@@ -1,0 +1,272 @@
+/*
+################################################################################
+# promsStyle.css         2.1.6                                                 #
+# Authors: P. Poullet, G. Arras & F. Yvon (Institut Curie)                     #
+# Contact: myproms@curie.fr                                                    #
+################################################################################
+#----------------------------------CeCILL License-------------------------------
+# This file is part of myProMS
+#
+# Copyright Institut Curie 2018
+#
+# This software is a computer program whose purpose is to process
+# Mass Spectrometry-based proteomic data.
+#
+# This software is governed by the CeCILL license under French law and
+# abiding by the rules of distribution of free software. You can use,
+# modify and/or redistribute the software under the terms of the CeCILL
+# license as circulated by CEA, CNRS and INRIA at the following URL
+# "http://www.cecill.info".
+#
+# As a counterpart to the access to the source code and rights to copy,
+# modify and redistribute granted by the license, users are provided only
+# with a limited warranty and the software's author, the holder of the
+# economic rights, and the successive licensors have only limited
+# liability.
+#
+# In this respect, the user's attention is drawn to the risks associated
+# with loading, using, modifying and/or developing or reproducing the
+# software by the user in light of its specific status of free software,
+# that may mean that it is complicated to manipulate, and that also
+# therefore means that it is reserved for developers and experienced
+# professionals having in-depth computer knowledge. Users are therefore
+# encouraged to load and test the software's suitability as regards their
+# requirements in conditions enabling the security of their systems and/or
+# data to be ensured and, more generally, to use and operate it in the
+# same conditions as regards security.
+#
+# The fact that you are presently reading this means that you have had
+# knowledge of the CeCILL license and that you accept its terms.
+#-------------------------------------------------------------------------------*/
+
+
+/* Main color theme for background */
+BODY {background-color:white;}
+.lightBg {background-color: #BDD7FF;}
+.darkBg {background-color: #80B3FF;}
+
+/*FONT*/
+/* BODY,TH,TD,INPUT {font-family:verdana,arial,helvetica,sans-serif;} */
+*{font-family:verdana,arial,helvetica,sans-serif;}
+.title{font-size:22px;font-weight:bold;}
+.title1{font-size:20px;font-weight:bold;}
+.title2{font-size:18px;font-weight:bold;}
+.title3{font-size:15px;font-weight:bold;}
+.font11{font-size:11px;}
+/*.seq{font-size:15px;font-family:monospace;}*/
+.seq, .seq > FONT, .seq > FONT > FONT, .seq > A {
+	font-family:monospace;
+	font-size: 15px;
+}
+.org{font-style:italic;text-decoration:underline;}
+.visibleProt{font-weight:bold;}
+.hiddenProt{font-weight:normal;}
+.virtualProt{font-style:italic;}
+.highConf{color:black;}
+.lowConf{color:DimGray;}
+.help {cursor:help;}
+
+
+/* FONT Size */
+BODY,TH {font-size:13px;}
+INPUT,TEXTAREA {font-size:13px;} /*BUTTON*/
+TD {font-size:12px;}
+/*TT {font-size:13px;} */
+
+A {color:black; text-decoration:none;}
+A:hover {text-decoration:underline;}
+A.selectable:hover,A.itemBig:hover {color:#FF6600; text-decoration:none;}
+A.selected {color:#DD0000; text-decoration:none;}
+A.selected:hover {text-decoration:none; color:#FF0000;}
+
+/* Navigation frames */
+DIV.navigation {position:absolue;left:0px;top:0px;height:100%;overflow:auto;}
+DIV.navBorder1 {border-style:solid;border-width:0px 0px 0px 7px;border-color:#EDCA7D;padding-left:3px;} /* #DD0000 */
+DIV.navBorder2 {border-style:solid;border-width:0px 0px 0px 7px;border-color:#80B3FF;padding-left:3px;} /* #0000A5 */
+A.item,A.noSelItem {font-size:11px; font-weight:bold;}
+A.item:hover {color:#FF6600; text-decoration:none;}
+A.selItem {color:#DD0000; text-decoration:none; font-size:11px; font-weight:bold;}
+A.selItem:hover {text-decoration:none; color:#FF0000;}
+A.noSelItem:hover {color:#000000; text-decoration:none;}
+
+
+
+TR.list:hover{background-color: #EDCA7D;} /* does not work with ME */
+TABLE.list:hover{background-color: #EDCA7D;} /* does not work with ME */
+
+TR.header TH {
+	border-width: 5px 2px 2px 0px;
+	border-color: #FFFFFF;
+	border-style: solid;
+}
+/*
+TH.header2 {border-width: 5px 0px 2px 0px;}
+*/
+
+IMG {border:none;}
+
+ACRONYM {cursor: help;}
+
+/* Table headers */
+.rBorder {
+	padding: 0px 0px;
+	border-style:solid;
+	border-color:white;
+	border-width: 0px 2px 0px 0px;
+}
+.bBorder {
+	padding: 0px 0px;
+	border-style:solid;
+	border-color:white;
+	border-width: 0px 0px 2px 0px;
+}
+.rbBorder {
+	padding: 0px 0px;
+	border-style:solid;
+	border-color:white;
+	border-width: 0px 2px 2px 0px;
+}
+.noBorder {
+	padding: 0px 0px;
+	border-width: 0px 0px 0px 0px;
+}
+.tBorder {
+	padding: 0px 0px;
+	border-style:solid;
+	border-color:white;
+	border-width: 2px 0px 0px 0px;
+}
+
+/* CSS for background cell proportion bar */
+.barContainerLeft {
+	position: relative;
+    text-align: left;
+}
+.barContainerRight {
+	position: relative;
+    text-align: right;
+}
+.barElementLeft {
+    position: absolute;
+    left: 0;
+    height: 100%;
+}
+.barElementRight {
+    position: absolute;
+    right: 0;
+    height: 100%;
+}
+.barGreen {background-color: rgba(128,255,128,0.6)}
+.barRed {background-color: rgba(255,128,128,0.6)}
+.barValue {
+	position: relative;
+	z-index: 1;
+}
+
+/* Buttons */
+input[type="button"],input[type="submit"],input[type="reset"],button {
+	cursor:pointer;
+    /*padding:2px 3px;*/
+    border-width:1px; /*#F4A460;*/
+	border-style:outset;
+	/*Rounded border*/
+	-moz-border-radius: 4px;
+	-webkit-border-radius: 4px;
+	border-radius: 4px;
+	/*Border shadow
+	-webkit-box-shadow: rgba(0, 0, 0, .75) 0 2px 6px;
+	-moz-box-shadow: rgba(0, 0, 0, .75) 0 2px 6px;
+	box-shadow: rgba(0, 0, 0, .75) 0 2px 6px;
+	*/
+/*
+	background : #FFE066;
+	background : -webkit-gradient(linear, left top, left bottom, color-stop(0%,#FFE066), color-stop(100%,#F4BD61));
+	background : -moz-linear-gradient(top, #FFE066 0%, #F4BD61 100%);
+	background : -webkit-linear-gradient(top, #FFE066 0%, #F4BD61 100%);
+	background : -o-linear-gradient(top, #FFE066 0%, #F4BD61 100%);
+	background : -ms-linear-gradient(top, #FFE066 0%, #F4BD61 100%);
+	background : linear-gradient(top, #FFE066 0%, #F4BD61 100%);
+	filter : progid:DXImageTransform.Microsoft.gradient( startColorstr='#FFE066', endColorstr='#F4BD61',GradientType=0);
+*/
+	background : #EDDAA8;
+	background : -webkit-gradient(linear, left top, left bottom, color-stop(0%,#EDDAA8), color-stop(100%,#EDBB52));
+	background : -moz-linear-gradient(top, #EDDAA8 0%, #EDBB52 100%);
+	background : -webkit-linear-gradient(top, #EDDAA8 0%, #EDBB52 100%);
+	background : -o-linear-gradient(top, #EDDAA8 0%, #EDBB52 100%);
+	background : -ms-linear-gradient(top, #EDDAA8 0%, #EDBB52 100%);
+	background : linear-gradient(top, #EDDAA8 0%, #EDBB52 100%);
+	filter : progid:DXImageTransform.Microsoft.gradient( startColorstr='#EDDAA8', endColorstr='#EDBB52',GradientType=0);
+}
+input[type="button"]:hover,input[type="submit"]:hover,input[type="reset"]:hover,button:hover {
+	color:#F9F9F9;
+}
+input[type="button"]:active,input[type="submit"]:active,input[type="reset"]:active,button:active {
+	border-color:#FF6347;
+	border-style:inset;
+	background:#FF6347;
+	color:#FFF;
+}
+input[type="button"]:disabled,input[type="submit"]:disabled,input[type="reset"]:disabled,button:disabled {
+	cursor:default;
+	/*padding:2px 3px;*/
+    border:1px solid #DDD;
+	border-style:inset;
+	/*Rounded border*/
+	-moz-border-radius: 4px;
+	-webkit-border-radius: 4px;
+	border-radius: 4px;
+	background:#DDD;
+}
+input[type="button"]:disabled:hover,input[type="submit"]:disabled:hover,input[type="reset"]:disabled:hover,button:disabled:hover {
+	color:#999;
+}
+input[type="button"].selectedButton,button.selectedButton { /* buttons */
+	color:#EEE;
+	background : #FFB000;
+	background : -webkit-gradient(linear, left top, left bottom, color-stop(0%,#FFB000), color-stop(100%,#FF4500));
+	background : -moz-linear-gradient(top, #FFB000 0%, #FF4500 100%);
+/*background : -moz-linear-gradient(top, #BDD7FF 0%, #80B3FF 100%);*/
+	background : -webkit-linear-gradient(top, #FFB000 0%, #FF4500 100%);
+	background : -o-linear-gradient(top, #FFB000 0%, #FF4500 100%);
+	background : -ms-linear-gradient(top, #FFB000 0%, #FF4500 100%);
+	background : linear-gradient(top, #FFB000 0%, #FF4500 100%);
+	filter : progid:DXImageTransform.Microsoft.gradient( startColorstr='#FFB000', endColorstr='#FF4500',GradientType=0 );
+}
+input[type="button"].selectedButton:hover,button.selectedButton:hover {
+	color:#FFF;
+}
+
+/* Fake buttons */
+.button {
+	cursor:pointer;
+	background-color:#D0D0D0;
+	padding:0px 0px;
+	border-style:outset;
+	border-width:2px;
+	border-color:#D0D0D0;
+	vertical-align:middle;
+}
+.button:active {border-style:inset;}
+
+/* Navigation Select */
+SELECT.action {
+	/*background-color:#F9CF64;*/ /* F4BD61 <-> FFE066 */
+	background-color:#EDCA7D; /* #EDDAA8 <-> #EDBB52 */
+}
+/*Popups*/
+DIV.clDescriptionCont {position:absolute; visibility:hidden; z-index:200;} /* width:200px; layer-background-color:#E5E5E5; */
+DIV.clDescription {left:0px; top:0px; font-family:verdana,arial,helvetica,sans-serif; overflow:hidden; border: 1px solid #999999; padding:3px; font-size:11px; background-color:#E5E5E5;} /* width:200px; layer-background-color:#E5E5E5; */
+
+/*
+####>Revision history<####
+# 2.1.5 Change in .seq class & addition of cell background proportion bar (PP 05/04/16)
+# 2.1.4 Minor spelling fix (PP 01/04/16)
+# 2.1.3 Button styling and extends default font to all elements (PP 12/03/16)
+# 2.1.2 Added navigation DIV styles (PP 19/10/15)
+# 2.1.1 Added .tBorder Class (PP 23/07/14)
+# 2.1.0 "help" font class (FY 08/10/13)
+# 2.0.9 GPL license & virtualProt CSS (PP 03/09/13)
+# 2.0.8 Classes for protein confidence (PP 06/02/13)
+# 2.0.7 Added more &lt;A&gt styles for species selection (PP 04/01/13)
+# 2.0.6 Removed width to Popup DIVs (PP 29/05/12)
+*/

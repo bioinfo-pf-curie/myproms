@@ -1,0 +1,123 @@
+<!--
+################################################################################
+# promsLogo.html           2.1.11                                              #
+# Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
+# Contact: myproms@curie.fr                                                    #
+################################################################################
+#----------------------------------CeCILL License-------------------------------
+# This file is part of myProMS
+#
+# Copyright Institut Curie 2018
+#
+# This software is a computer program whose purpose is to process
+# Mass Spectrometry-based proteomic data.
+#
+# This software is governed by the CeCILL license under French law and
+# abiding by the rules of distribution of free software. You can use,
+# modify and/or redistribute the software under the terms of the CeCILL
+# license as circulated by CEA, CNRS and INRIA at the following URL
+# "http://www.cecill.info".
+#
+# As a counterpart to the access to the source code and rights to copy,
+# modify and redistribute granted by the license, users are provided only
+# with a limited warranty and the software's author, the holder of the
+# economic rights, and the successive licensors have only limited
+# liability.
+#
+# In this respect, the user's attention is drawn to the risks associated
+# with loading, using, modifying and/or developing or reproducing the
+# software by the user in light of its specific status of free software,
+# that may mean that it is complicated to manipulate, and that also
+# therefore means that it is reserved for developers and experienced
+# professionals having in-depth computer knowledge. Users are therefore
+# encouraged to load and test the software's suitability as regards their
+# requirements in conditions enabling the security of their systems and/or
+# data to be ensured and, more generally, to use and operate it in the
+# same conditions as regards security.
+#
+# The fact that you are presently reading this means that you have had
+# knowledge of the CeCILL license and that you accept its terms.
+#--------------------------------------------------------------------------------->
+<HTML>
+<HEAD>
+<META HTTP-EQUIV="Pragma" CONTENT="no-cache">
+<META HTTP-EQUIV="Cache-Control" CONTENT="no-cache">
+<TITLE>myProMS Logo Page</TITLE>
+<LINK rel="stylesheet" href="./promsStyle.css" type="text/css" />
+<STYLE>
+A.text {
+	font-size:12px;
+	font-weight:bold;
+	text-decoration:none;
+	color:#0000A5;
+	line-height:0px;
+}
+A.text:hover {color:#C80000;text-decoration:none;}
+.version {
+	font-size:22px;
+	font-weight:bold;
+	font-style:italic;
+	color:#0000A5;
+	line-height:95px;
+}
+#Curie {
+	position:absolute;
+	left:55px;
+	top:60px;
+	height:30px;
+	font-size:8px;
+	z-index:99
+}
+#userDiv {
+	position:absolute;
+	/*left:350px; top:57px*/
+	left:450px; /*350px;*/
+	top:2px; /*57px*/
+}
+#userInfo {
+	position:absolute;
+	/*left:375px;top:63px;*/
+	left:475px;top:8px;
+	font-weight:bold
+}
+</STYLE>
+<SCRIPT LANGUAGE="JavaScript">
+var mappingJobRunning=0; //0: not running, 1: running
+function displayDedug() {
+	var debugFrame=document.getElementById('debug');
+	debugFrame.style.display=(debugFrame.style.display=='none')? 'block' : 'none';
+}
+</SCRIPT>
+</HEAD>
+<BODY topmargin="0" bgcolor="white"> <!-- background="./images/bgProMS.gif"-->
+<TABLE border=0 cellpadding=0 cellspacing=0 width=100%>
+	<TR>
+		<TD width=170 align=right valign=top><IMG border=0 src="./images/myProMS48.gif"></TD>
+		<TD valign=top nowrap>&nbsp;<FONT class="version">v3.6</FONT>&nbsp;</TD>
+		<TD width=100% valign=top><IMG border=0 src="./images/myProMS_fasta21.gif"></TD>
+		<TD width=150 valign=top><IMG border=0 src="./images/siteLogo.gif"></TD>
+	</TR>
+</TABLE>
+<DIV id="Curie">&nbsp;<A class="text" href="http://www.curie.fr" target="_blank">Developed at Institut Curie, France</A></DIV> <!-- style="position:absolute;left:55px;top:63px;" -->
+<DIV id="userDiv"><IMG id="userImg" src="./images/no_user_logged.gif"/></DIV>
+<SPAN id="userInfo">No user logged.</SPAN>
+</BODY>
+</HTML>
+
+<!--
+####>Revision history<####
+# 2.1.11 Optimized space for version number (PP 05/01/18)
+# 2.1.10 v3.6 (PP 06/12/17)
+# 2.1.9 v3.5 update (PP 02/12/15)
+# 2.1.8 generic siteLogo.gif (PP 07/03/14)
+# 2.1.7 v3.1 update (PP 27/01/14)
+# 2.1.6 v3.0.1 version (PP 13/11/13)
+# 2.1.5 v3.0.0 version (PP 27/09/13)
+# 2.1.4 beta2 version (PP 16/04/13)
+# 2.1.3 Added user connection info (PP 19/11/12)
+# 2.1.2 Fixed IE div bug (PP 23/03/12)
+# 2.1.1 Change version number to 3.0.beta (PP 23/03/12)
+# 2.1.0 Change URL to Curie home page (PP 22/02/12)
+# 2.0.9 Change version number to 2.7.1 (PP 05/10/11)
+# 2.0.8 Change version number to 2.7 (PP 13/04/11)
+-->

@@ -1,0 +1,1534 @@
+#!/usr/local/bin/perl -w
+
+################################################################################
+# displayPCA.cgi       1.1.2                                                   #
+# Authors: P. Poullet, S.Liva (Institut Curie)      	                       #
+# Contact: myproms@curie.fr                                                    #
+# display and store the results of PCA analysis        	                       #
+################################################################################
+#----------------------------------CeCILL License-------------------------------
+# This file is part of myProMS
+#
+# Copyright Institut Curie 2018
+#
+# This software is a computer program whose purpose is to process
+# Mass Spectrometry-based proteomic data.
+#
+# This software is governed by the CeCILL license under French law and
+# abiding by the rules of distribution of free software. You can use,
+# modify and/or redistribute the software under the terms of the CeCILL
+# license as circulated by CEA, CNRS and INRIA at the following URL
+# "http://www.cecill.info".
+#
+# As a counterpart to the access to the source code and rights to copy,
+# modify and redistribute granted by the license, users are provided only
+# with a limited warranty and the software's author, the holder of the
+# economic rights, and the successive licensors have only limited
+# liability.
+#
+# In this respect, the user's attention is drawn to the risks associated
+# with loading, using, modifying and/or developing or reproducing the
+# software by the user in light of its specific status of free software,
+# that may mean that it is complicated to manipulate, and that also
+# therefore means that it is reserved for developers and experienced
+# professionals having in-depth computer knowledge. Users are therefore
+# encouraged to load and test the software's suitability as regards their
+# requirements in conditions enabling the security of their systems and/or
+# data to be ensured and, more generally, to use and operate it in the
+# same conditions as regards security.
+#
+# The fact that you are presently reading this means that you have had
+# knowledge of the CeCILL license and that you accept its terms.
+#-------------------------------------------------------------------------------
+$|=1;
+use strict;
+use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
+use CGI ':standard';
+use promsConfig;
+use promsMod;
+use promsQuantif;
+use POSIX qw(strftime); # to get the time
+use Text::CSV;
+use Spreadsheet::WriteExcel;
+use utf8; # Tells Perl that characters are UTF8. Necessary for Excel export to work with UTF-8 characters ...
+use Encode qw(encode_utf8); # ... Encode needed if hard UTF8 chars in code!!!
+
+#######################
+####>Configuration<####
+#######################
+my %promsPath=&promsConfig::getServerInfo;
+my $userID=$ENV{'REMOTE_USER'};
+my $experimentID = param('experimentID');
+my $ajax = param('AJAX') || '';
+my $explorID = param('explorID');
+my $pcaType = param('selectPCA') || "quantif";
+my $action = param('ACT') || '';
+
+####>Connexion to DB<####
+my $dbh = &promsConfig::dbConnect;
+my $projectID=param('PROJECT_ID') || &promsMod::getProjectID($dbh,$explorID,'EXPLORANA');
+my $pathToFile = "$promsPath{explorAna}/project_$projectID/$explorID";
+my @userInfo=&promsMod::getUserInfo($dbh,$userID,$projectID);
+my $projectAccess=${$userInfo[2]}{$projectID};
+my $disabSave=($projectAccess eq 'guest')? ' disabled' : '';
+my $selQuantifModif=0;
+
+my ($quantifListStrg,%quantificationIDs); # also needed by &ajaxChangeDimensions
+my $sthSelExplorQuantif = $dbh -> prepare("SELECT Q.ID_QUANTIFICATION,TARGET_POS,ID_MODIFICATION FROM EXPLORANA_QUANTIF EA,QUANTIFICATION Q WHERE EA.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND ID_EXPLORANALYSIS = $explorID ORDER BY ID_QUANTIFICATION,TARGET_POS");
+$sthSelExplorQuantif -> execute;
+while (my($quantifID, $targetPos, $modifID) = $sthSelExplorQuantif -> fetchrow_array) {
+    $quantifListStrg.=':' if $quantifListStrg;
+    $quantifListStrg.=$quantifID."_".$targetPos;
+    $quantificationIDs{$quantifID}=1;
+	$selQuantifModif=$modifID if $modifID;
+}
+$sthSelExplorQuantif -> finish;
+
+my $featureItems=($selQuantifModif)? 'Isoforms' : 'Proteins';
+
+####>EXPORT call<####
+if ($action eq 'export') {
+    &exportProteins();
+    exit;
+}
+
+####>AJAX calls<####
+if ($ajax eq 'changeDimensions') {
+    &ajaxChangeDimensions(param('dimX'),param('dimY'),param('dimZ'),'false');
+    exit;
+}
+elsif ($ajax eq 'listSigProtDim') {
+    &ajaxListSignificantProteins;
+    exit;
+}
+elsif ($ajax=~/^property:/) {
+    &ajaxGetPropertyValues;
+    exit;
+}
+elsif ($ajax eq 'propDecorateGraph') {
+    &ajaxPropDecorateGraph;
+    exit;
+}
+elsif ($ajax eq 'customLists') {
+    &ajaxGetCustomLists;
+    exit;
+}
+elsif ($ajax eq 'listDecorateGraph') {
+    &ajaxListDecorateGraph;
+    exit;
+}
+elsif ($ajax eq 'saveAnnotations') {
+    &ajaxSaveAnnotations;
+    exit;
+}
+
+my %listThemes;
+my $sthTh=$dbh->prepare("SELECT ID_CLASSIFICATION,NAME FROM CLASSIFICATION WHERE ID_PROJECT=$projectID");
+$sthTh->execute;
+while (my($themeID,$themeName)=$sthTh->fetchrow_array) {
+    $listThemes{$themeID}=$themeName;
+}
+$sthTh->finish;
+my (%goAnalyses, %parentGoAna, %pathwayAnalyses);
+
+##GO ANALYSES
+my $sthGO = $dbh -> prepare("SELECT ID_GOANALYSIS,NAME,ASPECT,ID_PARENT_GOANA FROM GO_ANALYSIS WHERE ID_EXPERIMENT=$experimentID");
+$sthGO -> execute;
+while (my ($goID,$name,$aspectStrg,$parentGoID) = $sthGO -> fetchrow_array) {
+    if ($parentGoID) {
+        push @{$parentGoAna{$parentGoID}},$goID;
+    }
+    else {
+        @{$goAnalyses{$goID}} = ($name,$aspectStrg);
+    }
+}
+$sthGO -> finish;
+
+##PATHWAY ANALYSES
+my $sthPA=$dbh->prepare("SELECT ID_PATHWAY_ANALYSIS, ID_CATEGORY, NAME, PARAM_STRG FROM PATHWAY_ANALYSIS WHERE ID_EXPERIMENT=$experimentID AND STATUS>0");
+$sthPA->execute;
+while (my ($pathID, $catID, $name, $paramStrg)=$sthPA->fetchrow_array) {
+    $catID = (!$catID)? "" : $catID;
+    @{$pathwayAnalyses{$pathID}}=($catID, $name, $paramStrg);
+}
+$sthPA->finish;
+
+my ($pcaName) = $dbh -> selectrow_array("SELECT NAME from EXPLORANALYSIS where ID_EXPLORANALYSIS = $explorID");
+my %bioSampProperties;
+if ($pcaType =~ /^quantif/) {
+    my $sthProp=$dbh->prepare("SELECT DISTINCT P.ID_PROPERTY,P.NAME,P.PROPERTY_TYPE FROM PROPERTY P
+                                INNER JOIN BIOSAMPLE_PROPERTY BP ON P.ID_PROPERTY=BP.ID_PROPERTY
+                                INNER JOIN OBSERVATION O ON BP.ID_BIOSAMPLE=O.ID_BIOSAMPLE
+                                INNER JOIN ANA_QUANTIFICATION AQ ON O.ID_ANALYSIS=AQ.ID_ANALYSIS
+                                WHERE P.USE_IN_ANALYSIS=1 AND AQ.ID_QUANTIFICATION IN (".join(',',keys %quantificationIDs).")");
+    $sthProp->execute;
+    while (my($propID,$propName,$propType)=$sthProp->fetchrow_array) {
+        $bioSampProperties{$propType}{$propID}=$propName;
+    }
+    $sthProp->finish;
+}
+
+#### START HTML
+print header(-'content-encoding'=>'no',-charset=>'utf-8');
+warningsToBrowser(1);
+my ($lightColor,$darkColor)=&promsConfig::getRowColors;
+print qq
+|<HTML>
+<HEAD>
+<TITLE>PCA</TITLE>
+<LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
+<STYLE type="text/css">
+.TD {font-weight:normal;}
+.TH {font-weight:bold;}
+.row_0{background-color:$darkColor;}
+.row_1{background-color:$lightColor;}
+.highlight{width:250px;}
+.popup {z-index:999;background-color:#FFFFFF;border:solid 3px #999999;padding:5px;position:absolute;display:none;box-shadow:10px 10px 20px #808080;}
+</STYLE>
+<SCRIPT src="$promsPath{html}/js/Raphael/raphael.js"></SCRIPT>
+<SCRIPT src="$promsPath{html}/js/local/chartLibrary2.js"></SCRIPT>
+<SCRIPT src="$promsPath{html}/js/local/pcaPlot.js"></SCRIPT>
+<SCRIPT src="$promsPath{html}/js/other/canvg.js"></SCRIPT>
+<SCRIPT src="$promsPath{html}/js/other/svgfix-0.2.js"></SCRIPT>
+<SCRIPT src="$promsPath{html}/js/other/rgbcolor.js"></SCRIPT>
+<SCRIPT language="JavaScript">
+|;
+&promsMod::popupInfo();
+print qq
+|function editDeleteHighligth(name, action, newName) {
+    if (action=='delete') {
+        var pos = annotSetObject[name].position;
+        for ( var i in annotSetObject ) {
+            if (annotSetObject[i].position > pos){
+                annotSetObject[i].position --;
+            }
+        }
+        rank--;
+    }
+    else {
+        annotSetObject[newName]={};
+        for ( var j in annotSetObject[name]) {
+            annotSetObject[newName][j]=annotSetObject[name][j];
+        }
+    }
+    delete annotSetObject[name];
+    document.getElementById('saveButton').style.display='';
+}
+
+var XHR = null;
+function getXMLHTTP() {
+    var xhr = null;
+    if (window.XMLHttpRequest) {// Firefox & others
+        xhr = new XMLHttpRequest();
+    }
+    else if (window.ActiveXObject) { // Internet Explorer
+        try {
+          xhr = new ActiveXObject("Msxml2.XMLHTTP");
+        } catch (e) {
+            try {
+                xhr = new ActiveXObject("Microsoft.XMLHTTP");
+            } catch (e1) {
+                xhr = null;
+            }
+        }
+    }
+    else { // XMLHttpRequest not supported by browser
+        alert("Your browser does not support XMLHTTPRequest objects...");
+    }
+    return xhr;
+}
+
+//AJAX TO CHANGE DIMENSIONS
+function ajaxChangeDimensions() {
+    var selDimX=document.getElementById('selectDimX');
+    var selDimY=document.getElementById('selectDimY');
+    var selDimZ=document.getElementById('selectDimZ');
+    var dimX=selDimX.value;
+    var dimY=selDimY.value;
+	var dimZ=selDimZ.value;
+    if (!dimX \|\| !dimY) {
+        alert('Select valid values for X/Y axis dimension!');
+        return;
+    }
+    var dimXlabel=selDimX.options[selDimX.selectedIndex].text;
+    var dimYlabel=selDimY.options[selDimY.selectedIndex].text;
+
+    //If XHR object already exists, the request is canceled & the object is deleted
+    if (XHR && XHR.readyState != 0) {
+        XHR.abort();
+        delete XHR;
+    }
+    //Creation of the XMLHTTPRequest object
+    XHR = getXMLHTTP();
+    if ( !XHR ) {
+        return false;
+    }
+    XHR.open("GET","./displayPCA.cgi?AJAX=changeDimensions&dimX="+dimX+"&dimY="+dimY+"&dimZ="+dimZ+"&selectPCA="+selPCAtype+"&experimentID=$experimentID&explorID=$explorID",true);
+    XHR.onreadystatechange=function() {
+        if (XHR.readyState == 4 && XHR.responseText) {
+            PCA.resetData(XHR.responseText);
+            PCA.redraw(dimXlabel, dimYlabel);
+        }
+    }
+    XHR.send(null);
+}
+
+//DISPLAY PCA DATA
+var selPCAtype='$pcaType';
+function displayPCAdata(pcaType) {
+	if (selPCAtype.replace('_sc','')==pcaType.replace('_sc','')) { // same PCA target -> ajax update
+		selPCAtype=pcaType;
+		ajaxChangeDimensions();
+	}
+	else {
+	    window.location="./displayPCA.cgi?experimentID=$experimentID&explorID=$explorID&selectPCA="+pcaType;
+	}
+}
+var annotSetObject = {};
+|;
+if ($pcaType =~/^quantif/) { # PCA ON QUANTIFICATIONS
+    print qq
+|
+//AJAX FOR QUANTIFICATIONS
+var sigProtSort='p-value';
+function selectSigProtSort(newSort) {
+    sigProtSort=newSort;
+    ajaxListSignificantProteins();
+}
+function ajaxListSignificantProteins() {
+    saveListGlobals.themesFetched=false; // resets ajaxManageSaveProteins mecanism
+    var listDiv=document.getElementById('protListDIV');
+    listDiv.innerHTML="<BR><BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<FONT class=\\"title3\\">Fetching data. Please wait...</FONT><BR>&nbsp;&nbsp;&nbsp;&nbsp;<IMG src=\\"$promsPath{images}/scrollbarGreen.gif\\"><BR><BR>";
+    listDiv.style.display='';
+    listDiv.scrollIntoView();
+
+    var dim=document.getElementById('selectSigProtDim').value;
+    //If XHR object already exists, the request is canceled & the object is deleted
+    if (XHR && XHR.readyState != 0) {
+        XHR.abort();
+        delete XHR;
+    }
+    //Creation of the XMLHTTPRequest object
+    XHR = getXMLHTTP();
+    if ( !XHR ) {
+        return false;
+    }
+    XHR.open("GET","./displayPCA.cgi?AJAX=listSigProtDim&dim="+dim+"&sort="+sigProtSort+"&selectPCA="+selPCAtype+"&experimentID=$experimentID&explorID=$explorID",true);
+    XHR.onreadystatechange=function() {
+        if (XHR.readyState == 4 && XHR.responseText) {
+	    listDiv.innerHTML=XHR.responseText;
+        }
+    }
+    XHR.send(null);
+}
+function exportProteins() {
+
+    var selBox=document.getElementsByName('chkProt');
+    var numProt=0;
+    for (var i=0; i<selBox.length;i++) {
+        if (selBox[i].checked) {
+            numProt++;
+            break;
+        }
+    }
+    if (!numProt) {
+        alert('ERROR: select at least 1 protein');
+        return;
+    }
+    var defAction=document.protForm.ACT.value;
+    document.protForm.ACT.value='export';
+    document.protForm.submit();
+    document.protForm.ACT.value=defAction;
+}
+function extendSelection(index,chk) {
+    var auto=document.getElementById('autoExtend');
+    if (!auto.checked){return;}
+    var selBox=document.getElementsByName('chkProt');
+    for (var i=index; i<selBox.length;i++) {
+        selBox[i].checked=chk;
+    }
+}
+
+function ajaxGetPropertyValues(selProp) {
+    var selectDiv=document.getElementById('quantifHlDIV');
+    if (!selProp) {
+        selectDiv.innerHTML='';
+        selectDiv.style.display = 'none';
+        return;
+    }
+
+    //If XHR object already exists, the request is canceled & the object is deleted
+    if (XHR && XHR.readyState != 0) {
+        XHR.abort();
+        delete XHR;
+    }
+    //Creation of the XMLHTTPRequest object
+    XHR = getXMLHTTP();
+    if (!XHR) {
+        return false;
+    }
+
+    XHR.open("GET","./displayPCA.cgi?AJAX="+selProp+"&experimentID=$experimentID&explorID=$explorID&selectPCA="+selPCAtype,true);
+    XHR.onreadystatechange=function() {
+        if (XHR.readyState == 4 && XHR.responseText) {
+            //var multiStrg=(selProp.match(':O:')? ' multiple' : '';
+            selectDiv.innerHTML=XHR.responseText;
+            selectDiv.style.display = '';
+        }
+    }
+    XHR.send(null);
+}
+
+function prepareAjaxPropDecorateGraph(propValueData) {
+    if (!propValueData) return;
+    var valueSelect=document.getElementById('quantifHlSEL');
+    var propSelect=document.getElementById('quantifHighlightType');
+    ajaxPropDecorateGraph(propValueData, valueSelect.options[valueSelect.selectedIndex].text, propSelect.value, propSelect.options[propSelect.selectedIndex].text, false);
+}
+function ajaxPropDecorateGraph(propValueData,propValueText,selPropInfo,propName,saved) {
+    if (!saved) saved=false;
+    var paramStrg='AJAX=propDecorateGraph&explorID=$explorID&experimentID=$experimentID&qList=$quantifListStrg&propValueData='+encodeURIComponent(propValueData);
+
+    //If XHR object already exists, the request is canceled & the object is deleted
+    if (XHR && XHR.readyState != 0) {
+        XHR.abort();
+        delete XHR;
+    }
+	//Creation of the XMLHTTPRequest object
+    XHR = getXMLHTTP();
+    if (!XHR) {
+        return false;
+    }
+    XHR.open("POST","$promsPath{cgi}/displayPCA.cgi",!saved); // Switches to synchronous for already saved highlights
+    //Send the proper header information along with the request
+    XHR.setRequestHeader("Content-type", "application/x-www-form-urlencoded; charset=UTF-8");
+    XHR.setRequestHeader("Content-length", paramStrg.length);
+    XHR.setRequestHeader("Connection", "close");
+    XHR.onreadystatechange=function() {
+        if (XHR.readyState==4) {
+            if (XHR.responseText) {
+                colorIndex++;
+                if (colorIndex >= colorList.length) colorIndex=0;
+                var selData=selPropInfo.split(':'); // property:O:propID
+                var propInfo=propValueData.split(':=:'); // propID:selected value
+                var hlName=(selData[1]=='O')? propValueText+' ['+propName+']' : propName+': '+propValueText; // propInfo[1]+' ['+propName+']';
+                if (addHighlighting(PCA,hlName,colorList[colorIndex],{'-1':XHR.responseText.split(';')},'^###(\$\|%)')) {
+                    rank++;
+                    annotSetObject[hlName] = {color:colorList[colorIndex],type:selData[0]+':'+selData[1],param:'#'+propValueData,position:rank}; // # for ID tag
+                    if (colorIndex==colorList.length) colorIndex=0;
+                    if (!saved) document.getElementById('saveButton').style.display = '';
+                }
+                else {
+                    colorIndex--;
+                    if (colorIndex < 0) colorIndex=colorList.length-1;
+                }
+            }
+            else {alert('No match found!');}
+        }
+    }
+    XHR.send(paramStrg);
+}
+
+|;
+}
+else { # PCA ON PROTEINS
+	print "var goAspects=new Object();\n";
+	foreach my $goID (keys %goAnalyses) {
+	    print "goAspects[$goID]='$goAnalyses{$goID}[1]';\n";
+	}
+	print qq
+|function updateProtHighlightType(typeID) {
+    if (!typeID) {
+        document.getElementById('goAspect').style.display='none';
+        document.getElementById('selTermsDIV').style.display='none';
+        return;
+    }
+    var typeInfo=typeID.split(':');
+    if (typeInfo[0]=='GOA') {
+        updateGoAspects(typeInfo[1]);
+    }
+    else if (typeInfo[0]=='TH') {
+        document.getElementById('goAspect').style.display='none';
+        ajaxGetCustomLists(typeInfo[1]);
+    }
+    else if (typeInfo[0]=='PA') {
+        document.getElementById('goAspect').style.display='none';
+        document.getElementById('selTermsDIV').style.display='none';
+        ajaxGetPathwayList(typeInfo[1]);
+    }
+}
+//AJAX FOR GO
+function updateGoAspects(goID) {
+    var selAspect=document.getElementById('goAspect');
+    selAspect.options.length=1;
+    document.getElementById('selTermsDIV').innerHTML='';
+    if (goAspects[goID].match('P')) {selAspect.options[1]=new Option('Biological process',goID+',P');}
+    if (goAspects[goID].match('C')) {selAspect.options[2]=new Option('Cellular component',goID+',C');}
+    if (goAspects[goID].match('F')) {selAspect.options[3]=new Option('Molecular function',goID+',F');}
+    selAspect.style.display='';
+}
+
+function ajaxUpdateGoTermList(goIdStrg) {
+    var termsDiv=document.getElementById('selTermsDIV');
+    termsDiv.innerHTML='';
+    if (!goIdStrg) {
+        return;
+    }
+
+    //If XHR object already exists, the request is canceled & the object is deleted
+    if (XHR && XHR.readyState != 0) {
+        XHR.abort();
+        delete XHR;
+    }
+    //Creation of the XMLHTTPRequest object
+    XHR = getXMLHTTP();
+    if (!XHR) {
+        return false;
+    }
+    XHR.open("GET","$promsPath{cgi}/showProtQuantification.cgi?ACT=ajaxGoTerms&projectID=$projectID&goStrg="+goIdStrg,true);
+    XHR.onreadystatechange=function() {
+        if (XHR.readyState==4 && XHR.responseText) {
+            termsDiv.innerHTML=XHR.responseText;
+            termsDiv.style.display='';
+        }
+    }
+    XHR.send(null);
+}
+
+function ajaxGoDecorateGraph(termValue, termTxt, saved) {
+
+    var binArray=new Array();
+    binArray=termValue.split(',');
+    console.log(binArray);
+    var nbElem=binArray.length;
+
+    if (!saved) saved=false;
+    if (!termValue) return;
+
+    //If XHR object already exists, the request is canceled & the object is deleted
+    if (XHR && XHR.readyState != 0) {
+        XHR.abort();
+        delete XHR;
+    }
+    //Creation of the XMLHTTPRequest object
+    XHR = getXMLHTTP();
+    if (!XHR) {
+        return false;
+    }
+
+    termTxt = termTxt.replace(/ \\[GO.+/,""); // not when saved is true
+
+    if (nbElem==4) {
+        var binInfo=binArray.pop();
+        var binValues = binInfo.split(':');
+        var binStrg = (binValues[0] == 0 \|\| binValues[0] == 1)?' ]'+binValues[1]+']' : (binValues[0] == 3 \|\| binValues[0] == 4)?' ['+binValues[1]+'[' :' ]'+binValues[1]+'[';
+        termTxt=termTxt.concat(binStrg);
+    }
+
+    //var listParam = termValue.split(",");
+    //var strgParam = listParam[0]+','+listParam[1];
+
+    XHR.open("GET","$promsPath{cgi}/showProtQuantification.cgi?ACT=ajaxTermProt&projectID=$projectID&goStrg="+termValue,!saved);
+    XHR.onreadystatechange=function() {
+        if (XHR.readyState==4 && XHR.responseText) {
+            colorIndex++;
+	    if (colorIndex >= colorList.length) colorIndex=0;
+            var termData=termValue.split(',');
+            if (addHighlighting(PCA,termTxt,colorList[colorIndex],{'-1':XHR.responseText.split(';')},'^###(\$\|-)')) {
+                //colorList[colorIndex] = colorList[colorIndex].replace(/#/,"");
+                rank++;
+                annotSetObject[termTxt] = {color:colorList[colorIndex],type:'prot:GO',param:'#'+termValue,position:rank}; // # for ID tag
+                if (colorIndex==colorList.length) colorIndex=0;
+                if (!saved) document.getElementById('saveButton').style.display = '';
+            }
+            else {colorIndex--;}
+        }
+    }
+    XHR.send(null);
+}
+//AJAX FOR LIST HIGHLIGHTING
+function ajaxGetCustomLists(themeID) {
+    var termsDiv=document.getElementById('selTermsDIV');
+
+    //If XHR object already exists, the request is canceled & the object is deleted
+    if (XHR && XHR.readyState != 0) {
+        XHR.abort();
+        delete XHR;
+    }
+    //Creation of the XMLHTTPRequest object
+    XHR = getXMLHTTP();
+    if (!XHR) {
+        return false;
+    }
+    XHR.open("GET","$promsPath{cgi}/displayPCA.cgi?AJAX=customLists&experimentID=$experimentID&explorID=$explorID&themeID="+themeID,true);
+    XHR.onreadystatechange=function() {
+        if (XHR.readyState==4 && XHR.responseText) {
+            termsDiv.innerHTML=XHR.responseText;
+            termsDiv.style.display='';
+        }
+    }
+    XHR.send(null);
+}
+function ajaxListDecorateGraph(listID,saved) {
+    if (!saved) saved=false;
+    if (!listID) return;
+
+    //If XHR object already exists, the request is canceled & the object is deleted
+    if (XHR && XHR.readyState != 0) {
+        XHR.abort();
+        delete XHR;
+    }
+    //Creation of the XMLHTTPRequest object
+    XHR = getXMLHTTP();
+    if (!XHR) {
+        return false;
+    }
+    XHR.open("GET","$promsPath{cgi}/displayPCA.cgi?AJAX=listDecorateGraph&experimentID=$experimentID&explorID=$explorID&listID="+listID,!saved);
+    XHR.onreadystatechange=function() {
+        if (XHR.readyState==4) {
+            if (XHR.responseText) {
+                colorIndex++;
+                if (colorIndex >= colorList.length) colorIndex=0;
+                var listData=XHR.responseText.split('::');
+                if (addHighlighting(PCA,listData[0],colorList[colorIndex],{'-1':listData[1].split(';')},'^###(\$\|-)')) {
+                    rank++;
+                    annotSetObject[listData[0]] = {color:colorList[colorIndex],type:'prot:LIST',param:'#'+listID,position:rank}; // # for ID tag
+                    if (colorIndex==colorList.length) colorIndex=0;
+                    if (!saved) document.getElementById('saveButton').style.display = '';
+                }
+                else {colorIndex--;}
+            }
+            else {alert('List is empty!');}
+        }
+    }
+    XHR.send(null);
+}
+
+//AJAX FOR PATHWAY
+function ajaxGetPathwayList(pathID) {
+    var termsDiv=document.getElementById('selTermsDIV');
+    //If XHR object already exists, the request is canceled & the object is deleted
+    if (XHR && XHR.readyState != 0) {
+        XHR.abort();
+        delete XHR;
+    }
+    //Creation of the XMLHTTPRequest object
+    XHR = getXMLHTTP();
+    if (!XHR) {
+        return false;
+    }
+    XHR.open("GET","$promsPath{cgi}/runAndDisplayPathwayAnalysis.cgi?AJAX=ajaxGetPathway&FROM=PCA&ID="+pathID,true);
+    XHR.onreadystatechange=function() {
+        if (XHR.readyState==4 && XHR.responseText) {
+            termsDiv.innerHTML=XHR.responseText;
+            termsDiv.style.display='';
+        }
+    }
+    XHR.send(null);
+}
+function ajaxGetPathwayProteinsList(value, pathID, txt, saved) {
+    if (!saved) saved=false;
+    //If XHR object already exists, the request is canceled & the object is deleted
+    if (XHR && XHR.readyState != 0) {
+        XHR.abort();
+        delete XHR;
+    }
+    //Creation of the XMLHTTPRequest object
+    XHR = getXMLHTTP();
+    if (!XHR) {
+        return false;
+    }
+    XHR.open("GET","$promsPath{cgi}/runAndDisplayPathwayAnalysis.cgi?AJAX=ajaxListProt&ID="+pathID+"&FROM=PCA&reactNumber="+value,!saved);
+    XHR.onreadystatechange=function() {
+        if (XHR.readyState==4 && XHR.responseText) {
+            colorIndex++;
+            if (colorIndex >= colorList.length) colorIndex=0;
+            if (addHighlighting(PCA,txt,colorList[colorIndex],{'-1':XHR.responseText.split(';')},'^###(\$\|-)')) {
+                rank++;
+                annotSetObject[txt] = {color:colorList[colorIndex],type:'prot:PA',param:'#'+pathID+','+value,position:rank}; // # for ID tag
+                if (colorIndex==colorList.length) colorIndex=0;
+                if (!saved) document.getElementById('saveButton').style.display = '';
+            }
+            else {colorIndex--;}
+        }
+    }
+    XHR.send(null);
+}
+
+//OTHER AJAX FOR PROTEINS
+function ajaxListFromPCA(selectedPoints) {
+    ajaxListSelectedProteins(selectedPoints[0].join(','),'protein');
+}
+
+function ajaxListSelectedProteins(selectedPoints,sort) {
+    saveListGlobals.themesFetched=false; // resets ajaxManageSaveProteins mecanism
+    var listDiv=document.getElementById('protListDIV');
+    listDiv.innerHTML="<BR><BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<FONT class=\\"title3\\">Fetching data. Please wait...</FONT><BR>&nbsp;&nbsp;&nbsp;&nbsp;<IMG src=\\"$promsPath{images}/scrollbarGreen.gif\\"><BR><BR>";
+    listDiv.style.display='';
+    listDiv.scrollIntoView();
+    var paramStrg="AJAX=ajaxListProt&CALL=PCA&id_project=$projectID&ACT=result&quantifFocus=$selQuantifModif&quantifList=$quantifListStrg&selProt="+selectedPoints;
+
+    //If XHR object already exists, the request is canceled & the object is deleted
+    if (XHR && XHR.readyState != 0) {
+        XHR.abort();
+        delete XHR;
+    }
+    //Creation of the XMLHTTPRequest object
+    XHR = getXMLHTTP();
+    if (!XHR) {
+        return false;
+    }
+    XHR.open("POST","$promsPath{cgi}/compareQuantifications.cgi",true);
+    //Send the proper header information along with the request
+    XHR.setRequestHeader("Content-type", "application/x-www-form-urlencoded; charset=UTF-8");
+    XHR.setRequestHeader("Content-length", paramStrg.length);
+    XHR.setRequestHeader("Connection", "close");
+    XHR.onreadystatechange=function() {
+        if (XHR.readyState==4 && XHR.responseText) {
+            listDiv.innerHTML=XHR.responseText;
+        }
+    }
+    XHR.send(paramStrg);
+}
+|;
+}
+
+print qq
+|function selectSort(newSort,ajax) { // view=list (true or from Volcano ajax)
+    var checkedProt=document.protForm.chkProt;
+    var chkList=[];
+    if (checkedProt.length) {
+        for (var i=0; i<checkedProt.length; i++) {chkList.push(checkedProt[i].value);}
+    }
+    else {chkList.push(checkedProt.value);}
+    ajaxListSelectedProteins(chkList.join(','),null,newSort);
+}
+function sequenceView(id_protein,id_analyses) {
+    var winLocation="$promsPath{cgi}/sequenceView.cgi?id_ana="+id_analyses+"&id_prot="+id_protein+"&msdata="+top.showMSdata;
+    top.openProtWindow(winLocation);
+}
+
+function checkAllProteins(chkStatus) {
+    var checkBoxList=document.protForm.chkProt;
+    if (checkBoxList.length) {
+        for (var i=0; i < checkBoxList.length; i++) {checkBoxList[i].checked=chkStatus;}
+    }
+    else {checkBoxList.checked=chkStatus;}
+}
+|;
+&promsMod::printAjaxManageSaveProteins($projectID,\%promsPath,'document.protForm.chkProt'); # no need for callback
+print qq
+|function ajaxSaveAnnotations() {
+    //Object to string
+    var objString = '';
+    var concat = 0;
+    for (var i in annotSetObject) {
+        var nameSubstr=i.replace(/\\[.+\|\\].+/,"");
+        concat++;
+        if (concat > 1) objString += ':%:'; // object separator
+        objString += 'name=='+nameSubstr; // == because annotSetObject[i][j] contains "=" if Treatment!
+        for (var j in annotSetObject[i]) {
+	    if (j=='color') continue;
+            objString += '//'+j+'=='+annotSetObject[i][j]; // == because annotSetObject[i][j] contains "=" if Treatment!
+        }
+    }
+    var paramStrg="AJAX=saveAnnotations&experimentID=$experimentID&explorID=$explorID&selectPCA="+selPCAtype+"&string="+encodeURIComponent(objString);
+
+    //If XHR object already exists, the request is canceled & the object is deleted
+    if (XHR && XHR.readyState != 0) {
+        XHR.abort();
+        delete XHR;
+    }
+    //Creation of the XMLHTTPRequest object
+    XHR = getXMLHTTP();
+    if (!XHR) {
+        return false;
+    }
+    XHR.open("POST","$promsPath{cgi}/displayPCA.cgi",true);
+    //Send the proper header information along with the request
+    XHR.setRequestHeader("Content-type", "application/x-www-form-urlencoded; charset=UTF-8");
+    XHR.setRequestHeader("Content-length", paramStrg.length);
+    XHR.setRequestHeader("Connection", "close");
+    XHR.onreadystatechange=function() {
+        if (XHR.readyState==4) {
+            if (XHR.responseText.match('###OK###')) {
+                document.getElementById('saveButton').style.display='none';
+                var saveSpan=document.getElementById('saveSPAN');
+                saveSpan.style.display='';
+                setTimeout(function(){saveSpan.style.display='none';},5000);
+            }
+            else {
+                alert('ERROR: Highlights could not be saved !');
+            }
+        }
+    }
+    XHR.send(paramStrg);
+}
+</SCRIPT>
+</HEAD>
+<BODY background="$promsPath{images}/bgProMS.gif">
+<CENTER>
+<FONT class="title">PCA : <FONT color=#DD0000>$pcaName</FONT></FONT><BR><BR>
+<DIV id="waitDIV">
+<BR><BR><FONT class="title3">Fetching data. Please wait...</FONT><BR>&nbsp;&nbsp;&nbsp;&nbsp;<IMG src="$promsPath{images}/scrollbarGreen.gif"><BR><BR>
+</DIV>
+</CENTER>
+<DIV id="resultDIV" style="visibility:hidden"> <!-- display:none is not compatible with SVG text drawing with Raphaël in Chrome! -->
+|;
+
+#### PCA ###
+my %contribFiles=(prot=>'protContrib.txt',prot_sc=>'protContrib_sc.txt',quantif=>'quantifContrib.txt',quantif_sc=>'quantifContrib_sc.txt');
+my %dimContribution;
+open (CONTRIB, "$pathToFile/$contribFiles{$pcaType}" ) || &stopOnError("ERROR!<BR>$!: '$pathToFile/$contribFiles{$pcaType}'");
+while (<CONTRIB>) {
+    next if $. == 1;
+    chomp;
+    my ($dim, $contribValue) = split("\t",$_);
+    last if ($. > 4 && $contribValue < 5);
+    $dimContribution{$dim} = sprintf"%.2f",$contribValue;
+}
+close (CONTRIB);
+
+my $stringPCA=&ajaxChangeDimensions(1,2,3,'true'); # 1st dim, 2nd dim, 3rd dim, true:, transpo or not
+my $pcaTarget=($pcaType=~/^quantif/)? 'Quantifications' : 'Proteins';
+print qq
+|<SCRIPT language="JavaScript">
+var colorList = ['#0000FF','#4AA02C','#F660AB','#FBB917','#8AFB17','#9A9A9A','#7E2217','#95B9C7','#E18B6B'];
+var colorIndex = -1;
+var PCA;
+var rank = 0;
+function drawPCA() {
+    PCA = new pcaPlot({div:'pcaDIV',width:500,height:500,
+                       name:'PCA',
+                       axisX:'Dim 1 ($dimContribution{1} %)',
+                       axisY:'Dim 2 ($dimContribution{2} %)',
+                       //pointOnclick:externalLink,
+|;
+print "                 pointOnList:ajaxListFromPCA,\n" if $pcaType =~ /^prot/;
+print qq
+|                      allowHighlight:true,
+                       updateHighlight:{callback:editDeleteHighligth},
+					   exportAsImage:['Export as image','PCA_${pcaTarget}_$pcaName','./exportSVG.cgi']
+					   });
+    PCA.addDataAsString('$stringPCA');
+    PCA.draw();
+}
+function highlightPCA() {
+|;
+
+###>Restoring saved highlights<###
+my $sthSelectAnnot = $dbh -> prepare("SELECT NAME, RANK, ANNOT_TYPE, ANNOT_LIST FROM ANNOTATIONSET WHERE ID_EXPLORANALYSIS = $explorID ORDER BY RANK");
+my $sthProperty=$dbh->prepare("SELECT NAME FROM PROPERTY WHERE ID_PROPERTY=?");
+$sthSelectAnnot -> execute;
+while (my ($name, $rank, $annotType, $annotList) = $sthSelectAnnot -> fetchrow_array) {
+    #my ($color, $selValue) = split("=", $annotList);
+    if ($pcaType=~/^quantif/) {
+        #print "displayParamLabel('$annotType','$annotList','$name',true);\n";
+        if ($annotType =~ /^property:(.)/) {
+            my $propType=$1;
+            $annotList=~s/^#//; # remove propID tag
+            my ($propID,$propValue)=split(':=:',$annotList);
+            my $propValueText=($propType eq 'T')? &promsQuantif::convertTreatmentToText($propValue) : $propValue;
+            $sthProperty -> execute($propID);
+            my ($propName)=$sthProperty -> fetchrow_array;
+            next unless $propName; # to be safe in case property has been deleted
+            print "\tajaxPropDecorateGraph('$annotList','$propValueText','$annotType:$propID','$propName',true);\n";
+        }
+    }
+    elsif($pcaType =~ /^prot/ && $annotType=~ /^prot:/) {
+        if ($annotType eq 'prot:GO') {
+            my $termText=$annotList;
+            $termText=~ s/\s+$//;
+            $name=~s/^#//; # remove GOanaID tag
+            my $termValue=$name;
+            print "\tajaxGoDecorateGraph('$termValue','$termText',true);\n";
+        }
+        elsif ($annotType eq 'prot:LIST') {
+            my ($listID)=($name=~/^#(\d+)/); # extract cat ID
+            print "\tajaxListDecorateGraph($listID,true);\n";
+        }
+        elsif ($annotType eq 'prot:PA') {
+            $name=~s/^#//;
+            my ($pathID, $reactNumber)=split(",", $name);
+            print "\tajaxGetPathwayProteinsList('$reactNumber',$pathID,'$annotList',true);\n";
+        }
+    }
+}
+$sthSelectAnnot -> finish;
+$sthProperty -> finish;
+
+$dbh -> disconnect;
+my ($selQuantif,$selQuantifSc,$selProt,$selProtSc)=($pcaType eq 'quantif')? ('selected','','','') : ($pcaType eq 'quantif_sc')? ('','selected','','') : ($pcaType eq 'prot')? ('','','selected','') : ('','','','selected');
+print qq
+|}
+</SCRIPT>
+<TABLE cellspacing=0>
+    <TR class="row_0">
+        <TH class="title3" nowrap>&nbsp;PCA on:
+            <SELECT class="title3" name="selectPCA" onchange="displayPCAdata(this.value)">
+                <OPTION value="quantif" $selQuantif>Quantifications</OPTION>
+                <OPTION value="quantif_sc" $selQuantifSc>Quantifications [scaled PCA]</OPTION>
+                <OPTION value="prot" $selProt>$featureItems</OPTION>
+                <OPTION value="prot_sc" $selProtSc>$featureItems [scaled PCA]</OPTION>
+            </SELECT>
+        </TH>
+        <TH nowrap>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Show:</TH>
+        <TH nowrap>
+|;
+
+foreach my $dimAxis ('X','Y','Z') {
+    print qq
+|<SELECT id="selectDim$dimAxis">
+    <OPTION value="">-= $dimAxis =-</OPTION>
+|;
+    foreach my $dim (sort{$a <=> $b} keys %dimContribution) {
+        print "<OPTION value=\"$dim\"";
+        print ' selected' if (($dimAxis eq 'X' && $dim==1) || ($dimAxis eq 'Y' && $dim==2) || ($dimAxis eq 'Z' && $dim==3));
+        print ">Dim $dim ($dimContribution{$dim} %)</OPTION>\n";
+    }
+    print "</SELECT>\n";
+    print "vs." if $dimAxis eq 'X';
+	print "size:" if $dimAxis eq 'Y';
+}
+
+print qq
+|	</TH>
+    <TD nowrap><INPUT type="button" onclick="ajaxChangeDimensions()" value="Change dimensions"></TD>
+|;
+
+if ($pcaType=~/^quantif/) {
+    print "<TH nowrap>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$featureItems significant for:<SELECT id=\"selectSigProtDim\">";
+    foreach my $dim (sort{$a <=> $b} keys %dimContribution) {print "<OPTION value=\"$dim\">Dim $dim</OPTION>\n";}
+    print "</SELECT><INPUT type=\"button\" value=\"List\" onclick=\"ajaxListSignificantProteins()\"></TH>\n";
+}
+
+print qq
+|    </TR>
+</TABLE>
+
+<TABLE>
+    <TR>
+        <TD>
+            <DIV id="pcaDIV" style="float:left;background-color:#FFFFFF;border:solid 3px $darkColor;padding:2px;"></DIV>
+        </TD>
+        <TD valign="top">
+            <TABLE cellspacing=0>
+                <TR bgcolor="$darkColor"><TD class="title3">&nbsp;Highlights PCA:&nbsp;</TD></TR>
+|;
+if ($pcaType =~/^quantif/) { # PCA on quantifications
+		print qq
+|               <TR>
+                    <TD>
+                        <SELECT name="quantifHighlightType" id="quantifHighlightType" class="highlight title3" onchange="ajaxGetPropertyValues(this.value)">
+                            <OPTION value="">-=Select=-</OPTION>
+							<!--
+                                <OPTGROUP LABEL="Quantifications">
+                                    <OPTION value="samp:quantif:name" disabled>Name</OPTION>
+                                </OPTGROUP>
+						    -->
+                                <OPTGROUP LABEL="BioSample properties:">
+|;
+		if (scalar keys %{$bioSampProperties{'O'}}) {
+                    foreach my $propID (sort{lc($bioSampProperties{'O'}{$a}) cmp lc($bioSampProperties{'O'}{$b})} keys %{$bioSampProperties{'O'}}) {
+                        print "<OPTION value=\"property:O:$propID\">$bioSampProperties{O}{$propID}</OPTION>\n";
+                    }
+		}
+		else {print "<OPTION value=\"\" disabled>None</OPTION>\n";}
+		print qq|						</OPTGROUP>
+								<OPTGROUP label="BioSample treatments:">
+|;
+		if (scalar keys %{$bioSampProperties{'T'}}) {
+                    foreach my $propID (sort{lc($bioSampProperties{'T'}{$a}) cmp lc($bioSampProperties{'T'}{$b})} keys %{$bioSampProperties{'T'}}) {
+                        print "<OPTION value=\"property:T:$propID\">$bioSampProperties{T}{$propID}</OPTION>\n";
+                    }
+		}
+		else {print "<OPTION value=\"\" disabled>None</OPTION>\n";}
+		print qq|						</OPTGROUP>
+                        </SELECT>
+                    </TD>
+                </TR>
+                <TR>
+                    <TD>
+                        <DIV id="quantifHlDIV">
+						<!--
+                            <B>Highlight name:</B><INPUT type="text" name="labelName" size="20" maxlength="50" value=""/><br>
+                            <DIV id="addLabel" style="display:none"></DIV>
+						-->
+                        </DIV>
+                    </TD>
+                </TR>
+|;
+}
+else { # PCA on proteins
+		print qq
+|                        <TR>
+                            <TD>
+                                <SELECT class="highlight title3" onchange="updateProtHighlightType(this.value)">
+								<OPTION value="">-= Select =-</OPTION>
+								<OPTGROUP label="GO Analyses:">
+|;
+		if (scalar keys %goAnalyses) {
+                    foreach my $goID (sort{lc($goAnalyses{$a}[0]) cmp lc($goAnalyses{$b}[0])} keys %goAnalyses) {
+                        print "<OPTION value=\"GOA:$goID\">$goAnalyses{$goID}[0]</OPTION>\n";
+                    }
+		}
+		else {print "<OPTION value=\"\" disabled>** No GO annotations **</OPTION>\n";}
+		print qq
+|								</OPTGROUP>
+								<OPTGROUP label="Custom Lists:">
+|;
+		if (scalar keys %listThemes) {
+                    foreach my $themeID (sort{lc($listThemes{$a}) cmp lc($listThemes{$b})} keys %listThemes) {
+                        print "<OPTION value=\"TH:$themeID\">$listThemes{$themeID}</OPTION>\n";
+                    }
+		}
+		else {print "<OPTION value=\"\" disabled>** No List found **</OPTION>\n";}
+		print qq
+|								</OPTGROUP>
+                                                                <OPTGROUP label="Pathway Analyses:">
+|;
+                if (scalar keys %pathwayAnalyses) {
+                    foreach my $pathID (sort{lc($pathwayAnalyses{$a}[1]) cmp lc($pathwayAnalyses{$b}[1])} keys %pathwayAnalyses) {
+                        print "<OPTION value=\"PA:$pathID\">$pathwayAnalyses{$pathID}[1]</OPTION>\n";
+                    }
+                }
+                else {print "<OPTION value=\"\" disabled>** No Pathway annotations **</OPTION>\n";}
+		print qq
+|                                                                </OPTGROUP>
+				    </SELECT>
+                            </TD>
+                        </TR>
+                        <TR>
+                            <TD>
+                                <SELECT id="goAspect" class="highlight title3" style="display:none" onchange="ajaxUpdateGoTermList(this.value)">
+                                    <OPTION value="">-= Select Aspect =-</OPTION>
+                                </SELECT>
+                            </TD>
+                        </TR>
+                        <TR>
+                            <TD><DIV id="selTermsDIV"></DIV></TD>
+                        </TR>
+|;
+}
+print qq
+|        				<TR><TH>
+							<INPUT type="button" id="saveButton" style="font-weight:bold;display:none" onclick="ajaxSaveAnnotations()" value="Save highlights"$disabSave>
+							<SPAN id="saveSPAN" class="title3" style="color:#FFF;background-color:#387D38;padding:1px 7px;display:none">Highlights saved !</SPAN>
+						</TH></TR>
+					</TABLE>
+	</TD>
+    </TR>
+</TABLE>
+</DIV>
+<DIV id="protListDIV" style="position:absolute;height:500px;padding-right:25px;overflow:auto"></DIV>
+<BR><BR>
+<DIV id="divDescription" class="clDescriptionCont"></DIV>
+<SCRIPT type="text/javascript">
+setPopup();
+
+/********* DRAWING PCA *********/
+drawPCA();
+
+document.getElementById('waitDIV').style.display='none';
+document.getElementById('resultDIV').style.visibility='visible';
+
+/********* HIGHLIGHTS PCA *********/
+highlightPCA();
+
+</SCRIPT>
+</BODY>
+</HTML>
+|;
+
+#$dbh -> disconnect;
+sub ajaxChangeDimensions {
+    my ($dimX, $dimY, $dimZ, $return) = @_;
+
+    if ($return eq 'false') {
+        print header(-'content-encoding' => 'no',-charset => 'utf-8');warningsToBrowser(1);
+    }
+
+    my (%protList,$sthProt,%quantifNames);
+    if ($pcaType=~/^quantif/) { # PCA on samples
+        %quantifNames=&promsQuantif::getDistinctQuantifNames($dbh,$quantifListStrg);
+    }
+    else { # protein view
+        #my $sthProt=$dbh->prepare("SELECT P.ID_PROTEIN,P.ALIAS FROM EXPLORANA_QUANTIF EQ
+        #                                                  INNER JOIN PROTEIN_QUANTIFICATION PQ ON EQ.ID_QUANTIFICATION=PQ.ID_QUANTIFICATION
+        #                                                  INNER JOIN PROTEIN P ON PQ.ID_PROTEIN=P.ID_PROTEIN
+        #                                                  WHERE EQ.ID_EXPLORANALYSIS=$explorID"); # DISTINCT slows down query!!!!!!!!!
+        #$sthProt->execute;
+        #while (my ($protID,$alias)=$sthProt->fetchrow_array) {
+        #    $protList{$protID}=$alias;
+        #}
+        #$sthProt->finish;
+		$sthProt=$dbh->prepare("SELECT ALIAS FROM PROTEIN WHERE ID_PROTEIN=?");
+    }
+
+    my %coordFiles=(prot=>'protCoordinates.txt',prot_sc=>'protCoordinates_sc.txt',quantif=>'quantifCoordinates.txt',quantif_sc=>'quantifCoordinates_sc.txt');
+    my @coord;
+    open(COORD, "$pathToFile/$coordFiles{$pcaType}") || die "Error: $!";
+    while (my $lineCoord = <COORD>) {
+        chomp($lineCoord);
+        my $line;
+        next if ($. == 1);
+        my (@infoLine) = split("\t", $lineCoord);
+        my $alias;
+        if ($pcaType=~/^prot/) {
+			my ($protID,$modStrg)=split('-',$infoLine[0]);
+			unless ($protList{$protID}) {
+				$sthProt->execute($protID);
+				($protList{$protID})=$sthProt->fetchrow_array;
+			}
+            $alias=($modStrg)? $protList{$protID}.'-'.$modStrg : $protList{$protID};
+        }
+        else {
+            if ($infoLine[0]=~/%/) {
+                my ($test, $ref)=split(/%/, $infoLine[0]);
+                #my $aliasTest=(split(/:/,$quantifNames{'OPTIMAL'}{$test}))[1];
+                (my $aliasTest=$quantifNames{'OPTIMAL'}{$test})=~s/.*://;
+
+                #my $aliasRef=(split(/:/,$quantifNames{'OPTIMAL'}{$ref}))[1];
+                (my $aliasRef=$quantifNames{'OPTIMAL'}{$ref})=~s/.*://;
+                $alias=$aliasTest." % ".$aliasRef;
+                #$alias=$quantifNames{'OPTIMAL'}{$test}."_".$quantifNames{'OPTIMAL'}{$ref};
+            }
+            else {
+                $alias=$quantifNames{'OPTIMAL'}{$infoLine[0]};
+            }
+        }
+        if ($return eq 'true') {
+            $line = join(",",$alias,$infoLine[0],$infoLine[$dimX],$infoLine[$dimY]) ;
+        }
+        else {
+            $line = join(",",$infoLine[0],$infoLine[$dimX],$infoLine[$dimY]);
+        }
+		$line.=','.$infoLine[$dimZ] if ($dimZ && $infoLine[$dimZ]);
+        push @coord,$line;
+    }
+    close(COORD);
+	$sthProt->finish if $pcaType=~/^prot/;
+    #$dbh -> disconnect;
+
+    my $stringScale = join(";",@coord);
+    if ($return eq 'false') {print $stringScale;}
+    else {return $stringScale;}
+}
+
+sub ajaxListSignificantProteins {
+    print header(-type=>'text/plain', -'content-encoding' => 'no',-charset => 'utf-8');
+    warningsToBrowser(1);
+
+    my $dim=param('dim');
+    my $sortOrder=(param('sort')) || 'p-value';
+
+    my $sthP=$dbh->prepare("SELECT ALIAS,MW,PROT_DES,ORGANISM,ID_MASTER_PROTEIN FROM PROTEIN WHERE ID_PROTEIN=?");
+    my $sthMI=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_MASTER_PROTEIN=? and ID_IDENTIFIER=10 ORDER BY RANK");
+    my %protData;
+    my $protFile="$pathToFile/quantifProtDim$dim";
+    $protFile.=($pcaType eq 'quantif_sc')? '_sc.txt' : '.txt';
+    open(DATA,$protFile);
+    while (<DATA>) {
+        #next if $.==1;
+        chomp;
+        my ($modProtID,$correl,$pValue)=split(/\t/,$_);
+        next unless $modProtID;
+	my ($protID,$modStrg)=split('-',$modProtID); # modCode is null for whole protein quantif
+        $correl=sprintf "%.3f",$correl;
+        $pValue=sprintf "%.1e",$pValue;
+        $sthP->execute($protID);
+        my ($alias,$mw,$des,$species,$idMasterProt)=$sthP->fetchrow_array;
+        $mw=($mw)? sprintf "%.1f",$mw/1000 : '-';
+        $sthMI->execute($idMasterProt);
+        my @gene;
+        while (my($geneName)=$sthMI->fetchrow_array) {
+            push @gene,$geneName;
+        }
+        my $strgGene=scalar(@gene);
+        $strgGene.="-";
+        $strgGene.=join(';',@gene);
+        @{$protData{$modProtID}}=($alias,$correl,$pValue,$mw,$des,$species,$strgGene);
+    }
+    close DATA;
+    $sthP->finish;
+    $sthMI->finish;
+
+    my $sthA=$dbh->prepare("SELECT DISTINCT ID_ANALYSIS FROM EXPLORANA_QUANTIF EQ,ANA_QUANTIFICATION AQ WHERE EQ.ID_QUANTIFICATION=AQ.ID_QUANTIFICATION AND ID_EXPLORANALYSIS=$explorID");
+    my @anaList;
+    $sthA->execute;
+    while (my($anaID)=$sthA->fetchrow_array) {
+        push @anaList,$anaID;
+    }
+    $sthA->finish;
+    my $anaIDstrg=join(',',@anaList);
+
+    $dbh->disconnect;
+
+	my $lowerFeatures=lc($featureItems);
+    my $numTotProteins=scalar keys %protData;
+    my $proteinText=($sortOrder eq 'protein')? "<FONT color=\"#DD0000\">$lowerFeatures</FONT>" : $lowerFeatures;
+    my $correlText=($sortOrder eq 'correlation')? '<FONT color="#DD0000">Correlation</FONT>' : 'Correlation';
+    my $pvalueText=($sortOrder eq 'p-value')? '<FONT color="#DD0000">p-value</FONT>' : 'p-value';
+	print qq
+|<FORM name="protForm" method="POST">
+<INPUT type="hidden" name="PROJECT_ID" value="$projectID"/>
+<INPUT type="hidden" name="sort" value="$sortOrder"/>
+<INPUT type="hidden" name="ACT" value="" />
+<INPUT type="hidden" name="explorID" value="$explorID" />
+<INPUT type="hidden" name="experimentID" value="$experimentID" />
+<INPUT type="hidden" name="protList" value="" />
+<INPUT type="hidden" name="dim" value="$dim" />
+
+<FONT class="title2">List of significant $lowerFeatures for dimension $dim</FONT><BR>
+<TABLE border=0 cellspacing=0 cellpadding=2 align=center>
+<TR><TD colspan=8><DIV id="saveProtDIV" style="display:none;"></DIV></TD></TR>
+<TR><TD colspan=8>
+	<INPUT type="button" value="Clear list" style="font-weight:bold" onclick="document.getElementById('protListDIV').style.display='none'">
+	<INPUT type="button" value="Check all" onclick="checkAllProteins(true)"/><INPUT type="button" value="Uncheck all" onclick="checkAllProteins(false)"/><INPUT type="button" id="saveFormBUTTON" value="Save proteins..." onclick="ajaxManageSaveProteins('getThemes','PROT')"$disabSave/>|;
+	print qq|<INPUT type="button" id="saveSiteFormBUTTON" value="Save isoforms..." onclick="ajaxManageSaveProteins('getThemes','SITE',$selQuantifModif)"$disabSave/>| if $selQuantifModif;
+	print qq
+|        <INPUT type="button" value="Export proteins" onclick="exportProteins()"/>
+</TD></TR>
+<TR><INPUT type="checkbox" id="autoExtend" value="1" checked><FONT class="title3">Auto-extend selection</FONT></TR>
+<TR class="row_0">
+<TH class="rbBorder" align=left nowrap>&nbsp;$numTotProteins <A href="javascript:selectSigProtSort('protein')" onmouseover="popup('Click to sort proteins by <B>ascending name</B>.')" onmouseout="popout()">$proteinText</A>&nbsp;</TH>
+<TH class="rbBorder" align="left" nowrap>&nbsp;Gene Name&nbsp;</TH>
+<TH class="rbBorder">&nbsp;<A href="javascript:selectSigProtSort('correlation')" onmouseover="popup('Click to sort proteins by <B>decreasing correlation</B>.')" onmouseout="popout()">$correlText</A>&nbsp;</TH>
+<TH class="rbBorder">&nbsp;<A href="javascript:selectSigProtSort('p-value')" onmouseover="popup('Click to sort proteins by <B>ascending p-value</B>.')" onmouseout="popout()">$pvalueText</A>&nbsp;</TH>
+<TH class="rbBorder">&nbsp;MW<SUP>kd</SUP>&nbsp;</TH><TH class="bBorder">Description - Species</TH>
+</TR>
+|;
+    my $numProt=0;
+    my $index=-1;
+    foreach my $modProtID (sort{&sortSigProteins($sortOrder,\%protData)} keys %protData) {
+        $numProt++;
+        $index++;
+        my $trClass='row_'.($numProt % 2);
+	my ($protID,$modStrg)=split('-',$modProtID);
+	my $protLabel=($modStrg)? $protData{$modProtID}[0].'-'.$modStrg : $protData{$modProtID}[0];
+        print qq
+|<TR class="list $trClass" valign=top><TD class="TH" nowrap><INPUT type="checkbox" name="chkProt" value="$protID" onchange="extendSelection($index,this.checked)" /><A href="javascript:sequenceView($protID,'$anaIDstrg')">$protLabel</A>&nbsp;</TD>
+<TH>|;
+        my @popGene;
+        my ($count, $strgGene)=split('-',$protData{$modProtID}[6]);
+        foreach my $gene(split(';',$strgGene)) {
+            push @popGene, $gene;
+        }
+        if (scalar(@popGene) > 1) {
+            print "<A href=\"javascript:void(null)\" onmouseover=\"popup('<B><U>Synonyms:</U><BR>&nbsp;&nbsp;-",join('<BR>&nbsp;&nbsp;-',@popGene[1..$#popGene]),"</B>')\" onmouseout=\"popout()\"><U>",$popGene[0],"</U></A>&nbsp;";
+        }
+        else {
+            print @popGene;
+        }
+        print qq|</TH>
+<TH>$protData{$modProtID}[1]</TH><TH>$protData{$modProtID}[2]</TH>
+<TD class="TH" align=right>$protData{$modProtID}[3]&nbsp;</TD><TD>$protData{$modProtID}[4] <U><I>$protData{$modProtID}[5]</I></U></TD>
+</TR>
+|;
+    }
+    print qq
+|<TR><TD colspan=8><B>End of list.</B></TD></TR>
+</TABLE>
+</FORM>
+|;
+	exit;
+}
+
+sub ajaxGetPropertyValues {
+    print header(-type=>'text/plain',-charset => 'utf-8');
+    warningsToBrowser(1);
+
+    #my $sthEQ = $dbh -> prepare("SELECT GROUP_CONCAT(DISTINCT ID_QUANTIFICATION SEPARATOR ',') FROM EXPLORANA_QUANTIF WHERE ID_EXPLORANALYSIS=$explorID GROUP BY ID_EXPLORANALYSIS");
+    my ($propType,$propID)=($ajax=~/property:(.):(\d+)/);
+    my $sthPV=$dbh->prepare("SELECT DISTINCT BP.PROPERTY_VALUE FROM BIOSAMPLE_PROPERTY BP
+                                                            INNER JOIN OBSERVATION O ON BP.ID_BIOSAMPLE=O.ID_BIOSAMPLE
+                                                            INNER JOIN ANA_QUANTIFICATION AQ ON O.ID_ANALYSIS=AQ.ID_ANALYSIS
+                                                            INNER JOIN EXPLORANA_QUANTIF EQ ON AQ.ID_QUANTIFICATION=EQ.ID_QUANTIFICATION
+                                                            WHERE BP.ID_PROPERTY=$propID AND EQ.ID_EXPLORANALYSIS=$explorID");
+    #my ($propName)=($propType eq 'T')? $dbh->selectrow_array("SELECT NAME FROM PROPERTY WHERE ID_PROPERTY=$propID") : ('');
+    $sthPV->execute;
+    my %propValueCode;
+    while (my ($propValue)=$sthPV->fetchrow_array) {
+        my $propText=$propValue;
+        if ($propType eq 'T') {
+            $propValue=~s/^stepValue=\d:*//; # step independent: stepValue=1::quantity=xxx... -> quantity=xxx...
+            $propValue='%' unless $propValue;
+            $propText=&promsQuantif::convertTreatmentToText($propValue);
+        }
+        $propValueCode{$propValue}=$propText;
+    }
+    $sthPV->finish;
+    $dbh->disconnect;
+
+    print "<SELECT id=\"quantifHlSEL\" class=\"highlight title3\" onchange=\"prepareAjaxPropDecorateGraph(this.value)\">\n";
+    if (scalar keys %propValueCode) {
+        print "<OPTION value=\"\">-= Select =-</OPTION>\n";
+        print "<OPTION value=\"$propID:=:%\">treated</OPTION>\n" if $propType eq 'T'; # will be skipped if already in list
+        foreach my $propValue (sort{&promsMod::sortSmart(lc($propValueCode{$a}),lc($propValueCode{$b}))} keys %propValueCode) {
+            next if $propValue eq '%';
+            print "<OPTION value=\"$propID:=:$propValue\">$propValueCode{$propValue}</OPTION>\n";
+        }
+    }
+    else {
+        print "<OPTION value=\"\" disabled>No values</OPTION>\n";
+    }
+    print "</SELECT>\n";
+    exit;
+}
+
+sub ajaxPropDecorateGraph {
+    print header(-type=>'text/plain',-charset => 'utf-8');
+    warningsToBrowser(1);
+
+    my ($propID,$propertyValues)=split(':=:',param('propValueData'));
+    my ($propType)=$dbh->selectrow_array("SELECT PROPERTY_TYPE FROM PROPERTY WHERE ID_PROPERTY=$propID");
+
+    my %matchedQuantifs=&promsQuantif::getQuantificationsFromPropertyValue($dbh,$propID,$propType,$propertyValues,param('qList'));
+
+    $dbh->disconnect;
+
+    print join(';',keys %matchedQuantifs);
+    exit;
+}
+
+sub ajaxGetCustomLists {
+    print header(-type=>'text/plain',-charset => 'utf-8');
+    warningsToBrowser(1);
+
+    my $themeID=param('themeID');
+    my $sthList=$dbh->prepare("SELECT ID_CATEGORY,NAME,LIST_TYPE FROM CATEGORY WHERE ID_CLASSIFICATION=$themeID ORDER BY DISPLAY_POS");
+    $sthList->execute;
+    my $htmlCode='';
+	my %listTypeName=('PROT'=>'Proteins','SITE'=>'Sites');
+    while (my ($listID,$listName,$listType)=$sthList->fetchrow_array) {
+		$listType='PROT' unless $listType;
+        $htmlCode.="<OPTION value=\"$listID\">$listName [$listTypeName{$listType}]</OPTION>\n";
+    }
+    $sthList->finish;
+    $dbh->disconnect;
+
+    print "<SELECT id=\"listHlSEL\" class=\"highlight title3\" onchange=\"ajaxListDecorateGraph(this.value)\">\n";
+    if ($htmlCode) {
+        print "<OPTION value=\"\">-= Select a List =-</OPTION>\n$htmlCode";
+    }
+    else {
+        print "<OPTION value=\"\" disabled>No Lists</OPTION>\n";
+    }
+    print "</SELECT>\n";
+    exit;
+}
+sub ajaxListDecorateGraph {
+    print header(-type=>'text/plain',-charset => 'utf-8');
+    warningsToBrowser(1);
+
+    my $listID=param('listID');
+    my ($listName)=$dbh->selectrow_array("SELECT NAME FROM CATEGORY WHERE ID_CATEGORY=$listID");
+    my $sthProt=$dbh->prepare("SELECT ID_PROTEIN FROM CATEGORY_PROTEIN WHERE ID_CATEGORY=$listID");
+    print $listName.'::';
+    $sthProt->execute;
+    my $okProt=0;
+    while (my ($protID)=$sthProt->fetchrow_array) {
+        print ';' if  $okProt;
+        print $protID;
+        $okProt=1;
+    }
+    $sthProt->finish;
+    $dbh->disconnect;
+
+    print 0 unless $okProt;
+    exit;
+}
+
+sub ajaxSaveAnnotations {
+    print header(-'content-encoding' => 'no',-charset => 'utf-8');
+    warningsToBrowser(1);
+
+    ##<Deleting all previous annot for PCA target
+    if ($pcaType =~ /^quantif/) {
+        $dbh -> do("DELETE FROM ANNOTATIONSET WHERE ID_EXPLORANALYSIS = $explorID AND ANNOT_TYPE LIKE 'property:%'");
+    }
+    else {
+        $dbh -> do("DELETE FROM ANNOTATIONSET WHERE ID_EXPLORANALYSIS = $explorID AND ANNOT_TYPE LIKE 'prot:%'");
+    }
+
+    my ($annotSetID) = $dbh -> selectrow_array("SELECT MAX(ID_ANNOTATIONSET) FROM ANNOTATIONSET");
+    my $sthInsertAnnot = $dbh -> prepare("INSERT INTO ANNOTATIONSET(ID_ANNOTATIONSET,ID_EXPLORANALYSIS,NAME,RANK,ANNOT_TYPE,ANNOT_LIST) values (?,$explorID,?,?,?,?)");
+
+    if (param('string')) {
+        my @annotList;
+        foreach my $annotStrg (split(":%:",param('string'))) {
+            my %params;
+            foreach my $dataStrg (split('//',$annotStrg)) {
+                my @data=split('==',$dataStrg);
+                $params{$data[0]}=$data[1];
+            }
+            push @annotList,\%params;
+        }
+        ##<Proteins
+        if ($pcaType=~ /^prot/) {
+            foreach my $refAnnot (@annotList) {
+                $annotSetID++;
+                #<GO annotation
+                if ($refAnnot->{type} eq 'prot:GO' || $refAnnot->{type} eq 'prot:PA' ) {
+                    $sthInsertAnnot -> execute($annotSetID,$refAnnot->{param},$refAnnot->{position},$refAnnot->{type},$refAnnot->{name}); # '#goAnaID,Aspect,Term' used as name
+                }
+                #<List annotation
+                elsif ($refAnnot->{type} eq 'prot:LIST') {
+                    $sthInsertAnnot -> execute($annotSetID,$refAnnot->{param},$refAnnot->{position},$refAnnot->{type},undef); # '#listID' used as name
+                }
+            }
+        }
+        ##<Quantifications
+        else {
+            foreach my $refAnnot (@annotList) {
+                $annotSetID++;
+                #<Property/treatment
+                if ($refAnnot->{type} =~ /property:(.)/) {
+                    my $propType=$1;
+                    my $annotName;
+                    if ($propType eq 'O') {$annotName=$refAnnot->{param};}
+                    else { # Treatment
+                        my ($propID,$propValue)=split(':=:',$refAnnot->{param});
+                        $annotName=$propID.':=:'.&promsQuantif::convertTreatmentToText($propValue);
+                    }
+                    $sthInsertAnnot -> execute($annotSetID,$annotName, $refAnnot->{position}, $refAnnot->{type}, $refAnnot->{param}); # '#propID:=:value' used as name, Stored also in ANNOT_LIST in case too long for NAME field
+                }
+            }
+        }
+    }
+    $sthInsertAnnot -> finish;
+    $dbh -> commit;
+    $dbh -> disconnect;
+
+    print "###OK###";
+    exit;
+}
+
+sub exportProteins {
+
+    my ($pcaName) = $dbh -> selectrow_array("SELECT NAME from EXPLORANALYSIS where ID_EXPLORANALYSIS = $explorID");
+    my $dim=param('dim');
+    my $sortOrder=(param('sort')) || 'p-value';
+    my %prot2Display;
+    foreach my $prot (param('chkProt')) {
+        $prot2Display{$prot}=1;
+    }
+
+    my $sthP=$dbh->prepare("SELECT ALIAS,MW,PROT_DES,ORGANISM,ID_MASTER_PROTEIN FROM PROTEIN WHERE ID_PROTEIN=?");
+    my $sthMI=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_MASTER_PROTEIN=? and ID_IDENTIFIER=10 ORDER BY RANK");
+    my %protData;
+    my $protFile="$pathToFile/quantifProtDim$dim";
+    $protFile.=($pcaType eq 'quantif_sc')? '_sc.txt' : '.txt';
+    open(DATA,$protFile);
+    while (<DATA>) {
+        chomp;
+        my ($modProtID,$correl,$pValue)=split(/\t/,$_);
+        next unless $modProtID;
+	my ($protID,$modStrg)=split('-',$modProtID); # modCode is null for whole protein quantif
+        next if (!$prot2Display{$protID});
+        $correl=sprintf "%.3f",$correl;
+        $pValue=sprintf "%.1e",$pValue;
+        $sthP->execute($protID);
+        my ($alias,$mw,$des,$species,$idMasterProt)=$sthP->fetchrow_array;
+        $mw=($mw)? sprintf "%.1f",$mw/1000 : '-';
+        $sthMI->execute($idMasterProt);
+        my @gene;
+        while (my($geneName)=$sthMI->fetchrow_array) {
+            push @gene,$geneName;
+        }
+        my $strgGene=scalar(@gene);
+        $strgGene.="-";
+        $strgGene.=join(';',@gene);
+        @{$protData{$modProtID}}=($alias,$correl,$pValue,$mw,$des,$species,$strgGene);
+    }
+    close DATA;
+    $sthP->finish;
+    $sthMI->finish;
+    my $numTotProteins=scalar keys %protData;
+    my ($workbook, $worksheet, $formatLine, $title, $lineSize);
+    my $iLine = my $yTitle = my $yLine = 0;
+    $title = 'List proteins'.$pcaName;
+    print header(-type => "application/vnd.ms-excel",-attachment => "$title.xls");
+    $workbook = Spreadsheet::WriteExcel -> new("-");
+    $worksheet = $workbook -> add_worksheet();
+    my $formatTitle = $workbook -> add_format(bold=>1, color=>'red', size=>'12', align=>'vcenter');
+    $worksheet -> set_row(0,25);
+    $worksheet -> merge_range('A1:R1', "$title : $numTotProteins proteins (dimension $dim)", $formatTitle);
+    $iLine++;
+
+    my @titleHeader = ('Proteins', 'Gene Name', 'Correlation', 'p-value', 'MW', 'Description','Species');
+    my $formatHeader = $workbook -> add_format(bold => 1, size => 10, align => 'vcenter', color => 'white', bg_color => 'black');
+    foreach my $title (@titleHeader) {
+        $worksheet -> write($iLine, $yTitle, $title, $formatHeader);
+        $yTitle++;
+    }
+    $iLine++;
+
+    my $numProt=0;
+    my $index=-1;
+    foreach my $modProtID (sort{&sortSigProteins($sortOrder,\%protData)} keys %protData) {
+        $numProt++;
+        my ($protID,$modStrg)=split('-',$modProtID);
+	my $protLabel=($modStrg)? $protData{$modProtID}[0].'-'.$modStrg : $protData{$modProtID}[0];
+        $worksheet->write($iLine,$yLine,$protLabel);
+        $yLine++;
+        my @popGene;
+        my ($count, $strgGene)=split('-',$protData{$modProtID}[6]);
+        foreach my $gene(split(';',$strgGene)) {
+            push @popGene, $gene;
+        }
+        if (scalar(@popGene) > 1) {
+            $worksheet->write($iLine,$yLine,join(',',@popGene));
+        }
+        else {
+            $worksheet->write($iLine,$yLine,@popGene);
+        }
+        $yLine++;
+        $worksheet->write($iLine,$yLine,$protData{$modProtID}[1]);
+        $yLine++;
+        $worksheet->write($iLine,$yLine,$protData{$modProtID}[2]);
+        $yLine++;
+        $worksheet->write($iLine,$yLine,$protData{$modProtID}[3]);
+        $yLine++;
+        $worksheet->write($iLine,$yLine,$protData{$modProtID}[4]);
+        $yLine++;
+        $worksheet->write($iLine,$yLine,$protData{$modProtID}[5]);
+        $iLine++;
+        $yLine=0;
+    }
+    exit;
+}
+
+sub sortSigProteins {
+    my ($sort,$refProtData)=@_;
+    if ($sort eq 'protein') {lc($refProtData->{$a}[0]) cmp lc($refProtData->{$b}[0])}
+    elsif ($sort eq 'correlation') {$refProtData->{$b}[1]<=>$refProtData->{$a}[1] || $refProtData->{$a}[2]<=>$refProtData->{$b}[2] || lc($refProtData->{$a}[0]) cmp lc($refProtData->{$b}[0])}
+    else {$refProtData->{$a}[2]<=>$refProtData->{$b}[2] || $refProtData->{$b}[1]<=>$refProtData->{$a}[1] || lc($refProtData->{$a}[0]) cmp lc($refProtData->{$b}[0])}
+}
+
+sub stopOnError {
+    my ($error)=@_;
+    print qq
+|</DIV>
+<BR><BR>
+<FONT class="title3">$error</FONT>
+</BODY>
+</HTML>
+|;
+	exit;
+}
+
+####>Revision history<####
+# 1.1.2 Minor improvement in highlighting annotations sorting (PP 21/06/18)
+# 1.1.1 Compatible with sites list (PP 14/12/17)
+# 1.1.0 Minor bug fix on selection of max number dimensions (PP 18/01/17)
+# 1.0.9 display quantifName for PCA with normalization (SL 19/07/16)
+# 1.0.8 3rd dimension projected on point size (PP 09/11/15)
+# 1.0.7 auto extended selection + add gene name + export excel for list in dim (SL 16/05/15)
+# 1.0.6 Compatible with PTM quantifications (PP 16/06/15)
+# 1.0.5 display modification data and quantification reference (SL 20/03/15)
+# 1.0.4 add pathway annotation and manage bin for go analysis (SL 24/11/14)
+# 1.0.3 JS ajaxManageSaveProteins moved to promsMod.pm (PP 22/08/14)
+# 1.0.2 Quantification + protein highlithing & synchronized with new data file naming (PP 08/08/14)
+# 1.0.1 Code cleaning & simplication. (PP 10/07/14)
+# 1.0.0 New script to display and store the results of PCA (SL 08/04/14)

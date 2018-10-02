@@ -1,0 +1,193 @@
+<HTML>
+<HEAD>
+	<META charset="UTF-8">
+	<META HTTP-EQUIV="Pragma" CONTENT="no-cache">
+	<META HTTP-EQUIV="Cache-Control" CONTENT="no-cache">
+	<META name="DESCRIPTION" CONTENT="myProMS (Proteome Analysis using Mass Spectrometry with MySQL Database)">
+	<META name="KeyWords" CONTENT="myProMS Proteome Mass Spectrometry MySQL Database Mascot Proteome Discoverer Sequest MaxQuant">
+	<TITLE>Welcome to myProMS</TITLE>
+	<LINK rel="icon" type="image/png" href="./images/myProMS_icon.png">
+	<LINK rel="stylesheet" href="./promsStyle.css" type="text/css">
+	<STYLE type="text/css">
+		A {color: black; font-weight: bold; text-decoration:none}
+		A:hover {text-decoration:underline;}
+	</STYLE>
+<!--
+################################################################################
+# index.html          2.2.11D                                                    #
+# Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
+# Contact: myproms@curie.fr                                                    #
+################################################################################
+#----------------------------------CeCILL License-------------------------------
+# This file is part of myProMS
+#
+# Copyright Institut Curie 2018
+#
+# This software is a computer program whose purpose is to process
+# Mass Spectrometry-based proteomic data.
+#
+# This software is governed by the CeCILL license under French law and
+# abiding by the rules of distribution of free software. You can use,
+# modify and/or redistribute the software under the terms of the CeCILL
+# license as circulated by CEA, CNRS and INRIA at the following URL
+# "http://www.cecill.info".
+#
+# As a counterpart to the access to the source code and rights to copy,
+# modify and redistribute granted by the license, users are provided only
+# with a limited warranty and the software's author, the holder of the
+# economic rights, and the successive licensors have only limited
+# liability.
+#
+# In this respect, the user's attention is drawn to the risks associated
+# with loading, using, modifying and/or developing or reproducing the
+# software by the user in light of its specific status of free software,
+# that may mean that it is complicated to manipulate, and that also
+# therefore means that it is reserved for developers and experienced
+# professionals having in-depth computer knowledge. Users are therefore
+# encouraged to load and test the software's suitability as regards their
+# requirements in conditions enabling the security of their systems and/or
+# data to be ensured and, more generally, to use and operate it in the
+# same conditions as regards security.
+#
+# The fact that you are presently reading this means that you have had
+# knowledge of the CeCILL license and that you accept its terms.
+#-------------------------------------------------------------------------------
+!!! Edit line 75 if broken link to cgi directory !!!
+!!! Edit lines 111,114 and 117 to specify which local email address end-users can use for help and bug report !!!
+-->
+
+	<SCRIPT type="text/JavaScript">
+function startSession() {
+	if (sessionWindow != null && !sessionWindow.closed) {sessionWindow.close();}
+	var x=(screen.availWidth/2)-200;
+	var y=(screen.availHeight/2)-100;
+	//Path to cgi-bin directory
+	var locParts=document.location.href.split('/');
+	var cgiPath='';
+	var start=3;
+	if (locParts[3].match('^~')) { // eg. ~userName
+		cgiPath='/'+locParts[3];
+		start++;
+	}
+	cgiPath+='/cgi-bin';
+	if (locParts[start]=='html') start++; // skip html dir if visible is URL
+	for (var i=start; i<=locParts.length-2; i++) {
+		cgiPath+='/'+locParts[i];
+	}
+	sessionWindow=window.open(cgiPath+'/login.cgi','sessionWindow','resizable=yes,width=450,height=190,top='+x+',left='+y); // Hard code URL here if JS fails to find link (eg. '/.../cgi-bin/login.cgi')
+	sessionWindow.focus();
+}
+/*
+function alertCloseWindow() {
+	if (sessionWindow) {
+		alert('You are leaving myProMS Server.\nYour login and password remain active.\nClose all browser windows to prevent someone else from connecting to the server using your personal information.');
+		window.close();
+	}
+}
+*/
+var sessionWindow;
+	</SCRIPT>
+</HEAD>
+<BODY background="./images/bgProMS.gif""> <!-- onunload="alertCloseWindow() -->
+<BR><BR>
+<CENTER>
+<IMG src="./images/welcome.gif" border=0>
+
+<BR><BR><BR><BR><BR>
+
+<FONT class="title" color=#CC0000>Version <!--version tag-->3.6.6</FONT>
+<FONT style="font-size:9px"><BR></FONT>
+<B>(Updated on 26/09/2018)</B>
+<BR><BR><BR>
+
+<INPUT type="button" value="Start Session" class="title2" style="width:160px;" onclick="startSession()" />
+
+<BR><BR><BR><BR><BR>
+<TABLE border=0 width=80%>
+ <TR>
+  <TD><TABLE border=0>
+   <TR>
+    <TD rowspan=3><IMG src="./images/arobase-19.gif" border=0></TD>
+    <TD><A href="mailto:patrick.poullet@curie.fr?subject=Request an account&cc=guillaume.arras@curie.fr">Request an account</A></TD>
+   </TR>
+   <TR>
+    <TD><A href="mailto:patrick.poullet@curie.fr?subject=Request information&cc=guillaume.arras@curie.fr">Request information</A></TD>
+   </TR>
+   <TR>
+    <TD><A href="mailto:patrick.poullet@curie.fr?subject=Report bugs&cc=guillaume.arras@curie.fr">Report bugs</A></TD>
+   </TR>
+  </TABLE></TD>
+  <TD align=right><TABLE border=0>
+   <TR>
+    <TD><IMG src="./images/interro-15.gif" border=0></TD><!--help.gif-->
+    <TD><A href="./myProMSUsersGuide.pdf" target="_blank">User's guide</A><!--<BR><B><FONT color='#CC0000'>New version!</FONT></B>--></TD>
+   </TR>
+  </TABLE></TD>
+ </TR>
+</TABLE>
+<BR><BR><BR><BR>
+<B>myProMS is compatible with <FONT color='#0000A5'>recent versions</FONT> of most internet browsers. However, we recommand <FONT color='#CC0000'>Mozilla Firefox</FONT> or <FONT color='#CC0000'>Google Chrome</FONT>.<BR>
+Screen resolution should be at least <FONT color='#CC0000'>1280x1024</FONT> pixels for optimal display.<BR>
+<FONT color='#CC0000'>Javascript</FONT>, <FONT color='#CC0000'>popup windows</FONT> and <FONT color='#CC0000'>cookies</FONT> must be enabled.</B>
+<BR><BR><B>
+If myProMS was useful for your publication, please cite our paper (<A href="http://www.ncbi.nlm.nih.gov/pubmed/17610305" target="_blank" >Poullet <I>et al</I>. Proteomics 2007</A>).</B>
+<BR><BR>
+<TABLE cellpadding=0>
+ <TR><TH align=left><FONT color='#CC0000'>myProMS Team:</FONT></TH></TR>
+ <TR><TH align=left>&nbsp;&nbsp;Patrick Poullet: project leader & developer (Bioinformatics Platform)</TH></TR>
+ <TR><TH align=left>&nbsp;&nbsp;Guillaume Arras: developer (LSMP)</TH></TR>
+ <TR><TH align=left>&nbsp;&nbsp;Stéphane Liva: developer (Bioinformatics Platform)</TH></TR>
+ <TR><TH align=left>&nbsp;&nbsp;<FONT color='#777777'>Alexandre Sta: former statistician (Bioinformatics Platform)</FONT></TH></TR>
+ <TR><TH align=left>&nbsp;&nbsp;<FONT color='#777777'>Marine Le Picard: former developer (LSMP)</FONT></TH></TR>
+ <TR><TH align=left>&nbsp;&nbsp;<FONT color='#777777'>Matthieu Lhotellier: former statistician</FONT></TH></TR>
+ <TR><TH align=left>&nbsp;&nbsp;<FONT color='#777777'>Florent Yvon: former developer</FONT></TH></TR>
+ <TR><TH align=left>&nbsp;&nbsp;<FONT color='#777777'>Falaye Camara: former statistician</FONT></TH></TR>
+ <TR><TH align=left>&nbsp;&nbsp;<FONT color='#777777'>Florent Poulain: former developer</FONT></TH></TR>
+ <TR><TH align=left>&nbsp;&nbsp;<FONT color='#777777'>Sabrina Carpentier: former developer</FONT></TH></TR>
+ <TR><TH align=left><FONT color='#CC0000'>Contact:</FONT> <A href="mailto:myproms@curie.fr?subject=Request information">myproms@curie.fr</A></TH></TR>
+</TABLE>
+<BR>
+<TABLE><TR>
+<TH><A href="https://science.institut-curie.org/platforms/bioinformatics" target="_blank">Bioinformatics Platform</A><BR>
+<!-- UNIT 900 INSERM - Mines ParisTech - Institut Curie<BR>
+Bioinformatics and Computational Systems Biology of Cancer<BR> -->
+<FONT size=1>Tel : +33 (0)1 56 24 69 83 - Fax : +33 (0)1 56 24 69 11</FONT></TH>
+<TH>&nbsp;&nbsp;&nbsp;&nbsp;</TH>
+<TH><A href="https://science.institut-curie.org/platforms/mass-spectrometry-and-proteomics-facility" target="_blank">Mass Spectrometry and Proteomics Facility (LSMP)</A><BR>
+<FONT size=1>Tel :  +33 (0)1 56 24 65 24</FONT></TH>
+</TR>
+<TR>
+<TH colspan=3>Institut Curie - 26 rue d'Ulm - 75248 PARIS CEDEX 05 - FRANCE</TH>
+</TR></TABLE>
+
+</CENTER>
+<BR><BR>
+
+</BODY>
+</HTML>
+
+<!--
+####>Revision history<####
+# 2.2.11D Links to local myProMSUsersGuide.pdf & CONTACT_EMAIL string (PP 26/09/18)
+# 2.2.11 Changed number to customable line number in comment due to CeCILL license (PP 26/09/18) 
+# 2.2.10 v3.6.6 (PP 11/09/18)
+# 2.2.9 v3.6.5 (PP 25/06/18)
+# 2.2.8 v3.6.4 (PP 20/04/18)
+# 2.2.7 v3.6 (PP 06/12/17)
+# 2.2.6 v3.5 & developer list update (PP 24/10/16)
+# 2.2.5 v3.5beta & developer list update (PP 22/01/16)
+# 2.2.4 v3.1 final & developer list update (PP 06/03/14)
+# 2.2.3 v3.1 update (PP 27/01/14)
+# 2.2.2 v3.0.1 update (PP 13/11/13)
+# 2.2.1 Link to demo user's guide (PP 22/10/13)
+# 2.2.0 V3.0 update text & link to myProMS_users_guide.pdf (PP 23/09/13)
+# 2.1.9 Beta2 update text (PP 22/04/13)
+# 2.1.8 Licence update (PP 03/04/13)
+# 2.1.7 Change version number to 3.0 beta (PP 23/03/12)
+# 2.1.6 Minor change in comments (PP 05/01/12)
+# 2.1.5 Path to cgi directory handled by JavaScript (PP 31/10/11)
+# 2.1.4 Change version number to 2.7.1 (PP 05/10/11)
+# 2.1.3 Updated for myproms-dev.curie.fr: Developer SPECIFIC!!! (PP 01/07/11)
+# 2.1.2 Change version number to 2.7 (PP 13/04/11)
+# 2.1.1 Added FY as developer (PP 31/01/2011)
+-->

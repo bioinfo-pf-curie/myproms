@@ -1,0 +1,121 @@
+<!--
+################################################################################
+# proms.html           2.1.7                                                   #
+# Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
+# Contact: myproms@curie.fr                                                    #
+# !!! Edit line 84 if broken link to cgi directory !!!                         #
+################################################################################
+#----------------------------------CeCILL License-------------------------------
+# This file is part of myProMS
+#
+# Copyright Institut Curie 2018
+#
+# This software is a computer program whose purpose is to process
+# Mass Spectrometry-based proteomic data.
+#
+# This software is governed by the CeCILL license under French law and
+# abiding by the rules of distribution of free software. You can use,
+# modify and/or redistribute the software under the terms of the CeCILL
+# license as circulated by CEA, CNRS and INRIA at the following URL
+# "http://www.cecill.info".
+#
+# As a counterpart to the access to the source code and rights to copy,
+# modify and redistribute granted by the license, users are provided only
+# with a limited warranty and the software's author, the holder of the
+# economic rights, and the successive licensors have only limited
+# liability.
+#
+# In this respect, the user's attention is drawn to the risks associated
+# with loading, using, modifying and/or developing or reproducing the
+# software by the user in light of its specific status of free software,
+# that may mean that it is complicated to manipulate, and that also
+# therefore means that it is reserved for developers and experienced
+# professionals having in-depth computer knowledge. Users are therefore
+# encouraged to load and test the software's suitability as regards their
+# requirements in conditions enabling the security of their systems and/or
+# data to be ensured and, more generally, to use and operate it in the
+# same conditions as regards security.
+#
+# The fact that you are presently reading this means that you have had
+# knowledge of the CeCILL license and that you accept its terms.
+#--------------------------------------------------------------------------------->
+
+<HTML>
+<HEAD>
+<META HTTP-EQUIV="x-ua-compatible" CONTENT="IE=edge">
+<META HTTP-EQUIV="Pragma" CONTENT="no-cache">
+<META HTTP-EQUIV="Cache-Control" CONTENT="no-cache">
+<TITLE>myProMS</TITLE>
+<LINK rel="icon" type="image/png" href="./images/myProMS_icon.png">
+<SCRIPT LANGUAGE="JavaScript">
+window.moveTo(0,0);
+window.resizeTo(screen.availWidth,screen.availHeight);
+var projectTreeStatus=''; // stores project tree status
+var itemTreeStatus=''; // stores lower frame item (ie Gel,GO,quanti) tree status
+var experimentView=''; // GO or Quanti in itemFrame when an experiment is selected
+var expandMode=null; // used by listProteins.cgi & calling scripts ('null' value is important!)
+var showUnClass=0; // used by listProteins.cgi & all calling scripts
+var graphView='StdExp'; // used by graphicalView.cgi & all calling scripts
+var showMSdata=0; // used by sequenceView.cgi & calling scripts
+var protSectionVisibility={sequence:true}; // used by sequenceView.cgi
+var spectrumTolerance=0.2; // used by startValidation.cgi, drawSpectrum.cgi & peptide_view.cgi
+var spectrumMinInt=0.02; // used by startValidation.cgi, drawSpectrum.cgi & peptide_view.cgi
+//var spectrumTolUnit; **Not used! // used by startValidation.cgi, drawSpectrum.cgi & peptide_view.cgi
+var gel2dWindow; // window used to display 2D Gels
+var protWindow; // window used to sequence & graphical views of proteins
+var htmlPath; // used by closed session. Initialized by getPathToCGI
+function openProtWindow(winLocation){
+	if (protWindow && !protWindow.closed) {protWindow.close();}
+	protWindow=window.open(winLocation,'ProteinWindow','width=900,height=950,location=no,resizable=yes,scrollbars=yes');
+}
+function closeChildWindows() {
+	if (protWindow && !protWindow.closed) {protWindow.close();}
+	if (gel2dWindow && !gel2dWindow.closed) {gel2dWindow.close();}
+}
+function getPathToCGI(myFrame) {
+	var locParts=document.location.href.split('/');
+	var cgiPath='';
+	var start=3;
+	if (locParts[3].match('^~')) { // eg. ~userName
+		cgiPath='/'+locParts[3];
+		start++;
+	}
+	htmlPath=cgiPath;
+	cgiPath+='/cgi-bin';
+	if (locParts[start]=='html') start++; // skip html dir if visible is URL
+	for (var i=start; i<=locParts.length-2; i++) {
+		cgiPath+='/'+locParts[i];
+		htmlPath+='/'+locParts[i];
+	}
+	myFrame.window.location=cgiPath+'/promsMain.cgi?START=1'; // Hard code URL here if JS fails to find link (eg. '/.../cgi-bin/promsMain.cgi?START=1')
+}
+function closeSession() {
+	if (confirm('Terminate myProMS session?')) {
+		//Delete myproms cookie (set old date)
+		document.cookie = 'myproms='+escape('no_user;expires=Thu, 01-Jan-1970 00:00:01 GMT');
+		//close window
+		window.close();
+		window.location=htmlPath+'/'; // in case close() failed
+	}
+}
+</SCRIPT>
+</HEAD>
+<FRAMESET rows="82,*" frameborder=no onload="getPathToCGI(this.promsFrame)" onunload="closeChildWindows()">
+	<FRAME noresize scrolling=no src="./promsLogo.html" name="logoFrame">
+	<FRAME src="" name="promsFrame" >
+</FRAMESET>
+</HTML>
+
+<!--
+####>Revision history<####
+# 2.1.7 Workaround to allow focus on proteinWindow when already open because window.focus() is disabled in modern browsers (PP 18/03/16)
+# 2.1.6 Added META tag for forcing IE to use latest version engine (PP 02/10/14)
+# 2.1.5 Minor bug fix in closeSession (PP 17/14/13)
+# 2.1.4 Predifined values for spectrumTolerance & spectrumMinInt (PP 14/03/13)
+# 2.1.3 calls promsMain.cgi (PP 13/12/12)
+# 2.1.2 Minor JS correction (PP 25/07/12)
+# 2.1.1 Added protSectionVisibility & debuging for Opera browser (PP 23/05/12)
+# 2.1.0 Added experimentView variable used by tree frames (PP 17/04/12)
+# 2.0.9 Path to cgi directory handled by JavaScript (PP 05/01/12)
+# 2.0.8 Updated for myproms-dev.curie.fr: Developer SPECIFIC!!! (PP 01/07/11)
+-->
