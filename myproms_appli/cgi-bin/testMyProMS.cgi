@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# testMyProMS.cgi         2.4.11                                               #
+# testMyProMS.cgi         2.4.12                                               #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -814,7 +814,8 @@ foreach my $pathName (sort{lc($a) cmp lc($b)} @execPath) {
 			$masschroqPath=~s/\/masschroq\s*\Z//;
 		}
 		my @response=`$masschroqCommand -v 2>&1`;
-		my ($version)=($response[0] && $response[0]=~/MassChroQ version (\S+),/i);
+		#my ($version)=($response[0] && $response[0]=~/MassChroQ version (\S+),/i);
+		my ($version)=($response[0] && $response[0]=~/MassChroQ [version ]*([\d\.]+)/i);
 		&printVersionResponse($pathName,$masschroqPath,$version,\@response);
 	}
 	elsif ($pathName eq 'tpp') {
@@ -1258,6 +1259,7 @@ sub checkInternetConnection {
 
 
 ####>Revision history<####
+# 2.4.12 Updated parsing rule for MassChroQ version also in local binaries section (PP 06/10/18)
 # 2.4.11 Writes Perl $0 and `pwd` (PP 03/10/18)
 # 2.4.10 $clusterInfo{'list'} is no longer mandatory if only 1 cluster is defined in promsConfig.pm (PP 27/09/18)
 # 2.4.9 New parsing rule for MassChroQ version & uses $cluster{runJob} for launching cluster job (PP 17/09/18)
