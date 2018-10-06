@@ -52,11 +52,6 @@ We strongly recommand you then close the `login` account or at least change its 
 From `myproms` directory type `docker-compose down`  
 9. Repeat steps **6 to 8** to use the application as often as you wish.  
 
-## Data persistence
-Because Docker containers are created/deleted each time you start/shut down the myProMS Server, all data are stored outside these containers through mounted [volumes](https://docs.docker.com/storage/volumes/) to insure they are not lost when the server is shut down.
-* **MySQL database** data are stored in the directory `path/to/myproms/myproms_db`
-* **Flat file** data are stored in the directory `path/to/myproms/myproms_data`
-
 ## Custom configuration
 Some configuration parameters can be customized to match your preferences. In particular, we recommand to at least change the default MySQL user password.
 
@@ -69,11 +64,19 @@ The database **user** and **password** are defined in the following paired varia
 `cp path/to/myproms/myproms_appli/cgi-bin/promsConfig.bck path/to/myproms/myproms_appli/cgi-bin/promsConfig.pm`  
 The database connection credentials will be transferred to the `promsConfig.pm` file. Make sure user access to this file and the two `.env` files is under tight control.
 
+#### Time zone
+myProMS time zone is set to `Europe/Paris` by default. This can be changed by editing the variable `TZ` in the two `.env` files described above.
+
 #### Network ports
-The default port used to access the myProMS server with your browser is set to `8080`. You can change this by opening the file [docker-compose.yml](docker-compose.yml) with any text editor and go to the section below:
+The default port used to access the myProMS server with your browser is set to `8080. You can change this by opening the file [docker-compose.yml](docker-compose.yml) with any text editor and go to the section below:
 ```markdown
  ports:
    - "8080:80"
 ```
 **Note**: You can use the default Apache port `80` (`   - "80:80"`) if no other services installed on your system is using it. This will allow you to skip the port declaration in myProMS URL: `http://localhost`.  
+
+## Data persistence
+Because Docker containers are created/deleted each time you start/shut down the myProMS Server, all data are stored outside these containers through mounted [volumes](https://docs.docker.com/storage/volumes/) to insure they are not lost when the server is shut down.
+* **MySQL database** data are stored in the directory `path/to/myproms/myproms_db`
+* **Flat file** data are stored in the directory `path/to/myproms/myproms_data`
 
