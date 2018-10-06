@@ -38,6 +38,7 @@ cd path/to/docker
 `git clone https://github.com/bioinfo-pf-curie/myproms` - *Recommanded*  
 Or download and extract a compressed archive of the repository (https://github.com/bioinfo-pf-curie/myproms).  
 This will create a directory named `myproms` containing all files on this repository.  
+**Important**: Make sure the file `path/to/myproms/start.sh` is executable (`ls -l path/to/myproms/start.sh`). If not, run the command `chmod +x path/to/myproms/start.sh`.  
 6. To **start** myProMS Server with **docker-compose**:
 ```bash
 cd to/directory/myproms
