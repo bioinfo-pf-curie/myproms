@@ -1,0 +1,47 @@
+version: '3'
+services:
+ myproms-mysql:
+  image: mysql:5.5
+  container_name: myproms-mysql
+  env_file: myproms-mysql.env
+  ports:
+   - "33060:3306"
+  volumes:
+   - "./myproms_appli/database:/docker-entrypoint-initdb.d"
+   - "./myproms_db:/var/lib/mysql" 
+ myproms-server:
+  depends_on:
+   - myproms-mysql
+  image: myproms/myproms_base:1.1.19-1
+  container_name: myproms-server
+  env_file: myproms-server.env
+  environment:
+   - "SERVICE_80_NAME=myproms-server"
+   - "SERVICE_80_TAGS=apache,cgi"
+   - "APPLI_DIR=/myproms"
+   - "DATA_DIR=/data"
+   - "SHARED_DIR=/myproms_shared"
+   - "JAVA_DIR=/usr/bin"
+   - "R_DIR=/usr/bin"
+   - "QVALITY_DIR=/usr/bin"
+   - "MASSCHROQ_DIR=/usr/local/bin"
+   - "TPP_DIR=/usr/local/tpp/bin"
+   - "PYTHON_DIR=/usr/bin"
+   - "PYPROPHET_DIR=/usr/local/bin"
+   - "MSPROTEO_DIR=/usr/local/bin"
+   - "OPENMS_DIR=/usr/local/bin"
+   - "HTTP_PROXY="
+   - "MASCOT_SERVER_NAME=fake_mascot"
+   - "MASCOT_SERVER_URL="
+   - "MASCOT_SERVER_PROXY="
+   - "MASCOT_DIR="
+   - "MASCOT_LINK_FILES_FLAG=0"
+  ports:
+   - "8080:80"
+  volumes:
+   - ./myproms_appli:/myproms
+   - ./myproms_data:/data
+   - ./myproms_shared:/myproms_shared
+   - ./start.sh:/start.sh
+  links:
+   - myproms-mysql:myproms-mysql
