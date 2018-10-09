@@ -1,8 +1,8 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# showPepQuantification.cgi                1.9.2	                           #
-# Authors: P. Poullet, G. Arras, F. Yvon, M.Le Picard (Institut Curie)         #
+# showPepQuantification.cgi                1.9.3	                           #
+# Authors: P. Poullet, G. Arras, F. Yvon, M. Le Picard (Institut Curie)        #
 # Contact: myproms@curie.fr                                                    #
 # Displays peptide quantification data                                         #
 ################################################################################
@@ -1544,7 +1544,8 @@ else {
 					next if $.==1;
 					chomp;
 					my ($paramID,$pepID,$paramValue)=split(/\t/,$_);
-					@{$quantifValues{$pepID}{$repValue}{$chanNum}}=($paramValue);
+					next unless $paramID == $signalParamID; # For TMT, for each reporter, there are two values for each peptide (REP_INTENSITY AND REP_MASS) 
+					push @{$quantifValues{$pepID}{$repValue}{$chanNum}},($paramValue);
 					$sumValues{$chanNum}+=$paramValue if $paramValue;
 					if ($count==5000) {
 						$count=0;
@@ -2387,22 +2388,19 @@ sub exportProteinList {
 			my $maxReporterPos=scalar keys %{$refLabelingInfo};
 			foreach my $pepID (sort{$refPeptideData->{$matchGroup}{$a}[1]<=>$refPeptideData->{$matchGroup}{$b}[1] || $refPeptideData->{$matchGroup}{$a}[0] cmp $refPeptideData->{$matchGroup}{$b}[0] || $refPeptideData->{$matchGroup}{$a}[2]<=>$refPeptideData->{$matchGroup}{$b}[2] || $refPeptideData->{$matchGroup}{$b}[3]<=>$refPeptideData->{$matchGroup}{$a}[3]} keys %{$refPeptideData->{$matchGroup}}) {
 				$xlsCol=0;
-				my @pepInfo=@{$refPeptideSets->{$pepID}[0]};# $pepID,$charge,$pepSeq,$varModStrg
+				my @pepInfo=@{$refPeptideSets->{$pepID}[0]};# $pepID,$charge,$beg,$pepSeq,$varModStrg
 				#my $dataSrc;
 				$worksheet2->write_string(++$xlsRow,$xlsCol,$alias,$itemFormat{'text'});
-				#$worksheet2->write_string($xlsRow,++$xlsCol,$pepInfo[3],$itemFormat{'text'});
-				#$worksheet2->write_string($xlsRow,++$xlsCol,$pepInfo[4],$itemFormat{'text'});
-				$worksheet2->write_string($xlsRow,++$xlsCol,$pepInfo[2],$itemFormat{'text'});
-				$worksheet2->write_string($xlsRow,++$xlsCol,$pepInfo[3],$itemFormat{'text'});
+				$worksheet2->write_string($xlsRow,++$xlsCol,$pepInfo[3],$itemFormat{'text'});		# $pepSeq
+				$worksheet2->write_string($xlsRow,++$xlsCol,$pepInfo[4],$itemFormat{'text'});		# $varModStrg
 				if($refPepMrObs->{$pepID} eq "-"){
 					$worksheet2->write_string($xlsRow,++$xlsCol,$refPepMrObs->{$pepID},$itemFormat{'text'});
 				}
 				else{
 					$worksheet2->write_number($xlsRow,++$xlsCol,$refPepMrObs->{$pepID},$itemFormat{'number'});
 				}
-				#$worksheet2->write_number($xlsRow,++$xlsCol,$pepInfo[2],$itemFormat{'number'});
-				$worksheet2->write_number($xlsRow,++$xlsCol,$refPepProtPos->{$protID}{$pepID},$itemFormat{'number'});		# $beg
-				$worksheet2->write_string($xlsRow,++$xlsCol,"$pepInfo[1]+",$itemFormat{'textC'});
+				$worksheet2->write_number($xlsRow,++$xlsCol,$pepInfo[2],$itemFormat{'number'});		# $beg
+				$worksheet2->write_string($xlsRow,++$xlsCol,"$pepInfo[1]+",$itemFormat{'textC'})		# $charge
 				my $score=($refPeptideScore->{$pepID})?$refPeptideScore->{$pepID}:'-';
 				$worksheet2->write_string($xlsRow,++$xlsCol,$score,$itemFormat{'text'});
 				if ($refQuantifData->{$pepID}{$reportValue}) {
@@ -3289,6 +3287,7 @@ $jsPeptideIdStrg
 
 
 ####>Revision history<####
+# 1.9.3 Minor change for TMT display (GA 09/10/18)
 # 1.9.2 Minor modifications (GA 26/09/18)
 # 1.9.1 Removed usage of PEPTIDE_QUANTIFICATION in &showLog10Plot (PP 27/06/18)
 # 1.9.0 Reads peptide quantification data from file & rebuilds match groups after deletion of a peptide quantification (PP 06/06/18)

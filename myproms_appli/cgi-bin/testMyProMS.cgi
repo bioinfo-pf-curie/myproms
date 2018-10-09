@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# testMyProMS.cgi         2.4.12                                               #
+# testMyProMS.cgi         2.4.13                                               #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -578,7 +578,7 @@ else {
 	$serverRootUnix=$ENV{'SCRIPT_FILENAME'} || $0;
 	$serverRootUnix=~s/$promsPath{cgi}.+//;
 }
-my $indexUnix=(-d "$serverRootUnix$promsPath{html}")? "$serverRootUnix$promsPath{html}/index.html" : (-d "$serverRootUnix/html$promsPath{html}")? "$serverRootUnix/html$promsPath{html}/index.html": undef;
+my $indexUnix=(-d "$serverRootUnix$promsPath{html}" && -e "$serverRootUnix$promsPath{html}/index.html")? "$serverRootUnix$promsPath{html}/index.html" : (-d "$serverRootUnix/html$promsPath{html}")? "$serverRootUnix/html$promsPath{html}/index.html": undef;
 my $mypromsVersion='Unknown';
 if ($indexUnix) {
 	my $versionLine=`grep '<!--version tag-->' $indexUnix`;
@@ -1259,6 +1259,7 @@ sub checkInternetConnection {
 
 
 ####>Revision history<####
+# 2.4.13 [Fix] myProMS version detection for docker instance (PP 07/10/18)
 # 2.4.12 Updated parsing rule for MassChroQ version also in local binaries section (PP 06/10/18)
 # 2.4.11 Writes Perl $0 and `pwd` (PP 03/10/18)
 # 2.4.10 $clusterInfo{'list'} is no longer mandatory if only 1 cluster is defined in promsConfig.pm (PP 27/09/18)

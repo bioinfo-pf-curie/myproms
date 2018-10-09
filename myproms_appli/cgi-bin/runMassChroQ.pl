@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# runMassChroQ.pl              1.7.1                                           #
+# runMassChroQ.pl              1.7.2                                           #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Interface between myProMS and MassChroQ software, developed by Inra.         #
@@ -75,7 +75,7 @@ my $dbh=&promsConfig::dbConnect('no_user');
 ####>Updating quantification status to 0 (running)<####
 $dbh->do("UPDATE QUANTIFICATION SET STATUS=0 WHERE ID_QUANTIFICATION=$quantifID");
 $dbh->commit;
-my $sthPepInfoAll=$dbh->prepare("SELECT ID_PEPTIDE,ELUTION_TIME,PEP_SEQ,MISS_CUT,MR_EXP,MR_CALC,MR_OBS,CHARGE,DATA FROM PEPTIDE WHERE ID_ANALYSIS=? AND VALID_STATUS>=1");# Avoid to take ghost peptides
+my $sthPepInfoAll=$dbh->prepare("SELECT ID_PEPTIDE,ELUTION_TIME,PEP_SEQ,MISS_CUT,MR_EXP,MR_CALC,MR_OBS,CHARGE,DATA,SPEC_COUNT FROM PEPTIDE WHERE ID_ANALYSIS=? AND VALID_STATUS>=1");# Avoid to take ghost peptides
 my $sthPepInfoGP=$dbh->prepare("SELECT ID_PEPTIDE,PEP_SEQ,MISS_CUT,CHARGE,DATA FROM PEPTIDE WHERE ID_ANALYSIS=? AND VALID_STATUS=0");# Take ghost peptides only
 my $sthProtInfo=$dbh->prepare("SELECT PA.ID_PROTEIN,IDENTIFIER,SCORE,DB_RANK,VISIBILITY FROM PROTEIN P,PEPTIDE_PROTEIN_ATTRIB PPA,ANALYSIS_PROTEIN PA WHERE P.ID_PROTEIN=PPA.ID_PROTEIN AND P.ID_PROTEIN=PA.ID_PROTEIN AND PA.ID_ANALYSIS=? AND ID_PEPTIDE=?");
 my $sthGetInstrument=$dbh->prepare("SELECT INSTRUMENT FROM ANALYSIS WHERE ID_ANALYSIS=?");
@@ -95,7 +95,7 @@ close FILESTAT;
 ####>Getting the parameters from quantif_info.txt<####
 open (INFO,"$quantifDir/quantif_info.txt");
 my $section='';
-my (%params,%sampIDs,%pepInfo,%vmods,%seqMissedCuts,%proteinScore,%channels,%isoLists,%isoInfo,%anaLabelModifs);
+my (%params,%sampIDs,%pepInfo,%vmods,%spectralCount,%seqMissedCuts,%proteinScore,%channels,%isoLists,%isoInfo,%anaLabelModifs);
 while (<INFO>) {
 	if (/^PARAMETERS:/) {
         $section='parameters';
@@ -188,11 +188,12 @@ foreach my $anaID (keys %{$params{'MZXML'}}) {
 	print PEPFILE "scan\tsequence\tmh\tz\tproteins\tmods\n";
 	my @sortedScanNumbers;
 	@sortedScanNumbers=sort{$scan_allInfo->{$a}{'RT'}<=>$scan_allInfo->{$b}{'RT'}} keys %{$scan_allInfo} if ($instrument eq 'ESI-QUAD-TOF');
-	while (my ($idPeptide,$elutionTime,$pepSeq,$missCut,$mrExp,$mrCalc,$mrObs,$charge,$data) = $sthPepInfoAll->fetchrow_array) {
+	while (my ($idPeptide,$elutionTime,$pepSeq,$missCut,$mrExp,$mrCalc,$mrObs,$charge,$data,$sc) = $sthPepInfoAll->fetchrow_array) {
 		my $vmod=&promsMod::toStringVariableModifications($dbh,'PEPTIDE',$idPeptide,$anaID,$pepSeq,\%anaLabelModifs);
 		$seqMissedCuts{$pepSeq}=$missCut;
 		$vmod = '' unless $vmod;
 		$vmods{$idPeptide}=$vmod;
+		$spectralCount{$idPeptide}=$sc;
 		#$mrObs{"$pepSeq;$vmod;$charge"}=$mrObs;
 		#$mrCalc{"$pepSeq;$vmod;$charge"}=$mrCalc;
 		$mrCalc+=1.007825;
@@ -266,6 +267,7 @@ foreach my $anaID (keys %{$params{'MZXML'}}) {
 		my $vmod=&promsMod::toStringVariableModifications($dbh,'PEPTIDE',$idPeptide,$anaID,$pepSeq,\%anaLabelModifs);
 		$vmod='' unless $vmod;
 		$pepInfo{"ID"}{$idPeptide}=$anaID;
+		$spectralCount{$idPeptide}=0;
 		my $pepChannelID=-1;
 		if ($getLabelInfo) {
 			###> Check if the peptide contains a label modification and tag it !
@@ -667,11 +669,44 @@ while (my $line=<PEPQUANTI1>) {
         chomp($line);
         # example: q1,G1,samp0,F5849FD,518.25061,1249.1633,409292.7,7127488.8,1201.6282,1264.3375,pep855,isotopeName,GWDVGVAGMK,2,613281
         my ($quantifiMCQID,$group,$mrsrun,$msrunfile,$mz,$rt,$maxintensity,$area,$rtbegin,$rtend,$peptide,$isotope,$sequence,$z,$mods)=split("\t",$line);
-
-		my @pepIDs=split(/ |:/,$mods);
-		my $vmod=$vmods{$pepIDs[0]};
+		
+		# Be careful for VMOD choice: some isobaric peptides can be grouped together in $mods string with different positions or from different samples
+		# Therefore, to avoid the creation of Ghost-Peptides with incorrect VMOD for this specific entry, 2 priority rules to follow :
+		# 1st: choose the vmod from the same msrun peptide (and the highest number of spectral-counts if many possibilities)
+		# 2nd: choose the vmod from the closest RT-time provided compared to the rt time available of other experiment
+		my ($pepID,$mz2,$pepChannelID);
+		my $sameSample=0;
+		foreach my $pepEntry (split(/\s/,$mods)) { # each pepEntry looks like this: $idPeptide:$mz:$targetPos
+				my ($pepIDloc,$mz2loc,$pepChannelIDloc)=split(/:/,$pepEntry);
+				if ($pepInfo{'ID'}{$pepIDloc} == $sampIDs{$mrsrun}) {
+						if ($pepID) {
+								if ($sameSample) {
+										if ($spectralCount{$pepIDloc} > $spectralCount{$pepID}) {
+												($pepID,$mz2,$pepChannelID)=($pepIDloc,$mz2loc,$pepChannelIDloc);
+										}
+								}
+								else{
+										($pepID,$mz2,$pepChannelID)=($pepIDloc,$mz2loc,$pepChannelIDloc);
+								}
+						}
+						else{
+								($pepID,$mz2,$pepChannelID)=($pepIDloc,$mz2loc,$pepChannelIDloc);
+						}
+						$sameSample=1;
+				}
+				elsif ($pepID) {
+						if (!$sameSample) {
+								if ($spectralCount{$pepIDloc} > $spectralCount{$pepID}) {
+										($pepID,$mz2,$pepChannelID)=($pepIDloc,$mz2loc,$pepChannelIDloc);
+								}
+						}
+				}
+				else{
+						($pepID,$mz2,$pepChannelID)=($pepIDloc,$mz2loc,$pepChannelIDloc);
+				}
+		}
+		my $vmod=$vmods{$pepID};
 		$vmod='' unless $vmod;
-		my $pepChannelID=$pepIDs[2];
 		my $mzInt= int $mz;
 		if (!$isotope) {
 			if ( $pepInfo{"$sequence;$vmod;$z;$sampIDs{$mrsrun};$pepChannelID"}{"SEQVMODCHARGE"} ){
@@ -707,12 +742,12 @@ while (my $line=<PEPQUANTI1>) {
 					$newPeptides{"$sequence;$vmod;$z;$sampIDs{$mrsrun};$pepChannelID"}{"RT"}=$rt/60;
 					$newPeptides{"$sequence;$vmod;$z;$sampIDs{$mrsrun};$pepChannelID"}{"MZ"}=$mz;
 					$newPeptides{"$sequence;$vmod;$z;$sampIDs{$mrsrun};$pepChannelID"}{"MREXP"}=$mz*$z-1.007825;
-					$newPeptides{"$sequence;$vmod;$z;$sampIDs{$mrsrun};$pepChannelID"}{"REFPEPID"}=$pepIDs[0];
+					$newPeptides{"$sequence;$vmod;$z;$sampIDs{$mrsrun};$pepChannelID"}{"REFPEPID"}=$pepID;
 					$newPeptides{"$sequence;$vmod;$z;$sampIDs{$mrsrun};$pepChannelID"}{"BEGIN"}=$rtbegin;
 					$newPeptides{"$sequence;$vmod;$z;$sampIDs{$mrsrun};$pepChannelID"}{"END"}=$rtend;
 					$newPeptides{"$sequence;$vmod;$z;$sampIDs{$mrsrun};$pepChannelID"}{"APEX"}=$rt;
 					$newPeptides{"$sequence;$vmod;$z;$sampIDs{$mrsrun};$pepChannelID"}{"TRACE"}=$traceFiles{"q1:$group:$mrsrun:$peptide:$mzInt:$z"} if $params{TRACES};
-					my $data=$pepInfo{"$sequence;$vmod;$z;$pepInfo{'ID'}{$pepIDs[0]};$pepChannelID"}{'DATA'};
+					my $data=$pepInfo{"$sequence;$vmod;$z;$pepInfo{'ID'}{$pepID};$pepChannelID"}{'DATA'};
 				    my ($PRS) = ($data =~ /(##PRS=[^##]+)/) if $data;
 					$PRS='' unless $PRS;
 					$newPeptides{"$sequence;$vmod;$z;$sampIDs{$mrsrun};$pepChannelID"}{"DATA"}=$PRS; # in case there is PhosphoRS information
@@ -734,11 +769,39 @@ if ( $getLabelInfo ) {
 				chomp($line);
 				# example: q2,G1,samp0,F5849FD,518.25061,1249.1633,409292.7,7127488.8,1201.6282,1264.3375,pep855,isotopeName,GWDVGVAGMK,2,613281
 				my ($quantifiMCQID,$group,$mrsrun,$msrunfile,$mz,$rt,$maxintensity,$area,$rtbegin,$rtend,$peptide,$isotope,$sequence,$z,$mods)=split("\t",$line);
-
-				my @pepIDs=split(/ |:/,$mods);
-				my $vmod=$vmods{$pepIDs[0]};
+				my ($pepID,$mz2,$pepChannelID);
+				my $sameSample=0;
+				foreach my $pepEntry (split(/\s/,$mods)) { # each pepEntry looks like this: $idPeptide:$mz:$targetPos
+						my ($pepIDloc,$mz2loc,$pepChannelIDloc)=split(/:/,$pepEntry);
+						if ($pepInfo{'ID'}{$pepIDloc} == $sampIDs{$mrsrun}) {
+								if ($pepID) {
+										if ($sameSample) {
+												if ($spectralCount{$pepIDloc} > $spectralCount{$pepID}) {
+														($pepID,$mz2,$pepChannelID)=($pepIDloc,$mz2loc,$pepChannelIDloc);
+												}
+										}
+										else{
+												($pepID,$mz2,$pepChannelID)=($pepIDloc,$mz2loc,$pepChannelIDloc);
+										}
+								}
+								else{
+										($pepID,$mz2,$pepChannelID)=($pepIDloc,$mz2loc,$pepChannelIDloc);
+								}
+								$sameSample=1;
+						}
+						elsif ($pepID) {
+								if (!$sameSample) {
+										if ($spectralCount{$pepIDloc} > $spectralCount{$pepID}) {
+												($pepID,$mz2,$pepChannelID)=($pepIDloc,$mz2loc,$pepChannelIDloc);
+										}
+								}
+						}
+						else{
+								($pepID,$mz2,$pepChannelID)=($pepIDloc,$mz2loc,$pepChannelIDloc);
+						}
+				}
+				my $vmod=$vmods{$pepID};
 				$vmod='' unless $vmod;
-				my $pepChannelID=$pepIDs[2];
 				my $mzInt= int $mz;
 
 				my $traceFile=($params{TRACES})? $traceFiles{"q2:$group:$mrsrun:$peptide:$mzInt:$z"} : "";
@@ -1319,7 +1382,8 @@ package mzXMLHandler; {
 
 
 ####> Revision history
-# 1.7.1ga Minor bug corrections (GA 11/06/18)
+# 1.7.2 Change vmod parsing in result file (GA 08/10/18)
+# 1.7.1 Minor bug corrections (GA 11/06/18)
 # 1.7.0 Peptide quantification data now written to file $promsPath{quantification}/project_$projectID/quanti_$quantifID/peptide_quantification(_$targetPos).txt (PP 11/05/18)
 # 1.6.1 Modification of createMatchGroups arguments to include visibility computation (GA 27/03/18)
 # 1.5.10 Removed OBSERVATION creation: Handled by manageDesignCondition.cgi (PP 13/02/18)

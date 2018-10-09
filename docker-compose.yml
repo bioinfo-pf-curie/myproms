@@ -12,7 +12,7 @@ services:
  myproms-server:
   depends_on:
    - myproms-mysql
-  image: myproms/myproms_base:1.1.19-1
+  image: myproms/myproms_base:1.1.17
   container_name: myproms-server
   env_file: myproms-server.env
   environment:
