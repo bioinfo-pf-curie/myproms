@@ -1,6 +1,6 @@
 #!/bin/bash
 
-### File management 
+### File management
 chmod +x ${APPLI_DIR}/cgi-bin/*
 mkdir -p ${DATA_DIR}/{exploratory_data,gels,go/goa,go/obo,go/results,logs,peptide_data,quantification_data,spectrum_data,swath_lib,tmp,validation,pathway_data}
 if [ ! -e ${APPLI_DIR}/html/data ]; then
