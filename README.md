@@ -18,10 +18,10 @@ These images will be automatically pulled at first launch of the server.
 ## Repository
 This repository contains:
 * All HTLM/JavaScript/Image/MySQL/Perl/R/Java/bash files/scripts specific to myProMS Server.
-* Scripts, configuration files and instructions to install and run the application.
+* Scripts, configuration files and instructions for installing and running the application.
 
 ## Installation and run instructions
-**Note**: You may want to read the [Custom configuration](#custom-configuration) section to decide if the default configuration suits you.
+**Note**: You might want to read the [Custom configuration](#custom-configuration) section before to decide whether the default configuration suits you.
 1. Make sure docker is running.
 2. Open a console.
 3. Pull the required docker images (optional):
@@ -39,8 +39,8 @@ cd path/to/docker
 Or download and extract a compressed archive of the repository (https://github.com/bioinfo-pf-curie/myproms).  
 This will create a directory named `myproms` containing all files on this repository.  
 **Important**:
-    * Linux/MacOS users: Make sure the file `path/to/myproms/start.sh` is executable (`ls -l path/to/myproms/start.sh`). If not, run the command `chmod +x path/to/myproms/start.sh`.
-    * Windows users: Make sure the file `path/to/myproms/start.sh` has Unix-style line endings `(\n)`. It should be the case by default unless the file has been copied/altered.  
+    * **Linux/MacOS** users: Make sure the file `path/to/myproms/start.sh` is executable (`ls -l path/to/myproms/start.sh`). If not, run the command `chmod +x path/to/myproms/start.sh`.
+    * **Windows** users: Make sure the file `path/to/myproms/start.sh` has Unix-style line endings `(\n)`. It should be the case by default unless the file has been copied/altered.  
 6. To **start** myProMS Server with **docker-compose**:
 ```bash
 cd to/directory/myproms
