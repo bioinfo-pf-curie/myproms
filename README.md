@@ -46,7 +46,8 @@ This will create a directory named `myproms` containing all files on this reposi
 cd to/directory/myproms
 docker-compose up -d
 ```
-Two containers named `myproms-mysql` and `myproms-server` should be running. You can check this with the command: `docker ps`.  
+Two containers named `myproms-mysql` and `myproms-server` should be running. You can check this with the command: `docker ps`.
+
 7. To **use** myProMS:  
 Open a web browser and go to `http://localhost:8080` or `http://127.0.0.1:8080` to access the server home page. myProMS default **user account** is `login` with **password** `password`. Once connected, go to the **Users** section to create at least one *real* `bioinformatician` account. Logout and re-connect using this new account.
 We strongly recommand you then close the `login` account or at least change its password.  
@@ -61,7 +62,8 @@ Some configuration parameters can be customized to match your preferences. In pa
 Sensitive database variables are strored in the files [myproms-mysql.env](myproms-mysql.env) and [myproms-server.env](myproms-server.env). Open these files with any text editor and make changes as indicated below.  
 The database **user** and **password** are defined in the following paired variables:  
 * **User**: `MYSQL_USER` and `DB_USER` (default: `myproms`)  
-* **password**: `MYSQL_PASSWORD` and `DB_PASSWORD` (default: `myproms`)  
+* **password**: `MYSQL_PASSWORD` and `DB_PASSWORD` (default: `myproms`)
+
 **Important**: If you have started myProMS Server at least once before making any configuration changes, you must reset myProMS configuration file to it's original state for your changes to be applied at the next start. This is done with the following command:  
 `cp path/to/myproms/myproms_appli/cgi-bin/promsConfig.bck path/to/myproms/myproms_appli/cgi-bin/promsConfig.pm`  
 The database connection credentials will be transferred to the `promsConfig.pm` file. Make sure user access to this file and the two `.env` files is under tight control.
@@ -75,7 +77,7 @@ The default port used to access the myProMS server with your browser is set to `
  ports:
    - "8080:80"
 ```
-**Note**: You can use the default Apache port `80` (`   - "80:80"`) if no other services installed on your system is using it. This will allow you to skip the port declaration in myProMS URL: `http://localhost`.  
+**Note**: You can use the default Apache port `80` (`   - "80:80"`) if no other services installed on your system are served on it. This will allow you to skip the port declaration in myProMS URL: `http://localhost`.  
 
 ## Data persistence
 Because Docker containers are created/deleted each time you start/shut down the myProMS Server, all data are stored outside these containers through mounted [volumes](https://docs.docker.com/storage/volumes/) to insure they are not lost when the server is shut down.
