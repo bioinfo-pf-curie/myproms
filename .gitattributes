@@ -1,3 +1,15 @@
-# Control on line endings
+### Control on line endings
 
 * text=auto eol=lf
+
+## These files are binary and should be left untouched
+# Images
+*.gif binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.png binary
+
+# Skip other binaries
+*.jar binary
+*.pdf binary
