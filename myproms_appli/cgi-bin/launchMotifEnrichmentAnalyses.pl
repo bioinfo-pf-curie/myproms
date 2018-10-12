@@ -1,6 +1,6 @@
 #!/usr/local/bin/perl -w
 ################################################################################
-# launchMotifEnrichmentAnalyses.pl       1.0.0                                 #
+# launchMotifEnrichmentAnalyses.pl       1.0.1                                 #
 # Authors: P. Poullet, S.Liva (Institut Curie)                                 #
 # Contact: myproms@curie.fr                                                    #
 # called by startMotifAnalyses.cgi											   #
@@ -40,10 +40,10 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 #-------------------------------------------------------------------------------
+
 $| = 1;
 use strict;
-use File::Path qw(rmtree); # remove_tree
-use File::Copy qw(move);
+use File::Copy::Recursive qw(dirmove);
 use promsConfig;
 use promsMod;
 use POSIX qw(strftime); # to get the time
@@ -161,8 +161,9 @@ if ($wait == 0) {
 	$sthUpdateStatus -> execute(1, $motifID) or die "Cannot execute: " . $sthUpdateStatus -> errstr();
 	$sthUpdateStatus -> finish;
 	$dbh -> commit;
-	move($motifDIR,"$promsPath{data}/exploratory_data/project_$projectID/$motifID");
+	dirmove($motifDIR,"$promsPath{data}/exploratory_data/project_$projectID/$motifID");
 }
 
 #####>Revision history<####
+# 1.0.1 Uses dirmove instead of move (PP 12/10/18)
 # 1.0.0 first version (SL 07/06/17)

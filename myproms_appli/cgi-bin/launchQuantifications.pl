@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# launchQuantifications.pl       1.6.2                                         #
+# launchQuantifications.pl       1.6.3                                         #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Launches multiple quantifications +/- paralellization                        #
@@ -47,11 +47,11 @@ $| = 1;
 use strict;
 use POSIX ":sys_wait_h"; # for WNOHANG
 use File::Path qw(rmtree); # remove_tree
-use File::Copy qw(copy);
 use promsConfig;
 use promsMod;
 use promsQuantif;
 #exit;
+
 #######################
 ####>Configuration<####
 #######################
@@ -778,6 +778,7 @@ if (-e $quantifDir) {
 ###}
 
 #####>Revision history<####
+# 1.6.3 Removed useless 'use File::Copy' package (PP 12/10/18)
 # 1.6.2 Also checks for jobs launched by other parent launchQuantifications.pl (PP 01/10/18)
 # 1.6.1 Switch from _wait to _run flag now done on cluster to account for job queueing (PP 21/09/18)
 # 1.6.0 Uses cluster for design quantifications (PP 17/09/18)

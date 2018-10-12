@@ -1,5 +1,5 @@
 #############################################################################
-# goAnalysis.pm               1.1.5                                         #
+# goAnalysis.pm               1.1.6                                         #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                   #
 # Contact: myproms@curie.fr                                                 #
 # Performs term enrichment analysis on a protein set using GO::TermFinder,  #
@@ -50,7 +50,7 @@ use strict;
 use FileHandle;
 #use LWP::UserAgent;
 use File::Path qw(rmtree); # remove_tree
-use File::Copy;
+use File::Copy::Recursive qw(dirmove);
 
 #use subs 'print';
 my $verbose = 1;
@@ -647,10 +647,11 @@ sub storeData{
     mkdir $promsPath{'go_unix'} unless -d $promsPath{'go_unix'};
     mkdir "$promsPath{go_unix}/project_$projectID" unless -d "$promsPath{go_unix}/project_$projectID";
     mkdir "$promsPath{go_unix}/project_$projectID/$goAnaID";
-    foreach(glob("$promsPath{tmp}/GO/$tmpName/*")){
-        move($_,"$promsPath{go_unix}/project_$projectID/$goAnaID/") || print STDERR "$_: $!";
-    }
-    rmtree("$promsPath{tmp}/GO/$tmpName") || print STDERR $!;
+    #foreach(glob("$promsPath{tmp}/GO/$tmpName/*")){
+    #    move($_,"$promsPath{go_unix}/project_$projectID/$goAnaID/") || print STDERR "$_: $!";
+    #}
+    dirmove("$promsPath{tmp}/GO/$tmpName","$promsPath{go_unix}/project_$projectID/$goAnaID") || print STDERR $!;
+    #rmtree("$promsPath{tmp}/GO/$tmpName") || print STDERR $!;
 }
 
 sub deleteGOAnalysis{
@@ -736,6 +737,7 @@ sub getProteinIds{
 1;
 
 ####>Revision history<####
+# 1.1.6 Uses dirmove instead on move (PP12/10/18)
 # 1.1.5 More print to keep server connection (PP 20/08/15)
 # 1.1.4 Minor code cleaning (PP 12/11/14)
 # 1.1.3 Check for p-value < 1e-307 before log (PP 01/07/14)

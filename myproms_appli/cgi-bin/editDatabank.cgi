@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# editDatabank.cgi         2.4.1                                               #
+# editDatabank.cgi         2.4.2                                               #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -39,6 +39,7 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 #-------------------------------------------------------------------------------
+
 $| = 1;
 use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI ':standard';
@@ -618,9 +619,10 @@ sub processForm {
 
 			#<server file
 			if ($fileOption eq 'sharedFile') {
-				$fileName=param('sharedFile');
+				my $sharedFile=param('sharedFile');
+				$fileName=(split(/[\\\/]/,$sharedFile))[-1];
 				$fullDbankfile="$dbDir/$fileName";
-				move("$promsPath{shared}/$fileName",$fullDbankfile);
+				move("$promsPath{shared}/$sharedFile",$fullDbankfile);
 			}
 
 			#<local file
@@ -1028,6 +1030,7 @@ sub getParseRules {
 }
 
 ####>Revision history<####
+# 2.4.2 [Fix] bug in shared file path resolution (PP 11/10/18)
 # 2.4.1 [Fix] Javascript bugs when no shared directory declared (PP 13/04/18)
 # 2.4.0 Uses &promsMod::browseDirectory_getFiles for shared folder files (PP 04/12/17)
 # 2.3.7 Bug fix in edit mode to handle contaminant field (PP 14/11/16)

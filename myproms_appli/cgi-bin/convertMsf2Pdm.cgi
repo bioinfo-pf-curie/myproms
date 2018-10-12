@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# convertMsf2Pdm.cgi     1.2.4                                                 #
+# convertMsf2Pdm.cgi     1.2.5                                                 #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Converts Proteome Discoverer .msf file into a Mascot-like .pdm file          #
@@ -1818,6 +1818,7 @@ sub printPeptidesMSF2_2 { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber,
 	my $sthProt = $dbsqlite->prepare("SELECT UniqueSequenceID, Sequence, FastaTitleLines, Accession FROM TargetProteins");
 	$sthProt->execute;
 	while (my ($proteinID,$sequence,$description,$accession)= $sthProt->fetchrow_array) {
+		$accession=~s/,//g; # Need to remove all comma from accession to avoid further problem in storeAnalyses PDM parsing
 		print FASTA "$description\n$sequence\n";
 		@{$proteinsInfo{$proteinID}}=(
 			[$accession], 		# 0 identifiers
@@ -2053,6 +2054,7 @@ sub printPeptidesMSF2_2 { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber,
 }
 
 ####>Revision history<####
+# 1.2.5 Minor modification to avoid wrong PDM identifier format (GA 04/10/18)
 # 1.2.4 Minor modification for split mode file (GA 08/12/17)
 # 1.2.3 Update SQLite queries to PD 2.2 version (GA 21/08/17)
 # 1.2.2 Minor modification in PDM creation : add a \n in FixedMod (GA 05/05/17)

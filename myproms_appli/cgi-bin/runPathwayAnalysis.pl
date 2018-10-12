@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# runPathwayAnalysis.pl       1.0.0                                            #
+# runPathwayAnalysis.pl       1.0.1                                            #
 # Authors: P. Poullet, S.Liva (Institut Curie)                                 #
 # Contact: myproms@curie.fr                                                    #
 # Launches Pathway Analysisis                                                  #
@@ -41,10 +41,11 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 #-------------------------------------------------------------------------------
+
 $| = 1;
 use strict;
 use File::Path qw(make_path remove_tree);
-use File::Copy qw(move);
+use File::Copy::Recursive qw(dirmove);
 use promsConfig;
 use promsMod;
 use LWP::UserAgent;
@@ -128,7 +129,7 @@ getstore($urlPathway, $pathwaySave);
 if (-e $pathwaySave && -e $foundSave && -e $notFoundSave) {
 	my $sthUpdatePathAna=$dbh->do("UPDATE PATHWAY_ANALYSIS SET STATUS=1 where ID_PATHWAY_ANALYSIS=$pathwayID");
 	$dbh->commit;
-	move($tmpPathwayPathID,"$projectPath/$pathwayID");
+	dirmove($tmpPathwayPathID,"$projectPath/$pathwayID");
 }
 else {
 	my $sthUpdatePathAna=$dbh->do("UPDATE PATHWAY_ANALYSIS SET STATUS=-1 where ID_PATHWAY_ANALYSIS=$pathwayID");
@@ -138,4 +139,5 @@ else {
 $dbh->disconnect;
 
 ####>Revision history<####
+# 1.0.1 Uses dirmove instead of move (PP 12/10/18)
 # 1.0.0  new script, run reactome web service, replace runAndDisplayPathwayAnalysis (SL 19/11/14)

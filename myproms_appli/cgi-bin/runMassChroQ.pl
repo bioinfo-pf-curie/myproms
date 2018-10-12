@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# runMassChroQ.pl              1.7.2                                           #
+# runMassChroQ.pl              1.7.4                                           #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Interface between myProMS and MassChroQ software, developed by Inra.         #
@@ -43,6 +43,7 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 #-------------------------------------------------------------------------------
+
 $| = 1;
 
 use strict;
@@ -447,6 +448,54 @@ open(FILESTAT,">>$fileStat");
 print FILESTAT "2/3 Waiting for MassChroQ results...\n";
 close FILESTAT;
 
+####>
+####> PART TO REMOVE
+####>
+my $addParamStg='';
+if ($clusterInfo{'on'}) {
+		my $commandFile="$quantifDir/command.sh";
+		my $timeStamp=strftime("%Y%m%d%H%M%S",localtime);
+		open (COMM,">$commandFile");
+		print COMM "#!/bin/bash\n";
+		print COMM "cd $quantifDir\n$masschroqPath/masschroq -v 2>&1\n";
+		close COMM;
+		my $modBash=0775;
+		chmod $modBash,$commandFile;
+		my %jobParams=(
+maxMem=>'1Gb',
+numCPUs=>1,
+maxHours=>1,
+jobName=>"myProMS_test_$timeStamp",
+outFile=>'PBS.txt',
+errorFile=>'PBSerror.txt',
+jobEndFlag=>"_END_$timeStamp",
+noWatch=>1
+		);
+		$clusterInfo{'runJob'}->($quantifDir,$commandFile,\%jobParams);
+		sleep 60;
+		while (!(-e "$quantifDir/PBS.txt" && `tail -3 $quantifDir/PBS.txt | grep _END_$timeStamp`)) {
+				sleep 5;
+		}
+		open (PBS,"$quantifDir/PBS.txt");
+		while (my $line=<PBS>) {
+				chomp($line);
+				if ($line =~ /MassChroQ [version ]*([\d\.]+)/) {
+						if ($1=~ /2\.2\.12/) {
+								$addParamStg="truc ";
+						}
+						last;
+				}
+		}
+		close PBS;
+}
+else {
+	my @response=`$masschroqPath/masschroq -v 2>&1`;
+	$addParamStg="truc " if ($response[0] && $response[0]=~/2\.2\.12/);
+}
+####>
+####> END PART TO REMOVE
+####>
+
 ###> 1st step: Parse peptide option
 if ($clusterInfo{'on'}) {
 		#code
@@ -455,7 +504,7 @@ if ($clusterInfo{'on'}) {
 		print BASH qq
 |#!/bin/bash
 cd $quantifDir
-$masschroqPath/masschroq -p $quantifDir/quanti.masschroqML > $quantifDir/masschroq_status1.txt
+$masschroqPath/masschroq -p $addParamStg$quantifDir/quanti.masschroqML > $quantifDir/masschroq_status1.txt
 |;
 		close BASH;
 		my $modBash=0775;
@@ -488,7 +537,7 @@ $clusterCommandString
 		}
 }
 else{
-		system "cd $quantifDir; $masschroqPath/masschroq -p $quantifDir/quanti.masschroqML > $quantifDir/masschroq_status1.txt"; # if no cd, this command does not work because no permission to use cgi-bin as temporary directory!
+		system "cd $quantifDir; $masschroqPath/masschroq -p $addParamStg$quantifDir/quanti.masschroqML > $quantifDir/masschroq_status1.txt"; # if no cd, this command does not work because no permission to use cgi-bin as temporary directory!
 		sleep(5);
 }
 
@@ -504,7 +553,7 @@ while (my $line=<MCQSTAT>) {
 }
 close(MCQSTAT);
 unless($goodVersion) {
-	die "It seems that you have a version of MassChroQ software not supported (2.2.2 optimized version)\n";
+	die "It seems that you have a version of MassChroQ software not supported (2.2 or 2.2.12 optimized version)\n";
 }
 ###> 2nd step: read and add allChargeStates peptides.
 if ($params{'ALLCHARGESTATES'}) {# check-box was checked
@@ -1382,6 +1431,8 @@ package mzXMLHandler; {
 
 
 ####> Revision history
+# 1.7.4 Also tests for 2.2.12 version when running MassChroQ locally (PP 11/10/18)
+# 1.7.3 Customized version for demo/dev while using myproms_1.1.19-1.img (GA 10/10/18)<BR>TODO: remove code when new version of MassChroQ available !!!
 # 1.7.2 Change vmod parsing in result file (GA 08/10/18)
 # 1.7.1 Minor bug corrections (GA 11/06/18)
 # 1.7.0 Peptide quantification data now written to file $promsPath{quantification}/project_$projectID/quanti_$quantifID/peptide_quantification(_$targetPos).txt (PP 11/05/18)

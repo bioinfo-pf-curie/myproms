@@ -84,3 +84,6 @@ Because Docker containers are created/deleted each time you start/shut down the 
 * **MySQL database** data are stored in the directory `path/to/myproms/myproms_db`
 * **Flat file** data are stored in the directory `path/to/myproms/myproms_data`
 
+## Contact
+**Email**: myproms@curie.fr
+
