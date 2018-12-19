@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# showProtQuantification.cgi     2.4.5                                         #
+# showProtQuantification.cgi     2.5.0                                         #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Displays protein quantification data                                         #
@@ -40,6 +40,7 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 #-------------------------------------------------------------------------------
+
 $|=1;
 use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI ':standard';
@@ -66,8 +67,9 @@ my %labelingName=('FREE'=>'Label-free','SILAC'=>'SILAC','ITRAQ'=>'iTRAQ','TMT'=>
 #my $MAX_INF_RATIO_DB=1000; # true infinite value in database
 #my $MIN_INF_RATIO_DB=0.001;
 # Limit ratios for +/-infinity switch in volcano plot
-my $MAX_INF_RATIO=64;
-my $MIN_INF_RATIO=1/$MAX_INF_RATIO;
+my ($MIN_INF_RATIO,$MAX_INF_RATIO,$MAX_INF_RATIO_DB,$MIN_INF_RATIO_DB)=&promsQuantif::getExtremeRatios; # Max ratios allowed before switching to infinite
+$MAX_INF_RATIO=64;
+$MIN_INF_RATIO=1/$MAX_INF_RATIO;
 my $log2=log(2);
 my %normalizationNames=&promsQuantif::getQuantifNormalizationName;
 my %pValueCorrections=('none'=>'None','fdr'=>'Benjamini-Hochberg (FDR)','bonferroni'=>'Bonferroni'); # for algo v3
@@ -92,7 +94,7 @@ my $dispCV=param('coefVar') // 0; $dispCV=0 if $dispCV=~/[^\d\.]/; # includes ne
 my $dispCVFrac=$dispCV/100;
 my $dispPepType=param('pepType') || 'all';
 my $numPepCode=($dispPepType eq 'all')? 'NUM_PEP_USED' : ($dispPepType eq 'distinct')? 'DIST_PEP_USED' : $dispPepType;
-my $dispNumPep=param('numPep') || 3; $dispNumPep=3 if $dispNumPep=~/\D/;
+my $dispNumPep=(param('numPep') && param('numPep') !~ /\D/)? param('numPep') : ($selQuantifID)? 1 : 3;
 my $dispSort=param('sort') || 'peptide'; # for list only
 my (%dispRatios,%dispStates,%condToState,%ratioCode,%quantifParamInfo,$designID,$ratioType); # globals also for some ajax calls (%dispRatios & %dispStates mutually exclusve)
 if (param('dispRatios')) {foreach my $pos (param('dispRatios')) {$dispRatios{$pos}=1;}} # Positions of ratios displayed in results
@@ -102,6 +104,7 @@ $dispSort='peptide' if (param('dispRatios') && $dispSort=~/ratio_(-*\d+)/ && !$d
 my $restrictListID=param('restrictList') || 0;
 if ($action eq 'delete') {&deleteQuantification($analysisID,$selQuantifID); exit;} # only for label-based 2ndary quantifications
 elsif ($action eq 'ajaxDispCorrel') {&ajaxDisplayCorrelationMatrix; exit;}
+elsif ($action eq 'ajaxDispMissValues') {&ajaxDisplayMissingValues; exit;}
 elsif ($action eq 'ajaxProtStat') {&ajaxProteinStatistics; exit;}
 elsif ($action eq 'ajaxPepRatio') {&ajaxPeptideRatios; exit;}
 elsif ($action eq 'ajaxPepMaxQuant') {&ajaxPeptideMaxQuant; exit;}
@@ -148,7 +151,7 @@ if ($call eq 'ana') {
 		$name='No name' unless $name;
 		@{$anaQuantifList{$quantifID}}=($name,$focus,$status,$methodID,$qAnnot);
 		@{$methodList{$methodID}}=($methodName,$methodCode,$methodDesc);
-		my $typeName=($focus eq 'peptide' && $methodCode=~/XIC|SIN|SILAC|ITRAQ|TMT/)? 'Peptide quantification'
+		my $typeName=($focus eq 'peptide' && $methodCode=~/XIC|SIN|SILAC|ITRAQ|TMT|TDA/)? 'Peptide quantification'
 			: ($focus eq 'peptide' && $methodCode eq 'DIA')? 'SWATH-MS/DIA'
 			: ($focus eq 'peptide')? 'Peptide ratio'
 			: ($focus eq 'protein' && $methodCode=~/PROT_RATIO/)? 'Protein ratio' # should never be TNPQ (call=ana)
@@ -173,12 +176,13 @@ else { # called from quanti frame
 			WHERE ID_QUANTIFICATION=$selQuantifID");
 	$action='proteinView' if ($action eq 'select' && $designID);
 	#@quantificationInfo=$dbh->selectrow_array("SELECT Q.ID_QUANTIFICATION,Q.NAME,Q.FOCUS,STATUS,M.ID_QUANTIFICATION_METHOD,M.NAME,M.CODE FROM QUANTIFICATION Q,QUANTIFICATION_METHOD M WHERE Q.ID_QUANTIFICATION_METHOD=M.ID_QUANTIFICATION_METHOD AND Q.ID_QUANTIFICATION=$selQuantifID");
-	$title=($designID)? 'Design-based Quantification of ' : 'Single-Analysis Quantification of';
+	$title=($designID)? 'Design-based Quantification of ' : 'Single-Analysis Quantification of ';
 	if ($quantifModID) {
-		$title.="<FONT color=\"#DD0000\">$modifName</FONT>-Proteins";
+		my $ratioCorrStrg=($quantifAnnot=~/::INTRA_PROT_REF=/)? 'Fold Change-corrected ' : '';
+		$title.="<FONT color=\"#DD0000\">$ratioCorrStrg$modifName</FONT>-sites";
 		$highlighMatchStrg=",'^###-'"; # for matching modProtID with protID in volcanoPlot
 	}
-	else {$title.='Whole Proteins';}
+	else {$title.='Proteins';}
 	if ($projectAccess=~/bioinfo|mass/) {
 		$title.='&nbsp;<SPAN id="templateSpan">';
 		if ($quantifAnnot=~/::TEMPLATE=1/) {
@@ -328,6 +332,7 @@ function drawSpectrum(pepId,pepInfo) {
 |;
 		my $prevFocus='';
 		foreach my $typeName (sort keys %quantificationTypes) {
+			my $nbValidXIC = 0;
 			print "<OPTGROUP label=\"$typeName:\">\n";
 			foreach my $quantifID (sort{lc($anaQuantifList{$a}[0]) cmp lc($anaQuantifList{$b}[0])} @{$quantificationTypes{$typeName}}) {
 				print "<OPTION value=\"$anaQuantifList{$quantifID}[1]:$quantifID\"";
@@ -346,8 +351,9 @@ function drawSpectrum(pepId,pepInfo) {
 					$softwareExt=($qAnnot =~ /SOFTWARE=MCQ/) ? '-MCQ' : ($qAnnot =~ /SOFTWARE=MQ/) ? '-MQ' : ($qAnnot =~ /SOFTWARE=PD/) ? '-PD' : '';
 				}
 				print ">$errorFlag$anaQuantifList{$quantifID}[0] [$methodName]$softwareExt$errorFlag</OPTION>\n";
+				$nbValidXIC++ if $methodName ne 'TDA';
 			}
-			if ($typeName eq 'Peptide quantification' && scalar @{$quantificationTypes{$typeName}} > 1) {
+			if ($typeName eq 'Peptide quantification') { #&& $nbValidXIC > 1) {
 				print "<OPTION value=\"peptide:XIC\">Compare multiple XIC extractions</OPTION>";
 			}
 			print "</OPTGROUP>\n";
@@ -422,20 +428,19 @@ $labelType='FREE' unless $labelType;
 
 
 ###>Number of proteins and isoforms<###
-my ($numProteinsQuantified,$numIsoFormsQuantified);
+my $protQuantifiedStrg='';
 if ($quantifType !~ /EMPAI|SIN/) { # |MQ
 	my $paramCode=($quantifType eq 'MQ')? $dispMeasure : $ratioParamCode; # 'NUM_PEP_TOTAL';
 	my ($paramID)=$dbh->selectrow_array("SELECT ID_QUANTIF_PARAMETER FROM QUANTIFICATION_PARAMETER WHERE CODE='$paramCode' AND ID_QUANTIFICATION_METHOD=$quantifMethodID");
-	($numProteinsQuantified)=$dbh->selectrow_array("SELECT COUNT(DISTINCT ID_PROTEIN) FROM PROTEIN_QUANTIFICATION WHERE ID_QUANTIFICATION=$selQuantifID AND ID_QUANTIF_PARAMETER=$paramID");
-	($numIsoFormsQuantified)=($quantifModID)? $dbh->selectrow_array("SELECT COUNT(ID_PROT_QUANTIF) FROM PROTEIN_QUANTIFICATION WHERE ID_QUANTIFICATION=$selQuantifID AND ID_QUANTIF_PARAMETER=$paramID") : 0;
-}
+	my ($numProteinsQuantified)=$dbh->selectrow_array("SELECT COUNT(DISTINCT ID_PROTEIN) FROM PROTEIN_QUANTIFICATION WHERE ID_QUANTIFICATION=$selQuantifID AND ID_QUANTIF_PARAMETER=$paramID");
+	my ($numIsoFormsQuantified)=($quantifModID)? $dbh->selectrow_array("SELECT COUNT(ID_PROT_QUANTIF) FROM PROTEIN_QUANTIFICATION WHERE ID_QUANTIFICATION=$selQuantifID AND ID_QUANTIF_PARAMETER=$paramID") : 0;
 #print "*** QUANTIF_TYPE='$quantifType' // LABEL_TYPE='$labelType' // FOCUS='$focus' // VIEW='$view' ***<BR>\n";
-my $protQuantifiedStrg="$numProteinsQuantified protein"; $protQuantifiedStrg.='s' if $numProteinsQuantified && $numProteinsQuantified > 1;
-if ($quantifModID) {
-	$protQuantifiedStrg.=", $numIsoFormsQuantified $modifName-form"; $protQuantifiedStrg.='s' if $numIsoFormsQuantified > 1;
+	$protQuantifiedStrg="$numProteinsQuantified protein"; $protQuantifiedStrg.='s' if $numProteinsQuantified && $numProteinsQuantified > 1;
+	if ($quantifModID) {
+		$protQuantifiedStrg.=", $numIsoFormsQuantified $modifName-form"; $protQuantifiedStrg.='s' if $numIsoFormsQuantified > 1;
+	}
+	$protQuantifiedStrg.=' quantified';
 }
-$protQuantifiedStrg.=' quantified';
-
 
 ##################################
 ####>Protein restriction list<####
@@ -512,7 +517,7 @@ if ($labelType eq 'FREE' || $designID) {
 $numPepCode='PEPTIDES' if ($ratioType eq 'None' && $numPepCode=~/_PEP_USED/); # (NUM/DIST)_PEP_USED not available in no-ratio MaxQuant
 		my $numStates=scalar @{$labelingInfo{'STATES'}};
 		$algoVersion=($ratioType eq 'Ratio')? 1 : (!$labelingInfo{'SOFTWARE'})? 2 : ($labelingInfo{'SOFTWARE'}[0] eq 'myProMS')? $labelingInfo{'SOFTWARE'}[1] : 0; # myProMS version ONLY!
-		$isPepIntensity=($labelingInfo{'MEAN_STATE'} && $labelingInfo{'MEAN_STATE'}[0]==1)? 1 : ($algoVersion==2 && $labelType eq 'FREE')? 1 : ($algoVersion==3 && $labelingInfo{'ALGO_TYPE'}[0] eq 'PEP_INTENSITY')? 1 : 0; # 0 for v1 Ratio, v2 Label & v3 PEP_RATIO
+		$isPepIntensity=($labelingInfo{'MEAN_STATE'} && $labelingInfo{'MEAN_STATE'}[0]==1)? 1 : ($algoVersion==2 && $labelType eq 'FREE')? 1 : ($algoVersion>=3 && $labelingInfo{'ALGO_TYPE'}[0] eq 'PEP_INTENSITY')? 1 : 0; # 0 for v1 Ratio, v2 Label & v3 PEP_RATIO
 		#$quantifSoftware=($algoVersion > 0)? "myProMS v$algoVersion" : ($labelingInfo{'SOFTWARE'}[0] eq 'MQ')? 'MaxQuant' : $labelingInfo{'SOFTWARE'}[0];
 		$quantifSoftware=($algoVersion > 0)? 'myProMS' : ($labelingInfo{'SOFTWARE'}[0] eq 'MQ')? 'MaxQuant' : $labelingInfo{'SOFTWARE'}[0];
 		if ($algoVersion) { # myProMS version ONLY!
@@ -578,6 +583,10 @@ $numPepCode='PEPTIDES' if ($ratioType eq 'None' && $numPepCode=~/_PEP_USED/); # 
 					next unless $dispStates{$targetPos};
 				}
 				else {
+					if ($paramCode eq 'RATIO') {
+						if ($qValue < $MIN_INF_RATIO_DB) {$qValue=$MIN_INF_RATIO_DB;}
+						elsif ($qValue > $MAX_INF_RATIO_DB) {$qValue=$MAX_INF_RATIO_DB;}
+					}
 					if ($dispRatios{-$targetPos}) { # reverse ratio management
 						$targetPos=-$targetPos;
 						$qValue=1/$qValue if $paramCode=~/^RATIO/;
@@ -829,13 +838,15 @@ window.onload=function() {
 		$sthProtI->finish;
 		$sthGN->finish;
 		$sthProtQ->execute;
+		my %quantifProt;
 		while (my ($protID,$qValue,$code)=$sthProtQ->fetchrow_array) {
 			next unless $proteinInfo{$protID}; # skip hidden & restricted protein even if they were quantified!
 			#push @protOrder,$protID;
-			($quantifValues{$protID}{$code})=$qValue;
+			$quantifValues{$protID}{$code}=$qValue;
+			$quantifProt{$protID}=1;
 		}
 		$sthProtQ->finish;
-		my $numQuantProteins=scalar keys %quantifValues;
+		my $numQuantProteins=scalar keys %quantifProt;
 		#&displayIntensityPlot(\%quantifValues,\%proteinInfo,'MQ_INT','Intensity',$usedAnaID) if ($quantifType eq 'MQ' && $action ne 'export');
 		my $locationStrg='';
 		if ($action eq 'export') {
@@ -952,15 +963,17 @@ window.onload=function() {
 				elsif ($proteinInfo{$protID}[5][0]) {print "<TH>&nbsp;$proteinInfo{$protID}[5][0]&nbsp;</TH>";}
 				else {print '<TH>&nbsp;-&nbsp;</TH>';} # no gene mapped
 				foreach my $paramC (@qpcodes) {
-					if ($quantifValues{$protID}{$paramC}) {
-						if($quantifValues{$protID}{$paramC}<1000){
-							printf "<TH>&nbsp;$quantifValues{$protID}{$paramC}&nbsp;</TH>";
+					my $value;
+					if (defined($quantifValues{$protID}{$paramC})) { # can be 0
+						if ($quantifValues{$protID}{$paramC}>=0.1 && $quantifValues{$protID}{$paramC}<1000){
+							$value=sprintf '%.2f',$quantifValues{$protID}{$paramC};
 						}
-						else{
-							printf "<TH>&nbsp;%.2e&nbsp;</TH>",$quantifValues{$protID}{$paramC};
+						else {
+							$value=sprintf '%.2e',$quantifValues{$protID}{$paramC};
 						}
 					}
-					else {print "<TH>-</TH>"};
+					else {$value='-'};
+					printf "<TH align=\"right\">&nbsp;$value&nbsp;</TH>";
 				}
 				print "<TH>&nbsp;$proteinInfo{$protID}[1]&nbsp;</TH><TD class=\"TH\" align=right>$proteinInfo{$protID}[2]&nbsp;</TD><TD>$proteinInfo{$protID}[3] <U><I>$proteinInfo{$protID}[4]</I></U></TD>";
 				print "</TR>\n";
@@ -1178,12 +1191,12 @@ sub generateRatioCodes {
 				foreach my $testStatePos ($refStatePos+1..$numStates) {
 					next if $testStatePos==$refStatePos;
 					$ratioPos++;
-					$ratioCode{$ratioPos}=($algoVersion==3)? "State$testStatePos.State$refStatePos" : "State$testStatePos-State$refStatePos";
+					$ratioCode{$ratioPos}=($algoVersion>=3)? "State$testStatePos.State$refStatePos" : "State$testStatePos-State$refStatePos";
 					$ratioCode{-$ratioPos}='-'.$ratioCode{$ratioPos};
 				}
 			}
 		}
-		elsif ($algoVersion==3) {
+		elsif ($algoVersion>=3) {
 			my $numPrimRatios=$numStates-1;
 			foreach my $ratioPos (1..$numPrimRatios) {
 				$ratioCode{$ratioPos}='State'.($ratioPos+1).'.State1';
@@ -1191,8 +1204,8 @@ sub generateRatioCodes {
 			}
 			if ($ratioType eq 'SuperRatio') {
 				my $ratioPos=$numPrimRatios;
-				foreach my $x (1..$numPrimRatios-1) { # ratios of ratios
-					foreach my $y ($x+1..$numPrimRatios){
+				foreach my $x (2..$numPrimRatios) { # ratios of ratios
+					foreach my $y ($x+1..$numPrimRatios+1){
 						next if $y==$x;
 						$ratioPos++;
 						$ratioCode{$ratioPos}="State$y.State1.State$x.State1";
@@ -1215,6 +1228,7 @@ sub generateRatioCodes {
 						$ratioPos++;
 						$ratioCode{$ratioPos}=chr(64+$y).'-'.chr(64+$x);
 						$ratioCode{-$ratioPos}='-'.$ratioCode{$ratioPos};
+print "2) $ratioPos: $ratioCode{$ratioPos}<BR>\n";
 					}
 				}
 			}
@@ -1593,7 +1607,7 @@ sub printQuantificationSummary { # GLOBALS: $selQuantifID, $view, $projectID, $d
 						$valueStrg="<DIV style=\"max-height:100px;overflow-y:scroll;display:inline-block\">$valueStrg</DIV>" if $coeffIdx > 4;
 						$biasCorrectStrg.="$valueStrg</TD><TD valign=\"middle\">&nbsp;&nbsp;&nbsp;$biasCorrButtonStrg</TD></TR>\n";
 					}
-					elsif ($algoVersion==3) { # fetch data from file
+					elsif ($algoVersion>=3) { # fetch data from file
 						open(BIAS,"$resultDir/allbias_coef.txt");
 						#my @biasData=<BIAS>;
 						my (%header2Idx,%biasType);
@@ -1721,7 +1735,8 @@ sub printQuantificationSummary { # GLOBALS: $selQuantifID, $view, $projectID, $d
 			$protSelectionStrg.="$listStrg";
 		}
 		$worksheet1->write_string(++$xlsRow,0,'Protein selection :',$itemFormat{'headerR'});
-		$worksheet1->merge_range($xlsRow,1,$xlsRow,2,$protSelectionStrg.' ('.$protQuantifiedStrg.')',$itemFormat{'mergeColText'});
+		$protSelectionStrg.=' ('.$protQuantifiedStrg.')' if $protQuantifiedStrg;
+		$worksheet1->merge_range($xlsRow,1,$xlsRow,2,$protSelectionStrg,$itemFormat{'mergeColText'});
 		#<Bias
 		$worksheet1->write_string(++$xlsRow,0,'Bias correction :',$itemFormat{'headerR'});
 		if ($biasCorrectStrg2) {
@@ -1947,6 +1962,30 @@ function manageTemplate(value){
 	displayDiv.style.top = top+'px';
 	displayDiv.style.display='block';
 }
+function displayMissingValues(missButton) {
+	var [top,left]=getElementPosition(missButton);
+	top+=20;
+	left-=150;
+	if (left < 0) {left=0;}
+	var displayDiv=document.getElementById('displayDIV');
+	displayDiv.style.left = left+'px';
+	displayDiv.style.top = top+'px';
+	displayDiv.style.display='block';
+	var infoDiv=document.getElementById('infoDIV');
+	infoDiv.innerHTML='<BR><BR>&nbsp;&nbsp;&nbsp;&nbsp;<IMG src=\\"$promsPath{images}/scrollbarGreen.gif\\">&nbsp;&nbsp;&nbsp;&nbsp;<BR><BR>';
+	//Creation of the XMLHTTPRequest object
+	var XHR = getXMLHTTP();
+	if (!XHR) {
+		return false;
+	}
+	XHR.open("GET","$promsPath{cgi}/showProtQuantification.cgi?ACT=ajaxDispMissValues&id_quantif=$selQuantifID&projectID=$projectID",true);
+	XHR.onreadystatechange=function() {
+		if (XHR.readyState==4 && XHR.responseText) {
+			infoDiv.innerHTML=(XHR.responseText);
+		}
+	}
+	XHR.send(null);
+}
 function displayReplicCorrelation(corrButton,statePos,replicName) {
 	var [top,left]=getElementPosition(corrButton);
 	top+=20;
@@ -2035,7 +2074,7 @@ function displayRatioStat(linkID,ratioCode,ratioName) {
 		imageStrg+="<TR><TH>Boxplot</TH><TH>Distribution</TH></TR>";
 		imageStrg+="<TR><TD><IMG src=\\"$graphDirHtml/prot_ratio_box_"+ratioCode+".png\\"></TD><TD><IMG src=\\"$graphDirHtml/prot_ratio_hist_"+ratioCode+".png\\"></TD></TR>";
 	}
-	else if ($algoVersion==3) {
+	else if ($algoVersion>=3) {
 		imageStrg+="<TR><TH colspan=2><BR>Fold Change distribution<BR><IMG src=\\"$graphDirHtml/distriblog2FC_"+ratioCode+".jpeg\\" width=600></TH></TR>";
 		imageStrg+="<TR><TH colspan=2><BR>p-value distribution<BR><IMG src=\\"$graphDirHtml/distribPValue_"+ratioCode+".jpeg\\" width=600></TH></TR>";
 	}
@@ -2385,7 +2424,7 @@ function ajaxUpdateGoTermList(goIdStrg) {
 		print "</A>" if $stateInfo{$statePos}{'POPUP'};
 		print $stateInfo{$statePos}{REPLIC};
 		if ($quantifStatus > 0 && $ratioType=~/S\w+Ratio/ && $labelType eq 'FREE' && $quantifSoftware eq 'myProMS') {
-			my $imageFile=($algoVersion==3)? "distriblog2FC_State$statePos.jpeg" : "Graph_Box_Hist_ratioprot_mean_State$statePos.png";
+			my $imageFile=($algoVersion>=3)? "distriblog2FC_State$statePos.jpeg" : "Graph_Box_Hist_ratioprot_mean_State$statePos.png";
 			print "&nbsp;<INPUT type=\"button\" class=\"font11\" value=\"Mean distrib.\" onclick=\"displayImageFromButton(this,'Protein Mean Distribution for State $stateInfo{$statePos}{NAME}','$imageFile')\">";
 		}
 		print "&nbsp;</TD>";
@@ -2395,21 +2434,24 @@ function ajaxUpdateGoTermList(goIdStrg) {
 					print qq |<TD bgcolor=$lightColor rowspan="$numStates" valign=middle>|;
 					if ($ratioType=~/S\w+Ratio/) {
 						#my $disabStrg=(-e "$resultDir/graph/$correlImgFileName")? '' : 'disabled';
-						my $disabStrg=(-e "$resultDir/$correlMatFileName")? '' : 'disabled';
-						print qq |&nbsp;<INPUT type="button" class="font11" value="Global correlation" style="width:120px" onclick="displayReplicCorrelation(this)" $disabStrg>&nbsp;<BR>|;
+						my $disabCorrStrg=(-e "$resultDir/$correlMatFileName")? '' : 'disabled';
+						print qq
+|&nbsp;<INPUT type="button" class="font11" value="Missing values" style="width:120px" onclick="displayMissingValues(this)">&nbsp;<BR>
+&nbsp;<INPUT type="button" class="font11" value="Global correlation" style="width:120px" onclick="displayReplicCorrelation(this)" $disabCorrStrg>&nbsp;<BR>
+|;
 					}
 					print qq |&nbsp;<INPUT type="button" class="font11" value="Global coeff. var." style="width:120px" onclick="displayImageFromButton(this,'Coefficient of variation between all replicates','pep_cv_hist.png')">&nbsp;| if -e "$resultDir/graph/pep_cv_hist.png"; # before myProMS v3! ($ratioType eq 'Ratio' || $supRatioReplicates); #displayPepVariation(this)
 					print "</TD>\n";
 				}
 				if (scalar @{$refInfo->{RATIOS}} > 1) { # multiple ratios
 					unless (scalar keys %dispRatios) {%dispRatios=(1=>1,2=>1,3=>1);} # set default
-					print "<TH bgcolor=$lightColor rowspan=$numStates valign=top><TABLE bgcolor=$darkColor cellpadding=1><TR><TH bgcolor=$lightColor>";
+					print "<TH bgcolor=$lightColor rowspan=$numStates valign=top><TABLE bgcolor=$darkColor cellpadding=1><TR><TH bgcolor=$lightColor nowrap>";
 					if ($action eq 'summary') {
 						print "Ratios computed:</TH><TH>St.</TH>";
 						foreach my $stPosT (2..$numStates) {print "<TH>#$stPosT</TH>"}
 						print "</TR>\n";
 						#my $numReferences=(($ratioType eq 'SimpleRatio' && $labelType ne 'FREE' && $quantifSoftware ne 'MaxQuant') || ($refInfo->{'SINGLE_REF'} && $refInfo->{'SINGLE_REF'}[0]==1))? 1 : $numStates-1;
-my $numReferences=($refInfo->{'SINGLE_REF'} && $refInfo->{'SINGLE_REF'}[0]==1)? 1 : $numStates-1;
+						my $numReferences=($refInfo->{'SINGLE_REF'} && $refInfo->{'SINGLE_REF'}[0]==1)? 1 : $numStates-1;
 						my $ratioPos=0;
 						foreach my $stPosR (1..$numReferences) {
 							print "<TR>";
@@ -2502,6 +2544,29 @@ my $singleRef=($refInfo->{'SINGLE_REF'} && $refInfo->{'SINGLE_REF'}[0]==1)? 1 : 
 		}
 		print "</TR>\n";
 	}
+	if ($quantifModID) {
+		print "<TR><TH align=right nowrap valign=top>&nbsp;Fold change correction :</TH><TD nowrap bgcolor=$lightColor$colspanStrg>&nbsp;";
+		if ($refInfo->{'INTRA_PROT_REF'}) {
+			print "Using protein fold changes in ";
+			if ($refInfo->{'INTRA_PROT_REF'}[0] eq '-1') {
+				print "<B>current</B> dataset";
+				if ($refInfo->{'PEPTIDES_REF'}[0] eq 'manual') {print " (<B>Manual</B> peptide selection)";}
+			}
+			else {
+				my ($refQuantifID,$rPos,$testRefCondID,$refRefCondID)=split(/[_:]/,$refInfo->{'INTRA_PROT_REF'}[0]);
+				my ($refQuantifPath)=$dbh->selectrow_array("SELECT CONCAT(E.NAME,' > ',D.NAME,' > ',Q.NAME) FROM QUANTIFICATION Q,DESIGN D,EXPERIMENT E WHERE Q.ID_DESIGN=D.ID_DESIGN AND D.ID_EXPERIMENT=E.ID_EXPERIMENT AND Q.ID_QUANTIFICATION=$refQuantifID");
+				my $sthCondName = $dbh->prepare("SELECT NAME FROM EXPCONDITION WHERE ID_EXPCONDITION=?");
+				$sthCondName->execute($testRefCondID);
+				my ($testRefCondName)=$sthCondName->fetchrow_array;
+				$sthCondName->execute($refRefCondID);
+				my ($refRefCondName)=$sthCondName->fetchrow_array;
+				$sthCondName->finish;
+				print "dataset from <B>$refQuantifPath : $testRefCondName/$refRefCondName</B>";
+			}
+		}
+		else {print 'None';}
+		print "</TD></TR>\n";
+	}
 
 	#my $pepString=($quantifType !~ /XIC|SIN|EMPAI/)? "&nbsp;&nbsp;&bull;$pepChargeStrg&nbsp;&nbsp;&nbsp;&bull;$pepSourceStrg&nbsp;" : ''; # Change on 29/10/12
 	my $pepString=($quantifSoftware eq 'myProMS')? "&nbsp;&nbsp;&bull;$pepChargeStrg&nbsp;&nbsp;&nbsp;&bull;$pepSourceStrg&nbsp;" : '';
@@ -2516,11 +2581,12 @@ my $singleRef=($refInfo->{'SINGLE_REF'} && $refInfo->{'SINGLE_REF'}[0]==1)? 1 : 
 		$protSelectionStrg.="<B>$listStrg</B>";
 	}
 	print "<TR><TH align=right nowrap valign=top>&nbsp;Peptide selection :</TH><TD nowrap bgcolor=$lightColor$colspanStrg>&nbsp;";
-	if ($refInfo->{PEPTIDES}) {print "&bull;$pepRangeStrg&nbsp;&nbsp;&nbsp;&bull;$pepMissCutStrg&nbsp;&nbsp;&nbsp;&bull;$pepPtmStrg&nbsp;$pepString&nbsp;$ptmQuantifStrg";}
+	if ($refInfo->{'PEPTIDES'}) {print "&bull;$pepRangeStrg&nbsp;&nbsp;&nbsp;&bull;$pepMissCutStrg&nbsp;&nbsp;&nbsp;&bull;$pepPtmStrg&nbsp;$pepString&nbsp;$ptmQuantifStrg";}
 	else {print 'All';}
+	$protSelectionStrg.="&nbsp;(<B>$protQuantifiedStrg</B>)" if $protQuantifiedStrg;
 	print qq
 |</TD></TR>
-<TR><TH align=right nowrap valign=top>&nbsp;Protein selection :</TH><TD nowrap bgcolor=$lightColor$colspanStrg>&nbsp;$protSelectionStrg&nbsp;(<B>$protQuantifiedStrg</B>)</TD></TR>
+<TR><TH align=right nowrap valign=top>&nbsp;Protein selection :</TH><TD nowrap bgcolor=$lightColor$colspanStrg>&nbsp;$protSelectionStrg</TD></TR>
 <TR><TH align=right nowrap valign=top>&nbsp;Quantification settings :|;
 	if ($ratioType eq 'Ratio') {
 		print qq
@@ -2531,7 +2597,7 @@ my $singleRef=($refInfo->{'SINGLE_REF'} && $refInfo->{'SINGLE_REF'}[0]==1)? 1 : 
 |</TH><TD bgcolor=$lightColor$colspanStrg valign=top>
 	&nbsp;-<B>Quantification method:</B> $quantifMethDesc [$ratioTypeStrg$topNString - Software: $quantifSoftware$softVersionStrg]<BR>
 |;
-	if ($algoVersion==3) {
+	if ($algoVersion>=3) {
 		print "&nbsp;-<B>p-value</B> estimates <B>$refInfo->{'RESIDUAL_VAR'}[0]</B> variation [Correction: <B>",$pValueCorrections{$refInfo->{'FDR_CONTROL'}[0]},"</B>]<BR>\n";
 	}
 	if ($quantifSoftware ne 'MaxQuant') {print "&nbsp;-<B>Infinite ratios:</B> $infRatioString\n";}
@@ -3806,7 +3872,7 @@ sub ajaxListSelectedProteins {
 	$labelingInfo{'LABELTYPE'}=$labelType;
 	my $ratioType=($labelingInfo{'RATIO_TYPE'})? $labelingInfo{'RATIO_TYPE'}[0] : (!$labelingInfo{'RATIOS'})? 'None' : 'Ratio';
 	my $algoVersion=($ratioType eq 'Ratio')? 1 : (!$labelingInfo{'SOFTWARE'})? 2 : ($labelingInfo{'SOFTWARE'}[0] eq 'myProMS')? $labelingInfo{'SOFTWARE'}[1] : 0; # myProMS version ONLY!
-	my $isPepIntensity=($labelingInfo{'MEAN_STATE'} && $labelingInfo{'MEAN_STATE'}[0]==1)? 1 : ($algoVersion==2 && $labelType eq 'FREE')? 1 : ($algoVersion==3 && $labelingInfo{'ALGO_TYPE'}[0] eq 'PEP_INTENSITY')? 1 : 0; # 0 for v1 Ratio, v2 Label & v3 PEP_RATIO
+	my $isPepIntensity=($labelingInfo{'MEAN_STATE'} && $labelingInfo{'MEAN_STATE'}[0]==1)? 1 : ($algoVersion==2 && $labelType eq 'FREE')? 1 : ($algoVersion>=3 && $labelingInfo{'ALGO_TYPE'}[0] eq 'PEP_INTENSITY')? 1 : 0; # 0 for v1 Ratio, v2 Label & v3 PEP_RATIO
 
 
 	#if ($quantifType eq 'PROT_RATIO_PEP') {
@@ -4059,8 +4125,8 @@ sub ajaxPeptideRatios {
 		}
 	#}
 	my $ratioType=($labelingInfo{RATIO_TYPE})? $labelingInfo{RATIO_TYPE}[0] : 'Ratio';
-	my $algoVersion=($ratioType eq 'Ratio')? 1 : ($labelingInfo{SOFTWARE} && $labelingInfo{SOFTWARE}[0] eq 'myProMS')? 3 : 2;
-my $isPepIntensity=($algoVersion==2 && $labelType eq 'FREE')? 1 : ($algoVersion==3 && $labelingInfo{ALGO_TYPE}[0] eq 'PEP_INTENSITY')? 1 : 0; # 0 for v1 Ratio, v2 Label & v3 PEP_RATIO
+	my $algoVersion=($ratioType eq 'Ratio')? 1 : ($labelingInfo{SOFTWARE} && $labelingInfo{SOFTWARE}[1])? $labelingInfo{SOFTWARE}[1] : ($labelingInfo{SOFTWARE} && $labelingInfo{SOFTWARE}[0] eq 'myProMS')? 3 : 2;
+my $isPepIntensity=($algoVersion==2 && $labelType eq 'FREE')? 1 : ($algoVersion>=3 && $labelingInfo{ALGO_TYPE}[0] eq 'PEP_INTENSITY')? 1 : 0; # 0 for v1 Ratio, v2 Label & v3 PEP_RATIO
 	my $numRatios=scalar @{$labelingInfo{RATIOS}};
 	my $numStates=scalar @{$labelingInfo{STATES}};
 	my $idxShift=($quantifType eq 'PROT_RATIO_PEP')? 0 : 2;
@@ -4242,7 +4308,7 @@ my %usedStates; # (Super/Simple)Ratio (v2 v3)
 	my $numNormalRatios=0;
 	###my ($pepFile,$pepSetFactor)=($ratioType eq 'Ratio')? ("$resultDir/pep_mean_cv_ratio.txt",2) : ($labelType eq 'FREE')? ("$resultDir/Log2MeanPep.txt",1) : ("$resultDir/RatioPep.txt",2);
 	#my $pepSetFactor=($ratioType eq 'Ratio' || $labelType ne 'FREE')? 2 : 1;
-	my $pepFile=($algoVersion==3)? 'resultsPep.txt' : ($ratioType eq 'Ratio')? 'pep_mean_cv_ratio.txt' : ($labelType eq 'FREE')? 'Log2MeanPep.txt' : 'RatioPep.txt';
+	my $pepFile=($algoVersion>=3)? 'resultsPep.txt' : ($ratioType eq 'Ratio')? 'pep_mean_cv_ratio.txt' : ($labelType eq 'FREE')? 'Log2MeanPep.txt' : 'RatioPep.txt';
 	$pepFile="$resultDir/$pepFile";
 	foreach my $ratioPos (keys %protRatio) {
 		$normalRatio{$ratioPos}=0;
@@ -4336,7 +4402,7 @@ my ($score,$pepData,$anaID)=@{$protPeptideData{$pepID}{INFO}}[0..2];
 					foreach my $y ($x+1..$numStates) {
 						$rPos++;
 						if ($rPos==$trueRatioPos) {
-							if ($algoVersion==3) {
+							if ($algoVersion>=3) {
 								if ($isPepIntensity) {
 									$selStateCode{"State$x"}=$x; #$ratioPos;
 									$selStateCode{"State$y"}=$y; #$ratioPos;
@@ -4354,7 +4420,7 @@ my ($score,$pepData,$anaID)=@{$protPeptideData{$pepID}{INFO}}[0..2];
 						foreach my $y ($x+1..$numStates) {
 							$rPos++;
 							if ($rPos==$trueRatioPos) {
-								if ($algoVersion==3) {
+								if ($algoVersion>=3) {
 									$selStateCode{"State$x.State1"}=$x-1; # primary ratioPos
 									$selStateCode{"State$y.State1"}=$y-1; # primary ratioPos
 								}
@@ -4367,7 +4433,7 @@ my ($score,$pepData,$anaID)=@{$protPeptideData{$pepID}{INFO}}[0..2];
 
 				my (%peptideData, %seenExcluded); # simpleRatio with isPepIntensity
 				open(PEP,$pepFile) || die "ERROR: $!";
-				if ($algoVersion==3) {
+				if ($algoVersion>=3) {
 					my (%pepHeader2Idx,%replicates);
 					while(<PEP>) {
 						#next if $.==1;
@@ -5195,7 +5261,7 @@ foreach my $statePos ($testStatePos{$ratioPos},$refStatePos{$ratioPos}) {
 						foreach my $srcKey (@{$peptideSets{$targetPos}{$pepIdKey}{INFO}[5]{DATA}}) {push @srcFiles,$dataSources{$srcKey} || $srcKey;}
 						if ($ratioType eq 'Ratio') {print "<TD>&nbsp;",join('<BR>',sort @srcFiles),"&nbsp;</TD>";} # $dataSources{$peptideSets{$targetPos}{$pepIdKey}{INFO}[5]}
 						else {
-							my $srcName=($algoVersion==3)? $peptideSets{$targetPos}{$pepIdKey}{INFO}[5]{NAME} : '...';
+							my $srcName=($algoVersion>=3)? $peptideSets{$targetPos}{$pepIdKey}{INFO}[5]{NAME} : '...';
 							print "<TD>&nbsp;<A href=\"javascript:void(null)\" onmouseover=\"popup('<U>Source(s):</U><BR>",join('<BR>',sort @srcFiles),"')\" onmouseout=\"popout()\">$srcName</A>&nbsp;</TD>";
 						} # $peptideSets{$targetPos}{$pepIdKey}{INFO}[5]
 					}
@@ -5238,8 +5304,8 @@ foreach my $statePos ($testStatePos{$ratioPos},$refStatePos{$ratioPos}) {
 					next;
 				}
 				if ($isPepIntensity) { # $labelType eq 'FREE' && $ratioType ne 'Ratio'
-					my $ratioPropStrg=($algoVersion==3)? ",'Source'" : '';
-					my $pepColorStrg=($algoVersion==3)? "peptideColor: {map:'Source',type:'discrete'}" : '';
+					my $ratioPropStrg=($algoVersion>=3)? ",'Source'" : '';
+					my $pepColorStrg=($algoVersion>=3)? "peptideColor: {map:'Source',type:'discrete'}" : '';
 					print qq
 |var PP_$trueTargetPos=new peptidePlot({div:'pepPlot:$selQuantifID:$ratioPos$extraIdStrg',width:$plotWidth,height:300,valueAxisLabel:'Log2(mean XIC)',valueLabel:'Mean XIC',
 									protein: {name:'$protAlias$modStrg',length:$protLength,value:$protValue,relativeThresholds:[0.5,2]},
@@ -5252,8 +5318,8 @@ foreach my $statePos ($testStatePos{$ratioPos},$refStatePos{$ratioPos}) {
 |;
 				}
 				else {
-					my $ratioPropStrg=($ratioType eq 'Ratio')? ",'Test','Source'" : ($algoVersion==3)? ",'Source'" : '';
-					my $pepColorStrg=($ratioType eq 'Ratio' || $algoVersion==3)? "peptideColor: {map:'Source',type:'discrete'}" : '';
+					my $ratioPropStrg=($ratioType eq 'Ratio')? ",'Test','Source'" : ($algoVersion>=3)? ",'Source'" : '';
+					my $pepColorStrg=($ratioType eq 'Ratio' || $algoVersion>=3)? "peptideColor: {map:'Source',type:'discrete'}" : '';
 					print qq
 |var PP_$trueTargetPos=new peptidePlot({div:'pepPlot:$selQuantifID:$ratioPos$extraIdStrg',width:$plotWidth,height:300,valueAxisLabel:'Log2(ratio)',valueLabel:'Ratio',
 									protein: {name:'$protAlias$modStrg',length:$protLength,value:$protValue,relativeThresholds:[0.5,2]},
@@ -5270,7 +5336,7 @@ foreach my $statePos ($testStatePos{$ratioPos},$refStatePos{$ratioPos}) {
 					my $excluded=($peptideSets{$targetPos}{$pepIdKey}{DATA}[-1] eq '0')? 1 : 0; # 'eq' because 'NA' possible
 					print "PP_$trueTargetPos.addPeptide([[",join(',',@{$sequenceBeg{$peptideSets{$targetPos}{$pepIdKey}{INFO}[1]}}),"],'$peptideSets{$targetPos}{$pepIdKey}{INFO}[1]',$vModStrg,$peptideSets{$targetPos}{$pepIdKey}{INFO}[3],$peptideSets{$targetPos}{$pepIdKey}{DATA}[0],$excluded,'$peptideSets{$targetPos}{$pepIdKey}{INFO}[4]'"; # [beg],seq,mod,charge,ratio,exclu,score
 					# source
-					if ($algoVersion==3) {
+					if ($algoVersion>=3) {
 						print ",'$peptideSets{$targetPos}{$pepIdKey}{INFO}[5]{NAME}'";
 					}
 					elsif ($ratioType eq 'Ratio') {
@@ -5929,7 +5995,7 @@ sub ajaxProteinStatistics { # If multiple ratios were computed, ratio reversion 
 	}
 	print "</TR>\n";
 	my @quantifParams=('RATIO',"PVAL$adjStrg","NORM_PVAL$adjStrg",'SD_GEO');
-	push @quantifParams,('CONF_LOW','CONF_UP') if $algoVersion==3;
+	push @quantifParams,('CONF_LOW','CONF_UP') if $algoVersion>=3;
 	push @quantifParams,('DIST_PEP_USED','NUM_PEP_USED') if $ratioType=~/S\w+Ratio/;
 	my %log2Ratio;
 	foreach my $parCode (@quantifParams) {
@@ -6427,82 +6493,12 @@ sub ajaxDisplayCorrelationMatrix {
 #print header(-type=>'text/plain',-charset=>'UTF-8'); warningsToBrowser(1); # DEBUG
 	my $projectID=param('projectID');
 
-	my $dbh=&promsConfig::dbConnect;
-
-	my $sthQuantif=$dbh->prepare("SELECT QUANTIF_ANNOT FROM QUANTIFICATION WHERE ID_QUANTIFICATION=?");
-	my $sthState=$dbh->prepare("SELECT NAME FROM EXPCONDITION WHERE ID_EXPCONDITION=?");
-	my $sthAnaInfo=$dbh->prepare("SELECT A.NAME,S.NAME FROM ANALYSIS A,SAMPLE S WHERE A.ID_SAMPLE=S.ID_SAMPLE AND A.ID_ANALYSIS=?");
-
-	$sthQuantif->execute($selQuantifID);
-	my ($quantifAnnot)=$sthQuantif->fetchrow_array;
-	$quantifAnnot=~s/::/\$/g; # easier to match
-	my ($labelType)=($quantifAnnot=~/LABEL=([^\$]+)/);
-	my ($quantifSoftware,$algoVersion)=($quantifAnnot=~/=([^=]+MSstats)/)? ($1,0) : ($quantifAnnot=~/=myProMS;(\d+)/)? ('myProMS',$1) : ('myProMS',2);
-	my ($ratioType)=($quantifAnnot=~/RATIO_TYPE=([^\$]+)/); $ratioType='Ratio' unless $ratioType;
-	my ($stateStrg)=($quantifAnnot=~/STATES=([^\$]+)/);
-	$stateStrg=~s/#//g;
-
-	my (%states,%labels,%labelData);
+	my (%states,%labelsName);
+	my ($quantifSoftware,$algoVersion,$drawGroups,$ratioType)=&getSamplesInfo(\%states,\%labelsName);
+	
+	my (%labels,%labelData);
 	my $minCorrelation=1;
-	my $drawGroups=0;
 	if ($quantifSoftware eq 'myProMS') {
-		my $numStates=0;
-		my (%labelsInfo,%sampChannelOcc);
-		foreach my $stateData (split(';',$stateStrg)) {
-			$numStates++;
-			my ($numBioRep,$quantiObsIDs,$expCondID)=split(',',$stateData);
-			$sthState->execute($expCondID);
-			($states{$numStates})=$sthState->fetchrow_array;
-			my (%parentSampleName,%anaName,%channelName);
-			my $currBioRep=0;
-			foreach my $bioReplicate (split(/\./,$quantiObsIDs)) { # bio rep separator
-				$currBioRep++;
-				my $multiTechRep=($bioReplicate=~/&/)? 1 : 0;
-				my $numTechRep=0;
-				foreach my $techReplicate (split(/&/,$bioReplicate)) { # tech rep separator
-					$numTechRep++;
-					#my $multiFrac=($techReplicate=~/\+/)? 1 : 0;
-					my ($firstFrac)=($techReplicate=~/^([^\+]+)/);
-					my @obsData=split(/:/,$firstFrac);
-					my ($parQuantifID,$anaID,$targetPos);
-					if (scalar @obsData==4) {($parQuantifID,$anaID,$targetPos)=@obsData[1..3];} # design post 07/2013 -> obsID,parQuantifID,anaID,targetPos
-					else { # older design -> parQuantifID,anaID
-						($parQuantifID,$anaID)=@obsData;
-						$targetPos=0;
-					}
-					unless ($anaName{$anaID}) {
-						$sthAnaInfo->execute($anaID);
-						($anaName{$anaID},$parentSampleName{$anaID})=$sthAnaInfo->fetchrow_array;
-					}
-					my $targetName='';
-					if ($targetPos) { # labeling
-						unless ($channelName{$parQuantifID}) {
-							$sthQuantif->execute($parQuantifID);
-							my ($qAnnot)=$sthQuantif->fetchrow_array;
-							my @quantifInfo=split(/::/,$qAnnot);
-							foreach my $channelInfo (@quantifInfo[1..$#quantifInfo]) {
-								my ($chanPos,$chanName)=split(/;/,$channelInfo); # + other unused elements
-								$channelName{$parQuantifID}{$chanPos}=$chanName;
-							}
-						}
-						$targetName=' > '.$channelName{$parQuantifID}{$targetPos};
-					}
-					@{$labelsInfo{"State$numStates-biorep$currBioRep-techRep$numTechRep"}}=($numStates,$parentSampleName{$anaID},$anaName{$anaID},$targetName);
-#print "//State$numStates-biorep$currBioRep-techRep$numTechRep\n";
-					$sampChannelOcc{$parentSampleName{$anaID}.$targetName}++;
-				}
-			}
-		}
-
-		$drawGroups=1 if $numStates < scalar keys %labelsInfo; # bio|tech replicates => draw label groups
-		my( %labelsName,%groupName);
-		foreach my $label (keys %labelsInfo) {
-			$labelsName{$label}=($drawGroups)? $labelsInfo{$label}[1] : "[$states{$labelsInfo{$label}[0]}] $labelsInfo{$label}[1]";
-			my $sampChan=$labelsInfo{$label}[1].$labelsInfo{$label}[3];
-			$labelsName{$label}.=($sampChannelOcc{$sampChan}==1)? $labelsInfo{$label}[3] : ' > '.$labelsInfo{$label}[2].$labelsInfo{$label}[3];
-#$labelsName{$label}.=" ($label)"; # DEBUG
-		}
-
 		my %correlStages=('BEFORE'=>'Beforematrixcorrelation.txt','AFTER'=>'Aftermatrixcorrelation.txt');
 		foreach my $stage (keys %correlStages) {
 			my $corrMatrixFile="$promsPath{quantification}/project_$projectID/quanti_$selQuantifID/results/$correlStages{$stage}";
@@ -6523,7 +6519,7 @@ push @rawLabelList,$rawLabel;
 						if ($algoVersion==2) {
 							($expCode,$stateNum,$bioRepNum,$techRepNum)=($rawLabel=~/^(\w*)-*State(\d+)-biorep(\d+)-techRep(\d+)/); # "\w-" only for SuperRatio
 						}
-						else { # v3: A_rep1_techRep1_State1
+						else { # v3+: A_rep1_techRep1_State1
 							#($stateNum,$expCode,$bioRepNum,$techRepNum)=($rawLabel=~/^[\D]+(\d+)_([^_]+)_[\D]+(\d+)_[\D]+(\d+)/); # v3b
 							($stateNum,$expCode,$bioRepNum,$techRepNum)=($rawLabel=~/^State(\d+)_([^_]+)_rep(\d+)_techRep(\d+)/); # v3b
 						}
@@ -6556,12 +6552,6 @@ push @rawLabelList,$rawLabel;
 	elsif ($quantifSoftware =~ /MSstats/) {
 
 	}
-
-	$sthState->finish;
-	$sthQuantif->finish;
-	$sthAnaInfo->finish;
-
-	$dbh->disconnect;
 
 	###<Starting HTML>###
 	print header(-type=>'text/plain',-charset=>'UTF-8'); warningsToBrowser(1);
@@ -6612,12 +6602,12 @@ normalization:{scope:'row',reference:'user',limitValues:{ref:0,max:1}} //$minCor
 			if ($i > 0 && $statePos > $prevStatePos) {
 				my $endGrIdx=$i-1;
 				$groupStrg.=',' if $prevStatePos > 1;
-				$groupStrg.="['$states{$prevStatePos}',$prevStatePos,,$begGrIdx,$endGrIdx]";
+				$groupStrg.="['$states{$prevStatePos}[0]',$prevStatePos,,$begGrIdx,$endGrIdx]";
 				$begGrIdx=$i;
 			}
 			$prevStatePos=$statePos;
 		}
-		$groupStrg.=",['$states{$prevStatePos}',$prevStatePos,,$begGrIdx,$#sortedLabels]]";
+		$groupStrg.=",['$states{$prevStatePos}[0]',$prevStatePos,,$begGrIdx,$#sortedLabels]]";
 		print qq
 |GCM.defineGroups('row',$groupStrg);
 GCM.defineGroups('column',$groupStrg);
@@ -6627,6 +6617,170 @@ GCM.defineGroups('column',$groupStrg);
 	exit;
 }
 
+
+
+sub ajaxDisplayMissingValues {
+	
+	my $projectID=param('projectID');
+	
+	my (%states,%labelsName);
+	my ($quantifSoftware,$algoVersion,$replicInStates,$ratioType)=&getSamplesInfo(\%states,\%labelsName);
+	
+	my (%labels,%missingValues);
+	if ($quantifSoftware eq 'myProMS') {
+		unless (-e "$promsPath{quantification}/project_$projectID/quanti_$selQuantifID/results/Brut_percentageNAsample.txt") {
+			print header(-type=>'text/plain',-charset=>'UTF-8'); warningsToBrowser(1);
+			print qq
+|<CENTER>
+<FONT class="title3">Missing values (%)</FONT>&nbsp;&nbsp;<INPUT type="button" class="font11" value=" Close " onclick="document.getElementById('displayDIV').style.display='none'"><BR><BR>
+<B>Sorry, missing values were not recorded for this quantification.</B>
+<BR><BR>
+</CENTER>
+|;
+			exit;
+		}
+		open(MISS,"$promsPath{quantification}/project_$projectID/quanti_$selQuantifID/results/Brut_percentageNAsample.txt");
+		if ($algoVersion>=3) {
+			while (<MISS>) {
+				chomp;
+				my ($sampLabel,$pcMissValue)=split(/\t/,$_); # A/State1/rep1/techRep1
+				my ($expCode,$stateNum,$bioRepNum,$techRepNum)=($sampLabel=~/^(\w+)\/State(\d+)\/rep(\d+)\/techRep(\d+)/);
+				my $label=$labelsName{"State$stateNum-biorep$bioRepNum-techRep$techRepNum"} || "*State$stateNum-biorep$bioRepNum-techRep$techRepNum*";
+				@{$labels{$label}}=($stateNum,$bioRepNum,$techRepNum);
+				$missingValues{$label}=$pcMissValue;
+			}
+			close MISS;
+		}
+		elsif ($algoVersion==2) {
+			my %lines;
+			while (<MISS>) {
+				chomp;
+				@{$lines{$.}}=split(/\t/,$_);
+			}
+			close MISS;
+			foreach my $i (0..$#{$lines{1}}) { # A_State1_rep1_techRep1
+				my ($expCode,$stateNum,$bioRepNum,$techRepNum)=($lines{1}[$i]=~/^(\w+)_State(\d+)_rep(\d+)_techRep(\d+)/);
+				my $label=$labelsName{"State$stateNum-biorep$bioRepNum-techRep$techRepNum"} || "*State$stateNum-biorep$bioRepNum-techRep$techRepNum*";
+				@{$labels{$label}}=($stateNum,$bioRepNum,$techRepNum);
+				$missingValues{$label}=$lines{2}[$i];
+			}
+		}
+	}
+	
+	###<Starting HTML>###
+	print header(-type=>'text/plain',-charset=>'UTF-8'); warningsToBrowser(1);
+	print qq
+|<CENTER><FONT class="title3">Missing values (%)</FONT>&nbsp;&nbsp;<INPUT type="button" class="font11" value=" Close " onclick="document.getElementById('displayDIV').style.display='none'"></CENTERR>
+<BR><BR>
+<TABLE cellspacing=0>
+|;
+	my $prevStateNum=0;
+	my $bgClass='lightBg';
+	foreach my $label (sort{$labels{$a}[0]<=>$labels{$b}[0] || $labels{$a}[1]<=>$labels{$b}[1] ||$labels{$a}[2]<=>$labels{$b}[2]} keys %labels) {
+		my $dispValue=1*(sprintf "%.1f",$missingValues{$label});
+		my ($stateColStrg,$spaceRowStrg)=($replicInStates && $prevStateNum < $labels{$label}[0])? ("<TH class=\"darkBg rBorder\" align=\"right\" rowspan=$states{ $labels{$label}[0] }[1] nowrap>&nbsp;$states{ $labels{$label}[0] }[0]&nbsp;</TH>","<TR><TD colspan=3></TD></TR>\n") : ('','');
+		print qq
+|$spaceRowStrg<TR>
+	$stateColStrg<TH class="$bgClass" align="right" nowrap>&nbsp;$label :</TH>
+	<TD class="$bgClass" width=100><DIV class="barContainerLeft"><DIV class="barElementLeft barRed" style="width:$dispValue%"></DIV><DIV class="barValue">&nbsp;$dispValue&nbsp;</DIV></DIV></TD>
+</TR>
+|;
+		$prevStateNum=$labels{$label}[0];
+		$bgClass=($bgClass eq 'lightBg')? 'darkBg' : 'lightBg';
+	}
+	print "</TABLE>\n";
+	exit;
+}
+
+sub getSamplesInfo {
+	my ($refStates,$refLabelsName)=@_;
+	
+	my $dbh=&promsConfig::dbConnect;
+	my $sthQuantif=$dbh->prepare("SELECT QUANTIF_ANNOT FROM QUANTIFICATION WHERE ID_QUANTIFICATION=?");
+	my $sthState=$dbh->prepare("SELECT NAME FROM EXPCONDITION WHERE ID_EXPCONDITION=?");
+	my $sthAnaInfo=$dbh->prepare("SELECT A.NAME,S.NAME FROM ANALYSIS A,SAMPLE S WHERE A.ID_SAMPLE=S.ID_SAMPLE AND A.ID_ANALYSIS=?");
+
+	$sthQuantif->execute($selQuantifID);
+	my ($quantifAnnot)=$sthQuantif->fetchrow_array;
+	$quantifAnnot=~s/::/\$/g; # easier to match
+	my ($labelType)=($quantifAnnot=~/LABEL=([^\$]+)/);
+	#my ($quantifSoftware,$algoVersion)=($quantifAnnot=~/=([^=]+MSstats)/)? ($1,0) : ($quantifAnnot=~/=myProMS;(\d+)/)? ('myProMS',$1) : ('myProMS',2);
+	my ($quantifSoftware,$algoVersion)=($quantifAnnot=~/SOFTWARE=([^;\$]+);*([^\$]*)/);
+	$quantifSoftware='myProMS' unless $quantifSoftware;
+	unless ($algoVersion) {
+		$algoVersion=($quantifSoftware eq 'myProMS')? 2 : 0;
+	}
+	my ($ratioType)=($quantifAnnot=~/RATIO_TYPE=([^\$]+)/); $ratioType='Ratio' unless $ratioType;
+	my ($stateStrg)=($quantifAnnot=~/STATES=([^\$]+)/);
+	$stateStrg=~s/#//g;
+
+	my $replicInStates=0;
+	my $numStates=0;
+	my (%labelsInfo,%sampChannelOcc);
+	foreach my $stateData (split(';',$stateStrg)) {
+		$numStates++;
+		my ($numBioRep,$quantiObsIDs,$expCondID)=split(',',$stateData);
+		$sthState->execute($expCondID);
+		($refStates->{$numStates}[0])=$sthState->fetchrow_array;
+		my (%parentSampleName,%anaName,%channelName);
+		my $currBioRep=0;
+		my $numAllRep=0;
+		foreach my $bioReplicate (split(/\./,$quantiObsIDs)) { # bio rep separator
+			$currBioRep++;
+			my $multiTechRep=($bioReplicate=~/&/)? 1 : 0;
+			my $numTechRep=0;
+			foreach my $techReplicate (split(/&/,$bioReplicate)) { # tech rep separator
+				$numTechRep++;
+				#my $multiFrac=($techReplicate=~/\+/)? 1 : 0;
+				my ($firstFrac)=($techReplicate=~/^([^\+]+)/);
+				my @obsData=split(/:/,$firstFrac);
+				my ($parQuantifID,$anaID,$targetPos);
+				if (scalar @obsData==4) {($parQuantifID,$anaID,$targetPos)=@obsData[1..3];} # design post 07/2013 -> obsID,parQuantifID,anaID,targetPos
+				else { # older design -> parQuantifID,anaID
+					($parQuantifID,$anaID)=@obsData;
+					$targetPos=0;
+				}
+				unless ($anaName{$anaID}) {
+					$sthAnaInfo->execute($anaID);
+					($anaName{$anaID},$parentSampleName{$anaID})=$sthAnaInfo->fetchrow_array;
+				}
+				my $targetName='';
+				if ($targetPos) { # labeling
+					unless ($channelName{$parQuantifID}) {
+						$sthQuantif->execute($parQuantifID);
+						my ($qAnnot)=$sthQuantif->fetchrow_array;
+						my @quantifInfo=split(/::/,$qAnnot);
+						foreach my $channelInfo (@quantifInfo[1..$#quantifInfo]) {
+							my ($chanPos,$chanName)=split(/;/,$channelInfo); # + other unused elements
+							$channelName{$parQuantifID}{$chanPos}=$chanName;
+						}
+					}
+					$targetName=' > '.$channelName{$parQuantifID}{$targetPos};
+				}
+				@{$labelsInfo{"State$numStates-biorep$currBioRep-techRep$numTechRep"}}=($numStates,$parentSampleName{$anaID},$anaName{$anaID},$targetName);
+#print "//State$numStates-biorep$currBioRep-techRep$numTechRep\n";
+				$sampChannelOcc{$parentSampleName{$anaID}.$targetName}++;
+			}
+			$numAllRep+=$numTechRep;
+		}
+		$refStates->{$numStates}[1]=$numAllRep; # [0]: name, [1]: number of replicates
+	}
+
+	$replicInStates=1 if $numStates < scalar keys %labelsInfo; # bio|tech replicates => draw label groups
+	foreach my $label (keys %labelsInfo) {
+		$refLabelsName->{$label}=($replicInStates)? $labelsInfo{$label}[1] : "[$refStates->{$labelsInfo{$label}[0]}[0]] $labelsInfo{$label}[1]";
+		my $sampChan=$labelsInfo{$label}[1].$labelsInfo{$label}[3];
+		$refLabelsName->{$label}.=($sampChannelOcc{$sampChan}==1)? $labelsInfo{$label}[3] : ' > '.$labelsInfo{$label}[2].$labelsInfo{$label}[3];
+#$labelsName{$label}.=" ($label)"; # DEBUG
+	}
+
+	$sthState->finish;
+	$sthQuantif->finish;
+	$sthAnaInfo->finish;
+	$dbh->disconnect;
+	
+	return ($quantifSoftware,$algoVersion,$replicInStates,$ratioType);
+}
 
 sub ajaxManageTemplate {
 	my $templateAction=param('TEMPLATE');
@@ -6675,6 +6829,9 @@ sub revertLog2 {
 
 
 ####>Revision history<####
+# 2.5.0 Compatible with protein-level normalization of PTMs & missing values display (PP 19/12/18) 
+# 2.4.7 Improvement in emPAI/SIN display (PP 27/11/18)
+# 2.4.6 Added TDA displaying (VS 26/11/18)
 # 2.4.5 [Fix] Bug in &ajaxRestrictProteinList (PP 11/09/18)
 # 2.4.4 Chart highlighting now possible from custom lists (PP 07/09/18)
 # 2.4.3 Clean protein alias from badly parsed characters in case identifier conversion (PP 09/07/18)
