@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- XML Schema Definition to check missing data in phosphoRS input files -->
+<!-- Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie) 2012 -->
+<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+      <xsd:element name="phosphoRSInput">
+	<xsd:complexType>
+	      <xsd:all>
+		<xsd:element name="MassTolerance">
+		      <xsd:complexType>
+			<xsd:attribute name="Value" type="xsd:float"/>
+		      </xsd:complexType>
+		</xsd:element>
+		<xsd:element name="Phosphorylation">
+		      <xsd:complexType>
+			<xsd:attribute name="Symbol" type="xsd:positiveInteger"/>
+		      </xsd:complexType>
+		</xsd:element>
+		<xsd:element name="Spectra" nillable="true">
+		      <xsd:complexType>
+			<xsd:choice minOccurs="1" maxOccurs="unbounded">
+			      <xsd:element name="Spectrum">
+				<xsd:complexType>
+				      <xsd:all>
+					<xsd:element name="Peaks">
+					      <xsd:simpleType>
+						<xsd:restriction base="xsd:string">
+						      <xsd:pattern value="(\d+(\.\d+)?:\d+(\.\d+)?([eE][\-\+]\d+)?,?)+"/>
+						</xsd:restriction>
+					      </xsd:simpleType>
+					</xsd:element>
+					<xsd:element name="IdentifiedPhosphorPeptides">
+					      <xsd:complexType>
+						<xsd:choice minOccurs="1" maxOccurs="unbounded">
+						      <xsd:element name="Peptide">
+							<xsd:complexType>
+							      <xsd:attribute name="ID" type="xsd:positiveInteger"/>
+							      <xsd:attribute name="Sequence" type="xsd:string"/>
+							      <xsd:attribute name="ModificationInfo">
+								<xsd:simpleType>
+								      <xsd:restriction base="xsd:string">
+										<xsd:pattern value="[0-9]\.[0-9]+\.[0-9]"/>
+								      </xsd:restriction>
+								</xsd:simpleType>
+							      </xsd:attribute>
+							</xsd:complexType>
+						      </xsd:element>
+						</xsd:choice>
+					      </xsd:complexType>
+					</xsd:element>
+				      </xsd:all>
+				      <xsd:attribute name="ID" type="xsd:positiveInteger"/>
+				      <xsd:attribute name="PrecursorCharge" type="xsd:integer"/>
+				      <xsd:attribute name="ActivationTypes">
+					<xsd:simpleType>
+					      <xsd:restriction base="xsd:string">
+						<xsd:enumeration value="CID"/>
+						<xsd:enumeration value="ETD"/>
+						<xsd:enumeration value="HCD"/>
+					      </xsd:restriction>
+					</xsd:simpleType>
+				      </xsd:attribute>
+				</xsd:complexType>
+			      </xsd:element>
+			</xsd:choice>
+		      </xsd:complexType>
+		</xsd:element>
+		<xsd:element name="ModificationInfos">
+		      <xsd:complexType>
+			<xsd:choice minOccurs="1" maxOccurs="unbounded">
+			      <xsd:element name="ModificationInfo">
+				<xsd:complexType>
+				      <xsd:attribute name="Symbol" type="xsd:positiveInteger"/>
+				      <xsd:attribute name="Value">
+					<xsd:simpleType>
+					      <xsd:restriction base="xsd:string">
+						<xsd:pattern value="[1-9]+:[A-Za-z]+:[A-Za-z]+:[0-9]+(\.[0-9]+)?:[A-Za-z]+:[0-9]+(\.[0-9]+)?:.+"/>
+					      </xsd:restriction>
+					</xsd:simpleType>
+				      </xsd:attribute>
+				</xsd:complexType>
+			      </xsd:element>
+			</xsd:choice>
+		      </xsd:complexType>
+		</xsd:element>
+	      </xsd:all>
+	</xsd:complexType>
+      </xsd:element>
+</xsd:schema>
