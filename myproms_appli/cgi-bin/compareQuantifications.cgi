@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# compareQuantifications.cgi          1.6.2                                    #
+# compareQuantifications.cgi          1.6.3                                    #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Simple display of multiple quantifications                                   #
@@ -40,6 +40,7 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 #-------------------------------------------------------------------------------
+
 $|=1;
 use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI ':standard';
@@ -339,11 +340,15 @@ function ajaxListSelectedProteins(selectedPoints,thresholds,sort) { // threshold
 	}
 	var paramStrg="AJAX=ajaxListProt&quantifFamily=$selQuantifFamily&quantifFocus=$selQuantifFocus&quantifList="+qSetList.join(':')+"&view=list&sort="+sortOrder+"&pepType=$dispPepType&numPep=$dispNumPep";
 	if ('$selQuantifFamily'=='MQ') {
-		paramStrg+="&dispMeasure=$dispMeasure&selProt=";
+		paramStrg+="&dispMeasure=$dispMeasure";
 	}
-	else { // assumes ratio
-		paramStrg+="&foldChange=$dispFoldChange&pValue=$dispPvalue&selProt=";
+	else if ('$selQuantifFamily'=='EMPAI') {
+		paramStrg+="&empaiType=$empaiValue";
 	}
+	else if ('$selQuantifFamily'=='RATIO') {
+		paramStrg+="&foldChange=$dispFoldChange&pValue=$dispPvalue";
+	}
+	paramStrg+="&selProt=";
 
 	//Parameters 2
 	if (sort) { // Called from Ajax List => add string
@@ -1134,7 +1139,7 @@ function myPointLabel(dp,type) {
 		if ($selQuantifFamily =~ /EMPAI|MQ/) {
 			my $description = ($selQuantifFamily eq 'EMPAI') ?  $emPAIMeasures{$empaiValue} : $maxQuantMeasures{$dispMeasure};
 			print qq
-|		infoStrg+='\\n$description='+Math.round(fc1)+' vs '+Math.round(fc2);
+|		infoStrg+='\\n$description='+fc1.toExponential(2)+' vs '+fc2.toExponential(2);
 |;
 		}
 		else{
@@ -1842,7 +1847,7 @@ $quantifDataStrg
 		my %quantifAnalyses;
 		foreach my $quantif (@{$refSelQuantifs}) {
 			#$quantifAnalyses{$quantif}=$refQuantifInfo->{$quantif}[4]; # anaID
-			$quantifAnalyses{$refQuantifInfo->{$quantif}[4]}=1; # anaID
+			$quantifAnalyses{$refQuantifInfo->{$quantif}[5]}=1; # anaID
 			my $parentItemStrg;
 			for (my $i=1; $i<$#{$refQuantifInfo->{$quantif}[3]}; $i++) { # skip project & quantif
 				$parentItemStrg.=' > ' if $parentItemStrg;
@@ -1878,21 +1883,21 @@ $quantifDataStrg
 			my (@protInQuantif); ## %anaIDlist,
 			my $quantifDataStrg='';
 			foreach my $quantif (@{$refSelQuantifs}) {
-				if (!$refQuantifValues->{$protID}{$quantif} || !$refQuantifValues->{$protID}{$quantif}{$labelQVal}) {
+				if (!$refQuantifValues->{$protID}{$quantif} || !defined($refQuantifValues->{$protID}{$quantif}{$labelQVal})) { # defined because can be 0!
 					$quantifDataStrg.="<TH>-</TH><TH>-</TH>"; #<TH>-</TH>
 					next;
 				}
 				##$anaIDlist{$quantifAnalyses{$quantif}}=1 unless $anaIDstrg;
-				my $qVal=$refQuantifValues->{$protID}{$quantif}{$labelQVal};
 				my $quantifClass='TD';
 				my $trClass='list row_'.($numDispItems % 2);
 				if ($strictFilter && !$ajax && $quantifClass eq 'TD') { # this quantif did not pass filter
 					$quantifDataStrg.="<TH>-</TH><TH>-</TH>";
 				}
 				else {
+					my $qVal=$refQuantifValues->{$protID}{$quantif}{$labelQVal};
+					$qVal=($qVal >= 0.1 && $qVal < 1000)? sprintf '%.2f',$qVal : ($qVal==0)? $qVal : sprintf '%.2e',$qVal;
 					#my $numPep=($selQuantifFamily eq 'EMPAI')? $pepInfo{$quantif}{$protID} : $refQuantifValues->{$protID}{$quantif}{'NUM_PEP_TOTAL'};
-					my $numPep=($selQuantifFamily =~ /EMPAI|SIN/)? $refQuantifValues->{$protID}{$quantif}{'PEPTIDES'} : $refQuantifValues->{$protID}{$quantif}{'NUM_PEP_TOTAL'};
-					$numPep="-" unless $numPep;
+					my $numPep=$refQuantifValues->{$protID}{$quantif}{'PEPTIDES'} || "-";
 					$quantifDataStrg.="<TD class=\"$quantifClass\" align=right nowrap>&nbsp;$qVal&nbsp;</TD>";
 					$quantifDataStrg.="<TD class=\"$quantifClass\" align=\"center\">&nbsp;<A href=\"javascript:void(null)\" onclick=\"ajaxProteinData(event,'$protID','$quantif','ajaxPepData')\"/>$numPep</A>&nbsp;</TD>";
 					$vennStrg.=$quantifCode{$quantif} if (!$ajax && $numSelectedQuantifs <= 5);
@@ -1933,7 +1938,7 @@ $quantifDataStrg
 |;
 	unless ($ajax) { # not possible if ajax call
 		#my $protTypeStrg=(scalar keys %{$refQuantifPTM})? ' isoforms' : '';
-		$protString=($numModifQuantifs)? "&nbsp;$numDispIsoforms/$numTotIsoforms isoforms<BR>&nbsp;".(scalar keys %dispProteins)."/$numTotProteins $proteinText&nbsp;" : "&nbsp;$numDispItems/$numTotProteins $proteinText&nbsp;";
+		$protString=($numModifQuantifs)? "$numModifQuantifs&nbsp;$numDispIsoforms/$numTotIsoforms isoforms<BR>&nbsp;".(scalar keys %dispProteins)."/$numTotProteins $proteinText&nbsp;" : "&nbsp;$numDispItems/$numTotProteins $proteinText&nbsp;";
 		print qq
 |<SCRIPT LANGUAGE="javascript">
 document.getElementById('protCountDIV').innerHTML='$protString';
@@ -2490,7 +2495,7 @@ function updateView(view) {
 	}
 	// Updating strict filtering
 	var myForm=document.compForm;
-	myForm.strictFilter.disabled=(view=='volcano')? true : false;
+	if (myForm.strictFilter) {myForm.strictFilter.disabled=(view=='volcano')? true : false;}
 	// Checking & submitting form
 	var okSubmit=checkSelectedQuantifications(myForm);
 	if (okSubmit) myForm.submit();
@@ -2511,7 +2516,7 @@ function checkSelectedQuantifications(myForm) {
 		myForm.comparisonID.options[selCompIndex].text=selCompName; // removes '*' from name
 	}
 */
-	if (myForm.numPep.value <= 0) {myForm.numPep.value=1;}
+	if (myForm.numPep && myForm.numPep.value <= 0) {myForm.numPep.value=1;}
 	//if (myForm.numPep.value == 1 && myForm.view.value=='volcano') {myForm.numPep.value=2;} // no p-value if numPep < 2
 	return true;
 }
@@ -2982,6 +2987,7 @@ sub ajaxListSelectedProteins { # also called by displayClustering.cgi & displayP
 
 
 ####>Revision history<####
+# 1.6.3 Various improvements for EMPAI (PP 30/10/18)
 # 1.6.2 Desactivate no-scroll option in FRAMESET designeb by &generateFrames fuinction (GA 29/06/18)
 # 1.6.1 heatMap.js always loaded because needed by ajaxPepSwath in case of DIA quantif (PP 08/02/18)
 # 1.6.0 New correlation matrix view (PP 06/02/18)

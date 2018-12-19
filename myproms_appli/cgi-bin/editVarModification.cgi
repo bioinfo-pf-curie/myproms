@@ -1,8 +1,8 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# editVarModification.cgi      1.3.1                                           #
-# Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
+# editVarModification.cgi      1.3.3                                           #
+# Authors: P. Poullet, G. Arras, F. Yvon, V. Sabatet (Institut Curie)          #
 # Contact: myproms@curie.fr                                                    #
 # Edits variable modifications position & peptide comments                     #
 ################################################################################
@@ -217,24 +217,35 @@ elsif (param('save')) {
 		#	$possibleAAs=($posList[0]<=0)? 'N-term' : 'K';
 		#}
 
-		my $posStrg='';
+		my (@sitesSure, @sitesUnsure);
+		my $posStrg="";
 		my $nbMod=0;
 		foreach my $pos (@posList) {
-			if ($pos =~ /-(\d+|=|-|\+|\*)/ && $nbMod == $occurence-1) {
-				$posStrg.=join(';',@posList[$nbMod..$#posList]);
-				last;
+			if ($pos =~ /-(\d+|=|-|\+|\*)/) {
+				push @sitesUnsure,$pos;
+			} else {
+				push @sitesSure,$pos;
 			}
-			$posStrg.=($nbMod == $occurence-1)?"$pos":"$pos.";
-			$nbMod++;
 		}
-
+		$posStrg = join('.',sort{$a<=>$b} @sitesSure) if @sitesSure;
+		$posStrg .= "." if @sitesSure && @sitesUnsure;
+		$posStrg .= join(';',@sitesUnsure) if @sitesUnsure;
+		
 		#$varModNames[$v]=~s/\(.+\)/\($posStrg\)/; # converts PMF format into MIS
-#print "$varModNames[$v]<BR>\n";
+		#print "$varModNames[$v]<BR>\n";
 
 		if ($call eq 'listRanks') {
 			my ($posString,$refPosString)=$dbh->selectrow_array("SELECT POS_STRING,REF_POS_STRING FROM QUERY_MODIFICATION WHERE ID_MODIFICATION=$modID AND ID_QUERY=$queryID AND PEP_RANK=$rank");
 			if ($posString ne $posStrg) {
 				$refPosString=$posString unless $refPosString;
+				
+				# Add "." to end up with the right number of required modifications when ambigous exists
+				my $nbCurrentModifs = () = $posStrg =~ /\./g;
+				my $nbRefModifs = () = $refPosString =~ /\./g;
+				for(my $i=0; $i<$nbRefModifs-$nbCurrentModifs; $i++) {
+					$posStrg .= '.';
+				}
+				
 				$dbh->do("UPDATE QUERY_MODIFICATION SET POS_STRING='$posStrg',REF_POS_STRING='$refPosString' WHERE ID_MODIFICATION=$modID AND ID_QUERY=$queryID AND PEP_RANK=$rank");
 			}
 		}
@@ -243,15 +254,25 @@ elsif (param('save')) {
 			if ($posString ne $posStrg) {
 				my ($refPosString)=$refPosData=~/^([^#]+)/; # ignore MaxQuant ##PRB_MQ=xxxx if any
 				$refPosString=$posString unless $refPosString;
+				
+				# Add "." to end up with the right number of required modifications when ambigous exists
+				my $nbCurrentModifs = () = $posStrg =~ /\./g;
+				my $nbRefModifs = () = $refPosString =~ /\./g;
+				for(my $i=0; $i<$nbRefModifs-$nbCurrentModifs; $i++) {
+					$posStrg .= '.';
+				}
+				
 				(my $probData=$refPosData)=~s/^[^#]+//;
 				$refPosString.=$probData;
+				
 				$dbh->do("UPDATE PEPTIDE_MODIFICATION SET POS_STRING='$posStrg',REF_POS_STRING='$refPosString' WHERE ID_MODIFICATION=$modID AND ID_PEPTIDE=$pepID");
 			}
 		}
 	}
+	
 	#my $varModString=' + '.join(' + ',@varModNames);
-#print "$varModString<BR>\n";
-#exit;
+	#print "$varModString<BR>\n";
+	#exit;
 
 	$dbh->commit;
 	$dbh->disconnect;
@@ -275,7 +296,8 @@ window.close();
 ####>Connect to the database<####
 my $dbh=&promsConfig::dbConnect;
 
-my ($pepSequence,$comments,$anaID,$prsStatus,$prsOutputFile,$fileFormat);
+my ($pepSequence,$comments,$anaID,$prsStatus,$prsOutputFile,$fileFormat,%quantis);
+my $userStatus = $dbh->selectrow_array("SELECT USER_STATUS FROM USER_LIST WHERE ID_USER='$userID'");
 my $sthGetVM;
 if ($call eq 'listRanks') {
 	my ($tag,$queryID,$qNum,$rank)=split('_',$varModID);
@@ -301,6 +323,14 @@ elsif ($call eq 'sequenceView') {
 		}
 		#($refModString)=($data=~/REF_MOD=([^#]+)/);
 	}
+
+	my $sthGetQuanti=$dbh->prepare("SELECT DISTINCT P.ID_MODIFICATION FROM PEPTIDE_MODIFICATION P NATURAL JOIN PEPTIDE NATURAL JOIN ANA_QUANTIFICATION AQ INNER JOIN QUANTIFICATION Q ON Q.ID_QUANTIFICATION=AQ.ID_QUANTIFICATION WHERE ID_PEPTIDE=$pepID AND FOCUS='protein'");
+	$sthGetQuanti->execute;
+	
+	while (my ($modID) = $sthGetQuanti->fetchrow_array) {
+		$quantis{$modID}++;
+	}
+	$sthGetQuanti->finish;
 }
 
 ###> Retrieve MODIFICATIONS information such as name, specificity, position on the peptide and ref_pos is defined earlier
@@ -346,30 +376,27 @@ my $numVarMods=scalar keys %ptmInfo;
 my (@varModNames,@varModIDs,%varModPositions,%varModOccurences);
 foreach my $modID (keys %ptmInfo) {
 	my ($varModName,$specificity,$posStrg,$refPosData)=@{$ptmInfo{$modID}};
-
+	
 	push @varModNames,$varModName;
 	push @varModIDs,$modID;
 
 	if ($posStrg) { # MIS
 		foreach my $pos (split(/\./,$posStrg)) {
 			#$pos=$seqLength+2 if $pos==-1; # -1 unknown position (can be repeated!!!)
-			foreach my $pos2 (split(/;/,$pos)) { # For ambiguous positions...
+			foreach my $pos2 (split(/;/, $pos)) { # For ambiguous positions...
 				$pos2='-0' if ($pos2 =~/--|-=/);
 				#$pos2=0 if ($pos2 =~/-\d!|=/); # Pattern matching is not working - Changed on 29/10/13
+				$pos2=length($pepSequence)+1 if ($pos2 =~/^(\+|\*)$/);
+				$pos2=-length($pepSequence)-1 if ($pos2 =~/^(-\+|-\*)$/);
 				$pos2=0 if ($pos2 =~/-(?!\d)|=/);
-				$pos2=length($pepSequence)+1 if ($pos2 =~/\+|\*/);
-				$pos2=-length($pepSequence)-1 if ($pos2 =~/-\+|-\*/);
 				$varModPositions{$varModName}{$pos2}++;
 			}
-			$varModOccurences{$varModName}++;
 		}
+		$varModOccurences{$varModName} = ($refPosData) ? scalar split(/\./, $refPosData) : scalar split(/\./, $posStrg); # count PTMs sites
 	}
-	#if ($refPosStrg && $refPosStrg ne $posStrg){
-	#	$refModString=1;
-	#}elsif(!$refModString){ # Activate the revert button if one modification among several was changed !
-	#	$refModString=0;
-	#}
 }
+
+
 
 
 ###########################
@@ -388,85 +415,64 @@ print qq
 &promsMod::popupInfo() if $fileFormat eq 'MAXQUANT.DIR';
 print "var varModNameList=['",join("','",@varModNames),"'];\n";
 print "var varModIDList=['",join("','",@varModIDs),"'];\n";
-# Change the 1st of July 2013
-#print qq
-#|function checkForm(myForm) {
-#	for (var v=0; v<varModNameList.length; v++) {
-#		var chkVM=myForm['chkVarMod_'+varModIDList[v]];
-#		var numChecked=0;
-#		for (var i=0; i<chkVM.length; i++) {
-#			if (chkVM[i].checked) {numChecked++;}
-#		}
-#		var chkUnk=myForm['chkUnknown_'+varModIDList[v]].checked;
-#		if ((chkUnk && numChecked >= document.getElementById('varModOccurences_'+varModIDList[v]).value) \|\| (!chkUnk && numChecked != document.getElementById('varModOccurences_'+varModIDList[v]).value)) {
-#			alert("ERROR: Number of modified positions for '"+varModNameList[v]+"' has changed.");
-#			return false;
-#		}
-#	}
-#	formWasSubmitted=1;
-#//alert('OK'); return false;
-#	return true;
-#}
-my $chkVMLength=$seqLength+1;# To avoid javascript function to fail when no ambiguity is possible (one oxidation site for example... Ambigous line does not exist)
 print qq
-|function checkForm(myForm) {
-	for (var v=0; v<varModNameList.length; v++) {
-		var chkVM=myForm['chkVarMod_'+varModIDList[v]];
-		var numCheckedSure=0;
-		var numCheckedUnsure=0;
-		for (var i=0; i<$chkVMLength; i++) {
-			if (chkVM[i].checked) {
-				numCheckedSure+=1;
-			}
-			if (chkVM.length/2 == $chkVMLength+1) {
-				if ((chkVM[i+chkVM.length/2].checked) {
-					numCheckedUnsure+=1;
-				}
-				if (chkVM[i].checked && chkVM[i+$chkVMLength+1].checked) {
-					var pos=chkVM[i].value;
-					if (chkVM[i].value == 0) {
-						pos='N-term';
+	|function checkForm() {
+		for (var v=0; v<varModNameList.length; v++) {
+			var chkVM=document.getElementById("editVarMod")['chkVarMod_'+varModIDList[v]],
+				numSureChecked=0,
+				numUnsureChecked=0;
+			var nbChk = chkVM.length > 0 ? chkVM.length : chkVM ? 1 : 0;
+			for (var i=0; i<nbChk; i++) {
+				if (chkVM[i].checked) {
+					if (chkVM[i].value < 0 \|\| chkVM[i].value == "-0") {
+						if(chkVM[i-(nbChk/2)].checked) {
+							alert("ERROR: " + varModNameList[v] + " cannot be sure and ambigous on the same residue !");
+							return false;
+						}
+						numUnsureChecked++;
+					} else {
+						numSureChecked++;
 					}
-					if (chkVM[i].value == $chkVMLength) {
-						pos='C-term';
-					}
-					alert("ERROR: "+varModNameList[v]+" cannot be sure and ambigous on the same residue "+pos+" !");
-					return false;
 				}
-				
+			}
+
+			var vmodOcc = document.getElementById('varModOccurences_'+varModIDList[v]).value;
+			var errorMsg = "";
+			if (numSureChecked > vmodOcc) {
+				errorMsg = "ERROR: You have checked more '" + varModNameList[v] + "' than you should. (" + numSureChecked + "/" + vmodOcc + " available)";
+			} else if (numSureChecked + numUnsureChecked < vmodOcc) {
+				errorMsg = "ERROR: You have checked less '" + varModNameList[v] + "' than you should. (" + (numUnsureChecked + numSureChecked) + "/" + vmodOcc + " available)";
+			} else if(numSureChecked == vmodOcc && numUnsureChecked > 0) {
+				errorMsg = "ERROR: No need for ambigous sites at '" + varModNameList[v] + "' if all modifications are already sure.";
+			} 
+
+			if(errorMsg) {
+				alert(errorMsg);
+				return false;
 			}
 		}
-		var vmodOcc= document.getElementById('varModOccurences_'+varModIDList[v]).value;
-		if (numCheckedSure > vmodOcc \|\| (numCheckedSure==vmodOcc && numCheckedUnsure>0)) {
-			alert("ERROR: You have checked more '"+varModNameList[v]+"' than you should. (only "+vmodOcc+" found on this sequence)");
-			return false;
-		}
-		if (numCheckedSure + numCheckedUnsure < vmodOcc) {
-			alert("ERROR: You have checked less '"+varModNameList[v]+"' than you should. ("+vmodOcc+" found on this sequence)");
-			return false;
-		}
+
+		return true;
 	}
-	return false;
-}
-function closeWindow() {
-	if (opener) {
-		opener.document.getElementById(opener.selectedVarModId).style.color='#000000';
-		opener.selectedVarModId=null;
+
+	function closeWindow() {
+		if (opener) {
+			opener.document.getElementById(opener.selectedVarModId).style.color='#000000';
+			opener.selectedVarModId=null;
+		}
+		window.close();
 	}
-	window.close();
-}
-</SCRIPT>
-</HEAD>
-<BODY background="$promsPath{images}/bgProMS.gif">
-<CENTER>
-<FONT class="title">Edit Modification Positions</FONT>
-<BR>
-<BR>
-<FORM name="editVarMod" onsubmit="return(checkForm(this));" method="POST">
-<INPUT type="hidden" name="CALL" value="$call">
-<INPUT type="hidden" name="ID" value="$varModID">
-<INPUT type="hidden" name="numVarMods" value="$numVarMods">
-<INPUT type="hidden" name="sequence" value="$pepSequence">
+	</SCRIPT>
+	</HEAD>
+	<BODY background="$promsPath{images}/bgProMS.gif">
+	<CENTER>
+	<FONT class="title">Edit Modification Positions</FONT>
+	<BR/><BR/>
+	<FORM id="editVarMod" name="editVarMod" onsubmit="return(checkForm(this));" method="POST">
+		<INPUT type="hidden" name="CALL" value="$call">
+		<INPUT type="hidden" name="ID" value="$varModID">
+		<INPUT type="hidden" name="numVarMods" value="$numVarMods">
+		<INPUT type="hidden" name="sequence" value="$pepSequence">
 |;
 #foreach my $varModName (@varModNames) {
 #	print "<INPUT type=\"hidden\" name=\"varModNames\" value=\"$varModName\">\n";
@@ -485,7 +491,7 @@ print qq
 |;
 foreach my $i (0..$#pepAAs) {
 	my $bClass=($i==$#pepAAs)? 'bBorder' : 'rbBorder';
-	print "<TH class=\"title3 $bClass\">&nbsp;$pepAAs[$i]&nbsp;</TH>";
+	print "<TD class=\"title3 $bClass\">&nbsp;$pepAAs[$i]&nbsp;</TD>";
 }
 print "</TR>\n";
 my $bgColor=$color1;
@@ -531,51 +537,56 @@ foreach my $modID (sort{$ptmInfo{$a}[0] cmp $ptmInfo{$b}[0]} keys %ptmInfo) {
 	<INPUT type="hidden" name="varModOccurences_$modID" id="varModOccurences_$modID" value="$varModOccurences{$varModName}"/></TH>
 |;
 	if ($fileFormat eq 'MAXQUANT.DIR') {
-		print "<TH align=right>MaxQuant:</TH>"; # Confidence
+		print "<TD align=right>MaxQuant:</TD>"; # Confidence
 		foreach my $i (0..($#pepAAs)) {
-			print '<TH>';
+			print '<TD>';
 			print &promsMod::MaxQuantProbIcon($maxQuantProb{$i},{text=>'&nbsp;&nbsp;&nbsp;&nbsp;',popupText=>'<B>Probability='.($maxQuantProb{$i}*100).'%</B>'}) if defined $maxQuantProb{$i};
-			print '</TH>';
+			print '</TD>';
 		}
 		print "</TR>\n<TR bgcolor=\"$bgColor\">\n";
 	}
 
-	print "<TH align=right>Sure:</TH>";
+
+	my ($chkStatus,$disabled,$disabledStr,$hasRights,$countCheckable);
+	$hasRights = $userStatus=~/bioinfo|mass|manag/;
+	$disabled = (!$hasRights || (($call eq 'sequenceView') && $quantis{$modID})) ? 1 : 0;
+	$disabledStr= (!$hasRights) ? 'disabled' : (($call eq 'sequenceView') && $quantis{$modID}) ? "title='This site position is not editable since it has been used to do a quantification.' disabled" : "";
+	
 	#>2nd pass (Sure)
+	print "<TH align=right>Sure:</TH>";
+	$countCheckable = 0;
 	foreach my $i (0..($#pepAAs)) {
-		my ($chkStatus,$visibilityStrg);
-		if ($checkedPos{$i}) {
-			$chkStatus='checked';
-			$visibilityStrg='';
+		$chkStatus = "";
+		print "<TD>";
+		$chkStatus = ($checkedPos{$i}) ? "checked" : '';
+		if((!$disabled && $checkablePos{$i}) || $chkStatus) {
+			print "<INPUT type=\"checkbox\" name=\"chkVarMod_$modID\" value=\"$countCheckable\" $chkStatus $disabledStr";
+			print ' onclick="this.checked=!this.checked;"' unless $editable; # forces box to stay checked
+			print "/>";
 		}
-		else {
-			$chkStatus='';
-			$visibilityStrg=($checkablePos{$i})? '' : 'style="visibility:hidden"';
-		}
-		print "<TH><INPUT type=\"checkbox\" name=\"chkVarMod_$modID\" value=\"$i\" $chkStatus $visibilityStrg";
-		print ' onclick="this.checked=!this.checked;"' unless $editable; # forces box to stay checked
-		print "/></TH>";
+		print "</TD>";
+		$countCheckable++;
 	}
+
 	#>2nd pass (Ambigous)
 	print "</TR>\n";
+	$countCheckable = 0;
 	if ($editable) {
 		print "<TR bgcolor=\"$bgColor\">\n<TH>";
 		print qq |&nbsp;<INPUT type="button" name="revert" value="Revert" onclick="if (confirm('Revert position(s) of $varModName to original state?')) {window.location='./editVarModification.cgi?CALL=$call&ID=$varModID&revert=$modID';}">&nbsp;| if $revertable;
 		print "</TH>\n<TH align=right>Ambigous:</TH>\n";
 		foreach my $i (0..($#pepAAs)) {
-			my ($chkStatus,$visibilityStrg);
-			if ($checkedPos{"-$i"} || ($i == -1 && $checkedPos{"-$i"} > 1 && !$checkedPos{$i})) { # For old ambigous storage...
-				$chkStatus='checked';
-				$visibilityStrg='';
+			print "<TD>";
+			$chkStatus = ($checkedPos{"-$i"} || ($i == -1 && $checkedPos{"-$i"} > 1 && !$checkedPos{$i})) ? "checked" : '';
+			if((!$disabled && $checkablePos{$i}) || $chkStatus) {
+				print "<INPUT type=\"checkbox\" name=\"chkVarMod_$modID\" value=\"-$countCheckable\" $chkStatus $disabledStr/>";
 			}
-			else {
-				$chkStatus='';
-				$visibilityStrg=($checkablePos{$i})? '' : 'style="visibility:hidden"';
-			}
-			print "<TH><INPUT type=\"checkbox\" name=\"chkVarMod_$modID\" value=\"-$i\" $chkStatus $visibilityStrg/></TH>";
+			$countCheckable++;	
+			print "</TD>";
 		}
 		print "</TR>\n";
 	}
+
 	$bgColor=($bgColor eq $color2)? $color1 : $color2;
 }
 
@@ -585,8 +596,8 @@ print qq
 |<TR><TD colspan=$colSpan></TD></TR>
 <TR bgcolor="$color2"><TD colspan=$colSpan><TABLE><TR>
 <TH valign=top align=left nowrap>&nbsp;Comments :</TH><TD><TEXTAREA cols=54 name='editTextForm' rows=3 colspan=$colSpan>$comments</TEXTAREA></TD>
-<TH width=100%>&nbsp;<INPUT type="submit" name="save" value="Save" style="width:90px" $disSummit>&nbsp;
-<BR>&nbsp;<INPUT type="button" value="Cancel" style="width:90px" onclick="closeWindow();">&nbsp;|;
+<TH width=100%>&nbsp;<INPUT type="submit" name="save" value="Save" style="width:90px" onclick="return checkForm()" $disSummit>&nbsp;
+<BR>&nbsp;<INPUT type="button" value="Cancel" style="width:90px" onclick="closeWindow()">&nbsp;|;
 print qq |<BR>&nbsp;<INPUT type="button" name="revert" value="Revert All" style="width:90px" onclick="if (confirm('Revert position(s) of all modifications to original state?')) {window.location='./editVarModification.cgi?CALL=$call&ID=$varModID&revert=-1';}">&nbsp;| if $numRevertable > 1;
 print qq |</TH>
 </TR></TABLE></TD></TR>
@@ -661,6 +672,8 @@ print qq
 |;
 
 ####>Revision history<####
+# 1.3.3 Minor modification (VS 13/12/2018)
+# 1.3.2 Fixed security and improved behavior (VS 18/10/2018)
 # 1.3.1 Minor modification (GA 31/01/18)
 # 1.3.0 Minor modification to correct warning (GA 17/10/17)
 # 1.2.9 Change PRS outputfile due to 1.1.7 phosphoRS.pm modification (GA 04/09/17)

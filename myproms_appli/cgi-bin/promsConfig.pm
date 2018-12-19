@@ -1,5 +1,5 @@
 ################################################################################
-# promsConfig.pm           2.9.6D                                              #
+# promsConfig.pm           2.9.8D                                              #
 # Authors: P. Poullet, G. Arras, F. Yvon & M. Le Picard (Institut Curie)       #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -51,6 +51,7 @@ require Exporter;
 @EXPORT=qw();
 @EXPORT_OK=qw();
 $VERSION=1.00;
+$CGI::LIST_CONTEXT_WARN=0;
 
 use strict;
 
@@ -169,7 +170,7 @@ sub getClusterInfo {
 ###		'name'=>'myCluster',
 ###		'maxCPUs'=>24,
 ###		'maxJobs'=>20,
-###		'maxMem'=>240, # Gb
+###		'maxMemory'=>240, # Gb
 ###		'buildCommand' => sub {
 ###			my ($runDir,$command)=@_; # $command: a command string or a bash file full name
 ###			my $userCommandFile;
@@ -208,7 +209,8 @@ sub getClusterInfo {
 ###				# Remove:
 ###				# [0m[33mWARNING: Not mounting /bioinfo/projects_prod/myproms (already mounted in container)
 ###				# DIA InfluxDB error
-###				$error=`grep -v "^\\[" $errorFile | grep -vi InfluxDB$userErrorStrg`;
+###				$error=`grep -v "^\\[" $errorFile | grep -v "^perl: warning" | grep -vE "^    (LANG|LC_ALL|are supported)" | grep -vi InfluxDB$userErrorStrg`;
+###				$error=~s/\s//g unless $error=~/\S/; # remove empty and space-only lines if no text
 ###			}
 ###			return $error;
 ###		},
@@ -245,9 +247,9 @@ sub getClusterInfo {
 ###			$refParam={} unless $refParam;
 ###			my $bashFile=$refParam->{'commandFile'} || 'PBScommand.sh';
 ###			if ($bashFile !~ /\//) {$bashFile="$runDir/$bashFile";} # Full path required
-###			my $maxMem=$refParam->{'maxMem'} || '1Gb'; if ($maxMem=~/(\d+)Gb/ && $1 > $cluster{'maxMem'}) {$maxMem.=$cluster{'maxMem'}.'Gb';}
+###			my $maxMem=$refParam->{'maxMem'} || '1Gb'; if ($maxMem=~/(\d+)Gb/ && $1 > $cluster{'maxMemory'}) {$maxMem=$cluster{'maxMemory'}.'Gb';}
 ###			my $numCPUs=$refParam->{'numCPUs'} || 1; $numCPUs=$cluster{'maxCPUs'} if $numCPUs > $cluster{'maxCPUs'};
-###			my $maxHours=$refParam->{'maxHours'} || 24;
+###			my $maxHours=$refParam->{'maxHours'} || 24; $maxHours=~s/:.*//; # clean in case 'hh:mm:ss' format
 ###			my $jobName=$refParam->{'jobName'} || 'myProMS_job';
 ###			my $pbsFile=$refParam->{'outFile'} || 'PBS.txt';
 ###			if ($pbsFile !~ /\//) {$pbsFile="$runDir/$pbsFile";} # Full path required
@@ -661,8 +663,10 @@ sub getFragmentClassif {
 1;
 
 ####>Revision history<####
-# 2.9.6D Adapted for distribution (PP 27/09/18)
-# 2.9.6 Uses Singularity image myproms_1.1.19-1.img & updates in &getClusterInfo (PP 17/09/18)
+# 2.9.8D Adapted for distribution & (PP 19/12/18)
+# 2.9.8 [Fix] bug in max. memory management for cluster & declare $CGI::LIST_CONTEXT_WARN=0 to prevent warning from using CGI param instead of multi_param in list context (PP 19/12/18)
+# 2.9.7 Back to Singularity image myproms_1.1.17.img & filtering of Perl warning in &getClusterInfo{checkError} (PP 02/11/18)
+# 2.9.6 Uses Singularity image myproms_1.1.19-1.img & updates in &getClusterInfo & better detection of git_demo server (PP 03/10/18)
 # 2.9.5 New wrapping function $cluster{runJob}->() for job launch (PP 11/09/18)
 # 2.9.4 Improved server config detection for scripts running on cluster & filters mounting warnings from singularity in $cluster->checkError (PP 30/08/18)
 # 2.9.3 Minor modification in clusterInfo{path} (GA 25/06/18)

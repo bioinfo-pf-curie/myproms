@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# monitorDIAProcess.cgi         1.0.2                                          #
+# monitorDIAProcess.cgi         1.0.4                                          #
 # Authors: M. Le Picard (Institut Curie)                                       #
 # Contact: myproms@curie.fr                                                    #
 # monitor the libraries creation in myProMS                                    #
@@ -151,11 +151,10 @@ my @watchJob;
 print "<TABLE>";
 foreach my $jobDir (sort keys %{$jobDirList{$action}}){
     my $libID=$jobDirList{$action}{$jobDir};
-    my ($libName,$version,$useStatus,$user)=$dbh->selectrow_array("SELECT NAME,VERSION_NAME,USE_STATUS,UPDATE_USER FROM SWATH_LIB WHERE ID_SWATH_LIB=$libID");
-    $libName=($libName)? $libName : 'Undef';
-    my $processType=($action eq 'import') ? "Import DIA data" : ($useStatus && $useStatus eq 'err')? 'Creating a library' : 'Updating a library';
+    my ($libName,$libDesc,$useStatus,$user,$processType) = "";
+    my $isDIA = 0;
     
-    
+    # GET INFO FILE
     my $fileInfo="$workDir/$jobDir/info_$libID.out";
     my %jobInfo;
     open(IN,"<$fileInfo");
@@ -165,6 +164,27 @@ foreach my $jobDir (sort keys %{$jobDirList{$action}}){
     }
     close IN;
     
+    # GET LIBID (DIA) / DBID (TDA)
+    if(length $libID && $jobInfo{'Software'} !~ /Skyline/) {
+        $isDIA = 1;
+    }
+    
+    if($libID) {
+        if($isDIA) {
+            ($libName,$useStatus) = $dbh->selectrow_array("SELECT NAME, USE_STATUS FROM SWATH_LIB WHERE ID_SWATH_LIB=$libID");
+        } else {
+            $libName = $dbh->selectrow_array("SELECT NAME FROM DATABANK WHERE ID_DATABANK=$libID");
+        }
+    }
+    $libDesc = ($isDIA) ? "Library" : "Databank";
+    
+    if($action eq 'import') {
+        $processType = ($isDIA) ? "Import DIA data" : "Import TDA data";
+    } elsif($isDIA) {
+        $processType = ($useStatus && $useStatus eq 'err')? 'Creating a library' : 'Updating a library';
+    }
+    
+    # GET USER
     my $userName;
     if ($jobInfo{'User'}){
         chomp $jobInfo{'User'};
@@ -183,7 +203,7 @@ foreach my $jobDir (sort keys %{$jobDirList{$action}}){
     <TABLE cellspacing=0>
         <TR bgcolor="$darkColor">
             <TH class="rbBorder">#</TH>
-            <TH class="rbBorder">&nbsp;&nbsp;Library Name&nbsp;&nbsp;</TH>
+            <TH class="rbBorder">&nbsp;&nbsp;$libDesc Name&nbsp;&nbsp;</TH>
             <TH class="rbBorder">&nbsp;&nbsp;Software&nbsp;&nbsp;</TH>
             <TH class="bBorder">&nbsp;&nbsp;Status&nbsp;&nbsp;</TH>
         </TR>
@@ -393,9 +413,9 @@ sub getJobStatus {
     }
     if ($error || $warning){
         my $tag=($error)? 'ERROR' : 'WARNING';
-        $status.="<BR>&nbsp;&nbsp;<INPUT type=\"button\" value=\"Delete job\" onclick=\"deleteJob(\'$jobDir\',$libID)\">";
+        $status.="<BR>&nbsp;&nbsp;<INPUT type=\"button\" value=\"Delete job\" onclick=\"deleteJob(\'$jobDir\','$libID')\">";
         $status.="&nbsp;<FONT color=\"red\"><B>**$tag**</B></FONT>&nbsp;";
-        $status.="<INPUT type=\"button\" value=\"Show/Hide $tag\" onclick=\"displayErrorDiv(\'$jobDir\',$libID)\">";
+        $status.="<INPUT type=\"button\" value=\"Show/Hide $tag\" onclick=\"displayErrorDiv(\'$jobDir\','$libID')\">";
         $error=$warning if $warning;
     }
     return ($status,$error);
@@ -416,6 +436,8 @@ sub ajaxDelete{
 }
 
 ####>Revision history<####
+# 1.0.4 Improved TDA data monitoring (VS 20/11/18)
+# 1.0.3 Handling of TDA data monitoring  (VS 09/11/18)
 # 1.0.2 Add import DIA data monitoring (MLP 08/02/18)
 # 1.0.1 Allow peptide modification errors (MLP 30/01/18)
 # 1.0.0 Creation (MLP 19/01/18)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# selectAnalyses.cgi      2.6.5                                                #
+# selectAnalyses.cgi      2.6.7                                                #
 # Authors: P. Poullet, G. arras, F. Yvon, S. Liva (Institut Curie)             #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -39,6 +39,7 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 #-------------------------------------------------------------------------------
+
 $| = 1;
 
 use strict;
@@ -46,8 +47,6 @@ use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI ':standard';
 use promsConfig;
 use promsMod;
-
-use Data::Dumper;
 
 #print header; warningsToBrowser(1); # DEBUG
 #######################
@@ -104,7 +103,7 @@ else {
 my (%listDataBank,@itemAnalyses,@itemDesigns,%okDelete,%okRemFilter,%okActLowScores,%anaProteins,%listParam,@notReportableAna,%modifications,$numSelModifBoxes); #%listQuantif,
 
 ####>PhosphoRS<####
-my %prsParam;
+my (%prsParam,%prsRunning);
 
 ####>Recovering DBs name<####
 my $sthAD = $dbh->prepare("SELECT D.ID_DATABANK,NAME FROM ANALYSIS_DATABANK AD,DATABANK D WHERE AD.ID_DATABANK=D.ID_DATABANK AND AD.ID_ANALYSIS=?");
@@ -282,6 +281,7 @@ foreach my $sthI (@sthItem) {
 				$dataFile=quotemeta($dataFile);
 				$prsParamFile = "$promsPath{valid}/ana_$anaID/PRSparam_$dataFile.txt";
 			}
+			$prsRunning{$anaID}=0; # always defined
 			if (-e $prsParamFile) {
 				open PRSparam, $prsParamFile;
 				while(<PRSparam>){
@@ -290,6 +290,10 @@ foreach my $sthI (@sthItem) {
 					$prsParam{$anaID}{$line[0]} = $line[1];
 				}
 				close PRSparam;
+			}
+			elsif (-e "$promsPath{tmp}/phosphoRS" && -e "$promsPath{tmp}/phosphoRS/current") {
+				my ($errorFile)=(glob "$promsPath{tmp}/phosphoRS/current/$anaID\_*_error.txt")[0];
+				if ($errorFile) {$prsRunning{$anaID}=(-s $errorFile)? -1 : 1;} # -1 => error in file
 			}
 		}
 
@@ -941,7 +945,7 @@ else {
 if ($callType eq 'phosphoRS') {
 	print qq
 |	<TH class="rbBorder">&nbsp;Selected&nbsp;<BR>&nbsp;proteins&nbsp;</TH>
-	<TH class="bBorder">&nbsp;PhosphoRS&nbsp;<BR>&nbsp;Status&nbsp;</TH>
+	<TH class="bBorder">&nbsp;PhosphoRS&nbsp;<BR>&nbsp;status&nbsp;</TH>
 |;
 }
 elsif ($callType eq 'goQuantiAnalysis') {
@@ -962,7 +966,8 @@ else {
 	print "<TH class=\"bBorder\">&nbsp;Selected&nbsp;<BR>&nbsp;proteins&nbsp;</TH>";
 }
 my %itemIcones=&promsConfig::getItemIcones;
-my $bgColor=($ITEM eq 'SAMPLE' || $ITEM eq 'SPOT')? $lightColor : $darkColor;
+#my $bgColor=($ITEM eq 'SAMPLE' || $ITEM eq 'SPOT')? $lightColor : $darkColor;
+my $bgColor=$darkColor;
 my %prevItemName;
 my $disabSubmit=' disabled';
 if ($srcType eq 'ana') {
@@ -983,7 +988,7 @@ if ($srcType eq 'ana') {
 		$labeling=~s/ .+//; # iTRAQ 4plex -> iTRAQ
 		##>Row color
 		my $fatherIt=$projHierarchy[-3];
-		if ($fatherIt && (!$prevItemName{$fatherIt} || $prevItemName{$fatherIt} ne $projHierarchy[-2])) { # keep color if same analysis parent item (SAMPLE or SPOT)
+		if (($fatherIt && (!$prevItemName{$fatherIt} || $prevItemName{$fatherIt} ne $projHierarchy[-2])) || $ITEM =~ /SAMPLE|SPOT/) { # keep color if same analysis parent item (SAMPLE or SPOT)
 			$bgColor=($bgColor eq $lightColor)? $darkColor : $lightColor;
 		}
 		elsif ($ITEM eq 'EXPERIMENT' || $ITEM eq 'GEL2D') {
@@ -995,7 +1000,7 @@ if ($srcType eq 'ana') {
 		if ($callType ne 'list') {
 			my $disabStrg = '';
 			if($callType eq 'phosphoRS'){
-				$disabStrg = ' disabled' unless ($listParam{$anaID}{'g:Variable modifications'} && $listParam{$anaID}{'g:Variable modifications'} =~ /Phospho/);
+				$disabStrg = ' disabled' unless ($listParam{$anaID}{'g:Variable modifications'} && $listParam{$anaID}{'g:Variable modifications'} =~ /Phospho/ && !$prsRunning{$anaID});
 			}
 			elsif ($callType eq 'goQuantiAnalysis'){
 				$disabStrg = ' disabled' unless ($quantiData{$anaID});
@@ -1064,13 +1069,19 @@ if ($srcType eq 'ana') {
 			}
 			else {
 				$disabSubmit = '';
-				if(scalar keys %{$prsParam{$anaID}}){
+				if ($prsParam{$anaID}) {
 					$pRSstatus = "<TABLE border=0><TD>";
 					while(my ($name,$value) = each %{$prsParam{$anaID}}){
 						$pRSstatus .= "&nbsp;$name: $value&nbsp;\n<BR>";
 					}
 					$pRSstatus =~ s/<BR>$//;
 					$pRSstatus .= "</TD><TD align=\"center\" valign=\"center\">&nbsp;<INPUT type=\"button\" value=\"Revert\" class=\"font11\" onclick=\"window.location='$promsPath{cgi}/analysePhospho.cgi?deleteID=$anaID&branchID=$branchID';\">&nbsp;</TD></TABLE>";
+				}
+				elsif ($prsRunning{$anaID}==1) {
+					$pRSstatus = '&nbsp;<FONT style="color:#00A000;font-weight:bold">On-going...</FONT>&nbsp;';
+				}
+				elsif ($prsRunning{$anaID}==-1) {
+					$pRSstatus = '&nbsp;<FONT style="color:#DD0000;font-weight:bold">Error detected</FONT>&nbsp;';
 				}
 				else {
 					$pRSstatus = '&nbsp;Not performed&nbsp;';
@@ -1233,6 +1244,8 @@ print "</FORM>\n" if $callType ne 'list';
 print "</BODY>\n</HTML>\n";
 
 ####>Revision history<####
+# 2.6.7 Add check for on-going phosphoRS analysis (PP 08/11/18)
+# 2.6.6 Add branchID to allow phosphoRS parallelization (GA 02/11/18)
 # 2.6.5 Add checkbox to overwrite query manually modified (GA 31/01/18)
 # 2.6.4 [FIX] bug when 'design' is default value for parameter 'goType' & changed parameter/variable 'goType' to 'srcType' (PP 23/01/18)
 # 2.6.3 Restrict GoQuantification quantifs to PROT_RATIO_PEP & minor display change (PP 15/01/18)

@@ -1,5 +1,5 @@
 ###############################################################################
-# phosphoRS.pm               1.2.1                                            #
+# phosphoRS.pm               1.3.1                                            #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                     #
 # Contact: myproms@curie.fr                                                   #
 # Class used to determinate phosphorylation sites on peptides using PhosphoRS #
@@ -38,6 +38,7 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 #-------------------------------------------------------------------------------
+
 package phosphoRS;
 use XML::Simple;
 use POSIX qw(strftime);
@@ -45,6 +46,7 @@ use promsConfig;
 use promsMod;
 use strict;
 use Storable 'dclone';
+use File::Copy;
 
 $| = 1;
 
@@ -75,10 +77,11 @@ sub new{
     # Setting object attributes #
     my $this = {
 		analysisID => $parameters{'AnaID'},
+		fullJobDir => $parameters{'fullJobDir'}, # Full path to job directory
 		dataFile => $parameters{'File'}, # name of the MS data input file
         inputRef => undef, # hash of input data, exportable by XMLSimple
-        inputFileName => undef, # name of file containing input data in XML format
-        outputFileName => undef, # name of file containing output data in XML format
+        inputFile => undef, # file containing input data in XML format
+        outputFile => undef, # file containing output data in XML format
         outputRef => undef, # hash converted data of XML output data
         isoforms => undef, # hash of output data in a format that can be efficiently queried by myProMS
 		isoformMatch => undef # hash for retrieving isoform groups
@@ -103,7 +106,7 @@ sub new{
 
 
 
-sub startAnalysis{
+sub startAnalysis {
     # Method for starting the PhosphoRS analysis.
     # Use this method only if spectra were added.
     # Returns the exit code of the PhosphoRS software (0 = success, else be careful)
@@ -111,178 +114,29 @@ sub startAnalysis{
     my $this = shift;
     die "No input spectrum for analysis" unless defined $this->{'inputRef'};
     die "No phosphorylation in variable modification parameters for this file" unless $this->{'inputRef'}{'Phosphorylation'}{'Symbol'};
-    my $inputFileName = $this->_writeInputFile();
-    my @dataFilePath = split /\//, $this->{'dataFile'};
-    my $dataFileName = pop @dataFilePath;
-    $dataFileName =~ s/\.\w{3}$//;
-    my $dir = join '/', @dataFilePath;
-	my $anaID = $this->{'analysisID'};
-	#my $outputFileName = "$dir/PRS_$dataFileName.xml";
-    my $outputFileName = "$dir/PRS_ana_$anaID.xml";
+    my $inputFile = $this->_writeInputFile();
+	my $fullJobDir=$this->{'fullJobDir'};
+	my $outputFile = "$fullJobDir/output_data.xml";
     my %promsPath = &promsConfig::getServerInfo('no_user');
-	#my $processName = $ENV{'REMOTE_USER'}.strftime("%Y%m%d%H%M%S",localtime);
-    #my $stdoutPRSFileName = "$promsPath{tmp}/phosphoRS/prs_$processName";
-	my %clusterInfo=&promsConfig::getClusterInfo;
-    my ($code,$prsError,$pbsError);
-	my $maxHours=48;
-    if ($clusterInfo{'on'}) {
-	    my $bashFile = "$dir/makePhosphoRS.sh";
-		my $javaCommand="$clusterInfo{path}{java}/java -jar $promsPath{bin}/phosphoRS.jar $inputFileName $outputFileName > $dir/PRS_status.txt 2> $dir/PRSerrors.txt";
-		my $clusterJavaCommandString=$clusterInfo{'buildCommand'}->($dir,$javaCommand);
-
-	    #my $maxHours=5;
-	    my $maxMem='20gb';
-	    unlink $outputFileName if -e $outputFileName ; # delete previous output file to prevent a PRS error
-	    open (BASH,">$bashFile");
-	    print BASH qq
-|#!/bin/bash
-##resources
-#PBS -l mem=$maxMem
-#PBS -l nodes=1:ppn=1
-#PBS -l walltime=$maxHours:00:00
-#PBS -q batch
-##Information
-#PBS -N phosphoRS_$ENV{REMOTE_USER}_$dataFileName
-#PBS -m abe
-#PBS -o $dir/PBS.txt
-#PBS -e $dir/PBSerror.txt
-#PBS -d $dir
-
-## On cluster
-$clusterJavaCommandString
-|;
-	    close BASH;
-	    my $modBash=0775;
-	    chmod $modBash, $bashFile;
-	    #system "$promsPath{qsub}/qsub $bashFile > $dir/torqueID.txt";
-	    $clusterInfo{'sendToCluster'}->($bashFile);
-		sleep 30;
-		print '.';
-	    #sleep 30;
-		#print '.';
-	    ###> When PhosphoRS is finished, it is written phosphoRS terminated! Code:0 -> need to check if PhosphoRS is finished every 30sec.
-	    my $nbWhile=0;
-
-	    while ((!-e "$dir/PRS_status.txt" || !`tail -3 $dir/PRS_status.txt | grep 'phosphoRS terminated'`) && !$prsError && !$pbsError) {
-		    if ($nbWhile>$maxHours*60*2) {
-			    die "PhosphoRS is taking too long or died before completion";
-		    }
-		    sleep 30;
-			print '.';
-		    $prsError=`head -5 $dir/PRSerrors.txt` if -e "$dir/PRSerrors.txt";
-		    $pbsError=`head -5 $dir/PBSerrors.txt` if -e "$dir/PBSerrors.txt";
-		    $nbWhile++;
-	    }
-		if ($prsError) {
-			chomp($prsError);
-			$prsError=~s/\n/<BR>\n/g;
-			die "An unexpected error has occured:<BR>\n$prsError";
-		}
-		if ($pbsError) {
-			chomp($pbsError);
-			$pbsError=~s/\n/<BR>\n/g;
-			die "An unexpected PBS error has occured:<BR>\n$pbsError";
-		}
-	    my $outPRS = `grep 'phosphoRS terminated' $dir/PRS_status.txt`;
-	    ($code)=($outPRS =~ /Code:(\d+)/);
-		#die "No exit code returned" unless defined $code;
-    }
-    else { # local job
-		my $stdoutPRSFileName = "$promsPath{tmp}/phosphoRS/prs_".$ENV{'REMOTE_USER'}.strftime("%Y%m%d%H%M%S",localtime);
-
-		####<FORKING>####
-	    my $childID = fork;
-
-	    unless($childID){
-			##<Child
-		    open STDOUT, '>/dev/null' or die "Can't open /dev/null: $!";
-		    open STDIN, '</dev/null' or die "Can't open /dev/null: $!";
-		    open STDERR, '>/dev/null' or die "Can't open /dev/null: $!";
-		    unlink $outputFileName if -e $outputFileName ; # delete previous output file to prevent a PRS error
-			my $javaCommand=($promsPath{java})? "$promsPath{java}/java" : 'java';
-		    my $outPRS = `$javaCommand -jar $promsPath{bin}/phosphoRS.jar $inputFileName $outputFileName 2> $dir/PRSerrors.txt`;
-			$prsError=`head -5 $dir/PRSerrors.txt` if -e "$dir/PRSerrors.txt";
-			if ($prsError) {
-				chomp($prsError);
-				$prsError=~s/\n/<BR>\n/g;
-				die "An unexpected error has occured:<BR>\n$prsError";
-			}
-		    ($code)=($outPRS =~ /Code:(\d+)/);
-
-		    # Errors summary from PhosphoRS source code #
-
-		    #LESS_THAN_TWO_ARGUMENTS = 1;
-		    #UNKNOWN_READING_ERROR = 100;
-		    #FAILED_TO_READ_FROM_INPUT_FILE = 101;
-		    #AD_INPUT_XML_FORMAT = 102;
-		    #UNABLE_TO_FIND_MASS_TOLERANCE = 103;
-		    #UNABLE_TO_PARSE_MASS_TOLERANCE = 104;
-		    #UNABLE_TO_FIND_MOD_INFOS = 105;
-		    #UNABLE_TO_FIND_MOD_INFO = 106;
-		    #MODINFO_VALUE_EMPTY_OR_MISSING = 107;
-		    #UNKNOWN_RE_SCORING_ERROR = 200;
-		    #UNKNOWN_WRITING_ERROR = 300;
-
-		    open OUTPRS, ">$stdoutPRSFileName";
-		    print OUTPRS $code;
-		    close OUTPRS;
-		    exit;
-	    }
-
-		##<Parent waits for child to end
-		#while(1){
-		#	if(-e $stdoutPRSFileName){
-		#		sleep 5; # just to make sure child had time to write code in file
-		#		open PRSMONIT, $stdoutPRSFileName or die "Cannot open monitoring file: $!";
-		#		$code = <PRSMONIT>;
-		#		close PRSMONIT;
-		#		#unless(defined $code && $code =~ /^\d+/){
-		#		#	die "No exit code returned";
-		#		#}
-		#		chomp $code;
-		#		last;
-		#	}
-		#	sleep 30;
-		#	print '.';
-		#}
-		my $nbWhile=0;
-		while (!-e $stdoutPRSFileName || !-s $stdoutPRSFileName) { # Cannot use "wait" command because of server timeout
-			sleep 30;
-			print '.';
-			$nbWhile++;
-			if ($nbWhile > $maxHours*60*2) {
-				die "PhosphoRS is taking too long or died before completion";
-			}
-		}
-		open PRSMONIT, $stdoutPRSFileName or die "Cannot open monitoring file: $!";
-		$code = <PRSMONIT>;
-		close PRSMONIT;
-		if (!defined $code || $code !~ /^\d+/){
-			die "No exit code returned. PhosphoRS. did not exit correctly.";
-		}
-		chomp $code;
-
-		unlink $stdoutPRSFileName;
+	my %cluster=&promsConfig::getClusterInfo;
+	my $javaCommand=($cluster{'on'})? "$cluster{path}{java}/java" :  ($promsPath{java})? "$promsPath{java}/java" : 'java';
+	my $outPRS = `$javaCommand -jar $promsPath{bin}/phosphoRS.jar $inputFile $outputFile 2> $fullJobDir/PRSerrors.txt`;
+	my $prsError=`head -5 $fullJobDir/PRSerrors.txt` if -e "$fullJobDir/PRSerrors.txt";
+	if ($prsError) {
+		chomp($prsError);
+		$prsError=~s/\n/<BR>\n/g;
+		die "An unexpected error has occured:<BR>\n$prsError";
 	}
+	my ($code)=($outPRS =~ /Code:(\d+)/);
 
-    if (-e $outputFileName){
-		$this->_storeResults($outputFileName);
+    if (-e $outputFile){
+		$this->_storeResults($outputFile);
+		
     }
     if ($code && ($code == 100 or $code == 200)) {
-		my $xmlValidation = `xmllint --noout $inputFileName --schema $promsPath{valid}/phosphoRS.xsd`;
+		my $xmlValidation = `xmllint --noout $inputFile --schema $promsPath{bin}/phosphoRS.xsd`;
 		warn $xmlValidation;
     }
-
-    # Clean up temp files #
-    $this->_deleteInputFile();
-	if ($clusterInfo{'on'}) {
-		if ($code == 0) { # job finished OK
-			unlink "$dir/PBS.txt";
-			unlink "$dir/PBSerror.txt";
-			unlink "$dir/torqueID.txt";
-		}
-	}
-	#unlink $stdoutPRSFileName; # only exists for local run
 
     return $code;
 }
@@ -341,18 +195,6 @@ sub getIsoforms{
     }
 }
 
-sub cleanFiles{
-    # Method used to properly clean up ALL data files generated by phosphoRS
-    my $this = shift;
-
-    if ($this->{'inputFileName'} and -e $this->{'inputFileName'}){
-		$this->_deleteInputFile;
-    }
-
-    if ($this->{'outputFileName'} and -e $this->{'outputFileName'}){
-		$this->_deleteOutputFile;
-    }
-}
 
 #------------------#
 # Static functions #
@@ -399,9 +241,9 @@ sub getIsoformsFromFile{
 }
 
 sub cleanResults{
-    my ($outputFileName, $queryNumsRef) = @_;
+    my ($outputFile, $queryNumsRef) = @_;
 
-    my $xmlRef = XMLin($outputFileName, ForceArray => ['Spectrum', 'Peptide', 'Isoform', 'PhosphoSite']);
+    my $xmlRef = XMLin($outputFile, ForceArray => ['Spectrum', 'Peptide', 'Isoform', 'PhosphoSite']);
     my $newRef = dclone($xmlRef);
     $newRef->{'Spectra'}{'Spectrum'} = ();
 
@@ -417,7 +259,7 @@ sub cleanResults{
 
     my $xmlOut = XMLout($newRef, RootName => 'PhosphoRS_Results');
 
-    open OUT, ">$outputFileName" or die $!;
+    open OUT, ">$outputFile" or die $!;
     print OUT $xmlOut;
     close OUT;
 }
@@ -1007,10 +849,10 @@ sub _addSpectraFromParagonFile{
 
 sub _writeInputFile{
     my $this = shift;
-    my %promsPath = &promsConfig::getServerInfo('no_user');
-    unless(-d "$promsPath{tmp}/phosphoRS"){
-        mkdir "$promsPath{tmp}/phosphoRS";
-    }
+    #my %promsPath = &promsConfig::getServerInfo('no_user');
+    #unless(-d "$promsPath{tmp}/phosphoRS"){
+    #    mkdir "$promsPath{tmp}/phosphoRS";
+    #}
     my $ref = $this->_getInputRef;
 
     # Cleaning undefined spectra #
@@ -1046,34 +888,13 @@ sub _writeInputFile{
 	    $line=~ s/[\s]*<Spectrum><\/Spectrum>//g; # cleaning empty elements
 	    $xml2.="$line\n" unless $line eq '';
     }
-    my $inputFileName = "$promsPath{'tmp'}/phosphoRS/".strftime("%Y%m%d%H%M%S",localtime).'.xml';
-    open(XMLfile, ">$inputFileName");
+    #my $inputFile = "$promsPath{'tmp'}/phosphoRS/".strftime("%Y%m%d%H%M%S",localtime).'.xml';
+    my $inputFile = $this->{'fullJobDir'}.'/input_data.xml';
+	open(XMLfile, ">$inputFile");
     print XMLfile $xml2;
     close(XMLfile);
-    $this->{'inputFileName'} = $inputFileName;
-    return $inputFileName;
-}
-
-sub _deleteInputFile{
-    my $this = shift;
-    if($this->{'inputFileName'}){
-		unlink $this->{'inputFileName'};
-		$this->{'inputFileName'} = undef;
-    }
-	else {
-		warn "Undefined input file name";
-    }
-}
-
-sub _deleteOutputFile{
-    my $this= shift;
-    if($this->{'outputFileName'}){
-		unlink $this->{'outputFileName'};
-		$this->{'outputFileName'} = undef;
-    }
-	else {
-		warn "Undefined output file name";
-    }
+    $this->{'inputFile'} = $inputFile;
+    return $inputFile;
 }
 
 sub _setModifValue{ #static
@@ -1136,9 +957,16 @@ sub _incrementSymbol{
 }
 
 sub _storeResults{
-    my ($this,$outputFileName) = @_;
-    $this->{'outputFileName'} = $outputFileName;
-    $this->{outputRef} = XMLin($outputFileName, ForceArray => ['Spectrum', 'Peptide', 'Isoform', 'PhosphoSite']);
+    my ($this,$outputFile) = @_;
+    $this->{'outputFile'} = $outputFile;
+    $this->{outputRef} = XMLin($outputFile, ForceArray => ['Spectrum', 'Peptide', 'Isoform', 'PhosphoSite']);
+    my @dataFilePath = split /\//, $this->{'dataFile'};
+    my $dataFileName = pop @dataFilePath;
+    $dataFileName =~ s/\.\w{3}$//;
+    my $dir = join '/', @dataFilePath;
+	my $anaID = $this->{'analysisID'};
+    my $outputFileName = "$dir/PRS_ana_$anaID.xml";
+	copy($outputFile,$outputFileName);
 }
 
 sub _getInputRef{
@@ -1153,6 +981,8 @@ sub _setInputRef{
 1;
 
 ####>Revision history<####
+# 1.3.1 Add in _storeResults a copy of xml file (GA 12/12/18)
+# 1.3.0 Major code update for improved background run (PP 09/11/18)
 # 1.2.1 Changed $maxHours from 12 to 48 (PP 19/06/18)
 # 1.2.0 Now uses &promsConfig::clusterInfo (PP 15/06/18)
 # 1.1.9 Minor change in &cleanResults to handle unexpected undef $queryNum (PP 25/05/18)

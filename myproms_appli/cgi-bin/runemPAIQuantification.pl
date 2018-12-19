@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# runemPAIQuantification.pl   1.1.6                                            #
+# runemPAIQuantification.pl   1.1.7                                            #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Allows quantification of proteins by retrieving the emPAI of the proteins    #
@@ -146,6 +146,7 @@ if ($fileFormat =~ /MASCOT/) {
 	    }
     }
     $sthProtValid->finish;
+	$sthGetWeight->finish;
     $dbh->disconnect;
 
     open(FILESTAT,">>$fileStat");
@@ -368,6 +369,7 @@ sub getMascotemPAI {
 ###}
 
 ####>Revision history<####
+# 1.1.7 Minor fix to prevent DBI warning (PP 30/10/18)
 # 1.1.6 Add a test for emPAI normalization and change datecode retrievement for Mascot DAT searches -> use gmtime and not localtime (GA 24/02/16)
 # 1.1.5 Minor change script version -> myproms4emPAI_v2.pl to myproms4emPAI.pl (GA 11/01/16)
 # 1.1.4 Update for new Mascot web-server 2.5.1 version + change datecode retrieval for PDM searches (GA 17/07/15)

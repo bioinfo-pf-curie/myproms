@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# launchQuantifications.pl       1.6.3                                         #
+# launchQuantifications.pl       1.6.5                                         #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Launches multiple quantifications +/- paralellization                        #
@@ -42,6 +42,12 @@
 # knowledge of the CeCILL license and that you accept its terms.
 #-------------------------------------------------------------------------------
 
+### myProMS software versions for quantification (based on R scripts & data preprocessing in runXIC...)
+# 1: FC scripts (Ratio/TnPQ)
+# 2: ML scripts
+# 3: AS scripts before site-ratio correction by reference protein ratio (AnaDiff <= 4.0.13)
+# 3.1: AS site-ratio correction & IB (AnaDiff >= 4.2.0)
+
 $| = 1;
 
 use strict;
@@ -57,19 +63,19 @@ use promsQuantif;
 #######################
 my %promsPath=&promsConfig::getServerInfo('no_user');
 my %cluster=&promsConfig::getClusterInfo;
-my $MAX_PARALLEL_QUANTIFS=($cluster{'on'})? $cluster{'maxJobs'} : &promsConfig::getMaxParallelJobs;
-#$MAX_PARALLEL_QUANTIFS=4; # tmp
 
 ###############################
 ####>Recovering parameters<####
 ###############################
 my ($jobType,$userID,@extraArgs)=@ARGV;
+my $MAX_PARALLEL_QUANTIFS=($jobType eq 'multi' && $cluster{'on'})? $cluster{'maxJobs'} : &promsConfig::getMaxParallelJobs; # multiCluster
+#$MAX_PARALLEL_QUANTIFS=4; # tmp
 
 
                                                 ########################
 ####################################################>Multi-job call<####################################################
                                                 ########################
-if ($jobType eq 'multi') {
+if ($jobType=~/multi/) {
 	my @jobList=split(',',$extraArgs[0]);
 	my $numJobs=scalar @jobList;
 	my %runningJobs;
@@ -144,7 +150,7 @@ my %quantifScripts=(
 #my @quantItemList=split(':',$quantItemStrg);
 #my %quantifIdList;
 my ($quantifID,$quantifItemID); # $quantifItemID != $quantifID for SIN|emPAI only (=)
-my @pepQuantifFiles; # needed for cluster run
+my (@pepQuantifFiles,$numStates); # needed for cluster run
 my $labelType='FREE'; # default
 if ($quantifType ne 'XICMCQ') {
 	my $dbh=&promsConfig::dbConnect('no_user');
@@ -153,20 +159,22 @@ if ($quantifType ne 'XICMCQ') {
 	my $qRootName=quotemeta($quantifParams{'DB'}{'QUANTIF_NAME'}[0]);
 	$labelType=$quantifParams{'DB'}{'LABEL'}[0] if $quantifType eq 'DESIGN';
 	my $quantifAnnotStrg="LABEL=$labelType";
-	if ($quantifParams{'DB'}{'ALGO_TYPE'}[0]=~/PEP_/) {
-		my $overwritten=0;
-		if ($quantifParams{'R'}{'design'}[0] eq 'PEP_INTENSITY') { # Overwrite in case SuperRatio incompatibility
-			if ($quantifParams{'DB'}{'ALGO_TYPE'}[0] eq 'PEP_RATIO') {
-				$quantifParams{'DB'}{'ALGO_TYPE'}[0]=$quantifParams{'R'}{'design'}[0];
-				$quantifParams{'DB'}{'RATIO_TYPE'}[0]='SimpleRatio';
-				$overwritten=1;
+	if ($quantifParams{'DB'}{'ALGO_TYPE'}) {
+		if ($quantifParams{'DB'}{'ALGO_TYPE'}[0]=~/PEP_/) {
+			my $overwritten=0;
+			if ($quantifParams{'R'}{'design'}[0] eq 'PEP_INTENSITY') { # Overwrite in case SuperRatio incompatibility
+				if ($quantifParams{'DB'}{'ALGO_TYPE'}[0] eq 'PEP_RATIO') {
+					$quantifParams{'DB'}{'ALGO_TYPE'}[0]=$quantifParams{'R'}{'design'}[0];
+					$quantifParams{'DB'}{'RATIO_TYPE'}[0]='SimpleRatio';
+					$overwritten=1;
+				}
 			}
+			$quantifAnnotStrg.="::SOFTWARE=myProMS;3.1::ALGO_TYPE=$quantifParams{'DB'}{'ALGO_TYPE'}[0]"; # name;version::PEP_(RATIO/INTENSITY)
+			$quantifAnnotStrg.=';changed' if $overwritten;
 		}
-		$quantifAnnotStrg.="::SOFTWARE=myProMS;3::ALGO_TYPE=$quantifParams{'DB'}{'ALGO_TYPE'}[0]"; # name;version::PEP_(RATIO/INTENSITY)
-		$quantifAnnotStrg.=';changed' if $overwritten;
-	}
-	elsif ($quantifParams{'DB'}{'ALGO_TYPE'}[0] eq 'MSstats') {
-		$quantifAnnotStrg.='::SOFTWARE=DIA/MSstats'; # Version number inserted by runSWATHProtQuantification.pl
+		elsif ($quantifParams{'DB'}{'ALGO_TYPE'}[0] eq 'MSstats') {
+			$quantifAnnotStrg.='::SOFTWARE=DIA/MSstats'; # Version number inserted by runSWATHProtQuantification.pl
+		}
 	}
 	$quantifAnnotStrg.='::TOP_N='.$quantifParams{'DB'}{'TOP_N'}[0] if $quantifParams{'DB'}{'TOP_N'};
 	$quantifAnnotStrg.='::MATCH_PEP='.$quantifParams{'DB'}{'MATCH_PEP'}[0] if $quantifParams{'DB'}{'MATCH_PEP'};
@@ -190,7 +198,7 @@ if ($quantifType ne 'XICMCQ') {
 		}
 		if ($quantifType !~ /DESIGN/ || $param !~ /QUANTITOCOND|DESIGN|STATE/){
 			$quantifAnnotStrg.='::' if $quantifAnnotStrg;
-			$quantifAnnotStrg.="$param=".join(';',@{$quantifParams{'DB'}{$param}});
+			$quantifAnnotStrg.=($param eq 'PEPTIDES_REF')? "$param=$quantifParams{DB}{$param}[0]" : "$param=".join(';',@{$quantifParams{'DB'}{$param}}); # PEPTIDES_REF=manual/current
 		}
 		#if ($quantifType eq 'DESIGN' && $param=~/NUMERATOR/){
 		#	my $numState=1;
@@ -213,6 +221,7 @@ if ($quantifType ne 'XICMCQ') {
 	else { # DESIGN(:xxx)
 		$quantifMethod=($quantifParams{'DB'}{'ALGO_TYPE'}[0] eq 'SSPA')? 'SSPA' : ($quantifParams{'DB'}{'ALGO_TYPE'}[0] eq 'TnPQ')? 'TNPQ' : 'PROT_RATIO_PEP';
 		my @states=@{$quantifParams{'DB'}{'STATES'}};
+		$numStates=scalar @states;
 		if ($quantifParams{'DB'}{'ALGO_TYPE'}[0] eq 'SSPA') {
 			##>Compute and order all possible sets of size 1 to #states-1 (<=> abundance sets). Position=TARGET_POS of quantif value
 			$quantifAnnotStrg.="::SETS=";
@@ -352,7 +361,7 @@ if ($quantifParams{'DB'}{'RATIO_TYPE'}[0] eq 'SuperRatio') {
 					$techRepPosition{$bioRep}{$fracGroup}=++$curTechRepPos{$bioRep};
 				}
 				push @{$replicateHierarchy{$bioRep}{ $techRepPosition{$bioRep}{$fracGroup} }},"#$obsID:#$parQuantifID:#$anaID:$targetPos";
-push @pepQuantifFiles,[$parQuantifID,$anaID,$targetPos]; # to estimate necessary cluster ressources
+				push @pepQuantifFiles,[$parQuantifID,$anaID,$targetPos]; # to estimate necessary cluster ressources
 			}
 			my $numBioRep=scalar keys %replicateHierarchy;
 			$quantifAnnotStrg.="$numBioRep,";
@@ -403,35 +412,36 @@ push @pepQuantifFiles,[$parQuantifID,$anaID,$targetPos]; # to estimate necessary
 				$quantifName=$quantifParams{'DB'}{'QUANTIF_NAME'}[0];
 				if ($quantifType =~ /EMPAI|XIC|SIN/){
 					my ($anaName)=$dbh->selectrow_array("SELECT NAME FROM ANALYSIS WHERE ID_ANALYSIS=$analysisID");
-					$quantifName.=$anaName; # Auto_quantifType_anaName
+					$quantifName.='_'.$anaName; # Auto_quantifType_anaName
 				}
 			}
 
-			$sthInsQ->execute($quantifiedModifID,$quantifName,$quantifAnnotStrg);
+			$sthInsQ->execute(undef,$quantifName,$quantifAnnotStrg);
 			$quantifID=$dbh->last_insert_id(undef, undef,'QUANTIFICATION','ID_QUANTIFICATION');
 			$sthInsAnaQ->execute($quantifID,$analysisID);
 
-			$quantifItemID="$analysisID.$quantifID";
+			#$quantifItemID="$analysisID.$quantifID";
+			$quantifItemID=$analysisID;
 
 			###if ($quantifType =~ /EMPAI|SIN/){
 			###	$quantifIdList{"$quantItemID.$quantifID"}=$quantifID;
 			###	$quantItemList[$curAnaIdx]="$quantItemID.$quantifID";
-				rename("$currentQuantifDir/$analysisID\_$jobDir\_wait.flag","$currentQuantifDir/$quantifItemID\_$jobDir\_wait.flag");
-				open(INFO2,">$quantifDir/quantif_infobis.txt");
-				open (INFO,"$quantifDir/quantif_info.txt");
-				while (my $line=<INFO>) {
-					chomp($line);
-					if ($line eq $analysisID) {
-						print INFO2 "$quantifItemID\n";
-					}
-					else {
-						print INFO2 "$line\n";
-					}
-				}
-				close INFO;
-				close INFO2;
-				unlink "$quantifDir/quantif_info.txt";
-				rename("$quantifDir/quantif_infobis.txt","$quantifDir/quantif_info.txt");
+				#rename("$currentQuantifDir/$analysisID\_$jobDir\_wait.flag","$currentQuantifDir/$quantifItemID\_$jobDir\_wait.flag");
+				#open(INFO2,">$quantifDir/quantif_infobis.txt");
+				#open (INFO,"$quantifDir/quantif_info.txt");
+				#while (my $line=<INFO>) {
+				#	chomp($line);
+				#	if ($line eq $analysisID) {
+				#		print INFO2 "$quantifItemID\n";
+				#	}
+				#	else {
+				#		print INFO2 "$line\n";
+				#	}
+				#}
+				#close INFO;
+				#close INFO2;
+				#unlink "$quantifDir/quantif_info.txt";
+				#rename("$quantifDir/quantif_infobis.txt","$quantifDir/quantif_info.txt");
 			###}
 			###else{
 			###	$quantifIdList{$quantItemID}=$quantifID;
@@ -454,6 +464,11 @@ push @pepQuantifFiles,[$parQuantifID,$anaID,$targetPos]; # to estimate necessary
 		#	$sthUpdAnaQ->finish;
 		#	$sthUpdQ->finish;
 		#}
+		
+		###> Update quantif_info.txt in case needed later (PP 30/10/18)
+		open (INFO,">>$quantifDir/quantif_info.txt");
+		print INFO "QUANTIFICATIONS:\n$quantifID";
+		close INFO;
 	}
 	else {# DESIGN updates
 		my $quantifName=$quantifParams{'DB'}{'QUANTIF_NAME'}[0];
@@ -591,7 +606,7 @@ else { # XICMCQ
 	$dbh->disconnect;
 
 	###> Update quantif_info.txt to make it work for watchQuantifications.cgi
-	open (INFO , ">>$quantifDir/quantif_info.txt");
+	open (INFO,">>$quantifDir/quantif_info.txt");
 	print INFO "QUANTIFICATIONS:\n$quantifID";
 	close INFO;
 
@@ -618,8 +633,12 @@ if ($cluster{'on'} && $quantifType =~ /^DESIGN/) { #'DESIGN' or 'DESIGN:MSstats'
 
 	if ($quantifType eq 'DESIGN') {
 		my $numPepValues=0;
+		my %usedQuantifFile;
 		foreach my $resQuantInfo (@pepQuantifFiles) {
 			my ($parQuantifID,$anaID,$targetPos)=@{$resQuantInfo};
+			my $fileKey=$parQuantifID.':'.$targetPos;
+			next if $usedQuantifFile{$fileKey};
+			$usedQuantifFile{$fileKey}=1;
 			my $pepQuantifFile=($targetPos)? "peptide_quantification_$targetPos.txt" : 'peptide_quantification.txt';
 			my $numLines=`wc -l $promsPath{quantification}/project_$projectID/quanti_$parQuantifID/$pepQuantifFile`;
 			#chomp($numLines);
@@ -627,7 +646,7 @@ if ($cluster{'on'} && $quantifType =~ /^DESIGN/) { #'DESIGN' or 'DESIGN:MSstats'
 			$numPepValues+=$numLines;
 		}
 		$maxHours=int(0.5+($numPepValues/25000)); $maxHours=2 if $maxHours < 2; $maxHours=48 if $maxHours > 48; # 1 M lines -> 40 h
-		$maxMem=int(1.5 + 1E-6 * $numPepValues);
+		$maxMem=int(1.5 + 1E-6 * $numPepValues * $numStates);
 ##		$maxMem=$cluster{'maxMem'} if $maxMem > $cluster{'maxMem'};  done in $cluster{runJob}
 		$maxMem=1 if $maxMem < 1;
 		$maxMem.='Gb';
@@ -638,7 +657,8 @@ if ($cluster{'on'} && $quantifType =~ /^DESIGN/) { #'DESIGN' or 'DESIGN:MSstats'
 		my $numPepValues=0;
 		foreach my $resQuantInfo (@pepQuantifFiles) {
 			my ($parQuantifID,$anaID,$targetPos)=@{$resQuantInfo};
-			my $numLines=`wc -l $promsPath{peptide}/proj_$projectID/ana_$anaID/swath_quanti_$parQuantifID.txt`;
+			#my $numLines=`wc -l $promsPath{peptide}/proj_$projectID/ana_$anaID/swath_quanti_$parQuantifID.txt`;
+			my $numLines=`wc -l $promsPath{quantification}/project_$projectID/quanti_$parQuantifID/swath_ana_$anaID.txt`;
 		    #chomp($numLines);
 			$numLines=~s/^(\d+).*/$1/;
 			$numPepValues+=$numLines;
@@ -663,6 +683,16 @@ if ($cluster{'on'} && $quantifType =~ /^DESIGN/) { #'DESIGN' or 'DESIGN:MSstats'
 	$cgiUnixDir=~s/\/*\s*$//;
 	# cd is required for script to find myproms .pm files!!!!
 	my $commandString="export LC_ALL=\"C\"; cd $cgiUnixDir; $cluster{path}{perl}/perl $quantifScripts{$quantifType} $quantifID $jobDir 2> $currentQuantifDir/$quantifID\_$jobDir\_error.txt";
+#my $commandString=qq
+#|export LC_CTYPE="en_US.UTF-8"; export LC_NUMERIC="C";
+#export LC_TIME="en_US.UTF-8"; export LC_COLLATE="en_US.UTF-8";
+#export LC_MONETARY="en_US.UTF-8"; export LC_MESSAGES="en_US.UTF-8";
+#export LC_PAPER="en_US.UTF-8"; export LC_NAME="C";
+#export LC_ADDRESS="C"; export LC_TELEPHONE="C";
+#export LC_MEASUREMENT="en_US.UTF-8"; export LC_IDENTIFICATION="C";
+#cd $cgiUnixDir;
+#$cluster{path}{perl}/perl $quantifScripts{$quantifType} $quantifID $jobDir 2> $currentQuantifDir/$quantifID\_$jobDir\_error.txt;
+#|;
 
 	my %jobParameters=(
 		maxMem=>$maxMem,
@@ -730,8 +760,9 @@ if ($cluster{'on'} && $quantifType =~ /^DESIGN/) { #'DESIGN' or 'DESIGN:MSstats'
 		$dbh->commit;
 		$dbh->disconnect;
 	}
-	else { # Move cluster files to quantif final directory
-		system "mv $quantifDir/*.txt $quantifDir/*.sh $promsPath{quantification}/project_$projectID/quanti_$quantifID/.";
+	elsif (-e "$promsPath{quantification}/project_$projectID/quanti_$quantifID") { # Move cluster files to quantif final directory (except if error in quantif)
+		system "mv $quantifDir/*.txt $promsPath{quantification}/project_$projectID/quanti_$quantifID/.";
+		system "mv $quantifDir/*.sh $promsPath{quantification}/project_$projectID/quanti_$quantifID/.";
 	}
 
 } # end of cluster launch
@@ -778,6 +809,8 @@ if (-e $quantifDir) {
 ###}
 
 #####>Revision history<####
+# 1.6.5 Compatible with protein-level normalization of site quantification (PP 07/11/18)
+# 1.6.4 Update swath files path (VS 08/11/18)
 # 1.6.3 Removed useless 'use File::Copy' package (PP 12/10/18)
 # 1.6.2 Also checks for jobs launched by other parent launchQuantifications.pl (PP 01/10/18)
 # 1.6.1 Switch from _wait to _run flag now done on cluster to account for job queueing (PP 21/09/18)

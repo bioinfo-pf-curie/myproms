@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# convertMsf2Pdm.cgi     1.2.5                                                 #
+# convertMsf2Pdm.cgi     1.2.6                                                 #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Converts Proteome Discoverer .msf file into a Mascot-like .pdm file          #
@@ -41,6 +41,7 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 #-------------------------------------------------------------------------------
+
 $| = 1; # only for STDIN
 use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI ':standard';
@@ -63,7 +64,7 @@ my $userID=$ENV{'REMOTE_USER'} || 'unknown';
 my $processingNodeNumber=param('node'); # 4; #
 my $msfFile=param('file'); # 'SILAC-EF1j-Top10CID-RIPA-10B-uni.msf'; #
 my $filePath=param('path') || ''; # '/bioinfo/projects_dev/myproms/ppoullet/tmp/batch/ppoullet'; #
-my $fileID=param('fileID')?param('fileID') : '' ; # '108'; # list of rawfiles in FileInfos SQLite table
+my $fileID=param('fileID') || '' ; # '108'; # list of rawfiles in FileInfos SQLite table
 
 $filePath=~s/\/\Z//; # removes ending '/' if exists
 $filePath="/$filePath" if $filePath !~ /^\//; # adds '/' to path
@@ -76,7 +77,7 @@ if (param('error')) {
 	}else{
 		($processError=$msfFile)=~s/\.msf\Z/_$processingNodeNumber\.$userID\.error/;
 	}
-	open (ERROR,">$promsPath{tmp}/$processError");
+	open (ERROR,">$promsPath{tmp}/pdm/$processError");
 	print ERROR '__ERROR__';
 	close ERROR;
 	print "<HTML></HTML>\n";
@@ -173,7 +174,7 @@ if ($proteomeDiscovererVersion >= 2.2) {
 			($processEnd=$msfFile)=~s/\.msf\Z/_$processingNodeNumber\.$userID\.end/;
 		}
 		
-		open (P_END,">$promsPath{tmp}/$processEnd");
+		open (P_END,">$promsPath{tmp}/pdm/$processEnd");
 		print P_END "__END__\n";
 		close P_END;
 		
@@ -225,7 +226,7 @@ if ($fileID) {
 	($processEnd=$msfFile)=~s/\.msf\Z/_$processingNodeNumber\.$userID\.end/;
 }
 
-open (P_END,">$promsPath{tmp}/$processEnd");
+open (P_END,">$promsPath{tmp}/pdm/$processEnd");
 print P_END "__END__\n";
 close P_END;
 
@@ -951,9 +952,9 @@ sub printPeptidesMSF { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber, $r
 	my ($idRule)=($rules[0]=~/ID=(.+)/); #<<<<<<<<<<<<<< Synchronise with promsMod::getProtInfo >>>>>>
 	my $tempDbFile;
 	if ($fileID) {
-		($tempDbFile ="$promsPath{tmp}/$msfFile")=~s/\.msf\Z/_$processingNodeNumber\.$fileID\.$userID.fasta/;
+		($tempDbFile ="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$processingNodeNumber\.$fileID\.$userID.fasta/;
 	}else{
-		($tempDbFile ="$promsPath{tmp}/$msfFile")=~s/\.msf\Z/_$processingNodeNumber\.$userID.fasta/; # same dir as msf file
+		($tempDbFile ="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$processingNodeNumber\.$userID.fasta/; # same dir as msf file
 	}
 	open (FASTA,">$tempDbFile");
 #	print "";
@@ -1809,9 +1810,9 @@ sub printPeptidesMSF2_2 { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber,
 	my ($idRule)=($rules[0]=~/ID=(.+)/); #<<<<<<<<<<<<<< Synchronise with promsMod::getProtInfo >>>>>>
 	my $tempDbFile;
 	if ($fileID) {
-		($tempDbFile ="$promsPath{tmp}/$msfFile")=~s/\.msf\Z/_$processingNodeNumber\.$fileID\.$userID.fasta/;
+		($tempDbFile ="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$processingNodeNumber\.$fileID\.$userID.fasta/;
 	}else{
-		($tempDbFile ="$promsPath{tmp}/$msfFile")=~s/\.msf\Z/_$processingNodeNumber\.$userID.fasta/; # same dir as msf file
+		($tempDbFile ="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$processingNodeNumber\.$userID.fasta/; # same dir as msf file
 	}
 	open (FASTA,">$tempDbFile");
 #	print "";
@@ -1851,6 +1852,7 @@ sub printPeptidesMSF2_2 { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber,
 	#	$sthPRScol->finish;
 	#}
     my $workFlowID;
+	my $percolatorStrg=($refSearches->{$processingNodeNumber}{'PERCOLATOR_NODE'})? ',PercolatorqValue,PercolatorPEP' : ',NULL,NULL';
 	foreach my $refType (@peptideTypes) { # Target (and Decoy)
 		my ($typeName,$tableFlag,$sectionName)=@{$refType};
 
@@ -1862,7 +1864,8 @@ sub printPeptidesMSF2_2 { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber,
 		######################################################################
 #print "2 $typeName>";
 		###<Percolator filtering>###
-		my $sthPepInfo=$dbsqlite->prepare("SELECT PeptideID,$scoreName,MSnSpectrumInfoSpectrumID,MatchedIonsCount,Sequence,MissedCleavages,PercolatorqValue,PercolatorPEP FROM ${typeName}Psms TP, ${typeName}PsmsMSnSpectrumInfo TPMSI WHERE TP.WorkflowID=TPMSI.${typeName}PsmsWorkflowID AND TP.PeptideID=TPMSI.${typeName}PsmsPeptideID");
+		#my $sthPepInfo=$dbsqlite->prepare("SELECT PeptideID,$scoreName,MSnSpectrumInfoSpectrumID,MatchedIonsCount,Sequence,MissedCleavages,PercolatorqValue,PercolatorPEP FROM ${typeName}Psms TP, ${typeName}PsmsMSnSpectrumInfo TPMSI WHERE TP.WorkflowID=TPMSI.${typeName}PsmsWorkflowID AND TP.PeptideID=TPMSI.${typeName}PsmsPeptideID");
+		my $sthPepInfo=$dbsqlite->prepare("SELECT PeptideID,$scoreName,MSnSpectrumInfoSpectrumID,MatchedIonsCount,Sequence,MissedCleavages$percolatorStrg FROM ${typeName}Psms TP, ${typeName}PsmsMSnSpectrumInfo TPMSI WHERE TP.WorkflowID=TPMSI.${typeName}PsmsWorkflowID AND TP.PeptideID=TPMSI.${typeName}PsmsPeptideID");
 		#my $step=5000; #1000; # int($numPeptides/10);
 		my $count=0;
 		$sthPepInfo->execute;
@@ -1884,7 +1887,7 @@ sub printPeptidesMSF2_2 { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber,
 				"0" x (length($sequence)+2),	# 5 String that explain the modifications on the peptides
 				[]								# 6 matching proteins
 			);
-			push @{$peptidesInfo{$peptideID}},"$qVal:$PEP" if $qVal ; # 7 Percolator data
+			if ($qVal) {push @{$peptidesInfo{$peptideID}},"$qVal:$PEP";} else {push @{$peptidesInfo{$peptideID}},undef} # 7 Percolator data
 			push @{$spectrumPeptides{$spectrumID}},$peptideID; # 1 spectrum <-> several peptides
 		}
 		$sthPepInfo->finish;
@@ -2054,6 +2057,7 @@ sub printPeptidesMSF2_2 { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber,
 }
 
 ####>Revision history<####
+# 1.2.6 Handles optional Percolator fields in (Target/Decoy)Psms tables (PP 19/11/18)
 # 1.2.5 Minor modification to avoid wrong PDM identifier format (GA 04/10/18)
 # 1.2.4 Minor modification for split mode file (GA 08/12/17)
 # 1.2.3 Update SQLite queries to PD 2.2 version (GA 21/08/17)

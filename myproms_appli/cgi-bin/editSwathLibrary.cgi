@@ -1,8 +1,8 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# editSwathLibrary.cgi         1.8.3	                                       #
-# Authors: M. Le Picard (Institut Curie)                                       #
+# editSwathLibrary.cgi         1.8.5	                                       #
+# Authors: M. Le Picard, V. Sabatet (Institut Curie)                           #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
 #----------------------------------CeCILL License-------------------------------
@@ -39,6 +39,7 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 #-------------------------------------------------------------------------------
+
 $|=1;       # buffer flush (allows instant printing)
 use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI ':standard';
@@ -133,7 +134,7 @@ sub deleteSwathLib {
                         $alert.="\"".$name."\" ";
                     }
                     $alert.="before \"$libraryName\".";
-					print "<HTML><BODY><SCRIPT LANGUAGE=\"JavaScript\">alert('$alert'); window.location=\"$promsPath{cgi}/listSwathLibraries.cgi\";</SCRIPT></BODY></HTML>";
+					print "<HTML><BODY><SCRIPT LANGUAGE=\"JavaScript\">alert('$alert'); window.location=\"". $promsPath{cgi} . "/listSwathLibraries.cgi\";</SCRIPT></BODY></HTML>";
 					exit;
 				}
             }
@@ -1392,11 +1393,11 @@ else{
 							print "<SCRIPT LANGUAGE=\"JavaScript\">$divID.innerHTML=\"\";$divID.innerHTML='$status';</SCRIPT>";
 						}
 						print "<SCRIPT LANGUAGE=\"JavaScript\">$archDIV.innerHTML=\"\";</SCRIPT>";
-						print "<BR>";
+						print "<BR/>";
 					}
 					elsif ($type eq 'zip') {
 						print "<BR><BR>\n";
-						&promsMod::unzipArchive($newFile,$workDir,{mode=>'verbose',txtBefore=>'<B>&nbsp;&nbsp;-',txtAfter=>"</B><BR>\n"});
+						&promsMod::unzipArchive($newFile,$workDir,{mode=>'verbose',txtBefore=>'<B>&nbsp;&nbsp;-',txtAfter=>"</B><BR/>\n"});
 					}
 				}
 				###>Deleting zip file
@@ -2330,10 +2331,10 @@ then
 			if ($libOption eq 'unsplit'){ #unsplit mode
 				print BASH "echo \"Creating consensus library with unsplit mode in progress.\" >>$fileStat;\n";
 				if ($libCons eq 'mergelib' || $action eq 'update') {
-					print BASH "cd $workDir; $tppPath/spectrast -cN$workDir/SpecLib_cons -cI$fragmentation -cAC $workDir/SpecLib*.splib >>$outputFile 2>&1;\n";
+					print BASH "cd $workDir; $tppPath/spectrast -cN$workDir/SpecLib_cons -cI$fragmentation -cAC -cM $workDir/SpecLib*.splib >>$outputFile 2>&1;\n";
 				}
 				elsif ($libCons eq 'new' ){
-					print BASH "cd $workDir; $tppPath/spectrast -cN$workDir/SpecLib_cons -cI$fragmentation -cAC $workDir/SpecLib.splib >>$outputFile 2>&1;\n";
+					print BASH "cd $workDir; $tppPath/spectrast -cN$workDir/SpecLib_cons -cI$fragmentation -cAC -cM $workDir/SpecLib.splib >>$outputFile 2>&1;\n";
 				}
 				$split=0;
 			}
@@ -2690,12 +2691,13 @@ echo "END" >>$workDir/END.txt;
 						$residues=$resTab[1];
 						$positions=$resTab[2];
 						$residues='=' if $positions eq '=';
-						if ($varModCode eq 'GlyGly' || $varModCode eq 'Phospho'){
+						if ($varModCode eq 'GlyGly' || $varModCode eq 'Phospho' || $varModCode eq 'Acetyl'){
 							$numPepMod{$varModCode}{'Multiple'}++;
 						}
 					}
 					$numPepMod{'GlyGly'}{'Single'}++ if $modList=~/GlyGly/;
 					$numPepMod{'Phospho'}{'Single'}++ if $modList=~/Phospho/;
+					$numPepMod{'Acetyl'}{'Single'}++ if $modList=~/Acetyl/;
 					$swathModifications{$varModCode}{$residues}=1;
 				}
 				if($line=~/Protein=\d\/(\S+)/){
@@ -3039,6 +3041,7 @@ echo "END" >>$workDir/END.txt;
 				system "mv $workDir/SpecLib_cons.splib $finalDir/$nameFinalFiles.splib";
 				system "mv $workDir/SpecLib_cons.pepidx $finalDir/$nameFinalFiles.pepidx";
 				system "mv $workDir/SpecLib_cons.spidx $finalDir/$nameFinalFiles.spidx";
+				system "mv $workDir/SpecLib_cons.mrm $finalDir/$nameFinalFiles.mrm" if -s "$workDir/SpecLib_cons.mrm";
 			}
 			system "cp $workDir/sortie.txt $finalDir";
 			system "cp $workDir/script.sh $finalDir" if (-e "$workDir/script.sh");
@@ -3263,6 +3266,8 @@ $dbh->disconnect;
 
 
 ####>Revision history<#####
+# 1.8.5 Add acetylation recovering on importation (VS 22/10/2018) 
+# 1.8.4 Add option to create .mrm library final file (MLP 19/17/18)
 # 1.8.3 Minor modif : editting a library's name and PBSerror is now handled by &clusterInfo{checkError} (MLP 16/04/18)
 # 1.8.2 Minor modif to manage cluster error (PBSerror.txt) (MLP 11/04/18)
 # 1.8.1 Minor modif to manage cluster error (PBSerror.txt) (MLP 11/04/18)

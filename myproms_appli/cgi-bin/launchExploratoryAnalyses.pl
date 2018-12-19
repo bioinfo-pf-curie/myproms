@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# launchExploratoryAnalyses.pl       1.0.5                                     #
+# launchExploratoryAnalyses.pl       1.0.7                                     #
 # Authors: P. Poullet, S.Liva (Institut Curie)                                 #
 # Contact: myproms@curie.fr                                                    #
 # Launches PCA and Clustering analyses                                         #
@@ -45,7 +45,7 @@ $| = 1;
 
 use strict;
 use File::Path qw(rmtree); # remove_tree
-use File::Copy qw(move);
+use File::Copy::Recursive qw(dirmove);
 use promsConfig;
 use promsMod;
 my %promsPath=&promsConfig::getServerInfo;
@@ -60,11 +60,18 @@ if($anaType eq "PCA"){
 	system "cd $explorDIR; $promsPath{R}/R CMD BATCH --no-save --no-restore $promsPath{R_scripts}/PCA.R &";
 	$explorScript_Rout="$explorDIR/PCA.Rout";
 }
-else {
+elsif ($anaType eq "PCAPEP") {
+	system "cd $explorDIR; $promsPath{R}/R CMD BATCH --no-save --no-restore $promsPath{R_scripts}/PCA_PEP.R &";
+	$explorScript_Rout="$explorDIR/PCA_PEP.Rout";
+}
+elsif ($anaType eq "cluster") {
 	system "cd $promsPath{tmp}/exploratory_analysis/$explorID; $promsPath{R}/R CMD BATCH --no-save --no-restore '--args $metric $method $itemMetric' $promsPath{R_scripts}/cluster.R &";
 	$explorScript_Rout="$explorDIR/cluster.Rout";
 }
-
+else {
+	system "cd $promsPath{tmp}/exploratory_analysis/$explorID; $promsPath{R}/R CMD BATCH --no-save --no-restore '--args $metric $method $itemMetric' $promsPath{R_scripts}/cluster_PEP.R &";
+	$explorScript_Rout="$explorDIR/cluster_PEP.Rout";
+}
 my $tempError = "$explorDIR/error.txt";
 
 my $wait = 1;
@@ -120,12 +127,12 @@ if ($wait == 0) {
 	$sthUpdateStatus -> execute(1, $explorID) or die "Cannot execute: " . $sthUpdateStatus -> errstr();
 	$sthUpdateStatus -> finish;
 	$dbh -> commit;
-	move($explorDIR,"$promsPath{data}/exploratory_data/project_$projectID/$explorID");
+	dirmove($explorDIR,"$promsPath{data}/exploratory_data/project_$projectID/$explorID");
 }
 
-
-
 #####>Revision history<####
+# 1.0.7 Uses File::Copy::Recursive::dirmove instead of File::Copy::move (PP 12/10/18)
+# 1.0.6 add peptide pipeline (SL 06/11/17)
 # 1.0.5 Remove unsued variable (PP 18/07/15)
 # 1.0.4 add argument $itemMetric for clustering  (cor or dist) (SL 16/12/14)
 # 1.0.3 Minor changes (PP 09/07/14)

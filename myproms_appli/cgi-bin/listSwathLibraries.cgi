@@ -1,8 +1,8 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# listSwathLibraries.cgi         1.1.7                                         #
-# Authors: M. Le Picard (Institut Curie)                                       #
+# listSwathLibraries.cgi         1.1.8                                         #
+# Authors: M. Le Picard, V. Sabatet (Institut Curie)                           #
 # Contact: myproms@curie.fr                                                    #
 # Lists the libraries available in myProMS                                     #
 ################################################################################
@@ -66,7 +66,7 @@ $sthDataLibrary->execute;
 my $refDataLib=$sthDataLibrary->fetchall_arrayref;
 $sthDataLibrary->finish;
 my $sthDatabankSwathLib=$dbh->prepare("SELECT D.NAME FROM DATABANK_SWATHLIB DS,DATABANK D WHERE DS.ID_DATABANK=D.ID_DATABANK AND DS.ID_SWATH_LIB=?");
-my $sthModSwathLib=$dbh->prepare("SELECT SLM.ID_MODIFICATION,PSI_MS_NAME FROM SWATH_LIB_MODIFICATION SLM, MODIFICATION M WHERE SLM.ID_MODIFICATION=M.ID_MODIFICATION AND ID_SWATH_LIB=?");
+my $sthModSwathLib=$dbh->prepare("SELECT SLM.ID_MODIFICATION, INTERIM_NAME FROM SWATH_LIB_MODIFICATION SLM INNER JOIN MODIFICATION M ON SLM.ID_MODIFICATION=M.ID_MODIFICATION WHERE ID_SWATH_LIB=?");
 
 ##>delete older tmp folders
 foreach my $folder (glob "$promsPath{data}/tmp/Swath/*") {     
@@ -137,14 +137,8 @@ function monitorLibCreation() {
             ($version=$versionName)=~s/v//;
         }
         
-        my $split;
         $des='' unless $des;
-        if ($modeSplit == 1) {
-            $split="Split";
-        }
-        else{
-            $split="Unsplit";
-        }
+        my $split = ($modeSplit == 1) ? "Split" : "Unsplit";
         my $xml =XML::Simple-> new (KeepRoot=>1);
         my ($xmlStat,$numProt,$numPep,$numProtSpe,$numPepModList);
         if ($stat) {
@@ -176,12 +170,11 @@ function monitorLibCreation() {
             $dbFile.="$db\t";
         }
         
-        
         unless($numPepModList){
             my %modifLib;
             $sthModSwathLib->execute($libraryID);
             while (my ($modID,$modName)=$sthModSwathLib->fetchrow_array){
-                next if ($modName ne 'GG' && $modName ne 'Phospho');
+                next if ($modName ne 'GG' && $modName ne 'Phospho' && $modName ne 'Acetyl');
                 $modName='GlyGly' if $modName eq 'GG';
                 $modifLib{$modName}{'Single'}=0;
                 $modifLib{$modName}{'Multiple'}=0;
@@ -196,10 +189,11 @@ function monitorLibCreation() {
                         my @modList=split(/\//,$modifList);
                         foreach my $mod (@modList){
                             my ($pos,$aa,$varModName)=split(/,/,$mod);
-                            $numPepMod{$varModName}{'Multiple'}++ if ($varModName eq 'GlyGly' || $varModName eq 'Phospho');
+                            $numPepMod{$varModName}{'Multiple'}++ if ($varModName eq 'GlyGly' || $varModName eq 'Phospho' || $varModName eq 'Acetyl');
                         }
                         $numPepMod{'GlyGly'}{'Single'}++  if $modifList=~/GlyGly/;
                         $numPepMod{'Phospho'}{'Single'}++  if $modifList=~/Phospho/;      
+                        $numPepMod{'Acetyl'}{'Single'}++  if $modifList=~/Acetyl/;
                     }
                 }
                 close LIB;
@@ -278,6 +272,7 @@ function monitorLibCreation() {
 $dbh->disconnect;
 
 ####>Revision history<####
+# 1.1.8 Add acetyl count displaying (VS 22/10/2018)
 # 1.1.7 Minor modif to increase the time before temporary folder deletion (MLP 05/02/18)
 # 1.1.6 Add monitoring libraries creation (MLP 25/01/18)
 # 1.1.5 Minor modif (MLP 10/01/18)

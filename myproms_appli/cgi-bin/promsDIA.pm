@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# promsDIA.pm     1.1.2                                                        #
+# promsDIA.pm     1.1.4                                                      #
 # Authors: M. Le Picard (Institut Curie)                                       #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -38,7 +38,8 @@
 #
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
-#-------------------------------------------------------------------------------package promsDIA;
+#-------------------------------------------------------------------------------
+package promsDIA;
 
 require Exporter;
 
@@ -50,13 +51,12 @@ $VERSION=1.00;
 use strict;
 use DBD::mysql;	# MySQL
 use promsConfig;
-my %promsPath=&promsConfig::getServerInfo;
 use Data::Dumper;
 use POSIX qw(strftime); # to get the time
 
 
 sub exportLibrarySCRIPT {
-    my ($dbh,$libraryID,$libraryName,$workDir,$startTime,$loadingDivID,$loadingSPAN,$w,$k,$p,$g,$f,$t,$y,$m,$labelling,$other,$lMax,$lMin,$s,$x,$n,$o,$pepMod,$processText,$protList)=@_;
+    my ($dbh, $libraryID, $libraryName, $workDir, $refPromsPath, $startTime, $loadingDivID, $loadingSPAN, $w,$k,$p,$g,$f,$t,$y,$m,$labelling,$other,$lMax,$lMin,$s,$x,$n,$o,$pepMod,$processText,$protList)=@_;
     my $paramFile=$libraryName."_param";
     $processText=($processText)? $processText : '';
     
@@ -204,13 +204,13 @@ sub exportLibrarySCRIPT {
     my $finalFile;
     my $output="$workDir/sortieExport.txt";
     if ($k eq "peakview"){
-        $command="$promsPath{msproteomicstools}/spectrast2tsv.py -l $lMin,$lMax -s $s -x $x -o $o -n $n -p $p $other $param -t $t -y $y -w $workDir/$w -k $k -a $workDir/$libraryName\"_peakview.tsv\" $workDir/convertpeakview.sptxt >$output 2>&1;";
+        $command=$refPromsPath->{"msproteomicstools"}."/spectrast2tsv.py -l $lMin,$lMax -s $s -x $x -o $o -n $n -p $p $other $param -t $t -y $y -w $workDir/$w -k $k -a $workDir/$libraryName\"_peakview.tsv\" $workDir/convertpeakview.sptxt >$output 2>&1;";
         $command.="sed s/TRUE/FALSE/g $workDir/$libraryName\_peakview.tsv >$workDir/peakviewfile.txt;";
         $finalFile=$libraryName."_peakview.txt";
     }
     elsif ($k eq "openswath"){
         $finalFile=$libraryName."_openswath.tsv";
-        $command="$promsPath{msproteomicstools}/spectrast2tsv.py -l $lMin,$lMax -s $s -x $x -o $o -n $n -p $p $other $param -t $t -y $y -w $workDir/$w -k $k -a $workDir/$finalFile $workDir/convertopenswath.sptxt >$output 2>&1;";
+        $command=$refPromsPath->{"msproteomicstools"}."/spectrast2tsv.py -l $lMin,$lMax -s $s -x $x -o $o -n $n -p $p $other $param -t $t -y $y -w $workDir/$w -k $k -a $workDir/$finalFile $workDir/convertopenswath.sptxt >$output 2>&1;";
     }
     
     ###> Launch process
@@ -380,11 +380,11 @@ sub exportLibrarySCRIPT {
 package XTandemXMLHandler; {    ## for .xml and .tandem
     my (%infoRank,%matches,%protListNoSeq,%query2matches,%matchSpectrum);
     my (%modificationList,%bestScoreTarget,%bestScoreDecoy);
-    my ($minScore,$maxRank,$dbID,$modifNTer,$type,$dbh,$msFilename,$analysisID,%info,%rankSeq,%prot,$refProtSeq,$refQueryInfo,$refProtDes,$refProtOrg,$refProtLength,$refCharge,$refMassObs,$refMassExp,$refElutionTime,$refNumValid,$refMatchList,$refMaxProtMatch,$refMaxProtScore,$refMaxQueryScore,$refAnalysisMods,$refRankProtMatch,$refProtMW,$refProtDbRank);
+    my ($minScore,$maxRank,$dataPath,$dbID,$modifNTer,$type,$dbh,$msFilename,$analysisID,%info,%rankSeq,%prot,$refProtSeq,$refQueryInfo,$refProtDes,$refProtOrg,$refProtLength,$refCharge,$refMassObs,$refMassExp,$refElutionTime,$refNumValid,$refMatchList,$refMaxProtMatch,$refMaxProtScore,$refMaxQueryScore,$refAnalysisMods,$refRankProtMatch,$refProtMW,$refProtDbRank);
     my $i=1;
     
     sub new {
-        ($type,$msFilename,$modifNTer,$dbh,$dbID,$minScore,$analysisID,$maxRank,$refProtSeq,$refQueryInfo,$refProtDes,$refProtOrg,$refProtLength,$refCharge,$refMassObs,$refMassExp,$refElutionTime,$refNumValid,$refMatchList,$refMaxProtMatch,$refMaxProtScore,$refMaxQueryScore,$refAnalysisMods,$refRankProtMatch,$refProtMW,$refProtDbRank) = @_;
+        ($type,$msFilename,$dataPath,$modifNTer,$dbh,$dbID,$minScore,$analysisID,$maxRank,$refProtSeq,$refQueryInfo,$refProtDes,$refProtOrg,$refProtLength,$refCharge,$refMassObs,$refMassExp,$refElutionTime,$refNumValid,$refMatchList,$refMaxProtMatch,$refMaxProtScore,$refMaxQueryScore,$refAnalysisMods,$refRankProtMatch,$refProtMW,$refProtDbRank) = @_;
         my $self = bless ({}, $type);
         
         ###>Fetching parsing rules
@@ -512,7 +512,7 @@ package XTandemXMLHandler; {    ## for .xml and .tandem
                     }
                     if (! $match) {
                         my $line;
-                        open(MODFILE,"<","$promsPath{data}/Unified_Modification_PeakView.csv") or die ("open: $!"); #find modification in Unified_Modification_PeakView file
+                        open(MODFILE,"<","$dataPath/Unified_Modification_PeakView.csv") or die ("open: $!"); #find modification in Unified_Modification_PeakView file
                         while ($line=<MODFILE>) {
                             my @lineStrg=split(/;/,$line);
                             if ($lineStrg[11] eq $modifMass || $lineStrg[11] eq ($modifMass=~s/,/./) || (($lineStrg[11] > $modifMass-0.005) && ($lineStrg[11] < $modifMass+0.005)) ) {
@@ -718,14 +718,14 @@ package XTandemXMLHandler; {    ## for .xml and .tandem
                     }
                 }
             }
-            foreach my $identifier (keys $refMatchList) {
+            foreach my $identifier (keys %{$refMatchList}) {
                 delete($refMatchList->{$identifier}) unless $refMaxProtScore->{$identifier};
                 delete($refProtSeq->{$identifier}) unless $refMaxProtScore->{$identifier};
             }
             if (scalar keys %protListNoSeq) {
                 my @analysisID;
                 push @analysisID,$analysisID;
-                &promsMod::getProtInfo('silent',$dbh,$dbID,\@analysisID,$refProtDes,$refProtMW,$refProtOrg,$refProtLength,\%protListNoSeq);
+                &promsMod::getProtInfo('silent',$dbh,$dbID,\@analysisID,$refProtDes,$refProtMW,$refProtOrg,$refProtLength,undef,\%protListNoSeq);
             }
         }
         delete ($self->{'Elements'}{$element->{'Name'}});
@@ -774,11 +774,11 @@ package XTandemPEPXMLHandler; { ## only for .tandem.pep.xml
     my %infoRank;
     my (%matches,%scorePep,$protDBSeq,%query2matches,%matchSpectrum);
     my (%modificationList,%bestScoreTarget,%bestScoreDecoy);
-    my ($refProtSeq,$type,$msFilename,$maxRank,$dbh,$dbID,$minScore,$analysisID,$refQueryInfo,$refProtDes,$refProtOrg,$refProtLength,$refCharge,$refMassObs,$refMassExp,$refElutionTime,$refNumValid,$refMatchList,$refMaxProtMatch,$refMaxProtScore,$refMaxQueryScore,$refAnalysisMods,$refRankProtMatch,$refProtMW,$refProtDbRank);
-    use Data::Dumper;
+    my ($refProtSeq,$type,$msFilename,$dataPath,$maxRank,$dbh,$dbID,$minScore,$analysisID,$refQueryInfo,$refProtDes,$refProtOrg,$refProtLength,$refCharge,$refMassObs,$refMassExp,$refElutionTime,$refNumValid,$refMatchList,$refMaxProtMatch,$refMaxProtScore,$refMaxQueryScore,$refAnalysisMods,$refRankProtMatch,$refProtMW,$refProtDbRank);
     my $i=1;
+
     sub new {
-        ($type,$msFilename,$protDBSeq,$dbh,$dbID,$minScore,$maxRank,$analysisID,$refProtSeq,$refQueryInfo,$refProtDes,$refProtOrg,$refProtLength,$refCharge,$refMassObs,$refMassExp,$refElutionTime,$refNumValid,$refMatchList,$refMaxProtMatch,$refMaxProtScore,$refMaxQueryScore,$refAnalysisMods,$refRankProtMatch,$refProtMW,$refProtDbRank) = @_;
+        ($type,$msFilename,$dataPath,$protDBSeq,$dbh,$dbID,$minScore,$maxRank,$analysisID,$refProtSeq,$refQueryInfo,$refProtDes,$refProtOrg,$refProtLength,$refCharge,$refMassObs,$refMassExp,$refElutionTime,$refNumValid,$refMatchList,$refMaxProtMatch,$refMaxProtScore,$refMaxQueryScore,$refAnalysisMods,$refRankProtMatch,$refProtMW,$refProtDbRank) = @_;
         my $self = bless ({}, $type);
         $self->{'protDBSeq'}=$protDBSeq;
         
@@ -963,7 +963,7 @@ package XTandemPEPXMLHandler; { ## only for .tandem.pep.xml
                     }
                     if (! $match) {
                         my $line;
-                        open(MODFILE,"<","$promsPath{data}/Unified_Modification_PeakView.csv") or die ("open: $!"); #find modification in Unified_Modification_PeakView file
+                        open(MODFILE,"<","$dataPath/Unified_Modification_PeakView.csv") or die ("open: $!"); #find modification in Unified_Modification_PeakView file
                         while ($line=<MODFILE>) {
                             my @lineStrg=split(/;/,$line);
                             if ($lineStrg[11] eq $modifMass || $lineStrg[11] eq ($modifMass=~s/,/./) || (($lineStrg[11] > $modifMass-0.005) && ($lineStrg[11] < $modifMass+0.005)) ) {
@@ -1007,7 +1007,7 @@ package XTandemPEPXMLHandler; { ## only for .tandem.pep.xml
                 $matches{$self->{'hitNum'}}{'vmod'}=$self->{'varModString'} if $self->{'varModString'};
                 $refMatchList->{$self->{'identifier'}}{$actualSequence}=1;
                 
-                if (defined @{$self->{'altidentifier'}}) {
+                if (@{$self->{'altidentifier'}}) {
                     foreach my $identifier (@{$self->{'altidentifier'}}){
                         $refMatchList->{$identifier}{$actualSequence}=1;
                     }
@@ -1131,6 +1131,8 @@ package XTandemPEPXMLHandler; { ## only for .tandem.pep.xml
 1;
 
 ####>Revision history<####
+# 1.1.4 Encapsulated the promsPath within methods to avoid path retrieving issues when calling them by command line (VS 22/11/18)
+# 1.1.3 Minor modification on the getProtInfo call (VS 16/11/2018)
 # 1.1.2 Minor modif to handle library export errors (MLP 17/04/18)
 # 1.1.1 Minor modif (MLP 10/01/18)
 # 1.1.0 Add export function (MLP 06/12/17)

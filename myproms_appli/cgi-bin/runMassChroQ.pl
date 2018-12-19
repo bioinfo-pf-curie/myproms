@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# runMassChroQ.pl              1.7.4                                           #
+# runMassChroQ.pl              1.7.6                                           #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Interface between myProMS and MassChroQ software, developed by Inra.         #
@@ -457,7 +457,7 @@ if ($clusterInfo{'on'}) {
 		my $timeStamp=strftime("%Y%m%d%H%M%S",localtime);
 		open (COMM,">$commandFile");
 		print COMM "#!/bin/bash\n";
-		print COMM "cd $quantifDir\n$masschroqPath/masschroq -v 2>&1\n";
+		print COMM "export LC_ALL=\"C\"\n cd $quantifDir\n$masschroqPath/masschroq -v 2>&1\n";
 		close COMM;
 		my $modBash=0775;
 		chmod $modBash,$commandFile;
@@ -503,37 +503,28 @@ if ($clusterInfo{'on'}) {
 		open (BASH,"+>",$scriptfile);
 		print BASH qq
 |#!/bin/bash
+export LC_ALL="C"
 cd $quantifDir
 $masschroqPath/masschroq -p $addParamStg$quantifDir/quanti.masschroqML > $quantifDir/masschroq_status1.txt
 |;
 		close BASH;
 		my $modBash=0775;
 		chmod $modBash, $scriptfile;
-		my $clusterCommandString=$clusterInfo{'buildCommand'}->($quantifDir,$scriptfile);
-		my $bashFile="$quantifDir/launchMassChroQ_1step.sh";
-		open (BASHCLUSTER,">$bashFile");
-		print BASHCLUSTER qq
-|#!/bin/bash
-#PBS -l mem=10Gb
-#PBS -l nodes=1:ppn=1
-#PBS -l walltime=24:00:00
-#PBS -q batch
-##Information
-#PBS -N mcq1_$quantifID
-#PBS -M guillaume.arras\@curie.fr,patrick.poullet\@curie.fr
-#PBS -m abe
-#PBS -o $quantifDir/PBS1.txt
-#PBS -e $quantifDir/PBSerror1.txt
-
-## Command
-$clusterCommandString
-|;
-		close BASHCLUSTER;
-		chmod $modBash, $bashFile;
-		$clusterInfo{'sendToCluster'}->($bashFile);
+		my $timeStamp=strftime("%Y%m%d%H%M%S",localtime);
+		my %jobParams=(
+maxMem=>'10Gb',
+numCPUs=>1,
+maxHours=>24,
+jobName=>"mcq1_$quantifID",
+outFile=>'PBS1.txt',
+errorFile=>'PBSerror1.txt',
+jobEndFlag=>"_END_$timeStamp",
+noWatch=>1
+		);
+		$clusterInfo{'runJob'}->($quantifDir,$scriptfile,\%jobParams);
 		sleep 60;
-		while (!-e "$quantifDir/masschroq_status1.txt") {
-				sleep 30;
+		while (!(-e "$quantifDir/PBS1.txt" && `tail -3 $quantifDir/PBS1.txt | grep _END_$timeStamp`)) {
+				sleep 5;
 		}
 }
 else{
@@ -599,44 +590,27 @@ if ($clusterInfo{'on'}) {
 	open (BASH,"+>",$scriptfile);
 	print BASH qq
 |#!/bin/bash
+export LC_ALL="C"
 cd $quantifDir
 $masschroqPath/masschroq --cpus $nbProcs -t $quantifDir $quantifDir/parsed-peptides_quanti.masschroqML > $quantifDir/masschroq_status2.txt 2> $quantifDir/masschroq_errors.txt
 |;
 	close BASH;
 	my $modBash=0775;
 	chmod $modBash, $scriptfile;
-	my $clusterCommandString=$clusterInfo{'buildCommand'}->($quantifDir,$scriptfile);
-
-    #############################
-	####> Execute bash file <####
-	#############################
-    my $numAna=scalar keys %{$params{'MZXML'}};
+	my $numAna=scalar keys %{$params{'MZXML'}};
 	my $maxHours=10+12*$numAna;
 	my ($maxMem)=(2*$numAna > 100) ? "100Gb" : 2*$numAna.'Gb';
-	my $bashFile="$quantifDir/makeMassChroQ.sh";
-	open (BASHCLUSTER,">$bashFile");
-	print BASHCLUSTER qq
-|#!/bin/bash
-##resources
-#PBS -l mem=$maxMem
-#PBS -l nodes=1:ppn=$nbProcs
-#PBS -l walltime=$maxHours:00:00
-#PBS -q batch
-##Information
-#PBS -N mcq2_$quantifID
-#PBS -M guillaume.arras\@curie.fr,patrick.poullet\@curie.fr
-#PBS -m abe
-#PBS -o $quantifDir/PBS2.txt
-#PBS -e $quantifDir/PBSerror2.txt
-
-## Command
-$clusterCommandString
-echo _END_$quantifID
-|;
-	close BASHCLUSTER;
-
-	chmod $modBash, $bashFile;
-	$clusterInfo{'sendToCluster'}->($bashFile);
+	my $timeStamp=strftime("%Y%m%d%H%M%S",localtime);
+	my %jobParams=(
+maxMem=>$maxMem,
+numCPUs=>$nbProcs,
+maxHours=>$maxHours,
+jobName=>"mcq2_$quantifID",
+outFile=>'PBS2.txt',
+errorFile=>'PBSerror2.txt',
+jobEndFlag=>"_END_$timeStamp",
+		);
+	$clusterInfo{'runJob'}->($quantifDir,$scriptfile,\%jobParams);
 	sleep 60;
 
 	###> When MassChroQ is finished, it is written DONE in the status_file -> need to check if mcq is finished every 30sec.
@@ -648,7 +622,7 @@ echo _END_$quantifID
 		}
 		sleep 30;
 		$massChroqError=`head -5 $quantifDir/masschroq_errors.txt` if -e "$quantifDir/masschroq_errors.txt";
-		$pbsError=`head -5 $quantifDir/PBSerror.txt` if -e "$quantifDir/PBSerror.txt";
+		$pbsError=$clusterInfo{'checkError'}->("$quantifDir/PBSerror2.txt");
 		$nbWhile++;
 	}
 }
@@ -659,10 +633,10 @@ else{
 }
 
 ####>ERROR Management<####
-if ($massChroqError) {
+if ($massChroqError && $massChroqError !~ /WARNING/) {
 	die "MassChroQ has generated the following Error:\n$massChroqError";
 }
-elsif ($pbsError) {
+elsif ($pbsError && $pbsError !~ /WARNING/) {
 	die "The computation cluster has generated the following Error:\n$pbsError";
 }
 elsif (! -d $quantifDir) {
@@ -1431,6 +1405,8 @@ package mzXMLHandler; {
 
 
 ####> Revision history
+# 1.7.6 Change to use $cluster{'runJob'} for jobs (GA 12/11/18)
+# 1.7.5 Add export LC_ALL="C" in all cluster calls (GA 09/11/18)
 # 1.7.4 Also tests for 2.2.12 version when running MassChroQ locally (PP 11/10/18)
 # 1.7.3 Customized version for demo/dev while using myproms_1.1.19-1.img (GA 10/10/18)<BR>TODO: remove code when new version of MassChroQ available !!!
 # 1.7.2 Change vmod parsing in result file (GA 08/10/18)

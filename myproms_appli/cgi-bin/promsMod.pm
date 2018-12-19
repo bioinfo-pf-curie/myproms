@@ -1,8 +1,8 @@
-################################################################################
-# promsMod.pm           3.9.2                                                  #
-# Authors: P. Poullet, G. Arras, S.Liva, M. Le Picard (Institut Curie)         #
-# Contact: myproms@curie.fr                                                    #
-################################################################################
+####################################################################################
+# promsMod.pm           4.0.1                                                      #
+# Authors: P. Poullet, G. Arras, S.Liva, M. Le Picard, V. Sabatet (Institut Curie) #
+# Contact: myproms@curie.fr                                                    	   #
+####################################################################################
 #----------------------------------CeCILL License-------------------------------
 # This file is part of myProMS
 #
@@ -276,7 +276,7 @@ sub sortSmart {
 		foreach my $refArray (\@parData1,\@parData2) {
 			my $i=0;
 			while ($i <= $#{$refArray}) {
-				if ($refArray->[$i]) {$i++;}
+				if (length($refArray->[$i])) {$i++;}
 				else {splice(@{$refArray},$i,1);}
 			}
 		}
@@ -1257,7 +1257,7 @@ sub extractSpectrumMSF { # requires IO::Uncompress::Unzip & XML::Simple
 # WARNING: $refProtList does not have the same structure:
 # $refProtList->{$protID}{$anaID}=1 or $refProtList->{$protID}{pepSeq}=1 (or $refProtList->{$protID}=1?)
 sub getProtInfo { # called by scanDatank.pl, storeAnalysis.cgi (only for MSF) and importMaxQuant
-	my ($action,$dbh,$databankID,$refAnaList,$refProtDes,$refProtMW,$refProtOrg,$refProtLength,$refProtList,$localDbFile,$prefixID)=@_;
+	my ($action,$dbh,$databankID,$refAnaList,$refProtDes,$refProtMW,$refProtOrg,$refProtLength,$refProtSeq,$refProtList,$localDbFile,$prefixID)=@_;
 	$prefixID='' unless $prefixID; # for MaxQuant import, dynamic addition of CON__ prefix to ids in contaminant db
 	my @percent=(10,20,30,40,50,60,70,80,90,100); # needed to monitor process progression
 	my %taxonIDs;
@@ -1266,7 +1266,8 @@ sub getProtInfo { # called by scanDatank.pl, storeAnalysis.cgi (only for MSF) an
 	my %massAAave=&promsConfig::getMassAAave; # Average mass, needed for protein mass calculation
 	my %massATave=&promsConfig::getMassATave; # Average mass, needed for protein mass calculation
 	my $userID=($ENV{'REMOTE_USER'})? $ENV{'REMOTE_USER'} : 'myproms'; # no REMOTE_USER when called from cron
-
+	$refProtSeq = {} if (not defined $refProtSeq);
+	
 	##>Check $refProtList structure (multi vs single analysis)
 	my $multiAnalysis=(scalar @{$refAnaList} > 1)? 1 : 0;
 	unless ($multiAnalysis) { # can still be a multi-analysis structure but with only 1 analysis!!!
@@ -1470,10 +1471,21 @@ sub getProtInfo { # called by scanDatank.pl, storeAnalysis.cgi (only for MSF) an
 					open ($fileHandles{$anaID},">>$anaParentDir/ana_$anaID/analysis.fasta"); # >> in case of multi-db search (&getProtInfo called for each db)
 				}
 			#}
-			my ($protEntry,%matchedAnaList);
+			my ($protEntry, %matchedAnaList);
+			my $previousAnnotString = '';
+			my $sequence = '';
 			while(<MFAS>) {
 				if (/^>(.+)\n/) {
 					my $annotStrg=$1;
+					if($previousAnnotString) {
+						foreach my $entryStrg (split('',$previousAnnotString)) {
+							my ($identifier)=($entryStrg=~/^(\S+) ##/);
+							$refProtSeq->{"$prefixID$identifier"}=$sequence;
+						}
+						$sequence = "";
+					}
+					$previousAnnotString = $annotStrg;
+					
 					#if ($multiAnalysis) { # Dispatching previous protein entry in corresponding fasta files
 						foreach my $anaID (keys %matchedAnaList) { # if matched anaID => protEntry is set
 							print {$fileHandles{$anaID}} $protEntry;
@@ -1493,11 +1505,24 @@ sub getProtInfo { # called by scanDatank.pl, storeAnalysis.cgi (only for MSF) an
 							}
 						#}
 					}
-				}
+				} 
 				#elsif ($multiAnalysis && $_ !~ /^#/) {$protEntry.=$_;} # add sequence line(s) except ##END
-				elsif ($_ !~ /^#/) {$protEntry.=$_;} # add sequence line(s) except ##END line
+				# add sequence line(s) except ##END line
+				elsif ($_ !~ /^#/) {
+					$protEntry.=$_;
+					$_=~s/\W+//g; # chomp not always enough? (Windows!) + cleans any non-AA
+					$sequence .= $_;
+				}
 			}
 			close MFAS;
+			
+			if($previousAnnotString && $sequence) {
+				foreach my $entryStrg (split('',$previousAnnotString)) {
+					my ($identifier)=($entryStrg=~/^(\S+) ##/);
+					$refProtSeq->{"$prefixID$identifier"}=$sequence;
+				}
+			}
+			
 			#if ($multiAnalysis) { # Dispatching protein entries in corresponding fasta files
 				foreach my $anaID (keys %matchedAnaList) { # last protEntry of master file
 					print {$fileHandles{$anaID}} $protEntry;
@@ -1563,6 +1588,7 @@ sub getProtInfo { # called by scanDatank.pl, storeAnalysis.cgi (only for MSF) an
 					foreach my $identifier (@matchedID) { # already prefixed if any
 						$refProtMW->{$identifier}=$mass;
 						$refProtLength->{$identifier}=length($sequence);
+						$refProtSeq->{$identifier}=$sequence;
 					}
 					###<Writing sequence to analysis.fasta
 					###print FAS ">",join('',@matchedID),"\n$sequence\n";
@@ -1672,6 +1698,7 @@ sub getProtInfo { # called by scanDatank.pl, storeAnalysis.cgi (only for MSF) an
 			foreach my $identifier (@matchedID) {
 				$refProtMW->{"$prefixID$identifier"}=$mass;
 				$refProtLength->{"$prefixID$identifier"}=length($sequence);
+				$refProtSeq->{$identifier}=$sequence;
 			}
 			###<Writing sequence to analysis.fasta
 			###print FAS '>',join('',@matchedID),"\n$sequence\n";
@@ -2129,21 +2156,9 @@ my $paramGrIdx=0; # Assumes only 1 parameter group!!!!!!!!!!!!!!!!!!!!!
 		(my $minDatFile=$fileName)=~s/\.dat/_min\.dat/;
 		$searchFile=(-e "$anaDir/$minDatFile")? "$anaDir/$minDatFile" : "$anaDir/$fileName";
 	}
-	unless (-e $searchFile) {
+	unless (-e $searchFile || $fileFormat =~ /SWATH|SKYLINE|PDM/) {
 		$infoSubmit{'Error'}="Search file not found";
 		return %infoSubmit;
-	}
-
-	##<Proteome Discoverer
-	if ($fileFormat =~ /\.PDM/) {# Get the Proteome-Discoverer's version
-		(my $msfFileName = $fileName) =~ s/\_[0-9]*\.*[0-9]*\.pdm/\.msf/;
-		my $msfFile=($validStatus==2)? "$promsPath{peptide}/proj_$projectID/ana_$anaID/$msfFileName" : "$promsPath{valid}/multi_ana/proj_$projectID/$msfFileName";
-		if (-e $msfFile) {
-			my $dbsqlite = DBI->connect( "dbi:SQLite:$msfFile", "", "", {PrintError => 1,RaiseError => 1});
-			my ($softVersion)=$dbsqlite->selectrow_array("SELECT SoftwareVersion FROM SchemaInfo ORDER BY rowid ASC LIMIT 1");
-			$dbsqlite->disconnect;
-			$infoSubmit{'c:Proteome Discoverer version'} = $softVersion;
-		}
 	}
 
 	##<Paragon
@@ -2236,7 +2251,7 @@ my $paramGrIdx=0; # Assumes only 1 parameter group!!!!!!!!!!!!!!!!!!!!!
 		close (VMODFILE);
 		chop($infoSubmit{'g:Variable modifications'}) if $infoSubmit{'g:Variable modifications'};
 	}
-	if ($fileFormat eq 'SWATH.PKV') {			## SWATH quantification with PeakView
+	elsif ($fileFormat eq 'SWATH.PKV') {			## SWATH quantification with PeakView
         my $searchParam=$dbh->selectrow_array("SELECT QUANTIF_ANNOT FROM QUANTIFICATION Q, ANA_QUANTIFICATION AQ WHERE Q.ID_QUANTIFICATION=AQ.ID_QUANTIFICATION AND ID_ANALYSIS=$anaID");
 		foreach my $param (split(/::/,$searchParam)){
 			my ($name,$value)=split(/=/,$param);
@@ -2279,7 +2294,7 @@ my $paramGrIdx=0; # Assumes only 1 parameter group!!!!!!!!!!!!!!!!!!!!!
 			push @{$infoSubmit{'a:Databank'}{'c:Sequences in databank'}},$numEntry;
         }
     }
-	if($fileFormat eq 'OPENSWATH.TSV'){
+	elsif($fileFormat eq 'OPENSWATH.TSV'){
 		my $searchParam=$dbh->selectrow_array("SELECT QUANTIF_ANNOT FROM QUANTIFICATION Q, ANA_QUANTIFICATION AQ WHERE Q.ID_QUANTIFICATION=AQ.ID_QUANTIFICATION AND ID_ANALYSIS=$anaID");
 		foreach my $param (split(/::/,$searchParam)){
 			my ($name,$value)=split(/=/,$param);
@@ -2317,7 +2332,52 @@ my $paramGrIdx=0; # Assumes only 1 parameter group!!!!!!!!!!!!!!!!!!!!!
 			push @{$infoSubmit{'a:Databank'}{'c:Sequences in databank'}},$numEntry;
         }
 	}
-	if ($fileFormat eq 'TDM.PEP.XML') {			## X! TANDEM
+	elsif($fileFormat eq 'SKYLINE.CSV') {
+		## PARSE PARAMETERS
+		my $searchParam=$dbh->selectrow_array("SELECT QUANTIF_ANNOT FROM QUANTIFICATION Q, ANA_QUANTIFICATION AQ WHERE Q.ID_QUANTIFICATION=AQ.ID_QUANTIFICATION AND ID_ANALYSIS=$anaID");
+
+		foreach my $param (split(/::/,$searchParam)){
+			my ($name,$value)=split(/=/,$param);
+			next if $value=~/N\/A/;
+			push @{$infoSubmit{'b:Library'}{'a:Cut-off score'}},$value if $name=~/LIB_CUTOFF/ && $value;
+			push @{$infoSubmit{'b:Library'}{'b:Search files'}},$value if $name=~/LIB_SEARCH_FILES/ && $value;
+			push @{$infoSubmit{'b:Library'}{'c:Include ambigous matches'}},$value if $name=~/LIB_AMBIGOUS/ && $value;
+			
+			if($name =~ /SOFTWARE/) {
+				my ($soft, $softVersion) = split(/;/, $value);
+				$infoSubmit{'c:Software'} = "Skyline ($softVersion)";
+			}
+
+			push @{$infoSubmit{'d:MS1 Filtering'}{'a:Precursor charges'}},$value if $name=~/MS1_PRECURSOR_CHARGE/ && $value;
+			push @{$infoSubmit{'d:MS1 Filtering'}{'b:Isotope peaks included'}},$value if $name=~/MS1_ISOTOPE_PEAKS/ && $value;
+			push @{$infoSubmit{'d:MS1 Filtering'}{'c:Precursor mass analyzer'}},$value if $name=~/MS1_MASS_ANALYZER/ && $value;
+			push @{$infoSubmit{'d:MS1 Filtering'}{'d:Peaks'}},$value if $name=~/MS1_PEAKS/ && $value;
+			push @{$infoSubmit{'d:MS1 Filtering'}{'e:Resolving power'}},$value if $name=~/MS1_POWER/ && $value;
+			push @{$infoSubmit{'d:MS1 Filtering'}{'f:Resolving power charge'}},$value if $name=~/MS1_POWER_CHARGE/ && $value;
+			
+			push @{$infoSubmit{'e:Retention time'}{'a:Scan'}},$value if $name=~/RT_SCANS/ && $value;
+			push @{$infoSubmit{'e:Retention time'}{'b:Filter'}},$value if $name=~/RT_SCANS_FILTER/ && $value;
+			
+			push @{$infoSubmit{'f:Fasta'}{'b:Comment'}},$value if $name=~/FASTA_COMMENT/ && $value;
+			push @{$infoSubmit{'f:Fasta'}{'c:Enzyme'}},$value if $name=~/FASTA_ENZYME/ && $value;
+			push @{$infoSubmit{'f:Fasta'}{'d:Max missed cleavage'}},$value if $name=~/FASTA_MAX_MC/ && $value;
+			push @{$infoSubmit{'f:Fasta'}{'e:Filter proteins'}},"Having less than $value peptides" if $name=~/FASTA_FILTER/ && $value;
+			
+			if ($name =~ /MODIFS/ && $value) {
+				$value =~ s/,/, /g;
+				$infoSubmit{'g:Modifications'} = $value;
+			}
+		}
+		my $sthDbID=$dbh->prepare("SELECT ID_DATABANK FROM ANALYSIS_DATABANK WHERE ID_ANALYSIS=$anaID");
+		$sthDbID->execute;
+		while (my $dbID=$sthDbID->fetchrow_array) {
+            my ($dbName,$dbFile,$numEntry)=$dbh->selectrow_array("SELECT NAME,FASTA_FILE,NUM_ENTRY FROM DATABANK WHERE ID_DATABANK=$dbID");
+			push @{$infoSubmit{'a:Databank'}{'a:Name'}},$dbName if $dbName;
+			push @{$infoSubmit{'a:Databank'}{'b:File'}},$dbFile;
+			push @{$infoSubmit{'a:Databank'}{'c:Sequences in databank'}},$numEntry;
+        }
+	}
+	elsif ($fileFormat eq 'TDM.PEP.XML') {			## X! TANDEM
 		open (FILE, $searchFile) || ($infoSubmit{'Error'}="Unable to open Search file");
 		while (my $line=<FILE>) {
 			if ($line=~/scoring, maximum missed cleavage sites/) {
@@ -2443,6 +2503,18 @@ my $paramGrIdx=0; # Assumes only 1 parameter group!!!!!!!!!!!!!!!!!!!!!
         }
 	}
 	else { # all other cases
+		##<Proteome Discoverer
+		if ($fileFormat =~ /\.PDM/) {# Get the Proteome-Discoverer's version
+			(my $msfFileName = $fileName) =~ s/\_[0-9]*\.*[0-9]*\.pdm/\.msf/;
+			my $msfFile=($validStatus==2)? "$promsPath{peptide}/proj_$projectID/ana_$anaID/$msfFileName" : "$promsPath{valid}/multi_ana/proj_$projectID/$msfFileName";
+			if (-e $msfFile) {
+				my $dbsqlite = DBI->connect( "dbi:SQLite:$msfFile", "", "", {PrintError => 1,RaiseError => 1});
+				my ($softVersion)=$dbsqlite->selectrow_array("SELECT SoftwareVersion FROM SchemaInfo ORDER BY rowid ASC LIMIT 1");
+				$dbsqlite->disconnect;
+				$infoSubmit{'c:Proteome Discoverer version'} = $softVersion;
+			}
+		}
+		
 		open (FILE, $searchFile) || ($infoSubmit{'Error'}="Unable to open Search file");
 		my $section='';
 		my $modKey;
@@ -3170,12 +3242,12 @@ sub noRightClick {}
 ########################################
 # STATUS: 0=not reported, 1=reported, -1=reported BUT action was performed again in validation mode after report
 sub updateAnalysisHistory {
-	my ($dbh,$analysisID,$paramStrg,$valType) = @_;
+	my ($dbh,$analysisID,$paramStrg,$valType,$userID) = @_; # $userID only for PhosphoRS
 	$paramStrg = '' unless($paramStrg);
 	my ($userName,$numVerifQueries,$numAllQueries,$numValidPeptides,$numDecoyPeptides,$numAllProteins,$numValidProteins);
 
 	if ($valType ne 'endVal') { # $userName not needed & not defined if called from send2Biologist.cgi with $call='cmd'
-		my $userID = $ENV{'REMOTE_USER'};
+		$userID = $ENV{'REMOTE_USER'} unless $userID;
 		($userName) = $dbh->selectrow_array("SELECT USER_NAME FROM USER_LIST WHERE ID_USER='$userID'") if $userID;
 		$userName='Unknown' unless $userName;
 	}
@@ -4009,6 +4081,8 @@ sub toStringVariableModifications { # Too slow. Avoid if large dataset. Modify p
 		#$posString=~s/-1/?/g if $posString; # -1 -> ? (position ambiguity)
 		if ($posString) { # -1;-2;-3 means ambiguity in position 1, 2 and 3 and is replaced by ?
 			$posString=~s/(-(\d+|=|-|\+|\*);{0,1})+/?/g;
+			$posString=~s/\.\./\.\?\./g; # Add ambigous to match expected modification sites amount
+			$posString=~s/\.$/\.\?/;
 			$posString=~s/(\d+)/$1+$posShift/eg if $posShift; # e flag allows math inside regexp
 		}else{
 			$posString='?';
@@ -4052,21 +4126,23 @@ sub decodeVarMod {
 			$refModName->{$modID}=($psiMsName)? $psiMsName : ($interimName)? $interimName : ($altNames)? $altNames : '';
 		}
 		my %aa=();
-		my $vmodInString=scalar keys %varMods;
-		my $modNtCt='';
-		my @newPos=();
+		my $vmodInString = scalar keys %varMods;
+		my $modNtCt = '';
+		my @newPos = ();
+		my @ambigousSites = ();
 		foreach my $pos (split(/\./,$posString)) {
-			if ($pos =~ /;/) { # in case of ambiguity of a position
+			if ($pos =~ /;|-\d+/) { # in case of ambiguity of a position
 				foreach my $posNeg (split(/;/,$pos)) {
 					if ($posNeg eq '--' || $posNeg eq '-=') {
 						$aa{$sequence[0]}=1;
 						next;
 					}
-					elsif ($posNeg eq '-+' || $posNeg eq '-*'){
+					elsif ($posNeg eq '-+' || $posNeg eq '-*') {
 						$aa{$sequence[$#sequence]}=1;
 						next;
 					}
 					$aa{$sequence[abs($posNeg)-1]}=1;
+					push @ambigousSites, (-1*$posNeg)+$posShift;
 				}
 				push @newPos,'?';
 			}
@@ -4075,6 +4151,18 @@ sub decodeVarMod {
 			}
 			else {$aa{$sequence[$pos-1]}=1; push @newPos,$pos+$posShift;}
 		}
+		
+		# Add ambigous to match expected modification sites amount
+		my $remainingSites = () = $posString =~ /\.\./g; 
+		$remainingSites += () = $posString =~ /\.$/g;
+		for(my $i=0; $i<$remainingSites; $i++) {
+			push @newPos,'?';
+		}
+		
+		if(@ambigousSites) {
+			$newPos[-1] .= "[".join(',', @ambigousSites)."]";
+		}
+		
 		$varMods{"$refModName->{$modID} ($modNtCt)"}=1 if $modNtCt;
 		$varMods{"$refModName->{$modID} (".join('',sort{$a cmp $b} keys %aa).':'.join('.',@newPos).")"}=1 if scalar keys %aa;
 	}
@@ -4479,8 +4567,16 @@ elsif ($element->{'Name'} eq "classifications") {
 
 1;
 
-
 ####>Revision history
+# 4.0.1 Added ambigous modification sites position in decodeVarMod (VS 14/12/18)
+# 4.0.0 Handles multiple ambigous modification sites in decodeVarMod (VS 13/12/18)
+# 3.9.9 Fixed PD search parameters displaying (VS 22/11/18)
+# 3.9.8 Added TDA search parameters (VS 20/11/18)
+# 3.9.7 Added protein sequence recovering in getProtInfo (VS 16/11/2018)
+# 3.9.6 &updateAnalysisHistory takes userID as optional 5th argument (PP 07/11/18)
+# 3.9.5 Improvement in &sortSmart (PP 02/11/18)		
+# 3.9.4 Improvement in &cleanNumericalParameters (PP 02/11/18)
+# 3.9.3 Minor modification in decodeVarMod (VS 23/10/2018)
 # 3.9.2 Update in &deleteUnusedMasterProteins: checks all entries in MASTER_PROTEIN if no list is provided (PP 28/09/18)
 # 3.9.1 Minor modification in updateAnalysisHistory (GA 27/06/18)
 # 3.9.0 &updateMatchGroups: creates and updates match groups from scratch (PP 08/06/18)

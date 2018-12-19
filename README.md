@@ -35,7 +35,7 @@ mkdir docker
 cd path/to/docker
 ```
 5. Retrieve myproms **repository** from GitHub:  
-`git clone https://github.com/bioinfo-pf-curie/myproms` - *Recommanded*  
+`git clone --depth 1 https://github.com/bioinfo-pf-curie/myproms myproms` - *Recommanded*  
 Or download and extract a compressed archive of the repository (https://github.com/bioinfo-pf-curie/myproms).  
 This will create a directory named `myproms` containing all files on this repository.  
 **Important**:

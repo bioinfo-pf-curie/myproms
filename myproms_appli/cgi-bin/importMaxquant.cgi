@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# importMaxquant.cgi       1.3.3                                               #
+# importMaxquant.cgi       1.3.5                                               #
 # Component of site myProMS Web Server                                         #
 # Authors: P. Poullet, G. Arras, S. Liva (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
@@ -457,182 +457,179 @@ my ($fdrPc,$pepUsed,$peptideFilterStrg,$versionStrg,$xmlParams);
 my (@designRawFiles,@designExperiments,@designFractions,@designLabels);
 
 if ($mqparFile) {
-###>mqpar.xml<###
-print "<BR><FONT class='title3'>Importing experimental design from mqpar file:<BR>\n";
-my $xml = new XML::Simple();
-		$xmlParams = $xml->XMLin("$tmpFilesDir/$mqparFile",ForceArray=>['parameterGroup','string','short','int'],SuppressEmpty=>undef);
-		$fdrPc=$xmlParams->{peptideFdr} * 100;
-#>--Fixed modifs--<#
-if ($xmlParams->{fixedModifications}{string}) { # 'string' attribute missing if no modif at all!
-	foreach my $modifStrg (@{$xmlParams->{fixedModifications}{string}}) {
-		next unless $modifStrg;
-		my ($varModName,$specificity)=&promsMod::convertVarModString($modifStrg);
-		my $modID=&promsMod::getModificationIDfromString($dbh,$varModName,$specificity,\%vmodsInUnimod); # %vmodsInUnimod: prevents re-parsing of unimods_table file
-		push @fixedMods,[$modID,$specificity];
-		$modifName2ID{$varModName}=$modID;
+	###>mqpar.xml<###
+	print "<BR><FONT class='title3'>Importing experimental design from mqpar file:<BR>\n";
+	my $xml = new XML::Simple();
+	$xmlParams = $xml->XMLin("$tmpFilesDir/$mqparFile",ForceArray=>['parameterGroup','string','short','int'],SuppressEmpty=>undef);
+	$fdrPc=$xmlParams->{peptideFdr} * 100;
+	#>--Fixed modifs--<#
+	my $xmlFixedMods=$xmlParams->{fixedModifications} || $xmlParams->{parameterGroups}{parameterGroup}[$paramGrIdx]{fixedModifications}; # version dependent!!!!!
+	if ($xmlFixedMods && $xmlFixedMods->{string}) { # 'string' attribute missing if no modif at all!
+		foreach my $modifStrg (@{$xmlFixedMods->{string}}) {
+			next unless $modifStrg;
+			my ($varModName,$specificity)=&promsMod::convertVarModString($modifStrg);
+			my $modID=&promsMod::getModificationIDfromString($dbh,$varModName,$specificity,\%vmodsInUnimod); # %vmodsInUnimod: prevents re-parsing of unimods_table file
+			push @fixedMods,[$modID,$specificity];
+			$modifName2ID{$varModName}=$modID;
+		}
 	}
-}
-#>--Variable modifs--<#
-if ($xmlParams->{parameterGroups}{parameterGroup}[$paramGrIdx]{variableModifications}{string}) {
-	foreach my $modifStrg (@{$xmlParams->{parameterGroups}{parameterGroup}[$paramGrIdx]{variableModifications}{string}}) {
-		next unless $modifStrg;
-		my ($varModName,$specificity)=&promsMod::convertVarModString($modifStrg);
-		my $modID=($modifName2ID{$varModName})? $modifName2ID{$varModName} : &promsMod::getModificationIDfromString($dbh,$varModName,$specificity,\%vmodsInUnimod);
-		push @varMods,[$modID,$specificity,$modifStrg];
-		$modifName2ID{$varModName}=$modID;
+	#>--Variable modifs--<#
+	if ($xmlParams->{parameterGroups}{parameterGroup}[$paramGrIdx]{variableModifications}{string}) {
+		foreach my $modifStrg (@{$xmlParams->{parameterGroups}{parameterGroup}[$paramGrIdx]{variableModifications}{string}}) {
+			next unless $modifStrg;
+			my ($varModName,$specificity)=&promsMod::convertVarModString($modifStrg);
+			my $modID=($modifName2ID{$varModName})? $modifName2ID{$varModName} : &promsMod::getModificationIDfromString($dbh,$varModName,$specificity,\%vmodsInUnimod);
+			push @varMods,[$modID,$specificity,$modifStrg];
+			$modifName2ID{$varModName}=$modID;
+		}
 	}
-}
-#>--Peptides used for quantif--<#
-		$pepUsed=($xmlParams->{quantMode}==1)? 'razor' : ($xmlParams->{quantMode}==2)? 'unique' : 'all'; # 0: all, 1: unique+razor, 2: unique
-		$peptideFilterStrg="$pepUsed;1;"; # peptide used;missedCut;
-if ($xmlParams->{restrictMods}{string}[0]) { # PTM used
-	$peptideFilterStrg.='-' if $xmlParams->{useCounterparts} eq 'false'; # exclude unmodified matching peptides
-	#>Check if all varMods are listed
-	my @matchedVmods;
-	foreach my $modifStrg (@{$xmlParams->{restrictMods}{string}}) {
-		foreach my $refVarMod (@varMods) {
-			if ($modifStrg eq $refVarMod->[2]) {
-				push @matchedVmods,$modifStrg;
-				last;
+	#>--Peptides used for quantif--<#
+	$pepUsed=($xmlParams->{quantMode}==1)? 'razor' : ($xmlParams->{quantMode}==2)? 'unique' : 'all'; # 0: all, 1: unique+razor, 2: unique
+	$peptideFilterStrg="$pepUsed;1;"; # peptide used;missedCut;
+	if ($xmlParams->{restrictMods}{string}[0]) { # PTM used
+		$peptideFilterStrg.='-' if $xmlParams->{useCounterparts} eq 'false'; # exclude unmodified matching peptides
+		#>Check if all varMods are listed
+		my @matchedVmods;
+		foreach my $modifStrg (@{$xmlParams->{restrictMods}{string}}) {
+			foreach my $refVarMod (@varMods) {
+				if ($modifStrg eq $refVarMod->[2]) {
+					push @matchedVmods,$modifStrg;
+					last;
+				}
+			}
+		}
+		if (scalar @matchedVmods == scalar @varMods) {$peptideFilterStrg.='1';} # all allowed
+		else {
+			$peptideFilterStrg.='2:';
+			my $firstPTM=1;
+			foreach my $modifStrg (@matchedVmods) {
+				if ($firstPTM) {$firstPTM=0;}
+				else {$peptideFilterStrg.=',';}
+				my ($varModName,$specificity)=&promsMod::convertVarModString($modifStrg);
+				$peptideFilterStrg.='#'.$modifName2ID{$varModName};
 			}
 		}
 	}
-	if (scalar @matchedVmods == scalar @varMods) {$peptideFilterStrg.='1';} # all allowed
-	else {
-		$peptideFilterStrg.='2:';
-		my $firstPTM=1;
-		foreach my $modifStrg (@matchedVmods) {
-			if ($firstPTM) {$firstPTM=0;}
-			else {$peptideFilterStrg.=',';}
-			my ($varModName,$specificity)=&promsMod::convertVarModString($modifStrg);
-			$peptideFilterStrg.='#'.$modifName2ID{$varModName};
+	else {$peptideFilterStrg.='0';} # no PTM allowed
+	$peptideFilterStrg.=';all;all'; # charge;source used
+	@designRawFiles=@{$xmlParams->{filePaths}{string}};
+	@designExperiments=@{$xmlParams->{experiments}{string}};
+	@designFractions=@{$xmlParams->{fractions}{short}};
+	@designLabels=@{$xmlParams->{parameterGroups}{parameterGroup}[$paramGrIdx]{labelMods}{string}};
+}
+else {
+	print "<BR><FONT class='title3'>Importing experimental design from summary.txt and parameters.txt files:<BR>\n";
+
+	open (SUMMARY,"$tmpFilesDir/$summaryFile") || die "Unable to open $tmpFilesDir/$summaryFile";
+	my %summaryColNum;
+	while (my $line=<SUMMARY>) {
+		chomp($line);
+		my @parameters=split(/\t/,$line);
+		if ($parameters[0] eq 'Raw file') {
+			my $ncol=0;
+			foreach my $colName (@parameters) {
+				$summaryColNum{$colName}=$ncol;
+				$ncol++;
+			}
+		}
+		elsif ($parameters[0] eq 'Total' ||  defined($designInfo{'Experiment'}{$parameters[0]}) ){
+			# Experiment information is not kept so skip to the end !
+			last;
+		}
+		else{
+			if ($parameters[$summaryColNum{'LC-MS run type'}] =~ /Reporter ion MS/) {
+				#code
+				print "<BR><FONT class='title3' color=\"#DD0000\">WARNING: for Reporter ion MS2 or MS3, you need to provide the mqpar.xml file.</FONT><BR>\n";
+				exit;
+			}
+			###> Add sample according to experiment rawname
+			push @designRawFiles,$parameters[$summaryColNum{'Raw file'}];
+			push @designExperiments,$parameters[$summaryColNum{'Experiment'}] if $summaryColNum{'Experiment'};
+			push @designFractions,$parameters[$summaryColNum{'Fraction'}] if $summaryColNum{'Fraction'};
+			if ($#designLabels <0) {
+				if ( $summaryColNum{'Labels0'} ){
+					$parameters[$summaryColNum{'Labels0'}]='' unless $parameters[$summaryColNum{'Labels0'}];
+				}
+				push @designLabels,$parameters[$summaryColNum{'Labels0'}] if $summaryColNum{'Labels0'};
+				push @designLabels,$parameters[$summaryColNum{'Labels1'}] if $summaryColNum{'Labels1'};
+				push @designLabels,$parameters[$summaryColNum{'Labels2'}] if $summaryColNum{'Labels2'};
+				if ($summaryColNum{'Variable modifications'} && $parameters[$summaryColNum{'Variable modifications'}]) {
+					foreach my $modifStrg (split(/;/,$parameters[$summaryColNum{'Variable modifications'}])) {
+						next unless $modifStrg;
+						my ($varModName,$specificity)=&promsMod::convertVarModString($modifStrg);
+						my $modID=($modifName2ID{$varModName})? $modifName2ID{$varModName} : &promsMod::getModificationIDfromString($dbh,$varModName,$specificity,\%vmodsInUnimod);
+						push @varMods,[$modID,$specificity,$modifStrg];
+						$modifName2ID{$varModName}=$modID;
+					}
+				}
+			}
+			my ($sampleName)=($summaryColNum{'Experiment'}) ? $parameters[$summaryColNum{'Experiment'}] : "No_experiments_defined_in_maxquant";
+			%{$designInfo{'Experiment'}{$sampleName}}=();
 		}
 	}
-}
-else {$peptideFilterStrg.='0';} # no PTM allowed
-$peptideFilterStrg.=';all;all'; # charge;source used
-		@designRawFiles=@{$xmlParams->{filePaths}{string}};
-		@designExperiments=@{$xmlParams->{experiments}{string}};
-		@designFractions=@{$xmlParams->{fractions}{short}};
-		@designLabels=@{$xmlParams->{parameterGroups}{parameterGroup}[$paramGrIdx]{labelMods}{string}};
-
-}
-else{
-		print "<BR><FONT class='title3'>Importing experimental design from summary.txt and parameters.txt files:<BR>\n";
-
-		open (SUMMARY,"$tmpFilesDir/$summaryFile") || die "Unable to open $tmpFilesDir/$summaryFile";
-		my %summaryColNum;
-		while (my $line=<SUMMARY>) {
-				chomp($line);
-				my @parameters=split(/\t/,$line);
-				if ($parameters[0] eq 'Raw file') {
-						my $ncol=0;
-						foreach my $colName (@parameters) {
-								$summaryColNum{$colName}=$ncol;
-								$ncol++;
-						}
-				}
-				elsif ($parameters[0] eq 'Total' ||  defined($designInfo{'Experiment'}{$parameters[0]}) ){
-						# Experiment information is not kept so skip to the end !
+	close SUMMARY;
+	
+	my $addPepString='';
+	open (PARAMFILE,"$tmpFilesDir/$parametersFile") || die "Unable to open $tmpFilesDir/$parametersFile";
+	while (my $line=<PARAMFILE>) {
+		chomp($line);
+		$line=~s/\s+$//; # trailing spaces if any
+		my @parameters=split(/\t/,$line);
+		if ($parameters[0] eq 'Version') {
+			##>Maxquant XIC software & version
+			$parameters[1]=~s/\s+$//; # trailing spaces if any
+			$versionStrg=";$parameters[1]";
+		}
+		elsif($parameters[0] eq 'PSM FDR') {
+			$fdrPc=$parameters[1] * 100;
+		}
+		elsif($parameters[0] eq 'Fixed modifications' && $parameters[1] =~ /\w+/ ) {
+			my $fixStg=$parameters[1];
+			$fixStg=~ s/\s+$//g; # Remove last whitespace: 'Carbamidomethyl (C) ' becomes 'Carbamidomethyl (C)'
+			foreach my $modifStrg (split(/;/,$fixStg)){
+				next unless $modifStrg;
+				my ($varModName,$specificity)=&promsMod::convertVarModString($modifStrg);
+				my $modID=&promsMod::getModificationIDfromString($dbh,$varModName,$specificity,\%vmodsInUnimod); # %vmodsInUnimod: prevents re-parsing of unimods_table file
+				push @fixedMods,[$modID,$specificity];
+				$modifName2ID{$varModName}=$modID;
+			}
+		}
+		elsif($parameters[0] eq 'Modifications included in protein quantification') {
+			$peptideFilterStrg=";1;"; # peptide used;missedCut;
+			#>Check if all varMods are listed
+			my @matchedVmods;
+			foreach my $modifStrg (split(/;/,$parameters[1])) {
+				foreach my $refVarMod (@varMods) {
+					if ($modifStrg eq $refVarMod->[2]) {
+						push @matchedVmods,$modifStrg;
 						last;
+					}
 				}
-				else{
-						if ($parameters[$summaryColNum{'LC-MS run type'}] =~ /Reporter ion MS/) {
-								#code
-								print "<BR><FONT class='title3' color=\"#DD0000\">WARNING: for Reporter ion MS2 or MS3, you need to provide the mqpar.xml file.</FONT><BR>\n";
-								exit;
-						}
-						###> Add sample according to experiment rawname
-						push @designRawFiles,$parameters[$summaryColNum{'Raw file'}];
-						push @designExperiments,$parameters[$summaryColNum{'Experiment'}] if $summaryColNum{'Experiment'};
-						push @designFractions,$parameters[$summaryColNum{'Fraction'}] if $summaryColNum{'Fraction'};
-						if ($#designLabels <0) {
-								if ( $summaryColNum{'Labels0'} ){
-										$parameters[$summaryColNum{'Labels0'}]='' unless $parameters[$summaryColNum{'Labels0'}];
-								}
-								push @designLabels,$parameters[$summaryColNum{'Labels0'}] if $summaryColNum{'Labels0'};
-								push @designLabels,$parameters[$summaryColNum{'Labels1'}] if $summaryColNum{'Labels1'};
-								push @designLabels,$parameters[$summaryColNum{'Labels2'}] if $summaryColNum{'Labels2'};
-								if ($summaryColNum{'Variable modifications'} && $parameters[$summaryColNum{'Variable modifications'}]) {
-										foreach my $modifStrg (split(/;/,$parameters[$summaryColNum{'Variable modifications'}])) {
-												next unless $modifStrg;
-												my ($varModName,$specificity)=&promsMod::convertVarModString($modifStrg);
-												my $modID=($modifName2ID{$varModName})? $modifName2ID{$varModName} : &promsMod::getModificationIDfromString($dbh,$varModName,$specificity,\%vmodsInUnimod);
-												push @varMods,[$modID,$specificity,$modifStrg];
-												$modifName2ID{$varModName}=$modID;
-										}
-								}
-						}
-						my ($sampleName)=($summaryColNum{'Experiment'}) ? $parameters[$summaryColNum{'Experiment'}] : "No_experiments_defined_in_maxquant";
-						%{$designInfo{'Experiment'}{$sampleName}}=();
+				if (scalar @matchedVmods == scalar @varMods) {$addPepString.='1';} # all allowed
+				else {
+					$addPepString.='2:';
+					my $firstPTM=1;
+					foreach my $modifStrg (@matchedVmods) {
+						if ($firstPTM) {$firstPTM=0;}
+						else {$addPepString.=',';}
+						my ($varModName,$specificity)=&promsMod::convertVarModString($modifStrg);
+						$addPepString.='#'.$modifName2ID{$varModName};
+					}
 				}
+			}
 		}
-		close SUMMARY;
-		
-		my $addPepString='';
-		open (PARAMFILE,"$tmpFilesDir/$parametersFile") || die "Unable to open $tmpFilesDir/$parametersFile";
-		while (my $line=<PARAMFILE>) {
-				chomp($line);
-				$line=~s/\s+$//; # trailing spaces if any
-				my @parameters=split(/\t/,$line);
-				if ($parameters[0] eq 'Version') {
-						##>Maxquant XIC software & version
-						$parameters[1]=~s/\s+$//; # trailing spaces if any
-						$versionStrg=";$parameters[1]";
-				}
-				elsif($parameters[0] eq 'PSM FDR') {
-						$fdrPc=$parameters[1] * 100;
-				}
-				elsif($parameters[0] eq 'Fixed modifications' && $parameters[1] =~ /\w+/ ) {
-						my $fixStg=$parameters[1];
-						$fixStg=~ s/\s+$//g; # Remove last whitespace: 'Carbamidomethyl (C) ' becomes 'Carbamidomethyl (C)'
-						foreach my $modifStrg (split(/;/,$fixStg)){
-								next unless $modifStrg;
-								my ($varModName,$specificity)=&promsMod::convertVarModString($modifStrg);
-								my $modID=&promsMod::getModificationIDfromString($dbh,$varModName,$specificity,\%vmodsInUnimod); # %vmodsInUnimod: prevents re-parsing of unimods_table file
-								push @fixedMods,[$modID,$specificity];
-								$modifName2ID{$varModName}=$modID;
-						}
-				}
-				elsif($parameters[0] eq 'Modifications included in protein quantification') {
-						$peptideFilterStrg=";1;"; # peptide used;missedCut;
-						#>Check if all varMods are listed
-						my @matchedVmods;
-						foreach my $modifStrg (split(/;/,$parameters[1])) {
-								foreach my $refVarMod (@varMods) {
-										if ($modifStrg eq $refVarMod->[2]) {
-												push @matchedVmods,$modifStrg;
-												last;
-										}
-								}
-								if (scalar @matchedVmods == scalar @varMods) {$addPepString.='1';} # all allowed
-								else {
-										$addPepString.='2:';
-										my $firstPTM=1;
-										foreach my $modifStrg (@matchedVmods) {
-												if ($firstPTM) {$firstPTM=0;}
-												else {$addPepString.=',';}
-												my ($varModName,$specificity)=&promsMod::convertVarModString($modifStrg);
-												$addPepString.='#'.$modifName2ID{$varModName};
-										}
-								}
-						}
-
-				}
-				elsif($parameters[0] eq 'Peptides used for protein quantification') {
-						$pepUsed=($parameters[1]=~ /Razor/)? 'razor' : ($parameters[1]=~ /Unique/)? 'unique' : 'all';
-				}
-				elsif($parameters[0] eq 'Discard unmodified counterpart peptides') {
-						$peptideFilterStrg=$peptideFilterStrg."-" if $parameters[1] =~ /True/;
-						$peptideFilterStrg=$pepUsed.$peptideFilterStrg.$addPepString;
-				}
+		elsif($parameters[0] eq 'Peptides used for protein quantification') {
+			$pepUsed=($parameters[1]=~ /Razor/)? 'razor' : ($parameters[1]=~ /Unique/)? 'unique' : 'all';
 		}
-		close PARAMFILE;
-		if (!$peptideFilterStrg){ $peptideFilterStrg="$pepUsed;1;0"; }
-		$peptideFilterStrg.=';all;all'; # charge;source used
-		print " Done.</FONT><BR>\n";
-
-
+		elsif($parameters[0] eq 'Discard unmodified counterpart peptides') {
+			$peptideFilterStrg=$peptideFilterStrg."-" if $parameters[1] =~ /True/;
+			$peptideFilterStrg=$pepUsed.$peptideFilterStrg.$addPepString;
+		}
+	}
+	close PARAMFILE;
+	if (!$peptideFilterStrg){ $peptideFilterStrg="$pepUsed;1;0"; }
+	$peptideFilterStrg.=';all;all'; # charge;source used
+	print " Done.</FONT><BR>\n";
 }
 
 ##>Labeling<##
@@ -643,7 +640,7 @@ my ($pepQuantifName,$labelingName,$pepQuantifAnnot,$quantifMethodID,$areaParamID
 #>------SILAC-----<# !!! Actually any Isotopic labeling !!!
 #if (($xmlParams && $xmlParams->{parameterGroups}{parameterGroup}[$paramGrIdx]{multiplicity} > 1)||$#designLabels>1) { # $xmlParams->{parameterGroups}{parameterGroup}[$paramGrIdx]{labelMods}{string}[1]
 if ($#designLabels>0) {
-	$labelingPlex=($xmlParams)?$xmlParams->{parameterGroups}{parameterGroup}[$paramGrIdx]{multiplicity}:1+$#designLabels; #scalar @{$xmlParams->{parameterGroups}{parameterGroup}[$paramGrIdx]{labelMods}{string}};
+	$labelingPlex=($xmlParams)? $xmlParams->{parameterGroups}{parameterGroup}[$paramGrIdx]{multiplicity} : 1+$#designLabels; #scalar @{$xmlParams->{parameterGroups}{parameterGroup}[$paramGrIdx]{labelMods}{string}};
 	$labeling='SILAC';
 	$labelingName='SILAC '.$labelingPlex.'plex';
 	$pepQuantifName='SILAC made by MaxQuant';
@@ -1722,7 +1719,7 @@ foreach my $dbID (@databankIDs) {
 #print '.';
 	#my $prefix=($dbID==$contaminantDB)? 'CON__' : undef;
 	#&promsMod::getProtInfo('silent',$dbh,$dbID,\@anaIDs,\%protDes,\%protMW,\%protOrg,\%protLength,\%{$matchList{$dbRank}},undef,$prefix);
-	&promsMod::getProtInfo('verbose',$dbh,$dbID,\@anaIDs,\%protDes,\%protMW,\%protOrg,\%protLength,$refMatchList,undef,$prefix) if scalar keys %{$refMatchList};
+	&promsMod::getProtInfo('verbose',$dbh,$dbID,\@anaIDs,\%protDes,\%protMW,\%protOrg,\%protLength,undef,$refMatchList,undef,$prefix) if scalar keys %{$refMatchList};
 	$prevRefMatchList=$refMatchList;
 #print '.';
 }
@@ -2549,6 +2546,8 @@ sub getModIDforReporterIon { # Modification with corresponding Unimod ID as chec
 
 
 ####>Revision history<####
+# 1.3.5 Adapted to MaxQuant versions 1.6 (PP 19/12/18)
+# 1.3.4 Minor change on the getProtInfo call (VS 16/11/2018)
 # 1.3.3 Minor change to revert code block for modifications allowed for quantification to v1.3.1 (PP 01/10/18)
 # 1.3.2 Add extra files for maxquant import other than TMT or iTRAQ: summary.txt and parameters.txt (GA 09/08/18)
 # 1.3.1 [Fix] bug peptide specificity computation now excludes decoy and optionally contaminent matches (PP 15/06/18)

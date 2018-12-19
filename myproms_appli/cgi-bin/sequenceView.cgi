@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# sequenceView.cgi     3.2.8	                                               #
+# sequenceView.cgi     3.2.9	                                               #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Displays detailed information on a protein:                                  #
@@ -41,6 +41,7 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 #-------------------------------------------------------------------------------
+
 $|=1;
 use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI ':standard';
@@ -2489,23 +2490,23 @@ sub ajaxDisplayVarModPeptides2 {
 sub ajaxGetQuantificationList {
 #print header(-'content-encoding'=>'no',-charset=>'UTF-8');
 	require promsQuantif;
-	my %familyName=(RATIO=>'Protein ratio',SIN=>'Normalized Spectral Index',EMPAI=>'Exponentially Modified Protein Abundance Index');
+	my %proteinQuantifFamilies=&promsQuantif::getProteinQuantifFamilies;
 	my $dbh=&promsConfig::dbConnect;
-	my ($item,$itemID)=split(':',param('designBranch'));
-	$itemID=&promsMod::cleanNumericalParameters($itemID);
+	my ($item,$itemIdStrg)=split(':',param('designBranch'));
+	my @itemID=&promsMod::cleanNumericalParameters(split(',',$itemIdStrg));
 
 	my (%quantifList,%anaQuantifs,%modifications);
 	my (%quantifValues,%quantifInfo,%quantifHierarchy,%quantifPos);
-	my $sthQuantif;
-	if ($item eq 'design') { # Ratio quantifs
-		$sthQuantif=$dbh->prepare("SELECT DISTINCT QM.CODE,Q.ID_QUANTIFICATION,PQ.TARGET_POS,Q.ID_MODIFICATION
-									FROM QUANTIFICATION Q,PROTEIN_QUANTIFICATION PQ,QUANTIFICATION_METHOD QM
-									WHERE Q.ID_QUANTIFICATION=PQ.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD
-									AND Q.ID_DESIGN=$itemID AND PQ.ID_PROTEIN=$proteinID AND TARGET_POS IS NOT NULL");
+	my @sthQuantifs;
+	if ($item eq 'design') { # Ratio/MQ quantifs
+		$sthQuantifs[0]=$dbh->prepare("SELECT DISTINCT QM.CODE,Q.ID_QUANTIFICATION,PQ.TARGET_POS,Q.ID_MODIFICATION,PQ.ID_QUANTIF_PARAMETER
+										FROM QUANTIFICATION Q,PROTEIN_QUANTIFICATION PQ,QUANTIFICATION_METHOD QM
+										WHERE Q.ID_QUANTIFICATION=PQ.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD
+										AND Q.ID_DESIGN=$itemID[0] AND PQ.ID_PROTEIN=$proteinID AND TARGET_POS IS NOT NULL");
 	}
 	else { # internal-analysis
 		my $analysisStrg;
-		if ($itemID eq '0') {
+		if ($itemID[0]==0) {
 			my $sthAna=$dbh->prepare("SELECT ID_ANALYSIS FROM ANALYSIS_PROTEIN WHERE ID_PROTEIN=$proteinID");
 			my @analysisList;
 			$sthAna->execute;
@@ -2514,44 +2515,37 @@ sub ajaxGetQuantificationList {
 			}
 			$analysisStrg=join(',',@analysisList);
 		}
-		else {$analysisStrg=$itemID;}
+		else {$analysisStrg=join(',',@itemID);}
 
 		#<Ratio-quantifs
-		$sthQuantif=$dbh->prepare("SELECT DISTINCT QM.CODE,Q.ID_QUANTIFICATION,PQ.TARGET_POS,Q.ID_MODIFICATION
-									FROM ANA_QUANTIFICATION AQ,QUANTIFICATION Q,PROTEIN_QUANTIFICATION PQ,QUANTIFICATION_METHOD QM
-									WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION=PQ.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD
-									AND Q.ID_DESIGN IS NULL AND PQ.ID_PROTEIN=$proteinID AND TARGET_POS IS NOT NULL AND AQ.ID_ANALYSIS IN ($analysisStrg)");
+		$sthQuantifs[0]=$dbh->prepare("SELECT DISTINCT QM.CODE,Q.ID_QUANTIFICATION,PQ.TARGET_POS,Q.ID_MODIFICATION
+										FROM ANA_QUANTIFICATION AQ,QUANTIFICATION Q,PROTEIN_QUANTIFICATION PQ,QUANTIFICATION_METHOD QM
+										WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION=PQ.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD
+										AND Q.ID_DESIGN IS NULL AND PQ.ID_PROTEIN=$proteinID AND TARGET_POS IS NOT NULL AND AQ.ID_ANALYSIS IN ($analysisStrg)");
 		#<Non-ratio quantifs (SIN,EMPAI)
-		my $sthQuantifNR=$dbh->prepare("SELECT QM.CODE,AQ.ID_ANALYSIS,Q.ID_QUANTIFICATION,Q.NAME,QUANTIF_VALUE
-											FROM ANA_QUANTIFICATION AQ,QUANTIFICATION Q,PROTEIN_QUANTIFICATION PQ,QUANTIFICATION_METHOD QM
-											WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION=PQ.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD
-											AND Q.ID_DESIGN IS NULL AND PQ.ID_PROTEIN=$proteinID AND QM.CODE IN ('SIN','EMPAI') AND AQ.ID_ANALYSIS IN ($analysisStrg)");
-		$sthQuantifNR->execute;
-		while (my ($code,$anaID,$quantifID,$quantifName,$value)=$sthQuantifNR->fetchrow_array) {
-			push @{$quantifList{$code}},$quantifID;
-			$quantifValues{$quantifID}=$value;
-			my @itemInfo=&promsMod::getItemInfo($dbh,'ANALYSIS',$anaID);
-			my $quantifPath;
-			$quantifPos{$quantifID}='1';
-			foreach my $refParent (@itemInfo) {
-				next if $refParent->{'ITEM'} eq 'PROJECT';
-				$quantifPath.=' > ' if $quantifPath;
-				$quantifPath.=$refParent->{'NAME'};
-				$quantifPos{$quantifID}.=sprintf "%03d",$refParent->{'POS'}; # 1 -> 001 (eg EXP1+SAMP1+ANA1=1001001001001 < EXP1+SAMP2+ANA1=1001001002001)
-			}
-			@{$quantifHierarchy{$quantifID}}=($quantifPath,$quantifName);
-		}
-		$sthQuantifNR->finish;
+		$sthQuantifs[1]=$dbh->prepare("SELECT DISTINCT QM.CODE,Q.ID_QUANTIFICATION,1,Q.ID_MODIFICATION
+										FROM ANA_QUANTIFICATION AQ,QUANTIFICATION Q,PROTEIN_QUANTIFICATION PQ,QUANTIFICATION_METHOD QM
+										WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION=PQ.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD
+										AND Q.ID_DESIGN IS NULL AND PQ.ID_PROTEIN=$proteinID AND QM.CODE IN ('SIN','EMPAI') AND AQ.ID_ANALYSIS IN ($analysisStrg)");
 	}
 
-	###<Ratio quantifs>###
-	$sthQuantif->execute;
-	while (my ($code,$quantifID,$targetPos,$modifID)=$sthQuantif->fetchrow_array) { # anaID only for internal quantifs
-		next unless $code=~/_RATIO_|TNPQ/;
-		push @{$quantifList{'RATIO'}},$quantifID."_".$targetPos;
-		@{$modifications{$modifID}}=() if $modifID;
+	###<Fetching quantifs>###
+	my $ratioParamID;
+	foreach my $sthQuantif (@sthQuantifs) {
+		$sthQuantif->execute;
+		while (my ($code,$quantifID,$targetPos,$modifID,$quantifParamID)=$sthQuantif->fetchrow_array) { # anaID only for internal quantifs
+			if ($code eq 'PROT_RATIO_PEP') {
+				unless ($ratioParamID) {
+					($ratioParamID)=$dbh->selectrow_array("SELECT QP.ID_QUANTIF_PARAMETER FROM QUANTIFICATION_PARAMETER QP,QUANTIFICATION_METHOD QM WHERE QP.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD AND QM.CODE='PROT_RATIO_PEP' AND QP.CODE='RATIO'");
+				}
+				next if $quantifParamID != $ratioParamID; # this prevents non-ratio target_pos to be included (state mean, ...)
+			}
+			my $quantifFamily=($code=~/_RATIO_|TNPQ/)? 'RATIO' : $code;
+			push @{$quantifList{$quantifFamily}},$quantifID."_".$targetPos;
+			@{$modifications{$modifID}}=() if $modifID;
+		}
+		$sthQuantif->finish;
 	}
-	$sthQuantif->finish;
 
 	###<Fetching ratio-quantification data>###
 	if ($quantifList{'RATIO'}) { # RATIO
@@ -2560,7 +2554,6 @@ sub ajaxGetQuantificationList {
 		foreach my $quantif (@{$quantifList{'RATIO'}}) {
 			my ($quantifID,$ratioPos)=split('_',$quantif);
 			my $ratioIdx=$ratioPos-1;
-
 			my ($testCondID,$refCondID)=split(/\//,$quantifInfo{$quantifID}[1]->{'RATIOS'}[$ratioIdx]); # id flags removed by &promsQuantif::extractQuantificationParameters
 			my $superRatioTag=($testCondID=~/%/)? '°' : '';
 			$testCondID=~s/%\d+//;
@@ -2583,6 +2576,43 @@ sub ajaxGetQuantificationList {
 			@{$quantifHierarchy{$quantif}}=($quantifPath,$ratioName,$ratioPos);
 		}
 	}
+	if ($quantifList{'MQ'}) {
+		my %parameters=(QUANTIF_FAMILY=>'MQ',VIEW=>'',MEASURE=>['MQ_INT','MQ_IBAQ','MQ_LFQ'],NUM_PEP_CODE=>'PEPTIDES',QUANTIF_LIST=>$quantifList{'MQ'});
+		&promsQuantif::fetchQuantificationData($dbh,\%parameters,\%quantifInfo,\%quantifValues,undef,{$proteinID=>1});
+		foreach my $quantif (@{$quantifList{'MQ'}}) {
+			my ($quantifID,$ratioPos)=split('_',$quantif);
+			my $quantifPath;
+			$quantifPos{$quantif}='1';
+			foreach my $refParent (@{$quantifInfo{$quantifID}[3]}) {
+				next if $refParent->{'ITEM'} eq 'PROJECT';
+				last if $refParent->{'ITEM'} eq 'QUANTIFICATION'; # skip quantif Name
+				$quantifPath.=' > ' if $quantifPath;
+				$quantifPath.=$refParent->{'NAME'};
+				$quantifPos{$quantif}.=sprintf "%03d",$refParent->{'POS'} if $refParent->{'ITEM'} eq 'EXPERIMENT';
+			}
+			$quantifPos{$quantif}.=sprintf "%05d",$quantifID; # samp,ana,quantif generated together
+			@{$quantifHierarchy{$quantif}}=($quantifPath,$quantifInfo{$quantifID}[0]);
+		}
+	}
+	foreach my $quantifFamily ('EMPAI','SIN') { # all measures are fetched
+		if ($quantifList{$quantifFamily}) {
+			my %parameters=(QUANTIF_FAMILY=>$quantifFamily,VIEW=>'',NUM_PEP_CODE=>'',QUANTIF_LIST=>$quantifList{$quantifFamily});
+			&promsQuantif::fetchQuantificationData($dbh,\%parameters,\%quantifInfo,\%quantifValues,undef,{$proteinID=>1});
+			foreach my $quantif (@{$quantifList{$quantifFamily}}) {
+				my ($quantifID,$ratioPos)=split('_',$quantif);
+				my $quantifPath;
+				$quantifPos{$quantif}='1';
+				foreach my $refParent (@{$quantifInfo{$quantifID}[3]}) {
+					next if $refParent->{'ITEM'} eq 'PROJECT';
+					last if $refParent->{'ITEM'} eq 'QUANTIFICATION'; # skip quantif Name
+					$quantifPath.=' > ' if $quantifPath;
+					$quantifPath.=$refParent->{'NAME'};
+					$quantifPos{$quantif}.=sprintf "%03d",$refParent->{'POS'}; # 1 -> 001 (eg EXP1+SAMP1+ANA1=1001001001001 < EXP1+SAMP2+ANA1=1001001002001)
+				}
+				@{$quantifHierarchy{$quantif}}=($quantifPath,$quantifInfo{$quantifID}[0]);
+			}
+		}
+	}
 
 	###<Modification quantifications>###
 	if (scalar keys %modifications) {
@@ -2600,8 +2630,8 @@ sub ajaxGetQuantificationList {
 	print header(-charset=>'UTF-8');
 	warningsToBrowser(1);
 
-	foreach my $quantifFamily (sort keys %quantifList) { # RATIO | EMPAI | SIN
-		print "<FONT class=\"title3\">&bull;$familyName{$quantifFamily}:<FONT>\n";
+	foreach my $quantifFamily (sort keys %quantifList) { # RATIO | MQ | EMPAI | SIN
+		print "<FONT class=\"title3\">&bull;$proteinQuantifFamilies{NAME}{$quantifFamily}:<FONT>\n";
 		if ($quantifFamily eq 'RATIO') {
 			print qq
 |<TABLE border=0 cellspacing=0>
@@ -2615,7 +2645,7 @@ sub ajaxGetQuantificationList {
 |;
 			$bgColor=$color1;
 			my $prevQuantifName='';
-			foreach my $quantif (sort{$quantifPos{$a}<=>$quantifPos{$b} || lc($quantifHierarchy{$a}[0]) cmp lc($quantifHierarchy{$b}[0]) || $quantifHierarchy{$a}[2]<=>$quantifHierarchy{$b}[2]} @{$quantifList{$quantifFamily}}) {
+			foreach my $quantif (sort{lc($quantifHierarchy{$a}[0]) cmp lc($quantifHierarchy{$b}[0]) || $quantifHierarchy{$a}[2]<=>$quantifHierarchy{$b}[2] || &promsMod::sortSmart($a,$b)} @{$quantifList{$quantifFamily}}) {
 				my $quantifNameStrg=($prevQuantifName eq $quantifHierarchy{$quantif}[0])? "<FONT style=\"visibility:hidden\">$quantifHierarchy{$quantif}[0]&nbsp;:&nbsp;</FONT>" : "$quantifHierarchy{$quantif}[0]&nbsp;:&nbsp;";
 				$prevQuantifName=$quantifHierarchy{$quantif}[0];
 				next if $quantifHierarchy{$quantif}[1] eq '/'; # Some quantitation went wrong and there are no quantitation ratios computed !
@@ -2661,23 +2691,43 @@ sub ajaxGetQuantificationList {
 			print "</TABLE>\n<BR>";
 		}
 
-		else { # EMPAI, SIN
-print qq
+		else { # MQ,EMPAI,SIN
+			print qq
 |<TABLE border=0 cellspacing=0>
 <TR bgcolor="$color2">
 <TH class="rbBorder" align="left">&nbsp;Quantification&nbsp;</TH>
-<TH class="bBorder">&nbsp;Value&nbsp;</TH>
-</TR>
 |;
+			if ($quantifFamily eq 'MQ') {print "<TH class=\"rbBorder\">&nbsp;Intensity&nbsp;</TH><TH class=\"rbBorder\">&nbsp;iBAQ&nbsp;</TH><TH class=\"rbBorder\">&nbsp;LFQ&nbsp;</TH>";}
+			elsif ($quantifFamily eq 'EMPAI') {print "<TH class=\"rbBorder\">&nbsp;emPAI&nbsp;</TH><TH class=\"rbBorder\">&nbsp;emPAI (Mol %)&nbsp;</TH><TH class=\"rbBorder\">&nbsp;emPAI (Mr %)&nbsp;</TH>";}
+			elsif ($quantifFamily eq 'SIN') {print "<TH class=\"rbBorder\">&nbsp;SI<SUB>N</SUB>&nbsp;</TH>";}
+			print "<TH class=\"bBorder\">&nbsp;Peptides&nbsp;</TH></TR>\n";
+			
 			$bgColor=$color1;
 			my $prevParentsName='';
-			foreach my $quantifID (sort{$quantifPos{$a}<=>$quantifPos{$b} || lc($quantifHierarchy{$a}[0]) cmp lc($quantifHierarchy{$b}[0]) || lc($quantifHierarchy{$a}[1]) cmp lc($quantifHierarchy{$b}[1])} @{$quantifList{$quantifFamily}}) {
-				my $quantifNameStrg=($prevParentsName eq $quantifHierarchy{$quantifID}[0])? "<FONT style=\"visibility:hidden\">$quantifHierarchy{$quantifID}[0]&nbsp;>&nbsp;</FONT>" : "$quantifHierarchy{$quantifID}[0]&nbsp;>&nbsp;";
-				$prevParentsName=$quantifHierarchy{$quantifID}[0];
-				my $quantifValue=sprintf '%.2e',$quantifValues{$quantifID};
+			foreach my $quantif (sort{$quantifPos{$a}<=>$quantifPos{$b} || lc($quantifHierarchy{$a}[0]) cmp lc($quantifHierarchy{$b}[0]) || lc($quantifHierarchy{$a}[1]) cmp lc($quantifHierarchy{$b}[1])} @{$quantifList{$quantifFamily}}) {
+				my $quantifNameStrg=($prevParentsName eq $quantifHierarchy{$quantif}[0])? "<FONT style=\"visibility:hidden\">$quantifHierarchy{$quantif}[0]&nbsp;>&nbsp;</FONT>" : "$quantifHierarchy{$quantif}[0]&nbsp;>&nbsp;";
+				$prevParentsName=$quantifHierarchy{$quantif}[0];
+				my $quantifValueStrg='';
+				if ($quantifFamily eq 'MQ') {
+					my $intensity=$quantifValues{$quantif}{$proteinID}{MQ_INT} || '-';
+					my $iBaq=$quantifValues{$quantif}{$proteinID}{MQ_IBAQ} || '-';
+					my $lfq=$quantifValues{$quantif}{$proteinID}{MQ_LFQ} || '-';
+					$quantifValueStrg="<TH align=\"right\">&nbsp;$intensity&nbsp;</TH><TH align=\"right\">&nbsp;$iBaq&nbsp;</TH><TH align=\"right\">&nbsp;$lfq&nbsp;</TH>";
+				}
+				elsif ($quantifFamily eq 'EMPAI') {
+					my $empai=(defined($quantifValues{$quantif}{$proteinID}{EMPAI}))? $quantifValues{$quantif}{$proteinID}{EMPAI} : '-';
+					my $empaiMol=(defined($quantifValues{$quantif}{$proteinID}{EMPAI_MOL}))? $quantifValues{$quantif}{$proteinID}{EMPAI_MOL} : '-';
+					my $empaiMr=(defined($quantifValues{$quantif}{$proteinID}{EMPAI_MR}))? $quantifValues{$quantif}{$proteinID}{EMPAI_MR} : '-';
+					$quantifValueStrg="<TH align=\"right\">&nbsp;$empai&nbsp;</TH><TH align=\"right\">&nbsp;$empaiMol&nbsp;</TH><TH align=\"right\">&nbsp;$empaiMr&nbsp;</TH>";
+				}
+				elsif ($quantifFamily eq 'SIN') {
+					my $sin=$quantifValues{$quantif}{$proteinID}{SIN_SIN} || '-';
+					$quantifValueStrg="<TH align=\"right\">&nbsp;$sin&nbsp;</TH>";
+				}
+				#my $quantifValue=sprintf '%.2e',$quantifValues{$quantifID};
 				print qq
 |<TR bgcolor="$bgColor" class="list">
-<TH nowrap align="left" valign=top>&nbsp;$quantifNameStrg$quantifHierarchy{$quantifID}[1]&nbsp;</TH><TH align="left">&nbsp;$quantifValue&nbsp;</TH></TR>
+<TH nowrap align="left" valign=top>&nbsp;$quantifNameStrg$quantifHierarchy{$quantif}[1]&nbsp;</TH>$quantifValueStrg<TH>&nbsp;$quantifValues{$quantif}{$proteinID}{PEPTIDES}&nbsp;</TH></TR>
 |;
 				$bgColor=($bgColor eq $color1)? $color2 : $color1;
 			}
@@ -2689,6 +2739,7 @@ print qq
 }
 
 ####>Revision history<####
+# 3.2.9 Improved support for display of MQ, EMPAI and SIN quantifications (PP 02/11/18)
 # 3.2.8 Handles project status=-1 [no auto-end validation] (PP 07/06/18)
 # 3.2.7 Improved check for spectrum availability & added MaxQuant position probability in &ajaxDisplayVarModPeptides2 (PP 22/03/18)
 # 3.2.6 [Fix] Bug in AJAX &ajaxDisplayVarModPeptides2 to point to good peptide position when multiple occurences (PP 07/03/18)

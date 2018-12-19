@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# runXICProtQuantification.pl       2.7.0                                      #
+# runXICProtQuantification.pl       2.8.0                                      #
 # Component of site myProMS Web Server                                         #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
@@ -40,6 +40,7 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 #-------------------------------------------------------------------------------
+
 $| = 1;
 use promsConfig;
 use promsMod;
@@ -62,33 +63,37 @@ my %promsPath=&promsConfig::getServerInfo('no_user');
 ###############################
 ####>Recovering parameters<####
 ###############################
-my ($quantifID,$quantifDate,$quantItemID)=@ARGV; # only $quantifID & $quantifDate defined if Design-quantif
+my ($quantifID,$quantifDate,$referenceMode)=@ARGV; # only $quantifID & $quantifDate defined if Design-quantif
+$referenceMode='' unless $referenceMode; # for tableRef.txt
 my $quantifDir="$promsPath{tmp}/quantification/$quantifDate";
 my %quantifParameters=&promsQuantif::getQuantificationParameters("$quantifDir/quantif_info.txt");
 my $Rdesign=$quantifParameters{'DB'}{'ALGO_TYPE'}[0]; # <=> {R}{design} for v3 only!
-my ($call,$analysisID,$parentQuantifID); #,$ratioType
-if ($quantItemID) { # no longer possible
-	$call='ANALYSIS';
-	($analysisID,$parentQuantifID)=split(/\./,$quantItemID);
-	#$ratioType='Ratio';
-}
-else {
-	$call='DESIGN';
-	#$ratioType=$quantifParameters{'DB'}{'RATIO_TYPE'}[0]; # Ratio, SuperRatio or SimpleRatio;
-}
+#my ($call,$analysisID,$parentQuantifID); #,$ratioType
+#if ($quantItemID) { # no longer possible
+#	$call='ANALYSIS';
+#	($analysisID,$parentQuantifID)=split(/\./,$quantItemID);
+#	#$ratioType='Ratio';
+#}
+#else {
+#	$call='DESIGN';
+#	#$ratioType=$quantifParameters{'DB'}{'RATIO_TYPE'}[0]; # Ratio, SuperRatio or SimpleRatio;
+#}
 my $ratioType=$quantifParameters{'DB'}{'RATIO_TYPE'}[0]; # Ratio, SuperRatio or SimpleRatio;
 my $topN=($quantifParameters{'DB'}{'TOP_N'})? $quantifParameters{'DB'}{'TOP_N'}[0] : 0; # number peptide used for label-free (except old algo 'Ratio')
 my $matchingPep=($quantifParameters{'DB'}{'MATCH_PEP'})? $quantifParameters{'DB'}{'MATCH_PEP'}[0] : 0; # label-free SimpleRatio: peptides must be the same across conditions
 
 my $dbh=&promsConfig::dbConnect('no_user');
-$dbh->do("UPDATE QUANTIFICATION SET STATUS=0 WHERE ID_QUANTIFICATION=$quantifID");
-$dbh->commit;
-
 my $fileStat="$quantifDir/status_$quantifID.out"; # : "$quantifDir/status_$quantItemID.out";
-open(FILESTAT,">$fileStat") || die "Error while opening $fileStat";
-print FILESTAT "Started ",strftime("%H:%M:%S %d/%m/%Y",localtime),"\n";
-print FILESTAT "1/3 Generating data files\n";
-close FILESTAT;
+
+unless ($referenceMode) {
+	$dbh->do("UPDATE QUANTIFICATION SET STATUS=0 WHERE ID_QUANTIFICATION=$quantifID");
+	$dbh->commit;
+	
+	open(FILESTAT,">$fileStat") || die "Error while opening $fileStat";
+	print FILESTAT "Started ",strftime("%H:%M:%S %d/%m/%Y",localtime),"\n";
+	print FILESTAT "1/3 Generating data files\n";
+	close FILESTAT;
+}
 
 my $projectID=&promsMod::getProjectID($dbh,$quantifID,'QUANTIFICATION');
 
@@ -96,21 +101,44 @@ my ($quantiAnnotation,$quantifiedModifID)=$dbh->selectrow_array("SELECT QUANTIF_
 my ($labeling)=($quantiAnnotation=~/LABEL=([^:]+)/);
 $labeling=uc($labeling);
 
+my $skipFromRefModID=0;
+if ($referenceMode) { # Switching to non-modif quantif
+	$skipFromRefModID=$quantifiedModifID;
+	$quantifiedModifID=0;
+}
+
 ####> R part : statistical analysis of the proteins values
-####> 1st: Create the directories for R analysis (via promsMod function)
+####> 1st: Create the directories for R analysis
 #my $runDir=($call eq 'DESIGN')? "$quantifDir/quanti_$quantifID" : "$quantifDir/quanti_$quantItemID"."_$quantifID";
 my $runDir="$quantifDir/quanti_$quantifID";
 my $dataDir="$runDir/data";
 my $resultDir="$runDir/results";
 my $graphDir="$resultDir/graph";
-#make_path($dataDir,$graphDir,{verbose=>0,mode=>0775}); # $runDir,$resultDir will be created automatically
-mkdir $runDir unless -e $runDir; # already created if runXICProtQuantification.pl launched on cluster
-mkdir $dataDir;
-mkdir $resultDir;
-mkdir $graphDir;
+unless ($referenceMode) {
+	#make_path($dataDir,$graphDir,{verbose=>0,mode=>0775}); # $runDir,$resultDir will be created automatically
+	mkdir $runDir unless -e $runDir; # already created if runXICProtQuantification.pl launched on cluster
+	mkdir $dataDir;
+	mkdir $resultDir;
+	mkdir $graphDir;
+}
+#open (DEBUG,">$promsPath{tmp}/quantification/debug.txt") if $referenceMode; # DEBUG!!!!
 
-#open (DEBUG,">$promsPath{tmp}/quantification/debug.txt"); # DEBUG!!!!
-open(DATA,">$dataDir/table.txt"); # Name of data table
+####>Protein-level normalization for quantif sites (tableRef.txt)
+if (!$referenceMode && $quantifParameters{'DB'}{'INTRA_PROT_REF'}) {
+	if ($quantifParameters{'DB'}{'INTRA_PROT_REF'}[0] eq '-1') {
+		system "./runXICProtQuantification.pl $quantifID $quantifDate 1"; # referenceMode set to 1 to create tableRef.txt
+		$quantifParameters{'R'}{'normalization.ref.test'}[0]=$quantifParameters{'DB'}{'NORMALIZATION_METHOD'}[0];
+	}
+	else {
+		$quantifParameters{'R'}{'normalization.ref.test'}[0]=&generateReferenceProtFromQuantif;
+	}
+	$quantifParameters{'R'}{'normalization.ref.test'}[0].='.none' if $quantifParameters{'R'}{'normalization.ref.test'}[0] !~ /\./; # quantile
+	$quantifParameters{'R'}{'normalization.ref.test'}[0].='.median.scale'; # hard coded for now
+}
+
+####>Main data file
+my $dataFile=($referenceMode)? "$dataDir/tableRef.txt" : "$dataDir/table.txt";
+open(DATA,">$dataFile"); # Name of data table
 if ($ratioType eq 'Ratio') { # Old algos (FC)
 	print DATA "Protein_ID\tPep_Seq\tVar_Mod\tCharge\tPeptide_IDs\tProtein_Name\tProtein_Validity";
 }
@@ -134,7 +162,7 @@ my $poolObservations=0;
 my @conditionList;
 #my %designCheck; # Checks if experimental design matches algo type (label w. new Algo only) TODO: Implement actual test
 my $sthALM=$dbh->prepare("SELECT M.ID_MODIFICATION FROM ANALYSIS_MODIFICATION AM,MODIFICATION M WHERE AM.ID_MODIFICATION=M.ID_MODIFICATION AND AM.ID_ANALYSIS=? AND M.IS_LABEL=1");
-if ($call eq 'DESIGN') {
+#if ($call eq 'DESIGN') {
 	my $sthObsMod=$dbh->prepare("SELECT M.ID_MODIFICATION FROM OBSERVATION O LEFT JOIN OBS_MODIFICATION M ON O.ID_OBSERVATION=M.ID_OBSERVATION WHERE O.ID_OBSERVATION=?"); # returns NULL if no modif!!!
 
 	###> Add on 26/10/12 -> To get new STATES info
@@ -359,8 +387,8 @@ if ($labeling ne 'FREE') {
 	$sthObsMod->finish;
 
 
-}
-else { # $call eq 'ANALYSIS' !!!!!!!DEPRECATED!!!!!!!
+#}
+#else { # $call eq 'ANALYSIS' !!!!!!!DEPRECATED!!!!!!!
 ###	$sthPQN->execute($parentQuantifID);
 ###	my ($parQuantiAnnot)=$sthPQN->fetchrow_array;
 ###	$xicEngine{$parentQuantifID}=($parQuantiAnnot=~/SOFTWARE=MCQ::|EXTRACTION_ALGO=/)? 'MCQ' : 'PD';
@@ -449,7 +477,7 @@ else { # $call eq 'ANALYSIS' !!!!!!!DEPRECATED!!!!!!!
 ###			@ratioTarget=split(/;/,$1);
 ###		}
 ###	}
-}
+#}
 $sthPQN->finish;
 $sthALM->finish;
 
@@ -502,7 +530,7 @@ if ($quantifParameters{DB}{PROTEINS}) {
 ###>Reference proteins for bias correction
 my $normProtUsage='';
 my (%forNormalization,%notForNormalization);
-if ($quantifParameters{DB}{BIAS_CORRECTION}[1]) {
+if ($quantifParameters{DB}{BIAS_CORRECTION}[1] && !$referenceMode) { # done only once in normal mode
 	(my $listID,$normProtUsage)=@{$quantifParameters{DB}{BIAS_CORRECTION}}[1,2];
     $listID=~s/#//; # remove id flag
     $sthList->execute($listID);
@@ -520,6 +548,16 @@ $sthList->finish;
 ####>Query to get all the validated proteins and the peptides<####
 ##################################################################
 my ($pepSpecificity,$pepMissedCleavage,$ptmFilter,$pepChargeState,$pepSource)=@{$quantifParameters{'DB'}{'PEPTIDES'}};
+my %manualPeptides;
+my $manualPepSelection=0;
+if ($referenceMode && $quantifParameters{'DB'}{'PEPTIDES_REF'}[0] eq 'manual') { # if 'current', settings above are kept
+	$manualPepSelection=1;
+	($pepSpecificity,$pepMissedCleavage,$ptmFilter,$pepChargeState,$pepSource)=('all',1,1,'all','all'); # No filter at all
+	foreach my $pepData (1..$#{$quantifParameters{'DB'}{'PEPTIDES_REF'}}) {
+		my ($protID,@pepIDs)=split(/[:,]/,$pepData);
+		foreach my $pepID (@pepIDs) {$manualPeptides{$pepID}=1;}
+	}
+}
 #my $pepQuantifMethodCode=($labeling eq 'FREE')? 'XIC' : uc($labeling);
 #my $pepQuantifCode=($labeling eq 'FREE')? 'XIC_AREA' : ($labeling eq 'SILAC')? 'ISO_AREA' : 'REP_AREA'; # assumes ITRAQ
 #my %pepParamCode2ID;
@@ -565,12 +603,12 @@ my $quantiQuery=qq
 	LEFT JOIN PEPTIDE_MODIFICATION PM ON P.ID_PEPTIDE=PM.ID_PEPTIDE
 	INNER JOIN PEPTIDE_PROTEIN_ATTRIB PPA ON P.ID_PEPTIDE=PPA.ID_PEPTIDE
 	INNER JOIN ANALYSIS_PROTEIN AP ON PPA.ID_PROTEIN=AP.ID_PROTEIN
-	WHERE P.ID_ANALYSIS=AP.ID_ANALYSIS AND AP.ID_ANALYSIS=? AND ABS(AP.VISIBILITY)=2|; # Critical to restrict DISTINCT on ID_PROTEIN for execution time !!! $pepParamCode2ID{$pepQuantifCode}
+	WHERE P.ID_ANALYSIS=AP.ID_ANALYSIS AND AP.ID_ANALYSIS=? AND ABS(AP.VISIBILITY) >= 1|; # VIS>=1 to allow multi-prot/matchGroup in manual case MG edition (PP 19/11/18) # Critical to restrict DISTINCT on ID_PROTEIN for execution time !!! $pepParamCode2ID{$pepQuantifCode}
 unless ($normalizeWithAll) { # filter data
 	$quantiQuery.=($pepSpecificity eq 'unique')? ' AND PPA.IS_SPECIFIC=1' : ($pepSpecificity eq 'unique_shared')? ' AND AP.PEP_SPECIFICITY=100' : ''; # Filter at DB level
 	$quantiQuery.=' AND MISS_CUT=0' unless $pepMissedCleavage;
 }
-$quantiQuery.=' GROUP BY PPA.ID_PROTEIN,P.ID_PEPTIDE ORDER BY AP.NUM_PEP DESC,ABS(PEP_BEG) ASC';
+$quantiQuery.=' GROUP BY PPA.ID_PROTEIN,P.ID_PEPTIDE ORDER BY ABS(AP.VISIBILITY) DESC,AP.NUM_PEP DESC,ABS(PEP_BEG) ASC';
 
 
 #print DEBUG ">QUERY---------------\n$quantiQuery\n----------------------\n";
@@ -701,6 +739,7 @@ foreach my $observationSet (@quantiOrder) {
 		my %mcqXICs; # SILAC only
 		$sthGetPepData->execute($anaID);
 		while (my ($protID,$pepID,$pepBeg,$pepSeq,$varModStrg,$charge,$specif,$misscut,$pepData,$score,$isSpecif,$bestSpecif,$missCut)=$sthGetPepData->fetchrow_array) { # executed multiple time for labeled quantif
+			next if ($manualPepSelection && !$manualPeptides{$pepID});
 			next if (!$pepQuantifValues{$pepID} || !$pepQuantifValues{$pepID}{$targetPos} || $pepQuantifValues{$pepID}{$targetPos} <= 0); # no quantif for pepID or Isobaric bug
 			my $quantifValue=$pepQuantifValues{$pepID}{$targetPos};
 			#next if $quantifValue<=0; # Isobaric bug
@@ -753,28 +792,40 @@ $proteinInConds{$protID}{$poolGroup2Cond{$observationSet}}=1; # protein "exists"
 
 			#>Processing var mods (Checking allowed & removing label if labeled quantif)
 			my $varModCode='';
-			if ($varModStrg && ($labeling ne 'FREE' || $ptmAllowed != 1)) { # There is filtering on PTM
-				my $hasPTM=0;
+			if ($varModStrg && ($labeling ne 'FREE' || $ptmAllowed != 1 || $skipFromRefModID)) { # There is filtering on PTM
+				my %hasPTMs;
+				my $hasRefMod=0; # for referenceMode only
 				foreach my $vMod (split(/&/,$varModStrg)) {
 					my ($modID)=($vMod=~/^(\d+)/);
 					next if $labelModifs{$obsID}{$modID}; # skip labeling modifs
 					if ($ptmAllowed != 1 && !$allowedPtmID{$modID}) {
-						$hasPTM=1;
+						$hasPTMs{$modID}=1;
 						last;
 					}
 					$varModCode.='&'.$vMod;
+					if ($modID==$skipFromRefModID) {
+						$hasRefMod=1;
+						last;
+					}
 				}
-				if ($hasPTM) { # this modification is not allowed
-					$excludedSeq{$pepSeq}=1 if $ptmAllowed <= -1; # -1 or -2 unmodified peptide not allowed if exists a modified version
+				if (scalar %hasPTMs) { # this modification is not allowed
+					$excludedSeq{$pepSeq}=1 if $ptmAllowed <= -1; # -1,-2: unmodified peptide not allowed if exists a modified version
+					next;
+				}
+				if ($hasRefMod) { # referenceMode & target PTM matched: modified & unmodified peptides not allowed
+					$excludedSeq{$pepSeq}=1;
 					next;
 				}
 			}
-			elsif ($varModStrg) {$varModCode='&'.$varModStrg;}
+			elsif ($varModStrg) {
+				$varModCode='&'.$varModStrg;
+			}
 
 			# Non-SILAC phospho quantif
 			if ($isPhosphoQuantif && $labeling ne 'SILAC') {
 				my ($prsProb)=($pepData=~/PRS=\d;([^;]+);/);
-				next if (defined $prsProb && $prsProb < $prsThreshold);
+				#next if (defined $prsProb && $prsProb < $prsThreshold);
+				next if (!defined $prsProb || $prsProb < $prsThreshold); # Changed by PP 19/12/18
 			}
 
 			#$intensity{$pepID}=$quantifValue;
@@ -1255,7 +1306,7 @@ unless (scalar keys %{$usableData{$pepSeq}{$vmod}{$charge}}) {
 		}
 	}
 
-	##>Printing data to file (table.txt)
+	##>Printing data to file
 	$protNumber++ if scalar keys %usableData;
 	foreach my $pepSeq (sort{$peptideBeg{$protID}{$a}<=>$peptideBeg{$protID}{$b} || length($a)<=>length($b)} keys %usableData) {
 		my @seq=split(//,$pepSeq);
@@ -1642,7 +1693,7 @@ foreach my $context (keys %contextRatios) {
 
 	##>New +/-inf ratio decision for each cond pairs ********!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 	# infinite: if ratio >4 for 1,2 pep/protein or ratio >2 for 3+ pep/protein
-	if ($quantifParameters{'DB'}{'MIN_INF_RATIOS'}[0]==0) { ##### $ratioType=~/S\w+Ratio/ &&
+	if ($quantifParameters{'DB'}{'MIN_INF_RATIOS'}[0]==0 && !$referenceMode) { ##### $ratioType=~/S\w+Ratio/ &&
 		if ($quantifiedModifID) {
 			foreach my $modProtID (keys %numPepInCond4ModProt) {
 				&checkInfiniteRatios($modProtID,$numPepInCond4ModProt{$modProtID});
@@ -1654,6 +1705,11 @@ foreach my $context (keys %contextRatios) {
 	}
 }
 close DATA;
+if ($referenceMode) { ### <- End of Reference mode !
+	$dbh->disconnect;
+#close DEBUG;
+	exit;
+}
 #close DEBUG;
 #die "Test table.txt is complete!!!";
 
@@ -1721,7 +1777,7 @@ else { #  (Super/Simple)Ratio LabelFree
 # Launcher for quantification R scripts (provides path for sourcing dependencies) #
 ###################################################################################
 
-filepath="$promsPath{R_scripts}/"
+filepath <- "$promsPath{R_scripts}/"
 source(paste(filepath,"AnalysisDiffLimma.R",sep=""))
 |;
 	close R_SCRIPT;
@@ -2733,9 +2789,50 @@ sub checkForErrors {
 	}
 }
 
+sub generateReferenceProtFromQuantif { # globals: %promsPath,%quantifParameters,$dbh,$runDir,$projectID
+	my ($refQuantifID,$ratioPos,$refCondID,$testCondID)=&promsMod::cleanNumericalParameters(split(/[_:]/,$quantifParameters{'DB'}{'INTRA_PROT_REF'}[0]));
+
+	my ($quantifAnnot)=$dbh->selectrow_array("SELECT QUANTIF_ANNOT FROM QUANTIFICATION WHERE ID_QUANTIFICATION=$refQuantifID");
+	
+	my (@statePos,$normMethod);
+	foreach my $quantInfo (split('::',$quantifAnnot)) {
+		if ($quantInfo=~/^NORMALIZATION_METHOD=/) {
+			$normMethod=(split(/[=;]/,$quantInfo))[1];
+			#<Convert old normalization names (myProMS v2)
+			$normMethod=~s/\.normalization//;
+			$normMethod='median.scale' if $normMethod eq 'global.mad';
+		}
+		elsif ($quantInfo=~/^STATES=/) {
+			$quantInfo=~s/^STATES=//;
+			my $pos=0;
+			foreach my $state (split(';',$quantInfo)) {
+				$pos++;
+				if ($state=~/,#($refCondID|$testCondID)$/) {
+					push @statePos,$pos;
+					last if scalar @statePos==2;
+				}
+			}
+			last;
+		}
+	}
+	system "head -1 $promsPath{quantification}/project_$projectID/quanti_$refQuantifID/data/table.txt > $runDir/data/tableRef.txt";
+	system "grep -E '[[:space:]]State($statePos[0]|$statePos[1])[[:space:]]' $promsPath{quantification}/project_$projectID/quanti_$refQuantifID/data/table.txt >> $runDir/data/tableRef.txt";
+	
+	if ($statePos[0] > 1) {
+		system "sed -i s/state$statePos[0]/state1/ $runDir/data/tableRef.txt";
+	}
+	if ($statePos[1] != 2) {
+		system "sed -i s/state$statePos[1]/state2/ $runDir/data/tableRef.txt";
+	}
+	return $normMethod;
+}
+
+
+# TODO: Handle MaxQuant phospho probability instead of PhosphoRS
 # TODO: Make clear choice for labeled quantif done with PEP_INTENSITY algo: treat as 100% Label-Free or mixed LF/Label ?????
 # TODO: Move label-free peptide matching check further downstream for compatibility with PTM quantif
 ####>Revision history<####
+# 2.8.0 Added protein-level normalization for site quantification (PP 19/12/18)
 # 2.7.0 Now runs on cluster itself: R is launcher by system command (PP 17/09/18)
 # 2.6.2 [Fix] bug in splitting peptide id string during results parsing (PP 13/09/18)
 # 2.6.1 In TopX mode, prevents same peptide sequence to reused unless topX is not reached (PP 14/06/18)

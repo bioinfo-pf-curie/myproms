@@ -1,5 +1,5 @@
 ################################################################################
-# promsQuantif.pm           1.3.4                                              #
+# promsQuantif.pm           1.3.5                                              #
 # Authors: P. Poullet, G. Arras, S. Liva (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -37,6 +37,7 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 #-------------------------------------------------------------------------------
+
 package promsQuantif;
 require Exporter;
 
@@ -55,7 +56,7 @@ my $MAX_INF_RATIO=100; # 1000    ~~~Max ratio allowed before switching to infini
 my $MIN_INF_RATIO=1/$MAX_INF_RATIO;
 
 sub getExtremeRatios {
-	return ($MIN_INF_RATIO,$MAX_INF_RATIO);
+	return ($MIN_INF_RATIO,$MAX_INF_RATIO,$MAX_INF_RATIO_DB,$MIN_INF_RATIO_DB);
 }
 
 sub getProteinQuantifFamilies {
@@ -108,8 +109,9 @@ sub getQuantifNormalizationName {
 	my %normalizationNames=(
 		#>Algo v3--->
 		'none.none'=>		'None',
-		'loess.none'=>		'Loess',
-		'loess.scale'=>		'Loess & Scale',
+		#'loess.none'=>		'Loess',
+		'none.scale'=>		'Scale',
+		#'loess.scale'=>		'Loess & Scale',
 		'median.none'=>		'Median',
 		'median.scale'=>	'Median & Scale',
 		'quantile'=>		'Quantile',
@@ -232,7 +234,7 @@ sub writeQuantifParameterFiles {
 	#<Character
 	my @paramCharList=('normalization.method','pAdj.method','design','residual.variability'); # Super/SimpleRatio & LabelFree
 	push @paramCharList,('quantification.method','bias.correction','name.grp','name.ratio','invRatio','alter','pAdj','typeTest','typeTab','metric','prot.ref'); # Ratio (old algo)
-	push @paramCharList,('Design'); # for algo v2 + 'normalization.method','pAdj.method','pAdj'
+	push @paramCharList,('Design','normalization.ref.test'); # for algo v2 + 'normalization.method','pAdj.method','pAdj'
 	#push @paramCharList,('savegraph','displaygraph','Design','normalization.method','filepath'); # (Super/Simple)Ratio & LabelFree
 	push @paramCharList,('contrasts.matrix','clusters'); # MSstats
 	my %usedParams;
@@ -470,7 +472,7 @@ sub fetchQuantificationData {
 		my ($qMethCode)=$dbh->selectrow_array("SELECT QM.CODE FROM QUANTIFICATION Q,QUANTIFICATION_METHOD QM WHERE Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD AND ID_QUANTIFICATION=$quantifID");
 		$selQuantifFamily=($qMethCode=~/PROT_RATIO_PEP|TNPQ/)? 'RATIO' : $qMethCode;
 	}
-	($refParams->{MIN_RATIO},$refParams->{MAX_RATIO},$refParams->{MIN_PVALUE})=(1000000,0.000001,1); # modified only when RATIO for view = log2,heatmap,explorAna and returned
+	($refParams->{MIN_RATIO},$refParams->{MAX_RATIO},$refParams->{MIN_PVALUE})=(1000000,0.000001,1) if $selQuantifFamily eq 'RATIO'; # modified only when RATIO for view = log2,heatmap,explorAna and returned
 	my %quantifParamInfo;
 	my $view=$refParams->{'VIEW'} || 'log2';
 
@@ -506,6 +508,7 @@ sub fetchQuantificationData {
 		}
 	}
 	my $restrictStrg=($protSelection && scalar keys %{$refSelectedProteins} <= 25)? 'AND PQ.ID_PROTEIN IN ('.join(',',keys %{$refSelectedProteins}).')' : '';
+
 	my $exclusion=($refExcludedProteins && scalar keys %{$refExcludedProteins})? 1 : 0;
 	#my ($quantifMethod)=$dbh->selectrow_array("SELECT CODE FROM QUANTIFICATION_METHOD WHERE ID_QUANTIFICATION_METHOD=$selQuantifMethodID"); # TO BE changed to multi-method label (multiple methods could generate protein ratios)
 
@@ -557,7 +560,7 @@ sub fetchQuantificationData {
 			my $ratioType=($refQuantifInfo->{$quantifID}[1]->{'RATIO_TYPE'})? $refQuantifInfo->{$quantifID}[1]->{'RATIO_TYPE'}[0] : 'Ratio';
 			my @quantifParams;
 			if ($ratioType eq 'None') {
-				@quantifParams=($refParams->{MEASURE});
+				@quantifParams=(ref($refParams->{MEASURE}))? @{$refParams->{MEASURE}} : ($refParams->{MEASURE}); # can be array of values or scalar (1 value)
 			}
 			else {
 				@quantifParams=('RATIO'); # Must start with RATIO!
@@ -580,19 +583,19 @@ sub fetchQuantificationData {
 							next if ($isoSelection && !$refSelectedIsoforms->{$modProtID});
 						}
 						$allowedProtIDs{$modProtID}=1;
-						$refQuantifValues->{$quantif}{$modProtID}{$paramKey}=$qValue;
 						#@{$refProteinInfo->{$protID}}=();
 						if ($paramCode eq 'RATIO') { # recording min/max (!infinite) fold changes
 							if ($qValue < $refParams->{MIN_RATIO}) {
-								if ($qValue==$MIN_INF_RATIO_DB) {$refParams->{MINUS_INF}{$quantif}=1;} else {$refParams->{MIN_RATIO}=$qValue;}
+								if ($qValue<=$MIN_INF_RATIO_DB) {$refParams->{MINUS_INF}{$quantif}=1; $qValue=$MIN_INF_RATIO_DB} else {$refParams->{MIN_RATIO}=$qValue;}
 							}
 							elsif ($qValue > $refParams->{MAX_RATIO}) {
-								if ($qValue==$MAX_INF_RATIO_DB) {$refParams->{PLUS_INF}{$quantif}=1;} else {$refParams->{MAX_RATIO}=$qValue;}
+								if ($qValue>=$MAX_INF_RATIO_DB) {$refParams->{PLUS_INF}{$quantif}=1; $qValue=$MAX_INF_RATIO_DB} else {$refParams->{MAX_RATIO}=$qValue;}
 							}
 						}
 						elsif ($paramKey eq 'P_VALUE') {
 							$refParams->{MIN_PVALUE}=$qValue if ($qValue && $refParams->{MIN_PVALUE} > $qValue); # ignore pval=0
 						}
+						$refQuantifValues->{$quantif}{$modProtID}{$paramKey}=$qValue;
 					}
 				}
 				else { # heatmap,list,explorAna: {protID}{quantif} !!!
@@ -616,21 +619,21 @@ sub fetchQuantificationData {
 							#elsif ($qValue < $refParams->{STRICT_FILTER}{$paramCode}) {$filteredProtIDs{$modProtID}=1; next;}
 						}
 						$allowedProtIDs{$modProtID}=1;
-						$refQuantifValues->{$modProtID}{$quantif}{$paramKey}=$qValue;
 						#@{$refProteinInfo->{$protID}}=();
 						if ($paramCode eq 'RATIO') { # recording min/max (!infinite) fold changes
 							#if ($qValue < $minRatio && $qValue != $MIN_INF_RATIO_DB) {$minRatio=$qValue;}
 							#elsif ($qValue > $maxRatio && $qValue != $MAX_INF_RATIO_DB) {$maxRatio=$qValue;}
 							if ($qValue < $refParams->{MIN_RATIO}) {
-								if ($qValue==$MIN_INF_RATIO_DB) {$refParams->{MINUS_INF}{$quantif}=1;} else {$refParams->{MIN_RATIO}=$qValue;}
+								if ($qValue<=$MIN_INF_RATIO_DB) {$refParams->{MINUS_INF}{$quantif}=1; $qValue=$MIN_INF_RATIO_DB} else {$refParams->{MIN_RATIO}=$qValue;}
 							}
 							elsif ($qValue > $refParams->{MAX_RATIO}) {
-								if ($qValue==$MAX_INF_RATIO_DB) {$refParams->{PLUS_INF}{$quantif}=1;} else {$refParams->{MAX_RATIO}=$qValue;}
+								if ($qValue>=$MAX_INF_RATIO_DB) {$refParams->{PLUS_INF}{$quantif}=1; $qValue=$MAX_INF_RATIO_DB} else {$refParams->{MAX_RATIO}=$qValue;}
 							}
 						}
 						elsif ($paramKey eq 'P_VALUE') {
 							$refParams->{MIN_PVALUE}=$qValue if ($qValue && $refParams->{MIN_PVALUE} > $qValue); # ignore pval=0
 						}
+						$refQuantifValues->{$modProtID}{$quantif}{$paramKey}=$qValue;
 					}
 				}
 			}
@@ -801,37 +804,37 @@ sub fetchQuantificationData {
 		my $sthQinfo=$dbh->prepare("SELECT NAME,ID_ANALYSIS FROM QUANTIFICATION Q,ANA_QUANTIFICATION AQ WHERE Q.ID_QUANTIFICATION=AQ.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION=? LIMIT 0,1");
 		my $sthProtQ0=$dbh->prepare("SELECT PQ.ID_PROTEIN,ID_QUANTIF_PARAMETER,QUANTIF_VALUE FROM PROTEIN_QUANTIFICATION PQ WHERE ID_QUANTIFICATION=? $restrictStrg");
 		my $sthGetPepNum=$dbh->prepare("SELECT ID_PROTEIN,NUM_PEP FROM ANALYSIS_PROTEIN WHERE ID_ANALYSIS=?");
-		foreach my $quantifID (@selectedQuantifications) {
-			($quantifID)=(split('_',$quantifID))[0];($quantifID)=(split('_',$quantifID))[0]; # <ID_QUANTIFICATION>_0 when called for export option in startExporatoryAnalysis.cgi
+		foreach my $quantif (@selectedQuantifications) {
+			my $quantifID=(split('_',$quantif))[0];# ($quantifID)=(split('_',$quantifID))[0]; # <ID_QUANTIFICATION>_0 when called for export option in startExporatoryAnalysis.cgi
 			print '.' if $verbose;
 			$sthQinfo->execute($quantifID);
 			my ($quantifName,$anaID)=$sthQinfo->fetchrow_array;
 			my @itemInfo=&promsMod::getItemInfo($dbh,'QUANTIFICATION',$quantifID);
-			@{$refQuantifInfo->{$quantifID}}=($quantifName,undef,undef,\@itemInfo,$anaID);
+			@{$refQuantifInfo->{$quantifID}}=($quantifName,undef,undef,\@itemInfo,undef,$anaID);
 			$sthProtQ0->execute($quantifID);
 			while (my ($protID,$paramID,$qValue)=$sthProtQ0->fetchrow_array) {
 				next if ($protSelection && !$refSelectedProteins->{$protID});
 				next if ($exclusion && $refExcludedProteins->{$protID});
 				@{$refProteinInfo->{$protID}}=();
 				if ($view =~ /log2/) { # {quantif}{protID} !!!
-					$refQuantifValues->{$quantifID}{$protID}{$paramCodes{$paramID}}=$qValue;
+					$refQuantifValues->{$quantif}{$protID}{$paramCodes{$paramID}}=$qValue;
 				}
 				else { # heatmap,list,explorAna: {protID}{quantif} !!!
-					$refQuantifValues->{$protID}{$quantifID}{$paramCodes{$paramID}}=$qValue;
+					$refQuantifValues->{$protID}{$quantif}{$paramCodes{$paramID}}=$qValue;
 				}
 			}
 			#<Peptides
 			$sthGetPepNum->execute($anaID);
 			if ($view =~ /log2/) { # {quantif}{protID} !!!
 				while (my ($protID,$numPep)=$sthGetPepNum->fetchrow_array) {
-					next if (!$refQuantifValues->{$quantifID} || !$refQuantifValues->{$quantifID}{$protID});
-					$refQuantifValues->{$quantifID}{$protID}{PEPTIDES}=$numPep;
+					next if (!$refQuantifValues->{$quantif} || !$refQuantifValues->{$quantif}{$protID});
+					$refQuantifValues->{$quantif}{$protID}{PEPTIDES}=$numPep;
 				}
 			}
 			else { # heatmap,list,explorAna: {protID}{quantif} !!!
 				while (my ($protID,$numPep)=$sthGetPepNum->fetchrow_array) {
-					next if (!$refQuantifValues->{$protID} || !$refQuantifValues->{$protID}{$quantifID});
-					$refQuantifValues->{$protID}{$quantifID}{PEPTIDES}=$numPep;
+					next if (!$refQuantifValues->{$protID} || !$refQuantifValues->{$protID}{$quantif});
+					$refQuantifValues->{$protID}{$quantif}{PEPTIDES}=$numPep;
 				}
 			}
 		}
@@ -863,7 +866,7 @@ sub fetchQuantificationData {
 			$refProteinInfo->{$protID}[0]=~s/ .*//; # Clean protein alias from badly parsed characters in case identifier conversion
 			$refProteinInfo->{$protID}[0]=~s/[,;']/\./g; # Clean MaxQuant crappy contaminant identifiers
 			if ($view=~/list|export/) {
-				$refProteinInfo->{$protID}[1]=sprintf "%.1f",$refProteinInfo->{$protID}[1]/1000; # MW
+				$refProteinInfo->{$protID}[1]=sprintf "%.1f",$refProteinInfo->{$protID}[1]/1000 if $view eq 'list'; # MW
 				my @geneList;
 				$sthGN->execute($protID);
 				while (my ($gene)=$sthGN->fetchrow_array) {push @geneList,$gene;}
@@ -1227,6 +1230,7 @@ sub decodeModificationSite { # modCode[,any text prefix eg; name of modification
 1;
 
 ####>Revision history
+# 1.3.5 Added normalization.ref.test in &writeQuantifParameterFiles & minor fix in &fetchQuantificationData for EMPAI/SIN (PP 19/12/18)
 # 1.3.4 view=export handled in &fetchQuantificationData (PP 26/09/18)
 # 1.3.3 Added subs for insertion of quantified modification sites by run(XIC/SWATH)ProtQuantification.pl (PP 19/07/18)
 # 1.3.2 Clean protein alias from badly parsed characters in case identifier conversion (PP 09/07/18)

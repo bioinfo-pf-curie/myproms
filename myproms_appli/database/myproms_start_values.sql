@@ -1,5 +1,5 @@
 /*=============================================================================*/
-/*                  myProMS database v3.5.11                                   */
+/*                  myProMS database v3.5.12                                   */
 /* MySQL script for required starting values of myProMS v3.6 database          */
 /* Requires MySQL 5+                                                           */
 /* Patrick Poullet    06/12/2017                                               */
@@ -127,7 +127,8 @@ INSERT INTO QUANTIFICATION_METHOD (ID_QUANTIFICATION_METHOD,NAME,CODE,DES) VALUE
 (8,'MaxQuant','MQ','MaxQuant related Quantitation (iBAQ, Intensity, LFQ and MS/MS count)'),
 (9,'DIA','DIA','Data independant acquisition'),
 (10,'SSP Analysis','SSPA','State-Specific Protein Analysis'),
-(11,'TMT','TMT','Tandem mass tag');
+(11,'TMT','TMT','Tandem mass tag'),
+(12,'TDA','TDA','Targeted data acquisition (PRM,SRM,MRM)');
 
 /*==============================================================*/
 /* Loading table QUANTIFICATION_PARAMETER                       */

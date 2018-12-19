@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# storeAnalyses.cgi     3.7.2                                                  #
+# storeAnalyses.cgi     3.7.5                                                  #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Stores analysis data into myProMS server and DB                              #
@@ -42,6 +42,7 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 #-------------------------------------------------------------------------------
+
 $| = 1;
 use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI ':standard';
@@ -51,10 +52,9 @@ use promsMod;
 use strict;
 use XML::SAX;
 use promsDIA;
-#use XML::Simple;
-#use File::Path qw(make_path remove_tree);
 use File::Copy;
-use Data::Dumper;
+
+
 #######################
 ####>Configuration<####
 #######################
@@ -72,6 +72,8 @@ my (%protSeq,%massExp,%massObs,%queryInfo,%matchedQueryMIS,%varMods,%analysisMod
 my (%proteinsInfo,%peptidesInfo,%spectrumPeptides); # for MSF to PDM file conversion
 # Create a directory to save the MSF files
 mkdir "$promsPath{valid}/multi_ana" unless -e "$promsPath{valid}/multi_ana/";
+&promsMod::cleanDirectory("$promsPath{tmp}/pdm",'1d'); # created if doesn't exist
+
 
 #############################
 ####>Fetching parameters<####
@@ -261,6 +263,16 @@ elsif ($action eq 'anaBatch') {
 				my $totalMergedFiles=scalar @fileIDs;
 				foreach my $fileID (@fileIDs) {
 					$nbFile++;
+					
+					#>Process tracking files<#
+					(my $databankFile="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$searchNodeNumber\.$fileID\.$userID\.fasta/;
+					(my $processEnd="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$searchNodeNumber\.$fileID\.$userID\.end/;
+					(my $processError="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$searchNodeNumber\.$fileID\.$userID\.error/;
+					unlink $databankFile if -e $databankFile;
+					unlink $processEnd if -e $processEnd;
+					unlink $processError if -e $processError;
+				
+					#>Launching convertMsf2Pdm<#
 					print qq
 |<FONT class=\"title3\">&nbsp;-Extracting search #$searchNodeNumber from $msfFile split-mode file #$nbFile/$totalMergedFiles:</FONT><BR>
 <DIV id="streamDIV_${i}_$fileID">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<B>Waiting for process...</B></DIV>
@@ -279,9 +291,6 @@ setTimeout('getWindowStream()',1500);
 					my $pdmFile="$usedFilePath/$usedFileName"; # pdm generated in user's directory no matter where msf is
 
 					#>Starting wait loop<#
-					(my $databankFile="$promsPath{tmp}/$msfFile")=~s/\.msf\Z/_$searchNodeNumber\.$fileID\.$userID\.fasta/;
-					(my $processEnd="$promsPath{tmp}/$msfFile")=~s/\.msf\Z/_$searchNodeNumber\.$fileID\.$userID\.end/;
-					(my $processError="$promsPath{tmp}/$msfFile")=~s/\.msf\Z/_$searchNodeNumber\.$fileID\.$userID\.error/;
 					my $count=my $totCount=0;
 					my $pdmSize=0;
 					while (!-e $processEnd && !-e $processError) {
@@ -306,7 +315,6 @@ setTimeout('getWindowStream()',1500);
 						unlink $processError;
 						unlink $pdmFile if -e $pdmFile;
 						unlink $databankFile if -e $databankFile;
-		#exit;
 						next SEL_FILE;
 					}
 					unlink $processEnd if -e $processEnd;
@@ -362,8 +370,8 @@ setTimeout('getWindowStream()',1500);
 								###> Update the Fasta File that was created for fetching protein annotations and sequences
 								###  (cf. &printPeptidesMSF)
 								(my $rootFile=$usedFileName)=~s/\.pdm\Z//;
-								my $tempOldDbFile="$promsPath{tmp}/$rootFile.$fileID.$userID.fasta";
-								my $tempNewDbFile="$promsPath{tmp}/$msfFilewoExt##$newIndex"."_$searchNodeNumber.$fileID.$userID.fasta";
+								my $tempOldDbFile="$promsPath{tmp}/pdm/$rootFile.$fileID.$userID.fasta";
+								my $tempNewDbFile="$promsPath{tmp}/pdm/$msfFilewoExt##$newIndex"."_$searchNodeNumber.$fileID.$userID.fasta";
 								move($tempOldDbFile,$tempNewDbFile);
 								###> Update the variables containing the PDM filename.
 								$temporaryFiles[-1]=$newPDMFile;
@@ -390,7 +398,18 @@ setTimeout('getWindowStream()',1500);
 					$filePos++;
 				}
 				next;
-			}else{ # Regulare mode: merge files stay together
+			}
+			else { # Regular mode: merge files stay together
+				
+				#>Process tracking files<#
+				(my $databankFile="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$searchNodeNumber\.$userID\.fasta/;
+				(my $processEnd="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$searchNodeNumber\.$userID\.end/;
+				(my $processError="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$searchNodeNumber\.$userID\.error/;
+				unlink $databankFile if -e $databankFile;
+				unlink $processEnd if -e $processEnd;
+				unlink $processError if -e $processError;
+				
+				#>Launching convertMsf2Pdm<#
 				print qq
 |<FONT class=\"title3\">&nbsp;-Extracting search #$searchNodeNumber from $msfFile:</FONT><BR>
 <DIV id="streamDIV_$i">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<B>Waiting for process...</B></DIV>
@@ -409,9 +428,6 @@ setTimeout('getWindowStream()',1500);
 				my $pdmFile="$usedFilePath/$usedFileName"; # pdm generated in user's directory no matter where msf is
 
 				#>Starting wait loop<#
-				(my $databankFile="$promsPath{tmp}/$msfFile")=~s/\.msf\Z/_$searchNodeNumber\.$userID\.fasta/;
-				(my $processEnd="$promsPath{tmp}/$msfFile")=~s/\.msf\Z/_$searchNodeNumber\.$userID\.end/;
-				(my $processError="$promsPath{tmp}/$msfFile")=~s/\.msf\Z/_$searchNodeNumber\.$userID\.error/;
 				my $count=my $totCount=0;
 				my $pdmSize=0;
 				while (!-e $processEnd && !-e $processError) {
@@ -492,8 +508,8 @@ setTimeout('getWindowStream()',1500);
 							###> Update the Fasta File that was created for fetching protein annotations and sequences
 							###  (cf. &printPeptidesMSF)
 							(my $rootFile=$usedFileName)=~s/\.pdm\Z//;
-							my $tempOldDbFile="$promsPath{tmp}/$rootFile.$userID.fasta";
-							my $tempNewDbFile="$promsPath{tmp}/$msfFilewoExt##$newIndex"."_$searchNodeNumber.$userID.fasta";
+							my $tempOldDbFile="$promsPath{tmp}/pdm/$rootFile.$userID.fasta";
+							my $tempNewDbFile="$promsPath{tmp}/pdm/$msfFilewoExt##$newIndex"."_$searchNodeNumber.$userID.fasta";
 							move($tempOldDbFile,$tempNewDbFile);
 							###> Update the variables containing the PDM filename.
 							$temporaryFiles[-1]=$newPDMFile;
@@ -1266,18 +1282,18 @@ foreach my $dataFile (sort{$fileList{$a}{'pos'}<=>$fileList{$b}{'pos'}} keys %fi
 			#my $tempDbFile;
 
 			if ($fileFormat=~/\.PDM/) {
-				(my $tempDbFile="$promsPath{tmp}/$dataFile")=~s/\.pdm\Z/\.$userID.fasta/; # same dir as pdm file
+				(my $tempDbFile="$promsPath{tmp}/pdm/$dataFile")=~s/\.pdm\Z/\.$userID.fasta/; # same dir as pdm file
 				#if ($splitMsfFiles) {
-				#	($tempDbFile="$promsPath{tmp}/$dataFile")=~s/\.pdm\Z/\.$fileList{$dataFile}{'file_id'}\.$userID.fasta/; # same dir as pdm file
+				#	($tempDbFile="$promsPath{tmp}/pdm/$dataFile")=~s/\.pdm\Z/\.$fileList{$dataFile}{'file_id'}\.$userID.fasta/; # same dir as pdm file
 				#}else{
 				#
 				#}
-				&promsMod::getProtInfo('verbose',$dbh,$databankIDs[0],[$analysisID],\%protDes,\%protMW,\%protOrg,\%protLength,$refProtMatch,$tempDbFile); # only 1-db search allowed. $tempDbFile only for MSF
+				&promsMod::getProtInfo('verbose',$dbh,$databankIDs[0],[$analysisID],\%protDes,\%protMW,\%protOrg,\%protLength,undef,$refProtMatch,$tempDbFile); # only 1-db search allowed. $tempDbFile only for MSF
 			}
 			else {
 				foreach my $dbID (@databankIDs) {
 					#&promsMod::getProtInfo_old($dbh,$databankID,$analysisID,'verbose',\%protDes,\%protMW,\%protOrg,\%protLength,$refProtMatch,$tempDbFile); # $tempDbFile only for MSF
-					&promsMod::getProtInfo('verbose',$dbh,$dbID,[$analysisID],\%protDes,\%protMW,\%protOrg,\%protLength,$refProtMatch);
+					&promsMod::getProtInfo('verbose',$dbh,$dbID,[$analysisID],\%protDes,\%protMW,\%protOrg,\%protLength,undef,$refProtMatch);
 					#unlink $tempDbFile if $tempDbFile;
 				}
 			}
@@ -1560,7 +1576,7 @@ foreach my $dataFile (sort{$fileList{$a}{'pos'}<=>$fileList{$b}{'pos'}} keys %fi
 foreach my $tempFile (@temporaryFiles) {
 	unlink $tempFile;
 }
-unlink glob "$promsPath{tmp}/*.$userID.fasta" if $action eq 'anaBatch';
+unlink glob "$promsPath{tmp}/pdm/*.$userID.fasta" if $action eq 'anaBatch';
 
 #################################
 ####>Deleting original files<####
@@ -2485,7 +2501,7 @@ sub parseParagonXML {
 sub parseTandemPEPXML {
 	my ($msFileName,$protDBSeq) = @_;
 	print "<FONT class=\"title3\">&nbsp;-Extracting data from Tandem XML (from X! Tandem) $msFileName...";
-	my $parser = XML::SAX::ParserFactory->parser(Handler => XTandemPEPXMLHandler->new($msFileName,$protDBSeq,$dbh,$databankIDs[0],$minScore,$maxRank,$analysisID,\%protSeq,\%queryInfo,\%protDes,\%protOrg,\%protLength,\%charge,\%massObs,\%massExp,\%elutionTime,\%numValid,\%matchList,\%maxProtMatch,\%maxProtScore,\%maxQueryScore,\%analysisMods,\%rankProtMatch,\%protMW,\%protDbRank)  );
+	my $parser = XML::SAX::ParserFactory->parser(Handler => XTandemPEPXMLHandler->new($msFileName,$promsPath{"data"},$protDBSeq,$dbh,$databankIDs[0],$minScore,$maxRank,$analysisID,\%protSeq,\%queryInfo,\%protDes,\%protOrg,\%protLength,\%charge,\%massObs,\%massExp,\%elutionTime,\%numValid,\%matchList,\%maxProtMatch,\%maxProtScore,\%maxQueryScore,\%analysisMods,\%rankProtMatch,\%protMW,\%protDbRank)  );
 	$parser->parse_uri("$promsPath{valid}/ana_$analysisID/$msFileName");
 
 	print '...';
@@ -2499,7 +2515,7 @@ sub parseTandemPEPXML {
 sub parseTandemXML {
 	my ($msFileName,$modifNTer) = @_;
 	print "<FONT class=\"title3\">&nbsp;-Extracting data from Tandem XML (from X! Tandem) $msFileName...";
-	my $parser = XML::SAX::ParserFactory->parser(Handler => XTandemXMLHandler->new($msFileName,$modifNTer,$dbh,$databankIDs[0],$minScore,$analysisID,$maxRank,\%protSeq,\%queryInfo,\%protDes,\%protOrg,\%protLength,\%charge,\%massObs,\%massExp,\%elutionTime,\%numValid,\%matchList,\%maxProtMatch,\%maxProtScore,\%maxQueryScore,\%analysisMods,\%rankProtMatch,\%protMW,\%protDbRank)  );
+	my $parser = XML::SAX::ParserFactory->parser(Handler => XTandemXMLHandler->new($msFileName,$promsPath{"data"},$modifNTer,$dbh,$databankIDs[0],$minScore,$analysisID,$maxRank,\%protSeq,\%queryInfo,\%protDes,\%protOrg,\%protLength,\%charge,\%massObs,\%massExp,\%elutionTime,\%numValid,\%matchList,\%maxProtMatch,\%maxProtScore,\%maxQueryScore,\%analysisMods,\%rankProtMatch,\%protMW,\%protDbRank)  );
 	$parser->parse_uri("$promsPath{valid}/ana_$analysisID/$msFileName");
 
 	print '...';
@@ -5143,6 +5159,9 @@ sub getPercolatorScores {
 
 
 ####>Revision history<####
+# 3.7.5 Minor modification on the promsDIA XTandemXML and XTandemPepXML parsers calling (VS 22/11/18)
+# 3.7.4 Moved msf to pdm temporary files to $promsPath{tmp}/pdm (PP 19/11/18)
+# 3.7.3 Minor modif on the getProtInfo call (VS 16/11/18)
 # 3.7.2 Minor modif to rename promsTandemXML to promsDIA (MLP 06/12/17)
 # 3.7.1 Minor bug correction (GA 30/11/17)
 # 3.7.0 Update to PD 2_2 (GA 01/09/17)

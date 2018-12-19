@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# exportSwathLibrary.cgi         1.1.6                                         #
+# exportSwathLibrary.cgi         1.1.7                                         #
 # Authors: M. Le Picard (Institut Curie)                                       #
 # Contact: myproms@curie.fr                                                    #
 #Export a librarie available in myProMS  for peakview or openswath             #
@@ -40,6 +40,7 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 #-------------------------------------------------------------------------------
+
 
 
 $|=1;       # buffer flush (allows instant printing)
@@ -311,7 +312,7 @@ if($action){
     my $startTime=strftime("%s",localtime);
     my $processText="<B>Conversion for OpenSwath ...</B>";
     
-    my ($finalFile,$paramFile,$numValidProt)=&promsDIA::exportLibrarySCRIPT($dbh,$libraryID,$libraryName,$workDir,$startTime,$loadingDivID,$loadingSPAN,$w,$k,$p,$g,$f,$t,$y,$m,$labelling,$other,$lMax,$lMin,$s,$x,$n,$o,$pepMod,$processText,$protList);
+    my ($finalFile,$paramFile,$numValidProt)=&promsDIA::exportLibrarySCRIPT($dbh,$libraryID,$libraryName,$workDir,\%promsPath,$startTime,$loadingDivID,$loadingSPAN,$w,$k,$p,$g,$f,$t,$y,$m,$labelling,$other,$lMax,$lMin,$s,$x,$n,$o,$pepMod,$processText,$protList);
     
     
     
@@ -350,6 +351,7 @@ $dbh->disconnect;
 
 
 ####>Revision history<####
+# 1.1.7 Minor modification on the exportLibrarySCRIPT call (VS 22/11/18)
 # 1.1.6 Minor modif (MLP 13/12/17)
 # 1.1.5 Create a function in promsDIA.pm to export library (MLP 06/12/17)
 # 1.1.4 Minor modif on wait loop (MLP 31/10/17)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# runSWATHProtQuantification.pl       1.3.0                                    #
+# runSWATHProtQuantification.pl       1.3.2                                    #
 # Component of site myProMS Web Server                                         #
 # Authors: M.Le Picard (Institut Curie)                                        #
 # Contact: myproms@curie.fr                                                    #
@@ -297,8 +297,9 @@ foreach my $analysisID (keys %ana2Quant){
 
     ###> Recover fragments info
     my $pepQuantifID=$ana2Quant{$analysisID}{PEP_QUANTIF};
-    my $fragmentFile="$promsPath{peptide}/proj_$projectID/ana_$analysisID/swath_quanti_$pepQuantifID.txt";
-    open(IN,$fragmentFile) or die "$fragmentFile : $!";
+    my $swathFile = $promsPath{"quantification"}."/project_$projectID/quanti_$pepQuantifID/swath_ana_$analysisID.txt";
+    #open(IN,$swathFile) or die "$fragmentFile : $!";
+    open(IN,$swathFile) or die "$swathFile : $!"; # Change on 2018/11/27 because $fragmentFile does not exist !
     while (<IN>) {
         next if $_=~m/PEP/;
         s/\s\Z//g; # chom is not enough. More hidden Windows character
@@ -672,6 +673,8 @@ unlink $fileStat;
 
 
 ####>Revision history<####
+# 1.3.2 Minor modification because $fragmentFile does not exist (GA 27/11/2018)
+# 1.3.1 Update swath files paths (VS 08/11/2018)
 # 1.3.0 Now runs on cluster itself: R is launcher by system command (PP 17/09/18)
 # 1.2.1 Added 2 wait loops for file sync after job done on cluster & new maxMem estimation (PP 29/08/18)
 # 1.2.0 Updated DB insertion to runXICProtQuantification level (PP 19/07/18)

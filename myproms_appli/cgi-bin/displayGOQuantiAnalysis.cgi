@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 #############################################################################
-# displayGOQuantiAnalysis.cgi    1.2.0                                      #
+# displayGOQuantiAnalysis.cgi    1.2.1                                      #
 # Authors: P. Poullet, G. Arras ,F. Yvon & S. Liva (Institut Curie)         #
 # Contact: myproms@curie.fr                                                 #
 # Display heatmap of quantitative GO analyses                               #
@@ -249,7 +249,11 @@ window.onload=function() {
 		#my $goid = $order{$pos};
 		my $rowID = $goID;
 		#$rowID =~ s/GO:0*//;
-		my $rowString = join ',', map { $binData{$_}{'p-value'}{$goID} } (0..4);
+		my $rowString = ''; #join ',', map { $binData{$_}{'p-value'}{$goID} } (0..4);
+		foreach my $bin (0..4) {
+			$rowString.=',' if $bin > 0;
+			$rowString.=$binData{$bin}{'p-value'}{$goID} if $binData{$bin}{'p-value'}{$goID};
+		}
 		# GO~term : ncRNA 3'-end processing contain -> do not use apostrophe for $goTerms{$goid} but quotation marks instead
         print "    HM.addRow([\"$goTerms{$goID}\",'$rowID',\"$goTerms{$goID}\"],[$rowString]);\n";
     }
@@ -265,7 +269,7 @@ const enrichFactors=[|;
 		my $firstGoID=1;
 		foreach my $goID (@order) {
 			print ',' unless $firstGoID;
-			print $binData{$binIdx}{'enrichment'}{$goID};
+			print $binData{$binIdx}{'enrichment'}{$goID} if $binData{$binIdx}{'enrichment'}{$goID}; # can be undef
 			$firstGoID=0;
 		}
 		print ']';
@@ -625,6 +629,7 @@ sub getProtList{
 }
 
 ####>Revision history
+# 1.2.1 [Fix] undef bin values when no term found for a bin (PP 11/12/18)
 # 1.2.0 Handles PTM-based GO-quantification, merge.txt no longer used & updated list management (PP 31/08/18)
 # 1.1.3 [Fix] Now uses /usr/local/bin/perl instead of /usr/bin/perl (PP 19/09/17)
 # 1.1.2 Minor graphics improvement (PP 28/01/15)

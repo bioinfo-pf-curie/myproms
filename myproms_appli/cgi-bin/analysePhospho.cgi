@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 #############################################################################
-# analysePhospho.cgi         1.1.3                                          #
+# analysePhospho.cgi         2.0.0                                          #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                   #
 # Contact: myproms@curie.fr                                                 #
 # Script processing PhosphoRS analyses started by selectAnalyses.cgi        #
@@ -40,67 +40,76 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 #-------------------------------------------------------------------------------
+
 use strict;
+use POSIX ":sys_wait_h"; # for WNOHANG
 use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI ':standard';
+use POSIX qw(strftime); # to get the time
+use File::Path qw(rmtree);
 use promsConfig;
 use promsMod;
 use phosphoRS;
 #use IO::Uncompress::Unzip qw(unzip $UnzipError); # needed for &promsMod::extractSpectrumMSF
 use XML::Simple; # needed for &promsMod::extractSpectrumMSF
 
-my %promsPath=&promsConfig::getServerInfo;
-my ($infoPepStrg, @infoPepList);
-@infoPepList = map { "INFO_PEP$_" } (1..10);
-$infoPepStrg = join(', ',@infoPepList);
+####>Configuration<####
+my %promsPath=&promsConfig::getServerInfo('no_user');
+my $phosphoRSDir="$promsPath{tmp}/phosphoRS";
+my $currentPRSDir="$phosphoRSDir/current";
 
-#---------------------#
-# Fetching parameters #
-#---------------------#
-my $probThreshold = param('probThreshold');
-my $massTolerance = param('massTolerance');
-my $activationType = param('activationType');
-my $overWrite=(param('overwrite'))?param('overwrite'):0;
-my @analysisList = param('anaList');
-
-my $dbh=&promsConfig::dbConnect;
-my ($phosphoModID)=$dbh->selectrow_array("SELECT ID_MODIFICATION FROM MODIFICATION WHERE UNIMOD_ACC=21");
-
-#------------------#
-# Only delete case #
-#------------------#
-if(param('deleteID')){
-    my $branchID = param('branchID');
-    print header(-'content-encoding' => 'no', -'charset' => 'UTF-8');
-    print qq
+                      ######################
+##########################>>>CGI mode<<<##########################
+                      ######################
+if ($#ARGV < 0) {
+	
+	my $dbh=&promsConfig::dbConnect;
+	
+	#------------------#
+	# Only delete case #
+	#------------------#
+	if (param('deleteID')) {
+		my $branchID = param('branchID');
+		print header(-'content-encoding' => 'no', -'charset' => 'UTF-8');
+		warningsToBrowser(1);
+		print qq
 |<HEAD>
 <TITLE>Deleting PhosphoRS Analysis</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
 </HEAD>
 <BODY>
 |;
-	&deletePRS($dbh,param('deleteID'));
-	$dbh->disconnect;
+		print "<FONT class=\"title3\">&nbsp;&nbsp;- ";
+		&deletePRS($dbh,param('deleteID'));
+		print "</FONT><BR>\n";
+		$dbh->disconnect;
 
-	print qq
+		print qq
 |<SCRIPT language="Javascript">
 window.location="$promsPath{cgi}/selectAnalyses.cgi?ID=$branchID&callType=phosphoRS";
 </SCRIPT>
 </BODY>
 |;
-	exit;
-}
+		exit;
+	}
 
-$dbh->disconnect;
-#------#
-# HTML #
-#------#
-print header(-'content-encoding' => 'no', -'charset' => 'UTF-8');
-warningsToBrowser(1);
 
-print qq
+	#------------------------------------#
+	# Preparing Phosphorylation Analyses #
+	#------------------------------------#
+
+	####>parameters<####
+	my $probThreshold = param('probThreshold');
+	my $massTolerance = param('massTolerance');
+	my $activationType = param('activationType');
+	my $overWrite=param('overwrite') || 0;
+	my @analysisList = param('anaList');
+	
+	print header(-'content-encoding' => 'no', -'charset' => 'UTF-8');
+	warningsToBrowser(1);
+	print qq
 |<HEAD>
-<TITLE>Performing Phosphorylation Analyses</TITLE>
+<TITLE>Preparing Phosphorylation Analyses</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
 <SCRIPT language="Javascript">
 function newPhosphoRS() {
@@ -110,335 +119,516 @@ function newPhosphoRS() {
 </SCRIPT>
 </HEAD>
 <BODY background="$promsPath{images}/bgProMS.gif">
-<CENTER><FONT class="title">Performing Phosphorylation Site Analysis</FONT></CENTER>
+<CENTER><FONT class="title">Launching Phosphorylation Site Analyses</FONT></CENTER>
 <BR>
 <BR>
 |;
-
-#------------------#
-# Looping analyses #
-#------------------#
-foreach my $anaID (@analysisList){
-
-    # Fetching analysis data #
-    $dbh=&promsConfig::dbConnect;
-    my $startTime = time;
-
-	my ($specificity)=$dbh->selectrow_array("SELECT SPECIFICITY FROM ANALYSIS_MODIFICATION WHERE ID_MODIFICATION=$phosphoModID AND ID_ANALYSIS=$anaID");
-	$specificity=~s/,//g; # S,T,Y -> STY
-
-    my ($countUnchanged,$countFlagged,$countChanged,$countConfirmed,$countTotal) = (0,0,0,0,0);
-    my ($anaName,$dataFile,$fileFormat,$maxRank) = $dbh->selectrow_array("SELECT NAME,DATA_FILE,FILE_FORMAT,MAX_RANK FROM ANALYSIS WHERE ID_ANALYSIS=$anaID");
-    $dbh->disconnect;
-	my $anadir = "$promsPath{valid}/ana_$anaID";
-    my $fullDataFileName = "$anadir/$dataFile";
-
-    # Printing parameters file #
-    #my @anaFilePath = split /\//, $fullDataFileName;
-    my $fileName = $dataFile;
-    $fileName =~ s/\.\w{3}$//;
-    #my $anadir = join '/', @anaFilePath;
-	my $paramFile = "$promsPath{valid}/ana_$anaID/PRSparam_ana_$anaID.txt";
-
-    my $childPid=fork;
-    if ($childPid == 0) { # child here
-		$dbh=&promsConfig::dbConnect;
-		print "<FONT class=\"title2\">+ PhosphoRS analysis of $anaName:</FONT></BR>\n";
-
-		# Removing previous storing parameters file if exists #
-		#my ($dataFileCutName) = ($dataFile =~ /^(.+)\.\w{3}$/);
-		#my $paramFile = "$promsPath{valid}/ana_$anaID/PRSparam_$dataFileCutName.txt";
-		&deletePRS($dbh,$anaID) if -e $paramFile;
-
-		# Starting PhosphoRS #
-
-		my $phosphoRS = new phosphoRS(AnaID => $anaID, File => $fullDataFileName, FileFormat => $fileFormat, MassTolerance => $massTolerance, ActivationType => $activationType);
-
-		my %noAmbiguityQueries;
-		if ($fullDataFileName =~ /([^\/]+)\.pdm$/){
-			print "<FONT class=\"title3\">&nbsp;&nbsp;- Fetching spectrum list...";
-			my $cutFileName = $1;
-			$cutFileName =~ s/_\d$//;
-			my $projectID = &promsMod::getProjectID($dbh, $anaID, 'ANALYSIS');
-			my $dir = "$promsPath{valid}/multi_ana/proj_$projectID";
-			my $msfFileName = "$dir/$cutFileName.msf";
-			die "File: $dir/$cutFileName.msf not found!" unless -e $msfFileName;
-
-			#my @infoPepList = map { "INFO_PEP$_ LIKE \"%Phospho%\"" } (1..10);
-			#my $pepInfoQuery = join ' OR ', @infoPepList;
-			#my $sthSpecId = $dbh->prepare("SELECT EXT_SPECTRUMID, QUERY_NUM FROM QUERY_VALIDATION WHERE VALID_STATUS>=? AND ID_ANALYSIS=? AND QUERY_NUM>0 AND ($pepInfoQuery)");
-			my @spectrumList;
-			my %sthPep;
-			foreach my $i (1..$maxRank){
-				$sthPep{$i} = $dbh->prepare("SELECT INFO_PEP$i FROM QUERY_VALIDATION WHERE ID_QUERY=?");
-			}
-			#my $sthSpecId = $dbh->prepare("SELECT EXT_SPECTRUMID,QUERY_NUM,V.ID_QUERY,GROUP_CONCAT(CONCAT(PEP_RANK,':',POS_STRING) SEPARATOR ',') FROM QUERY_VALIDATION V,QUERY_MODIFICATION M WHERE V.ID_QUERY=M.ID_QUERY AND VALID_STATUS>=-3 AND QUERY_NUM>0 AND ID_MODIFICATION=$phosphoModID AND ID_ANALYSIS=$anaID GROUP BY QUERY_NUM");
-			my ($addQuery)=($overWrite)?'':' M.REF_POS_STRING IS NULL AND';###> Avoid to take into account modified queries
-			my $sthSpecId = $dbh->prepare("SELECT EXT_SPECTRUMID,QUERY_NUM,V.ID_QUERY,GROUP_CONCAT(CONCAT(PEP_RANK,':',POS_STRING) SEPARATOR ',') FROM QUERY_VALIDATION V,QUERY_MODIFICATION M WHERE V.ID_QUERY=M.ID_QUERY AND$addQuery VALID_STATUS>=-3 AND QUERY_NUM>0 AND ID_MODIFICATION=$phosphoModID AND ID_ANALYSIS=$anaID GROUP BY QUERY_NUM");
-			$sthSpecId->execute;
-			while(my ($extSpectrumID,$queryNum,$queryID,$phosPosStrg) = $sthSpecId->fetchrow_array){
-				#>Filetring for obvious unambiguous positions
-				my $ambiguity=0;
-				foreach my $pepPosData (split(',',$phosPosStrg)) {
-					my ($rank,$posStrg)=split(':',$pepPosData);
-					$sthPep{$rank}->execute($queryID);
-					my ($infoPep)=$sthPep{$rank}->fetchrow_array;
-					my ($seq) = ($infoPep=~ /SEQ=([^,]+),/);
-					my @acceptors=$seq=~/[$specificity]/g;
-					my @phosphoPos=split(/\./,$posStrg);
-					if (scalar @acceptors > scalar @phosphoPos) { # more acceptors than modifs -> phosphoRS
-						$ambiguity=1;
-						last;
-					}
-				}
-				if ($ambiguity) {
-					push @spectrumList,[$queryNum,$extSpectrumID];
-				}
-				else { # no need for phosphRS
-					$noAmbiguityQueries{$queryID}=$phosPosStrg;
-				}
-			}
-			print " Done (",scalar keys %noAmbiguityQueries," unambiguous spectra will be skipped).</FONT><BR>\n";
-			$sthSpecId->finish;
-			foreach my $sth (values %sthPep){
-				$sth->finish;
-			}
-			$dbh->disconnect;
-
-			my $numSpectra=scalar @spectrumList;
-			print "<FONT class=\"title3\">&nbsp;&nbsp;- Extracting $numSpectra spectra from MSF file: </FONT>";
-			print "<B>0%" if $numSpectra >= 1000;
-			my $dbsqlite = DBI->connect("dbi:SQLite:$msfFileName","","",{PrintError=>1,RaiseError=>1});
-			my $c = 0;
-			my $pc=0.1; # 1/10 fraction of 1
-			foreach my $refSpectrum (@spectrumList) {
-				$c++;
-				my ($queryNum,$extSpectrumID)=@{$refSpectrum};
-				my ($parentFile,@spectrumInfos) = &promsMod::extractSpectrumMSF($dbsqlite, $extSpectrumID); #, $dir, 'no_user');
-				my $refIons = $spectrumInfos[0];
-				my $charge = $spectrumInfos[4];
-				my $peaks = '';
-
-				foreach my $value (@{$refIons}){
-					$peaks .= $value->{X} . ':' . $value->{Y} . ',';
-				}
-				$peaks =~ s/,$//;
-
-				$phosphoRS->addSpectrumInfo(Peaks => $peaks, Charge => $charge, Activation => $activationType, Query => $queryNum) or die "Cannot add spectrum info for query $queryNum";
-				print '<!--.-->'; # invisible (to keep connection)
-				print '.' if (($c % 50) == 0); # 50 => 20 points between x%
-				if ($numSpectra >= 1000 && $c/$numSpectra >= $pc) {
-					print 100*$pc,'%';
-					$pc+=0.1;
-				}
-			}
-			$dbsqlite->disconnect;
-			print "</B><FONT class=\"title3\"> Done.</FONT><BR>\n";
+	####>job directories<####
+	mkdir $phosphoRSDir unless -e $phosphoRSDir;
+	mkdir $currentPRSDir unless -e $currentPRSDir;
+	
+	my $masterJobCode=strftime("%Y%m%d%H%M%S",localtime);
+	while (glob "$phosphoRSDir/$masterJobCode*") { # to prevent multi-user launch collision
+		sleep 2;
+		$masterJobCode=strftime("%Y%m%d%H%M%S",localtime);
+	}
+	my $numJobs=scalar @analysisList;
+	print '<FONT class="title3">Launching PhosohRS process';
+	print "es" if $numJobs > 1;
+	print " [Master job #$masterJobCode]:\n";
+	
+	####>Looping through analyses<####
+	my $sthAN = $dbh->prepare("SELECT NAME FROM ANALYSIS WHERE ID_ANALYSIS=?");
+	my $jobPos=0; 
+	foreach my $anaID (@analysisList) {
+		$jobPos++;
+		sleep 1 if $jobPos > 1; # wait 1 sec between jobs
+		
+		$sthAN->execute($anaID);
+		my ($anaName)=$sthAN->fetchrow_array;
+		print "<BR>&nbsp;&nbsp;-$jobPos/$numJobs: Analysis '$anaName'";
+		if (-e "$promsPath{valid}/ana_$anaID/PRSparam_ana_$anaID.txt") { # $paramFile
+			print ' [';
+			&deletePRS($dbh,$anaID);
+			print ']';
 		}
-
-		# Running PhosphoRS
-		print "<FONT class=\"title3\">&nbsp;&nbsp;- Running PhosphoRS...";
-		my $code = $phosphoRS->startAnalysis;
-		#if($code != 0){
-		#	print "<BR><FONT class=\"title2\" color=\"red\">Failed, code:$code</FONT><BR><BR>";
-		#	$phosphoRS->cleanFiles;
-		#	next;
-		#}
-		print " Done.</FONT><BR>\n";
-
-		# Fetching queries from DB #
-		print "<FONT class=\"title3\">&nbsp;&nbsp;- Updating phosphorylation sites position...";
-		$dbh = &promsConfig::dbConnect;
-		my %sthUpQ;
-		foreach my $i (1..$maxRank){
-			$sthUpQ{$i} = $dbh->prepare("UPDATE QUERY_VALIDATION SET INFO_PEP$i=? WHERE ID_QUERY=?");
-		}
-		my $sthUpQM1 = $dbh->prepare("UPDATE QUERY_MODIFICATION SET REF_POS_STRING=POS_STRING WHERE ID_MODIFICATION=$phosphoModID AND ID_QUERY=? AND PEP_RANK=? AND REF_POS_STRING IS NULL");
-		my $sthUpQM2 = $dbh->prepare("UPDATE QUERY_MODIFICATION SET POS_STRING=? WHERE ID_MODIFICATION=$phosphoModID AND ID_QUERY=? AND PEP_RANK=?");
-		my $sthQuery = $dbh->prepare("SELECT ID_QUERY,QUERY_NUM,$infoPepStrg FROM QUERY_VALIDATION WHERE ID_ANALYSIS=$anaID AND QUERY_NUM>0 AND VALID_STATUS >=-3");
-		my $sthPhosphoPosStg = $dbh->prepare("SELECT POS_STRING,REF_POS_STRING FROM QUERY_MODIFICATION WHERE ID_QUERY=? AND PEP_RANK=? AND ID_MODIFICATION=$phosphoModID");
-		$sthQuery->execute;
-		while (my ($idQuery,$queryNum,@infoPep) = $sthQuery->fetchrow_array) {
-			if ($noAmbiguityQueries{$idQuery}) {
-				foreach my $pepPosData (split(',',$noAmbiguityQueries{$idQuery})) {
-					my ($rank,$posStrg)=split(':',$pepPosData);
-					my $infoPepStrg = $infoPep[$rank-1];
-					$infoPepStrg .= "PRS=3;100;,";
-					$sthUpQ{$rank}->execute($infoPepStrg,$idQuery);
-					$countConfirmed++;
-					$countTotal++;
-				}
-				next;
-			}
-			# Browsing each info pep #
-			my $i=0;
-			while( my $infoPepStrg = shift @infoPep){
-				$i++;
-				$sthPhosphoPosStg->execute($idQuery,$i);
-				my ($positionStrg,$refpos)=$sthPhosphoPosStg->fetchrow_array;
-				$positionStrg=$refpos if ($refpos && $positionStrg =~ /-\d/);# one site is ambigous
-				if($infoPepStrg =~ /VMOD=([^,]+),/){# keep VMOD for RMOD
-					my $vmodStrg = $1;
-					my $rmodStrg;
-					if ($infoPepStrg !~ /RMOD=/) {
-						$rmodStrg = $vmodStrg;
-					}
-					#my $positionStrg;
-					# Fetching all phosphorylation positions #
-					my %positions;
-					#while($vmodStrg =~ /Phospho \(([A-Z]+):([^\)]+)\)/g){
-					#	$positionStrg .= ($positionStrg)? ".$2" : $2;
-					#	$positions{$1} = $2;
-					#}
-					$positions{'STY'}=$positionStrg;
-					next unless $positionStrg;
-					my ($seq) = ($infoPepStrg=~ /SEQ=([^,]+),/);
-					#next unless ($seq =~ /[STY].*[STY]/);makePhosphoRS.sh
-
-					$countTotal++;
-
-					# Fetching best isoform from PhosphoRS #
-					#print "Query: $queryNum , i: $i , Positions: $positionStrg<BR>\n";
-					if(my $isoformRef = $phosphoRS->getIsoforms($queryNum,$i)){
-						my @isoforms = @{$isoformRef};
-						my $bestIsoformRef = (sort {$b->[0] <=> $a->[0]} @isoforms )[0];
-						my ($proba,$positionsRef) = @{$bestIsoformRef};
-						$proba *= 100;
-						my $bestPositions = join('.',@{$positionsRef});
-						$infoPepStrg =~ s/PRS=[^,]+,//g;
-
-						# Updating info pep data strings #
-						if($bestPositions ne $positionStrg){
-							if($proba >= $probThreshold){
-								# Change Mascot positions to phosphoRS positions
-								my ($sequence) = ($infoPepStrg =~ /SEQ=([^,]+)/);
-								my @sequence = split(//,$sequence);
-								my %newPositions;
-								foreach my $position (@{$positionsRef}){
-									my $aa = $sequence[$position-1];
-									#my $phosphoType = ($aa eq 'S' or $aa eq 'T')? 'ST' : $aa; # assuming that S & T phosphorylations are always regrouped
-									my $phosphoType = ($aa=~/[$specificity]/)? $specificity : $aa; # uses search specif (PP 19/12/14)
-									push @{$newPositions{$phosphoType}}, $position;
-								}
-								$vmodStrg =~ s/ \+ Phospho[^\)]+\)//g;
-								foreach my $phosphoType (keys %newPositions){
-									my $posStrg = join '.', @{$newPositions{$phosphoType}};
-									$vmodStrg .= " + Phospho ($phosphoType:$posStrg)";
-								}
-								$infoPepStrg =~ s/VMOD=[^,]+/VMOD=$vmodStrg/;
-								# Store old positions
-								$infoPepStrg .= "RMOD=$rmodStrg," if $rmodStrg;
-								$sthUpQM1->execute($idQuery,$i); # Record original position
-								$sthUpQM2->execute($bestPositions,$idQuery,$i);
-								my $aaModPos;
-								foreach my $aa ( keys %positions ){ # to keep phospho aa type (lost by PhosphoRS)
-									$aaModPos .= "[$aa]";
-									$aaModPos .= $positions{$aa};
-								}
-								$infoPepStrg .= "PRS=2;$proba;$aaModPos,"; # (status ; PRS score ; previous Mascot positions)
-								$countChanged++;
-							}
-							else {
-								# PRS != Mascot, but unchanged because PRS proba < threshold
-								$infoPepStrg .= "PRS=1;$proba;$bestPositions,"; # (status ; PRS score ; PRS best positions)
-								$countFlagged++;
-							}
-						}
-						else {
-							# PRS = Mascot
-							if($proba >= $probThreshold){
-								$infoPepStrg .= "PRS=3;$proba;,"; # same isoform for PRS and Mascot
-								$countConfirmed++;
-							}
-							else {
-								$infoPepStrg .= "PRS=0;$proba;,"; # same isoform but PRS score < threshold
-								$countUnchanged++;
-							}
-						}
-					}
-					else {
-					   $infoPepStrg .= "PRS=4;;,";
-					}
-					$sthUpQ{$i}->execute($infoPepStrg,$idQuery);
-				}
-			}
-		}
-		foreach my $sth (values %sthUpQ){
-			$sth->finish;
-		}
-	    $sthUpQM1->finish;
-	    $sthUpQM2->finish;
-		$sthPhosphoPosStg->finish;
-	    $dbh->commit;
-	    $dbh->disconnect;
-	    open (INFILE, ">$anadir/PRS_${anaID}_done.txt");
-	    print INFILE "$countConfirmed,$countUnchanged,$countChanged,$countFlagged,$countTotal\n";
-	    close(INFILE);
-	    exit;
-    }
-    else {
-		while (! -e "$anadir/PRS_${anaID}_done.txt") {
-			sleep 60;
-			print "."
-		}
-		open (INFILE, "$anadir/PRS_${anaID}_done.txt");
-		my $line=<INFILE>;
-		chomp($line);
-		($countConfirmed,$countUnchanged,$countChanged,$countFlagged,$countTotal)=split(/,/,$line);
-		close(INFILE);
-		unlink("$anadir/PRS_${anaID}_done.txt");
-
-		## Printing parameters file #
-		#my @anaFilePath = split /\//, $fullDataFileName;
-		#my $fileName = pop @anaFilePath;
-		#$fileName =~ s/\.\w{3}$//;
-		#my $dir = join '/', @anaFilePath;
-		#open PRSPARAM, ">$anadir/PRSparam_$fileName.txt";
-		open (PRSPARAM, ">$paramFile");
-		print PRSPARAM qq
-|Threshold:$probThreshold%
-Mass Tolerance:$massTolerance Da
-Activation Type:$activationType|;
-		close PRSPARAM;
-		print " Done.</FONT><BR>\n";
-
-		# Summary display #
-		my $processTime = time - $startTime;
-		my $processTimeStrg = int($processTime/60).' min '.($processTime % 60).' sec';
-		print qq
-|<FONT class="title3">&nbsp;&nbsp;- Analysis completed in $processTimeStrg:<BR>
-<FONT class="title3">
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$countConfirmed/$countTotal phosphosites confirmed by PhosphoRS (probability > $probThreshold%)<BR>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$countUnchanged/$countTotal phosphosites confirmed by PhosphoRS (probability < $probThreshold%)<BR>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$countChanged/$countTotal phosphosites were changed<BR>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$countFlagged/$countTotal phosphosites were differently determinated by PhosphoRS but unchanged (probability < $probThreshold%)<BR>
-</FONT><BR>
+		my $jobDir=$masterJobCode.'.'.$jobPos;
+		open(FLAG,">$currentPRSDir/$anaID\_$jobDir\_wait.flag"); # flag file used by watchQuantif
+		print FLAG "#";
+		close FLAG;
+		my $fullJobDir="$phosphoRSDir/$jobDir";
+		mkdir $fullJobDir || die "ERROR detected: $!";
+		open (INFO,">$fullJobDir/prs_info.txt"); # item valueR valueDB
+		print INFO qq
+|USER=$ENV{REMOTE_USER}
+ANAID=$anaID
+probThreshold=$probThreshold
+massTolerance=$massTolerance
+activationType=$activationType
+overWrite=$overWrite
 |;
-		$dbh = &promsConfig::dbConnect;
-		# Updating history #
-		my $paramStrg = "threshold:$probThreshold;massTolerance:$massTolerance;activationType:$activationType;";
-		&promsMod::updateAnalysisHistory($dbh, $anaID, $paramStrg, 'prs');
-		$dbh->commit;
-		$dbh->disconnect;
-    }
-}
+		close INFO;	
+	}
+	$sthAN->finish;
+	$dbh->disconnect;
+	print "<BR><BR> Done.</FONT><BR>\n";
 
-print qq
-|<CENTER><INPUT type="button" value="New PhosphoRS Analysis" onclick="newPhosphoRS();"></CENTER>
+	####>Forking to launch master job in background<####
+	my $childPid = fork;
+	unless ($childPid) { # child here
+		#>Disconnecting STDOUT & STDIN from Apache (STDERR still goes to Apache error log!)
+		open STDOUT, '>/dev/null' or die "Can't open /dev/null: $!";
+		open STDIN, '</dev/null' or die "Can't open /dev/null: $!";
+		&launchAllJobs($masterJobCode,\@analysisList,$probThreshold,$massTolerance,$activationType,$overWrite);
+		exit;
+	}
+	
+	print qq
+|<CENTER>
+<BR><FONT class=\"title2\"><BR>PhosphoRS is running in background mode. You can continue using myProMS.</FONT>
+<BR><BR><INPUT type="button" value="New PhosphoRS Analysis" onclick="newPhosphoRS();">
+</CENTER>
+|;
+	####>Calling watch popup window<####
+	sleep 3;
+	print qq
+|<SCRIPT type="text/javascript">
+var watchPhosphoWin=window.open("$promsPath{cgi}/watchPhosphoAnalyses.cgi",'WatchPhosphoWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
+watchPhosphoWin.focus();
+</SCRIPT>
 </BODY>
 </HTML>
 |;
+	exit;
+
+} # <--- End of CGI mode
+	
+	
+                      #####################################
+##########################>>>BASH mode (Single job)<<<##########################
+                      #####################################
+
+####>Recovering parameters<####
+my ($userID,$jobDir,$anaID,$probThreshold,$massTolerance,$activationType,$overWrite)=@ARGV;
+my $fullJobDir="$phosphoRSDir/$jobDir";
+my $fileStat="$fullJobDir/status.out";
+
+rename("$currentPRSDir/$anaID\_$jobDir\_wait.flag","$currentPRSDir/$anaID\_$jobDir\_run.flag"); # run flag file
+
+open(FILESTAT,">$fileStat") || die "Error while opening $fileStat";
+print FILESTAT "Started ",strftime("%H:%M:%S %d/%m/%Y",localtime),"\n";
+print FILESTAT "1/3 Preparing data\n";
+close FILESTAT;
+
+my ($infoPepStrg,@infoPepList);
+@infoPepList = map { "INFO_PEP$_" } (1..10);
+$infoPepStrg = join(', ',@infoPepList);
+
+####>Database connection<####
+my $dbh=&promsConfig::dbConnect('no_user');
+
+my ($phosphoModID)=$dbh->selectrow_array("SELECT ID_MODIFICATION FROM MODIFICATION WHERE UNIMOD_ACC=21");
+
+my ($specificity)=$dbh->selectrow_array("SELECT SPECIFICITY FROM ANALYSIS_MODIFICATION WHERE ID_MODIFICATION=$phosphoModID AND ID_ANALYSIS=$anaID");
+$specificity=~s/,//g; # S,T,Y -> STY
+
+my ($countUnchanged,$countFlagged,$countChanged,$countConfirmed,$countTotal) = (0,0,0,0,0);
+my ($anaName,$dataFile,$fileFormat,$maxRank) = $dbh->selectrow_array("SELECT NAME,DATA_FILE,FILE_FORMAT,MAX_RANK FROM ANALYSIS WHERE ID_ANALYSIS=$anaID");
+$dbh->disconnect;
+my $anadir = "$promsPath{valid}/ana_$anaID";
+my $fullDataFileName = "$anadir/$dataFile";
+
+####>Preparing data for PhosphoRS<####
+my $phosphoRS = new phosphoRS(AnaID => $anaID, fullJobDir =>$fullJobDir, File => $fullDataFileName, FileFormat => $fileFormat, MassTolerance => $massTolerance, ActivationType => $activationType);
+
+my %noAmbiguityQueries;
+if ($fullDataFileName =~ /([^\/]+)\.pdm$/){
+	
+	open(FILESTAT,">>$fileStat") || die "Error while opening $fileStat";
+	print FILESTAT "1.1/3 Fetching spectra from MSF file\n";
+	close FILESTAT;
+	my $cutFileName = $1;
+	$cutFileName =~ s/_\d$//;
+	
+	$dbh=&promsConfig::dbConnect('no_user');
+	
+	my $projectID = &promsMod::getProjectID($dbh, $anaID, 'ANALYSIS');
+	
+	my $dir = "$promsPath{valid}/multi_ana/proj_$projectID";
+	my $msfFileName = "$dir/$cutFileName.msf";
+	die "File: $dir/$cutFileName.msf not found!" unless -e $msfFileName;
+
+	#my @infoPepList = map { "INFO_PEP$_ LIKE \"%Phospho%\"" } (1..10);
+	#my $pepInfoQuery = join ' OR ', @infoPepList;
+	#my $sthSpecId = $dbh->prepare("SELECT EXT_SPECTRUMID, QUERY_NUM FROM QUERY_VALIDATION WHERE VALID_STATUS>=? AND ID_ANALYSIS=? AND QUERY_NUM>0 AND ($pepInfoQuery)");
+	my @spectrumList;
+	my %sthPep;
+	foreach my $i (1..$maxRank){
+		$sthPep{$i} = $dbh->prepare("SELECT INFO_PEP$i FROM QUERY_VALIDATION WHERE ID_QUERY=?");
+	}
+	#my $sthSpecId = $dbh->prepare("SELECT EXT_SPECTRUMID,QUERY_NUM,V.ID_QUERY,GROUP_CONCAT(CONCAT(PEP_RANK,':',POS_STRING) SEPARATOR ',') FROM QUERY_VALIDATION V,QUERY_MODIFICATION M WHERE V.ID_QUERY=M.ID_QUERY AND VALID_STATUS>=-3 AND QUERY_NUM>0 AND ID_MODIFICATION=$phosphoModID AND ID_ANALYSIS=$anaID GROUP BY QUERY_NUM");
+	my ($addQuery)=($overWrite)?'':' M.REF_POS_STRING IS NULL AND';###> Avoid to take into account modified queries
+	my $sthSpecId = $dbh->prepare("SELECT EXT_SPECTRUMID,QUERY_NUM,V.ID_QUERY,GROUP_CONCAT(CONCAT(PEP_RANK,':',POS_STRING) SEPARATOR ',') FROM QUERY_VALIDATION V,QUERY_MODIFICATION M WHERE V.ID_QUERY=M.ID_QUERY AND$addQuery VALID_STATUS>=-3 AND QUERY_NUM>0 AND ID_MODIFICATION=$phosphoModID AND ID_ANALYSIS=$anaID GROUP BY QUERY_NUM");
+	$sthSpecId->execute;
+	while(my ($extSpectrumID,$queryNum,$queryID,$phosPosStrg) = $sthSpecId->fetchrow_array){
+		#>Filetring for obvious unambiguous positions
+		my $ambiguity=0;
+		foreach my $pepPosData (split(',',$phosPosStrg)) {
+			my ($rank,$posStrg)=split(':',$pepPosData);
+			$sthPep{$rank}->execute($queryID);
+			my ($infoPep)=$sthPep{$rank}->fetchrow_array;
+			my ($seq) = ($infoPep=~ /SEQ=([^,]+),/);
+			my @acceptors=$seq=~/[$specificity]/g;
+			my @phosphoPos=split(/\./,$posStrg);
+			if (scalar @acceptors > scalar @phosphoPos) { # more acceptors than modifs -> phosphoRS
+				$ambiguity=1;
+				last;
+			}
+		}
+		if ($ambiguity) {
+			push @spectrumList,[$queryNum,$extSpectrumID];
+		}
+		else { # no need for phosphoRS
+			$noAmbiguityQueries{$queryID}=$phosPosStrg;
+		}
+	}
+	$sthSpecId->finish;
+	foreach my $sth (values %sthPep){
+		$sth->finish;
+	}
+	$dbh->disconnect;
+
+	my $numSpectra=scalar @spectrumList;
+	open(FILESTAT,">>$fileStat") || die "Error while opening $fileStat";
+	print FILESTAT "1.2/3 Extracting $numSpectra spectra from MSF file\n";
+	close FILESTAT;
+
+	my $dbsqlite = DBI->connect("dbi:SQLite:$msfFileName","","",{PrintError=>1,RaiseError=>1});
+	foreach my $refSpectrum (@spectrumList) {
+		my ($queryNum,$extSpectrumID)=@{$refSpectrum};
+		my ($parentFile,@spectrumInfos) = &promsMod::extractSpectrumMSF($dbsqlite, $extSpectrumID); #, $dir, 'no_user');
+		my $refIons = $spectrumInfos[0];
+		my $charge = $spectrumInfos[4];
+		my $peaks = '';
+
+		foreach my $value (@{$refIons}){
+			$peaks .= $value->{X} . ':' . $value->{Y} . ',';
+		}
+		$peaks =~ s/,$//;
+
+		$phosphoRS->addSpectrumInfo(Peaks => $peaks, Charge => $charge, Activation => $activationType, Query => $queryNum) or die "Cannot add spectrum info for query $queryNum";
+	}
+	$dbsqlite->disconnect;
+}
+
+####>Running PhosphoRS<####
+open(FILESTAT,">>$fileStat") || die "Error while opening $fileStat";
+print FILESTAT "2/3 Running PhosphoRS analysis\n";
+close FILESTAT;
+
+my $code = $phosphoRS->startAnalysis;
+#if($code != 0){
+#	print "<BR><FONT class=\"title2\" color=\"red\">Failed, code:$code</FONT><BR><BR>";
+#	$phosphoRS->cleanFiles;
+#	next;
+#}
+
+
+####>Updating sites position in DB<####
+open(FILESTAT,">>$fileStat") || die "Error while opening $fileStat";
+print FILESTAT "3/3 Updating sites position\n";
+close FILESTAT;
+
+$dbh = &promsConfig::dbConnect('no_user');
+my %sthUpQ;
+foreach my $i (1..$maxRank){
+	$sthUpQ{$i} = $dbh->prepare("UPDATE QUERY_VALIDATION SET INFO_PEP$i=? WHERE ID_QUERY=?");
+}
+my $sthUpQM1 = $dbh->prepare("UPDATE QUERY_MODIFICATION SET REF_POS_STRING=POS_STRING WHERE ID_MODIFICATION=$phosphoModID AND ID_QUERY=? AND PEP_RANK=? AND REF_POS_STRING IS NULL");
+my $sthUpQM2 = $dbh->prepare("UPDATE QUERY_MODIFICATION SET POS_STRING=? WHERE ID_MODIFICATION=$phosphoModID AND ID_QUERY=? AND PEP_RANK=?");
+my $sthQuery = $dbh->prepare("SELECT ID_QUERY,QUERY_NUM,$infoPepStrg FROM QUERY_VALIDATION WHERE ID_ANALYSIS=$anaID AND QUERY_NUM>0 AND VALID_STATUS >=-3");
+my $sthPhosphoPosStg = $dbh->prepare("SELECT POS_STRING,REF_POS_STRING FROM QUERY_MODIFICATION WHERE ID_QUERY=? AND PEP_RANK=? AND ID_MODIFICATION=$phosphoModID");
+$sthQuery->execute;
+while (my ($idQuery,$queryNum,@infoPep) = $sthQuery->fetchrow_array) {
+	if ($noAmbiguityQueries{$idQuery}) {
+		foreach my $pepPosData (split(',',$noAmbiguityQueries{$idQuery})) {
+			my ($rank,$posStrg)=split(':',$pepPosData);
+			my $infoPepStrg = $infoPep[$rank-1];
+			$infoPepStrg .= "PRS=3;100;,";
+			$sthUpQ{$rank}->execute($infoPepStrg,$idQuery);
+			$countConfirmed++;
+			$countTotal++;
+		}
+		next;
+	}
+	# Browsing each info pep #
+	my $i=0;
+	while( my $infoPepStrg = shift @infoPep){
+		$i++;
+		$sthPhosphoPosStg->execute($idQuery,$i);
+		my ($positionStrg,$refpos)=$sthPhosphoPosStg->fetchrow_array;
+		$positionStrg=$refpos if ($refpos && $positionStrg =~ /-\d/);# one site is ambigous
+		if($infoPepStrg =~ /VMOD=([^,]+),/){# keep VMOD for RMOD
+			my $vmodStrg = $1;
+			my $rmodStrg;
+			if ($infoPepStrg !~ /RMOD=/) {
+				$rmodStrg = $vmodStrg;
+			}
+			#my $positionStrg;
+			# Fetching all phosphorylation positions #
+			my %positions;
+			#while($vmodStrg =~ /Phospho \(([A-Z]+):([^\)]+)\)/g){
+			#	$positionStrg .= ($positionStrg)? ".$2" : $2;
+			#	$positions{$1} = $2;
+			#}
+			$positions{'STY'}=$positionStrg;
+			next unless $positionStrg;
+			my ($seq) = ($infoPepStrg=~ /SEQ=([^,]+),/);
+			#next unless ($seq =~ /[STY].*[STY]/);makePhosphoRS.sh
+
+			$countTotal++;
+
+			# Fetching best isoform from PhosphoRS #
+			#print "Query: $queryNum , i: $i , Positions: $positionStrg<BR>\n";
+			if(my $isoformRef = $phosphoRS->getIsoforms($queryNum,$i)){
+				my @isoforms = @{$isoformRef};
+				my $bestIsoformRef = (sort {$b->[0] <=> $a->[0]} @isoforms )[0];
+				my ($proba,$positionsRef) = @{$bestIsoformRef};
+				$proba *= 100;
+				my $bestPositions = join('.',@{$positionsRef});
+				$infoPepStrg =~ s/PRS=[^,]+,//g;
+
+				# Updating info pep data strings #
+				if($bestPositions ne $positionStrg){
+					if($proba >= $probThreshold){
+						# Change Mascot positions to phosphoRS positions
+						my ($sequence) = ($infoPepStrg =~ /SEQ=([^,]+)/);
+						my @sequence = split(//,$sequence);
+						my %newPositions;
+						foreach my $position (@{$positionsRef}){
+							my $aa = $sequence[$position-1];
+							#my $phosphoType = ($aa eq 'S' or $aa eq 'T')? 'ST' : $aa; # assuming that S & T phosphorylations are always regrouped
+							my $phosphoType = ($aa=~/[$specificity]/)? $specificity : $aa; # uses search specif (PP 19/12/14)
+							push @{$newPositions{$phosphoType}}, $position;
+						}
+						$vmodStrg =~ s/ \+ Phospho[^\)]+\)//g;
+						foreach my $phosphoType (keys %newPositions){
+							my $posStrg = join '.', @{$newPositions{$phosphoType}};
+							$vmodStrg .= " + Phospho ($phosphoType:$posStrg)";
+						}
+						$infoPepStrg =~ s/VMOD=[^,]+/VMOD=$vmodStrg/;
+						# Store old positions
+						$infoPepStrg .= "RMOD=$rmodStrg," if $rmodStrg;
+						$sthUpQM1->execute($idQuery,$i); # Record original position
+						$sthUpQM2->execute($bestPositions,$idQuery,$i);
+						my $aaModPos;
+						foreach my $aa ( keys %positions ){ # to keep phospho aa type (lost by PhosphoRS)
+							$aaModPos .= "[$aa]";
+							$aaModPos .= $positions{$aa};
+						}
+						$infoPepStrg .= "PRS=2;$proba;$aaModPos,"; # (status ; PRS score ; previous Mascot positions)
+						$countChanged++;
+					}
+					else {
+						# PRS != Mascot, but unchanged because PRS proba < threshold
+						$infoPepStrg .= "PRS=1;$proba;$bestPositions,"; # (status ; PRS score ; PRS best positions)
+						$countFlagged++;
+					}
+				}
+				else {
+					# PRS = Mascot
+					if($proba >= $probThreshold){
+						$infoPepStrg .= "PRS=3;$proba;,"; # same isoform for PRS and Mascot
+						$countConfirmed++;
+					}
+					else {
+						$infoPepStrg .= "PRS=0;$proba;,"; # same isoform but PRS score < threshold
+						$countUnchanged++;
+					}
+				}
+			}
+			else {
+			   $infoPepStrg .= "PRS=4;;,";
+			}
+			$sthUpQ{$i}->execute($infoPepStrg,$idQuery);
+		}
+	}
+}
+foreach my $sth (values %sthUpQ) {
+	$sth->finish;
+}
+$sthUpQM1->finish;
+$sthUpQM2->finish;
+$sthPhosphoPosStg->finish;
+
+my $paramFile = "$promsPath{valid}/ana_$anaID/PRSparam_ana_$anaID.txt";
+open (PRSPARAM, ">$paramFile");
+print PRSPARAM qq
+|Threshold:$probThreshold%
+Mass Tolerance:$massTolerance Da
+Activation Type:$activationType|;
+close PRSPARAM;
+
+####>Updating validation history<####
+my $paramStrg = "threshold:$probThreshold;massTolerance:$massTolerance;activationType:$activationType;";
+&promsMod::updateAnalysisHistory($dbh,$anaID,$paramStrg,'prs',$userID);
+
+$dbh->commit;
+$dbh->disconnect;
+		
+rename("$currentPRSDir/$anaID\_$jobDir\_run.flag","$currentPRSDir/$anaID\_$jobDir\_end.flag"); # end flag file
+		
+open(FILESTAT,">>$fileStat");
+print FILESTAT "Ended ",strftime("%H:%M:%S %d/%m/%Y",localtime),"\n";
+close(FILESTAT);
+
+sleep 30;
+
+##>Cleaning tmp job directory
+rmtree($fullJobDir); rmdir $fullJobDir if -e $fullJobDir;
+unlink "$currentPRSDir/$anaID\_$jobDir\_error.txt";
+unlink "$currentPRSDir/$anaID\_$jobDir\_end.flag";
+
+
+
+
+######################################> SUBROUTINES <########################################
+
+sub launchAllJobs { # Globals: $phosphoRSDir,$currentPRSDir
+	
+	my ($masterJobCode,$refAnalysisList,$probThreshold,$massTolerance,$activationType,$overWrite)=@_;
+	my $userID=$ENV{REMOTE_USER};
+	my $numJobs=scalar @{$refAnalysisList};
+	my %runningJobs;
+	my $cgiUnixDir=`pwd`;
+	$cgiUnixDir=~s/\/*\s*$//; # trim any trailing '/' & spaces
+	
+	my %cluster=&promsConfig::getClusterInfo;
+	
+	####>Cluster jobs<####
+	if ($cluster{'on'}) {
+		
+		my $checkForEndedJobs=sub { # This sub can access all variables global to parent bloc code!!!
+			foreach my $anaID (keys %runningJobs) {
+				my $jobDir=$masterJobCode.'.'.$runningJobs{$anaID};
+				my $fullJobDir="$phosphoRSDir/$jobDir";
+				if (!-e $fullJobDir || -s "$currentPRSDir/$anaID\_$jobDir\_error.txt") {
+					delete $runningJobs{$anaID}; # untrack job.
+				}
+			}
+		};
+		my %baseJobParameters=(
+			maxMem=>'20Gb',
+			numCPUs=>2,
+			maxHours=>48,
+			pbsRunDir=>$cgiUnixDir,
+			noWatch=>1 # do not wait for job to end
+		);
+		my $MAX_PARALLEL_JOBS=$cluster{'maxJobs'};
+
+		####>Looping through job list
+		my $curJobIdx=-1;
+		MAIN_LOOP:while (1) {
+	
+			###>Parallel launch of up to $MAX_PARALLEL_JOBS jobs
+			while (scalar (keys %runningJobs) < $MAX_PARALLEL_JOBS) {
+	
+				##>Also check other user/launches jobs
+				my @runs=glob "$currentPRSDir/*_run.flag";
+				last if scalar @runs >= $MAX_PARALLEL_JOBS;
+				
+				##>Ok to go
+				$curJobIdx++;
+				my $jobPos=$curJobIdx+1;
+				my $anaID=$refAnalysisList->[$curJobIdx];
+				my $jobDir=$masterJobCode.'.'.$jobPos;
+				my $fullJobDir="$phosphoRSDir/$jobDir";
+				
+				my %jobParameters=%baseJobParameters;
+				$jobParameters{jobName}="myProMS_phosphoRS_$anaID";
+				my $commandString="$cgiUnixDir/analysePhospho.cgi $userID $jobDir $anaID $probThreshold $massTolerance $activationType $overWrite 2> $currentPRSDir/$anaID\_$jobDir\_error.txt";
+				my ($pbsError,$pbsErrorFile)=$cluster{'runJob'}->($fullJobDir,$commandString,\%jobParameters);
+				$runningJobs{$anaID}=$jobPos;
+				
+				last MAIN_LOOP if $curJobIdx==$#{$refAnalysisList}; # no more jobs to launch => break MAIN_LOOP
+				sleep 2;
+			}
+			
+			###>Wait for potential ended job before next MAIN_LOOP
+			sleep 60; # $SIG{CHLD} is active during sleep
+			&{$checkForEndedJobs};
+	
+		}
+		###>Wait for last jobs to end
+		while (scalar (keys %runningJobs) > 0) {
+			sleep 60;
+			&{$checkForEndedJobs};
+		}
+	}
+	####>Local jobs<####
+	else {
+		$SIG{CHLD} = sub { # sub called when child communicates with parent (occur during parent sleep)
+			local $!; # good practice. avoids changing errno.
+			while (1) { # while because multiple children could finish at same time
+				my $childPid = waitpid(-1,WNOHANG); # WNOHANG: parent doesn't hang during waitpid
+				#my $childPid = waitpid(-1,POSIX->WNOHANG); # WNOHANG: parent doesn't hang during waitpid
+				last unless ($childPid > 0); # No more to reap.
+				delete $runningJobs{$childPid}; # untrack child.
+			}
+		};
+		
+		my $MAX_PARALLEL_JOBS=&promsConfig::getMaxParallelJobs;
+
+		####>Looping through job list
+		my $curJobIdx=-1;
+		MAIN_LOOP:while (1) {
+	
+			###>Parallel launch of up to $MAX_PARALLEL_JOBS jobs
+			while (scalar (keys %runningJobs) < $MAX_PARALLEL_JOBS) {
+	
+				##>Also check other user/launches jobs
+				my $numProc=`ps -edf | grep analysePhospho.cgi | grep ' 2> ' | grep -v grep | wc -l`;
+				chomp($numProc);
+				last if $numProc >= $MAX_PARALLEL_JOBS;
+	
+				##>Ok to go
+				$curJobIdx++;
+	
+				my $childPid = fork;
+				unless ($childPid) { # child here
+					my $jobPos=$curJobIdx+1;
+					my $jobDir=$masterJobCode.'.'.$jobPos;
+					my $anaID=$refAnalysisList->[$curJobIdx];
+					system "$cgiUnixDir/analysePhospho.cgi $userID $jobDir $anaID $probThreshold $massTolerance $activationType $overWrite 2> $currentPRSDir/$anaID\_$jobDir\_error.txt";
+					exit;
+				}
+				$runningJobs{$childPid}=$curJobIdx;
+				last MAIN_LOOP if $curJobIdx==$#{$refAnalysisList}; # no more jobs to launch => break MAIN_LOOP
+				sleep 2;
+			}
+	
+			###>Wait for potential ended job before next MAIN_LOOP
+			sleep 60; # $SIG{CHLD} is active during sleep
+	
+		}
+		###>Wait for last child processes to end
+		while (scalar (keys %runningJobs) > 0) {
+			sleep 60; # $SIG{CHLD} is active during sleep
+		}
+	}
+}
 
 sub deletePRS{
     my ($dbh,$anaID) = @_;
 
-	print "<FONT class=\"title3\">&nbsp;&nbsp;- Deleting previous PhosphoRS analysis...";
+	print "Deleting previous PhosphoRS analysis...";
     ## Restore DB entries ##
 	my ($maxRank) = $dbh->selectrow_array("SELECT MAX_RANK FROM ANALYSIS WHERE ID_ANALYSIS=$anaID");
 	my @infoPepList = map { "INFO_PEP$_" } (1..$maxRank);
 	my $infoPepStrg = join(', ',@infoPepList);
 
 	# table QUERY_MODIFICATION #
+	my ($phosphoModID)=$dbh->selectrow_array("SELECT ID_MODIFICATION FROM MODIFICATION WHERE UNIMOD_ACC=21");
 	$dbh->do("UPDATE QUERY_MODIFICATION M INNER JOIN QUERY_VALIDATION V ON M.ID_QUERY=V.ID_QUERY AND V.ID_ANALYSIS=$anaID AND M.ID_MODIFICATION=$phosphoModID AND M.REF_POS_STRING IS NOT NULL SET M.POS_STRING=M.REF_POS_STRING");
 	$dbh->do("UPDATE QUERY_MODIFICATION M INNER JOIN QUERY_VALIDATION V ON M.ID_QUERY=V.ID_QUERY SET M.REF_POS_STRING=NULL WHERE V.ID_ANALYSIS=$anaID AND M.ID_MODIFICATION=$phosphoModID");
 
@@ -495,11 +685,12 @@ sub deletePRS{
 	#unlink "$dir/PRSparam_ana_$anaID.txt" or warn "Cannot delete PRS parameter file: $!";
 	unlink glob "$dir/PRSparam_*.txt"; # old & new param naming
 	unlink glob "$dir/PRS_*"; # old & new result.xml naming + status.txt
-	unlink "$dir/PRSerrors.txt" if -e "$dir/PRSerrors.txt";
-	print " Done.</FONT><BR>\n";
+	#unlink "$dir/PRSerrors.txt" if -e "$dir/PRSerrors.txt";
+	print " Done.";
 }
 
 ####>Revision history<####
+# 2.0.0 Major code rewrite for full background run support with call of watchPhosphoAnalyses.cgi (PP 08/11/18)
 # 1.1.3 Minor bug fix in call for a new PhosphoRS analysis (PP 15/06/18)
 # 1.1.2 Modification to avoid positionStg stored in INFO_PEP (GA 31/01/18)
 # 1.1.1 Uses xxx_ana_&lt;anaID&gt;.xxx instead of data file name for PRS parameter and output files (PP 21/03/17)

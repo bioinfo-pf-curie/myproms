@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# linkBioSample2Observations.cgi     1.0.5                                     #
+# linkBioSample2Observations.cgi     1.0.6                                     #
 # Authors: P. Poullet, G. Arras, S.Liva (Institut Curie)              	       #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -331,7 +331,7 @@ foreach my $sthGAI (@sthGetAnaInfo) {
 		# IMPORTANT NOTE (31/01/14 PP): TARGET_POS has meaning only for iTRAQ-like quantif
 		# Otherwise: 0 for label-free and -1 for all channel pos of SILAC-like (true match given by OBS_MODIFCATION)
 		if ($quantifAnnot) {
-			$quantifAnnot=~s/::SOFTWARE=\w+//; # remove software info for back compatibility
+			$quantifAnnot=~s/::SOFTWARE=[^:]+::/::/; # remove software info for back compatibility
 			my ($labelTypeStrg,@labelInfo)=split('::',$quantifAnnot);
 			my ($labelType)=($labelTypeStrg =~ /^LABEL=(.+)/);
 			if ($labelType =~ /FREE|NONE/) { # no labeling in analysis
@@ -529,6 +529,7 @@ print qq
 |;
 
 ####>Revision history<####
+# 1.0.6 Also removes software version from QUANTIF_ANNOT (PP 09/12/18)
 # 1.0.5 Minor modification for TMT (GA 03/04/17)
 # 1.0.4 Compatible with SILAC cases where same labeling mod is used on different aa (PP 21/07/15)
 # 1.0.3 Update for SOFTWARE tag in QUANTIF_ANNOT field (PP 28/04/15)

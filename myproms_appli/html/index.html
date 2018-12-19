@@ -1,23 +1,18 @@
-<HTML>
-<HEAD>
-	<META charset="UTF-8">
-	<META HTTP-EQUIV="Pragma" CONTENT="no-cache">
-	<META HTTP-EQUIV="Cache-Control" CONTENT="no-cache">
-	<META name="DESCRIPTION" CONTENT="myProMS (Proteome Analysis using Mass Spectrometry with MySQL Database)">
-	<META name="KeyWords" CONTENT="myProMS Proteome Mass Spectrometry MySQL Database Mascot Proteome Discoverer Sequest MaxQuant">
-	<TITLE>Welcome to myProMS</TITLE>
-	<LINK rel="icon" type="image/png" href="./images/myProMS_icon.png">
-	<LINK rel="stylesheet" href="./promsStyle.css" type="text/css">
-	<STYLE type="text/css">
-		A {color: black; font-weight: bold; text-decoration:none}
-		A:hover {text-decoration:underline;}
-	</STYLE>
 <!--
 ################################################################################
-# index.html          2.2.11D                                                    #
+# index.html          2.2.12D                                                   #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
+-->
+<HTML>
+<HEAD>
+<META charset="UTF-8">
+<META HTTP-EQUIV="Pragma" CONTENT="no-cache">
+<META HTTP-EQUIV="Cache-Control" CONTENT="no-cache">
+<META name="DESCRIPTION" CONTENT="myProMS (Proteome Analysis using Mass Spectrometry with MySQL Database)">
+<META name="KeyWords" CONTENT="myProMS Proteome Mass Spectrometry MySQL Database Mascot Proteome Discoverer Sequest MaxQuant">
+<!--
 #----------------------------------CeCILL License-------------------------------
 # This file is part of myProMS
 #
@@ -55,7 +50,13 @@
 !!! Edit line 75 if broken link to cgi directory !!!
 !!! Edit lines 111,114 and 117 to specify which local email address end-users can use for help and bug report !!!
 -->
-
+<TITLE>Welcome to myProMS</TITLE>
+<LINK rel="icon" type="image/png" href="./images/myProMS_icon.png">
+<LINK rel="stylesheet" href="./promsStyle.css" type="text/css">
+<STYLE type="text/css">
+	A {color: black; font-weight: bold; text-decoration:none}
+	A:hover {text-decoration:underline;}
+</STYLE>
 	<SCRIPT type="text/JavaScript">
 function startSession() {
 	if (sessionWindow != null && !sessionWindow.closed) {sessionWindow.close();}
@@ -95,9 +96,9 @@ var sessionWindow;
 
 <BR><BR><BR><BR><BR>
 
-<FONT class="title" color=#CC0000>Version <!--version tag-->3.6.6</FONT>
+<FONT class="title" color=#CC0000>Version <!--version tag-->3.7.0</FONT>
 <FONT style="font-size:9px"><BR></FONT>
-<B>(Updated on 26/09/2018)</B>
+<B>(Updated on 19/12/2018)</B>
 <BR><BR><BR>
 
 <INPUT type="button" value="Start Session" class="title2" style="width:160px;" onclick="startSession()" />
@@ -168,7 +169,8 @@ Bioinformatics and Computational Systems Biology of Cancer<BR> -->
 
 <!--
 ####>Revision history<####
-# 2.2.11D Links to local myProMSUsersGuide.pdf & CONTACT_EMAIL string (PP 26/09/18)
+# 2.2.12D Links to local myProMSUsersGuide.pdf & CONTACT_EMAIL string (PP 26/09/18)
+# 2.2.12 v3.7.0 (PP 19/12/18) 
 # 2.2.11 Changed number to customable line number in comment due to CeCILL license (PP 26/09/18) 
 # 2.2.10 v3.6.6 (PP 11/09/18)
 # 2.2.9 v3.6.5 (PP 25/06/18)

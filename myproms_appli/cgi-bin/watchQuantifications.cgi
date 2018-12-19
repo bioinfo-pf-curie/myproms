@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# watchQuantifications.cgi       1.3.5                                         #
+# watchQuantifications.cgi       1.3.8                                         #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Monitors all on-going quantifications                                        #
@@ -41,6 +41,7 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 #-------------------------------------------------------------------------------
+
 $| = 1;
 use strict;
 use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
@@ -113,12 +114,17 @@ function deleteJob(jobDir,quantItem) {
 			}
 			//Update watchQuanti window
 			if (XHR.responseText.match('##RELOAD')) { // an entire job dir was deleted => reload window
-				//window.location.reload();
-				setTimeout('window.location.reload()',30000);
-				return;
+				window.location.reload();
+				//setTimeout('window.location.reload()',5000);
+				//return;
 			}
 			else {
-				document.getElementById('status:'+jobDir+':'+quantItem).innerHTML='<B>Job deleted</B>';
+				if (document.getElementById('status:'+jobDir+':'+quantItem)) { // can be undef after 1st delete
+					//var responseStrg=(XHR.responseText.match('##OK'))? 'Job deleted' : XHR.responseText;
+					//document.getElementById('status:'+jobDir+':'+quantItem).innerHTML='<B>'+responseStrg+'</B>';
+					document.getElementById('status:'+jobDir+':'+quantItem).innerHTML='<B>'+XHR.responseText+'</B>';
+				}
+				else {alert('Deletion of job '+jobDir+': '+XHR.responseText);}
 				autoUpdate=1;
 				setTimeout('ajaxWatchAnalysis()',5000);
 			}
@@ -168,17 +174,20 @@ my $sthPj=$dbh->prepare("SELECT NAME FROM PROJECT WHERE ID_PROJECT=?");
 ####>Scanning Quantification directories<####
 #############################################
 my @jobDirList=&getJobList;
-my %projectJobs;
+my (%projectJobs,%userList);
 foreach my $jobDir (sort{&promsMod::sortSmart($a,$b)} @jobDirList) {
 	my ($jobUserID,$jobUserName,$quantifType,$designID,@quantItemList,@quantificationList,@quantifNameList,@designList);
-	my ($anaSection,$quantiSection)=(0,0);
 	my $section='';
 	open (INFO,"$quantifHomeDir/$jobDir/quantif_info.txt");
 	while (<INFO>) {
 		if (/^USER=(\S+)/) {
 			$jobUserID=$1;
-			$sthUsr->execute($jobUserID);
-			($jobUserName)=$sthUsr->fetchrow_array;
+			if ($userList{$jobUserID}) {$jobUserName=$userList{$jobUserID};}
+			else {
+				$sthUsr->execute($jobUserID);
+				($jobUserName)=$sthUsr->fetchrow_array;
+				$userList{$jobUserID}=$jobUserName;
+			}
 		}
 		elsif (/^TYPE=(\S+)/) {$quantifType=$1 unless $quantifType;} #$quantifProcesses{$1}
 		#elsif (/^ALGO_TYPE\s+(\S+)/) {$quantifType='DESIGN:'.$1;} # Modified on 2017/05/04
@@ -285,6 +294,18 @@ foreach my $projectID (sort{lc($projectJobs{$a}{'NAME'}) cmp lc($projectJobs{$b}
 			my $rowColor=$lightColor;
 			my $countItem=0;
 			foreach my $quantItemID (@{$refJob->[3]}) {
+				my ($scanAgain,$anaStatus,$anaError)=&getAnaQuantifInfo($jobDir,$quantItemID);
+				if ($scanAgain==3) { # jobDir was deleted => reload everything
+					print qq
+|</TABLE></TD></TR></TABLE>
+<SCRIPT language="JavaScript">
+window.location.reload();
+</SCRIPT>
+</BODY>
+</HTML>
+|;
+					exit;
+				}
 				$countItem++;
 				my ($anaID,$parentQuantifID)=split(/\./,$quantItemID); # anaID or anaID.parentQuantifID
 				my @anaInfo=&promsMod::getItemInfo($dbh,'ANALYSIS',$anaID);
@@ -301,7 +322,6 @@ foreach my $projectID (sort{lc($projectJobs{$a}{'NAME'}) cmp lc($projectJobs{$b}
 					$anaName.="<BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;using $parQuantifName";
 				}
 
-				my ($scanAgain,$anaStatus,$anaError)=&getAnaQuantifInfo($jobDir,$quantItemID);
 				$anaError = "ok" unless $anaError;
 				$anaError=~s/\n/<BR>/g;
 				my $anaStatusStrg;
@@ -565,7 +585,7 @@ sub getAnaQuantifInfo {
 			$RoutFile=(split(/\s/,$RoutFileInfo))[-1] if $RoutFileInfo;
 		}
 		#my $quantiTime=($quantifType eq 'XIC')? 300 : ($quantifType eq 'SIN')? 40 : 5; # min
-		my $quantiTime=($quantifType eq 'XIC')? 600 : ($quantifType eq 'SIN')? 1800 : ($algoType=~/MSstats/)? 14400 : 3600; # sec
+		my $quantiTime=($quantifType eq 'XIC')? 600 : ($quantifType eq 'SIN')? 1800 : ($algoType && $algoType=~/MSstats/)? 14400 : 3600; # sec
 
 		if ($quantItemID==0 || -e "$quantifHomeDir/current/$jobDir\_request.flag") { # quantif not yet recorded in DB: design-based multi job launch
 			$anaStatus='<B>Pending...</B> [Request to be processed]';
@@ -577,15 +597,15 @@ sub getAnaQuantifInfo {
 		}
 		else {
 			if (-e "$quantifHomeDir/$jobDir/status_$quantItemID.out") {
-				open(my $out, "<", "$quantifHomeDir/$jobDir/status_$quantItemID.out");
+				open(OUT, "$quantifHomeDir/$jobDir/status_$quantItemID.out");
 				my ($firstLine,$lastLine)=('','');
-				while (<$out>) {
+				while (<OUT>) {
 					chomp;
 					if ($.==1) {$firstLine=$_;}
 					else {$lastLine=$_;}
 				}
 				#my $startInSec=stat($out)->[9]; # File::stat
-				close $out;
+				close OUT;
 				#my $firstLine=`head -1 $quantifHomeDir/$jobDir/status_$quantItemID.out`;
 				#chomp $firstLine;
 				#my $lastLine=`tail -1 $quantifHomeDir/$jobDir/status_$quantItemID.out`;
@@ -669,7 +689,7 @@ sub getAnaQuantifInfo {
 			chomp $error if $error;
 			if ($error) {
 				my $errorString;
-				open(ERRORFILE, "$quantifHomeDir/current/${quantItemID}_${jobDir}_error.txt") or die $!;
+				open(ERRORFILE, "$quantifHomeDir/current/$quantItemID\_$jobDir\_error.txt") or die $!;
 				while (<ERRORFILE>) {
 					$errorString .= $_;
 				}
@@ -789,16 +809,25 @@ sub ajaxDeleteJob {
 		chomp($numFiles);
 		if ($numFiles*1 <= 2 || !$quantItemID) { # total + only quantif_info.txt
 			#remove_tree("$quantifHomeDir/$jobDir");
-			rmtree("$quantifHomeDir/$jobDir");
+			rmtree("$quantifHomeDir/$jobDir"); unlink "$quantifHomeDir/$jobDir" if -e "$quantifHomeDir/$jobDir"; # empty dir can remain
 			print "##RELOAD\n";
 		}
-		print 'OK';
+		#print '##OK';
+		else {
+			print 'Could not delete all temporary files.';
+		}
 	}
-	else {print 'Data directory not found.';}
+	else {
+		#print 'Data directory not found.';
+		print "##RELOAD (Data directory not found.')\n";
+	}
 	exit;
 }
 
 ####>Revision history<####
+# 1.3.8 [Fix] occasional JS bug following deletion request (PP 04/12/18)
+# 1.3.7 Various improvements (PP 14/11/18)
+# 1.3.6 Minor fix of undef variable (PP 30/10/18)
 # 1.3.5 Slower window.reload frequency in case multi-job & fix bug modif-quantif deletion (PP 21/09/18)
 # 1.3.4 Scans also for a new wait.flag file used for design-based multi-launch (PP 30/08/18)
 # 1.3.3 Removes peptide data file(s) not from PEPTIDE_QUANTIFICATION & uses quanti_$quantifID instead of quantif_$quantifID (PP 18/05/18)

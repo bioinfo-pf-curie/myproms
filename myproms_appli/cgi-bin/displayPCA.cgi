@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# displayPCA.cgi       1.1.2                                                   #
+# displayPCA.cgi       1.2.0                                                   #
 # Authors: P. Poullet, S.Liva (Institut Curie)      	                       #
 # Contact: myproms@curie.fr                                                    #
 # display and store the results of PCA analysis        	                       #
@@ -40,6 +40,7 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 #-------------------------------------------------------------------------------
+
 $|=1;
 use strict;
 use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
@@ -63,6 +64,10 @@ my $ajax = param('AJAX') || '';
 my $explorID = param('explorID');
 my $pcaType = param('selectPCA') || "quantif";
 my $action = param('ACT') || '';
+if ($action eq 'full3D') {
+	&displayFull3D;
+	exit;
+}
 
 ####>Connexion to DB<####
 my $dbh = &promsConfig::dbConnect;
@@ -73,7 +78,7 @@ my $projectAccess=${$userInfo[2]}{$projectID};
 my $disabSave=($projectAccess eq 'guest')? ' disabled' : '';
 my $selQuantifModif=0;
 
-my ($quantifListStrg,%quantificationIDs); # also needed by &ajaxChangeDimensions
+my ($quantifListStrg,%quantificationIDs); # also needed by &changeDimensions
 my $sthSelExplorQuantif = $dbh -> prepare("SELECT Q.ID_QUANTIFICATION,TARGET_POS,ID_MODIFICATION FROM EXPLORANA_QUANTIF EA,QUANTIFICATION Q WHERE EA.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND ID_EXPLORANALYSIS = $explorID ORDER BY ID_QUANTIFICATION,TARGET_POS");
 $sthSelExplorQuantif -> execute;
 while (my($quantifID, $targetPos, $modifID) = $sthSelExplorQuantif -> fetchrow_array) {
@@ -94,7 +99,7 @@ if ($action eq 'export') {
 
 ####>AJAX calls<####
 if ($ajax eq 'changeDimensions') {
-    &ajaxChangeDimensions(param('dimX'),param('dimY'),param('dimZ'),'false');
+    &changeDimensions(param('dimX'),param('dimY'),param('dimZ'),'false');
     exit;
 }
 elsif ($ajax eq 'listSigProtDim') {
@@ -195,10 +200,28 @@ print qq
 |;
 &promsMod::popupInfo();
 print qq
-|function editDeleteHighligth(name, action, newName) {
+|var full3dWindow;
+function displayFull3D() {
+	myForm=document.full3dForm;
+	//Highlighting
+	var objString = '';
+    var concat = 0;
+    for (let i in annotSetObject) {
+        //var nameSubstr=i.replace(/\\[.+\|\\].+/,"");
+        concat++;
+        if (concat > 1) objString += ':%:'; // object separator
+        objString += i+'&&'+annotSetObject[i].position+'&&'+annotSetObject[i].color+'&&'+annotSetObject[i].ajaxResp;
+    }
+	myForm.highlight.value=objString;
+	//Display window
+	full3dWindow=window.open('','full3dWindow','width=950,height=950,location=no,resizable=yes,scrollbars=yes');
+	myForm.submit();
+	full3dWindow.focus();
+}
+function editDeleteHighligth(name, action, newName) {
     if (action=='delete') {
         var pos = annotSetObject[name].position;
-        for ( var i in annotSetObject ) {
+        for (let i in annotSetObject ) {
             if (annotSetObject[i].position > pos){
                 annotSetObject[i].position --;
             }
@@ -207,7 +230,7 @@ print qq
     }
     else {
         annotSetObject[newName]={};
-        for ( var j in annotSetObject[name]) {
+        for (let j in annotSetObject[name]) {
             annotSetObject[newName][j]=annotSetObject[name][j];
         }
     }
@@ -267,7 +290,17 @@ function ajaxChangeDimensions() {
     XHR.onreadystatechange=function() {
         if (XHR.readyState == 4 && XHR.responseText) {
             PCA.resetData(XHR.responseText);
-            PCA.redraw(dimXlabel, dimYlabel);
+            PCA.redraw(dimXlabel,dimYlabel);
+			//full3D form
+			if (dimZ) {
+				var myForm=document.full3dForm;
+				myForm.axisTitles.value=dimXlabel+';'+dimYlabel+';'+selDimZ.options[selDimZ.selectedIndex].text;
+				myForm.pointData.value=XHR.responseText;
+				document.getElementById('full3dBUT').disabled=false;
+			}
+			else { // disable full3D button
+				document.getElementById('full3dBUT').disabled=true;
+			}
         }
     }
     XHR.send(null);
@@ -383,10 +416,11 @@ function prepareAjaxPropDecorateGraph(propValueData) {
     if (!propValueData) return;
     var valueSelect=document.getElementById('quantifHlSEL');
     var propSelect=document.getElementById('quantifHighlightType');
-    ajaxPropDecorateGraph(propValueData, valueSelect.options[valueSelect.selectedIndex].text, propSelect.value, propSelect.options[propSelect.selectedIndex].text, false);
+    ajaxPropDecorateGraph([ propValueData,valueSelect.options[valueSelect.selectedIndex].text,propSelect.value, propSelect.options[propSelect.selectedIndex].text ],false);
 }
-function ajaxPropDecorateGraph(propValueData,propValueText,selPropInfo,propName,saved) {
-    if (!saved) saved=false;
+function ajaxPropDecorateGraph(params,saved,jobRank) {
+    var [propValueData,propValueText,selPropInfo,propName]=params;
+	if (!saved) saved=false;
     var paramStrg='AJAX=propDecorateGraph&explorID=$explorID&experimentID=$experimentID&qList=$quantifListStrg&propValueData='+encodeURIComponent(propValueData);
 
     //If XHR object already exists, the request is canceled & the object is deleted
@@ -399,11 +433,11 @@ function ajaxPropDecorateGraph(propValueData,propValueText,selPropInfo,propName,
     if (!XHR) {
         return false;
     }
-    XHR.open("POST","$promsPath{cgi}/displayPCA.cgi",!saved); // Switches to synchronous for already saved highlights
+    XHR.open("POST","$promsPath{cgi}/displayPCA.cgi",true); //!saved Switches to synchronous for already saved highlights
     //Send the proper header information along with the request
     XHR.setRequestHeader("Content-type", "application/x-www-form-urlencoded; charset=UTF-8");
-    XHR.setRequestHeader("Content-length", paramStrg.length);
-    XHR.setRequestHeader("Connection", "close");
+	//XHR.setRequestHeader("Content-length", paramStrg.length);
+    //XHR.setRequestHeader("Connection", "close");
     XHR.onreadystatechange=function() {
         if (XHR.readyState==4) {
             if (XHR.responseText) {
@@ -414,7 +448,13 @@ function ajaxPropDecorateGraph(propValueData,propValueText,selPropInfo,propName,
                 var hlName=(selData[1]=='O')? propValueText+' ['+propName+']' : propName+': '+propValueText; // propInfo[1]+' ['+propName+']';
                 if (addHighlighting(PCA,hlName,colorList[colorIndex],{'-1':XHR.responseText.split(';')},'^###(\$\|%)')) {
                     rank++;
-                    annotSetObject[hlName] = {color:colorList[colorIndex],type:selData[0]+':'+selData[1],param:'#'+propValueData,position:rank}; // # for ID tag
+                    annotSetObject[hlName] = {
+						color:colorList[colorIndex],
+						type:selData[0]+':'+selData[1],
+						param:'#'+propValueData,
+						position:rank,
+						ajaxResp:XHR.responseText
+					}; // # for ID tag
                     if (colorIndex==colorList.length) colorIndex=0;
                     if (!saved) document.getElementById('saveButton').style.display = '';
                 }
@@ -424,6 +464,7 @@ function ajaxPropDecorateGraph(propValueData,propValueText,selPropInfo,propName,
                 }
             }
             else {alert('No match found!');}
+			if (jobRank) {jobProcessed=jobRank;}
         }
     }
     XHR.send(paramStrg);
@@ -495,11 +536,13 @@ function ajaxUpdateGoTermList(goIdStrg) {
     XHR.send(null);
 }
 
-function ajaxGoDecorateGraph(termValue, termTxt, saved) {
-
+function ajaxGoDecorateGraph(termValue,termTxt) { // called ajax call to showProtQuantification.cgi
+	ajaxMyGoDecorateGraph([termValue,termTxt]); // parameter conversion required for compatibility with restoreSavedHighlightings
+}
+function ajaxMyGoDecorateGraph(params,saved,jobRank) {
+	var [termValue,termTxt]=params;
     var binArray=new Array();
     binArray=termValue.split(',');
-    console.log(binArray);
     var nbElem=binArray.length;
 
     if (!saved) saved=false;
@@ -528,20 +571,21 @@ function ajaxGoDecorateGraph(termValue, termTxt, saved) {
     //var listParam = termValue.split(",");
     //var strgParam = listParam[0]+','+listParam[1];
 
-    XHR.open("GET","$promsPath{cgi}/showProtQuantification.cgi?ACT=ajaxTermProt&projectID=$projectID&goStrg="+termValue,!saved);
+    XHR.open("GET","$promsPath{cgi}/showProtQuantification.cgi?ACT=ajaxTermProt&projectID=$projectID&goStrg="+termValue,true);
     XHR.onreadystatechange=function() {
         if (XHR.readyState==4 && XHR.responseText) {
             colorIndex++;
-	    if (colorIndex >= colorList.length) colorIndex=0;
+			if (colorIndex >= colorList.length) colorIndex=0;
             var termData=termValue.split(',');
             if (addHighlighting(PCA,termTxt,colorList[colorIndex],{'-1':XHR.responseText.split(';')},'^###(\$\|-)')) {
                 //colorList[colorIndex] = colorList[colorIndex].replace(/#/,"");
                 rank++;
-                annotSetObject[termTxt] = {color:colorList[colorIndex],type:'prot:GO',param:'#'+termValue,position:rank}; // # for ID tag
+                annotSetObject[termTxt] = {color:colorList[colorIndex],type:'prot:GO',param:'#'+termValue,position:rank,ajaxResp:XHR.responseText}; // # for ID tag
                 if (colorIndex==colorList.length) colorIndex=0;
                 if (!saved) document.getElementById('saveButton').style.display = '';
             }
             else {colorIndex--;}
+			if (jobRank) {jobProcessed=jobRank;}
         }
     }
     XHR.send(null);
@@ -569,7 +613,8 @@ function ajaxGetCustomLists(themeID) {
     }
     XHR.send(null);
 }
-function ajaxListDecorateGraph(listID,saved) {
+function ajaxListDecorateGraph(params,saved,jobRank) {
+	var [listID]=params;
     if (!saved) saved=false;
     if (!listID) return;
 
@@ -583,7 +628,7 @@ function ajaxListDecorateGraph(listID,saved) {
     if (!XHR) {
         return false;
     }
-    XHR.open("GET","$promsPath{cgi}/displayPCA.cgi?AJAX=listDecorateGraph&experimentID=$experimentID&explorID=$explorID&listID="+listID,!saved);
+    XHR.open("GET","$promsPath{cgi}/displayPCA.cgi?AJAX=listDecorateGraph&experimentID=$experimentID&explorID=$explorID&listID="+listID,true);
     XHR.onreadystatechange=function() {
         if (XHR.readyState==4) {
             if (XHR.responseText) {
@@ -592,13 +637,14 @@ function ajaxListDecorateGraph(listID,saved) {
                 var listData=XHR.responseText.split('::');
                 if (addHighlighting(PCA,listData[0],colorList[colorIndex],{'-1':listData[1].split(';')},'^###(\$\|-)')) {
                     rank++;
-                    annotSetObject[listData[0]] = {color:colorList[colorIndex],type:'prot:LIST',param:'#'+listID,position:rank}; // # for ID tag
+                    annotSetObject[listData[0]] = {color:colorList[colorIndex],type:'prot:LIST',param:'#'+listID,position:rank,ajaxResp:XHR.responseText}; // # for ID tag
                     if (colorIndex==colorList.length) colorIndex=0;
                     if (!saved) document.getElementById('saveButton').style.display = '';
                 }
                 else {colorIndex--;}
             }
             else {alert('List is empty!');}
+			if (jobRank) {jobProcessed=jobRank;}
         }
     }
     XHR.send(null);
@@ -626,7 +672,8 @@ function ajaxGetPathwayList(pathID) {
     }
     XHR.send(null);
 }
-function ajaxGetPathwayProteinsList(value, pathID, txt, saved) {
+function ajaxGetPathwayProteinsList(params,saved,jobRank) {
+	var [value,pathID,txt]=params;
     if (!saved) saved=false;
     //If XHR object already exists, the request is canceled & the object is deleted
     if (XHR && XHR.readyState != 0) {
@@ -638,18 +685,19 @@ function ajaxGetPathwayProteinsList(value, pathID, txt, saved) {
     if (!XHR) {
         return false;
     }
-    XHR.open("GET","$promsPath{cgi}/runAndDisplayPathwayAnalysis.cgi?AJAX=ajaxListProt&ID="+pathID+"&FROM=PCA&reactNumber="+value,!saved);
+    XHR.open("GET","$promsPath{cgi}/runAndDisplayPathwayAnalysis.cgi?AJAX=ajaxListProt&ID="+pathID+"&FROM=PCA&reactNumber="+value,true);
     XHR.onreadystatechange=function() {
         if (XHR.readyState==4 && XHR.responseText) {
             colorIndex++;
             if (colorIndex >= colorList.length) colorIndex=0;
             if (addHighlighting(PCA,txt,colorList[colorIndex],{'-1':XHR.responseText.split(';')},'^###(\$\|-)')) {
                 rank++;
-                annotSetObject[txt] = {color:colorList[colorIndex],type:'prot:PA',param:'#'+pathID+','+value,position:rank}; // # for ID tag
+                annotSetObject[txt] = {color:colorList[colorIndex],type:'prot:PA',param:'#'+pathID+','+value,position:rank,ajaxResp:XHR.responseText}; // # for ID tag
                 if (colorIndex==colorList.length) colorIndex=0;
                 if (!saved) document.getElementById('saveButton').style.display = '';
             }
             else {colorIndex--;}
+			if (jobRank) {jobProcessed=jobRank;}
         }
     }
     XHR.send(null);
@@ -722,13 +770,13 @@ print qq
     //Object to string
     var objString = '';
     var concat = 0;
-    for (var i in annotSetObject) {
+    for (let i in annotSetObject) {
         var nameSubstr=i.replace(/\\[.+\|\\].+/,"");
         concat++;
         if (concat > 1) objString += ':%:'; // object separator
         objString += 'name=='+nameSubstr; // == because annotSetObject[i][j] contains "=" if Treatment!
-        for (var j in annotSetObject[i]) {
-	    if (j=='color') continue;
+        for (let j in annotSetObject[i]) {
+			if (j=='color' \|\| j=='ajaxResp') continue;
             objString += '//'+j+'=='+annotSetObject[i][j]; // == because annotSetObject[i][j] contains "=" if Treatment!
         }
     }
@@ -774,6 +822,7 @@ print qq
 </DIV>
 </CENTER>
 <DIV id="resultDIV" style="visibility:hidden"> <!-- display:none is not compatible with SVG text drawing with Raphaël in Chrome! -->
+<INPUT type="button" id="full3dBUT" class="title3" value=" Full 3D view " onclick="displayFull3D()" disabled/>
 |;
 
 #### PCA ###
@@ -788,8 +837,8 @@ while (<CONTRIB>) {
     $dimContribution{$dim} = sprintf"%.2f",$contribValue;
 }
 close (CONTRIB);
-
-my $stringPCA=&ajaxChangeDimensions(1,2,3,'true'); # 1st dim, 2nd dim, 3rd dim, true:, transpo or not
+my $numDimensions=scalar keys %dimContribution;
+my $stringPCA=&changeDimensions(1,2,3,'true'); # 1st dim, 2nd dim, 3rd dim, true:, transpo or not
 my $pcaTarget=($pcaType=~/^quantif/)? 'Quantifications' : 'Proteins';
 print qq
 |<SCRIPT language="JavaScript">
@@ -820,7 +869,9 @@ function highlightPCA() {
 my $sthSelectAnnot = $dbh -> prepare("SELECT NAME, RANK, ANNOT_TYPE, ANNOT_LIST FROM ANNOTATIONSET WHERE ID_EXPLORANALYSIS = $explorID ORDER BY RANK");
 my $sthProperty=$dbh->prepare("SELECT NAME FROM PROPERTY WHERE ID_PROPERTY=?");
 $sthSelectAnnot -> execute;
+my $jobRank=0;
 while (my ($name, $rank, $annotType, $annotList) = $sthSelectAnnot -> fetchrow_array) {
+$jobRank++;
     #my ($color, $selValue) = split("=", $annotList);
     if ($pcaType=~/^quantif/) {
         #print "displayParamLabel('$annotType','$annotList','$name',true);\n";
@@ -832,25 +883,29 @@ while (my ($name, $rank, $annotType, $annotList) = $sthSelectAnnot -> fetchrow_a
             $sthProperty -> execute($propID);
             my ($propName)=$sthProperty -> fetchrow_array;
             next unless $propName; # to be safe in case property has been deleted
-            print "\tajaxPropDecorateGraph('$annotList','$propValueText','$annotType:$propID','$propName',true);\n";
+            #print "\tajaxPropDecorateGraph('$annotList','$propValueText','$annotType:$propID','$propName',true);\n";
+			print "\trestoreSavedHighlightings($jobRank,ajaxPropDecorateGraph,['$annotList','$propValueText','$annotType:$propID','$propName']);\n";
         }
     }
-    elsif($pcaType =~ /^prot/ && $annotType=~ /^prot:/) {
+    elsif ($pcaType =~ /^prot/ && $annotType=~ /^prot:/) {
         if ($annotType eq 'prot:GO') {
             my $termText=$annotList;
             $termText=~ s/\s+$//;
             $name=~s/^#//; # remove GOanaID tag
             my $termValue=$name;
-            print "\tajaxGoDecorateGraph('$termValue','$termText',true);\n";
-        }
+            #print "\tajaxGoDecorateGraph('$termValue','$termText',true);\n";
+			print "\trestoreSavedHighlightings($jobRank,ajaxMyGoDecorateGraph,['$termValue','$termText']);\n";
+         }
         elsif ($annotType eq 'prot:LIST') {
             my ($listID)=($name=~/^#(\d+)/); # extract cat ID
-            print "\tajaxListDecorateGraph($listID,true);\n";
+            #print "\tajaxListDecorateGraph($listID,true);\n";
+			print "\trestoreSavedHighlightings($jobRank,ajaxListDecorateGraph,[$listID]);\n";
         }
         elsif ($annotType eq 'prot:PA') {
             $name=~s/^#//;
             my ($pathID, $reactNumber)=split(",", $name);
-            print "\tajaxGetPathwayProteinsList('$reactNumber',$pathID,'$annotList',true);\n";
+            #print "\tajaxGetPathwayProteinsList('$reactNumber',$pathID,'$annotList',true);\n";
+			print "\trestoreSavedHighlightings($jobRank,ajaxGetPathwayProteinsList,['$reactNumber',$pathID,'$annotList']);\n";
         }
     }
 }
@@ -861,6 +916,15 @@ $dbh -> disconnect;
 my ($selQuantif,$selQuantifSc,$selProt,$selProtSc)=($pcaType eq 'quantif')? ('selected','','','') : ($pcaType eq 'quantif_sc')? ('','selected','','') : ($pcaType eq 'prot')? ('','','selected','') : ('','','','selected');
 print qq
 |}
+var jobProcessed=0;
+function restoreSavedHighlightings(jobRank,hlFunction,params) {
+	if (jobProcessed==jobRank-1) { // Good to go
+		hlFunction(params,true,jobRank);
+	}
+	else { // wait & try again
+		setTimeout(function(){restoreSavedHighlightings(jobRank,hlFunction,params);},500);
+	}
+}
 </SCRIPT>
 <TABLE cellspacing=0>
     <TR class="row_0">
@@ -900,6 +964,20 @@ if ($pcaType=~/^quantif/) {
     print "<TH nowrap>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$featureItems significant for:<SELECT id=\"selectSigProtDim\">";
     foreach my $dim (sort{$a <=> $b} keys %dimContribution) {print "<OPTION value=\"$dim\">Dim $dim</OPTION>\n";}
     print "</SELECT><INPUT type=\"button\" value=\"List\" onclick=\"ajaxListSignificantProteins()\"></TH>\n";
+}
+
+###>Data for full 3D view
+my ($pointLabelStrg,$pointDataStrg)=('','');
+if ($numDimensions >= 3) {
+	foreach my $pointStrg (split(';',$stringPCA)) {
+		my ($alias,@data)=split(',',$pointStrg);
+		if ($pointLabelStrg) {
+			$pointLabelStrg.=';';
+			$pointDataStrg.=';';
+		}
+		$pointLabelStrg.=$alias;
+		$pointDataStrg.=join(',',@data);
+	}
 }
 
 print qq
@@ -960,27 +1038,27 @@ if ($pcaType =~/^quantif/) { # PCA on quantifications
 |;
 }
 else { # PCA on proteins
-		print qq
-|                        <TR>
-                            <TD>
+	print qq
+|                     <TR>
+                        <TD>
                                 <SELECT class="highlight title3" onchange="updateProtHighlightType(this.value)">
 								<OPTION value="">-= Select =-</OPTION>
 								<OPTGROUP label="GO Analyses:">
 |;
-		if (scalar keys %goAnalyses) {
-                    foreach my $goID (sort{lc($goAnalyses{$a}[0]) cmp lc($goAnalyses{$b}[0])} keys %goAnalyses) {
-                        print "<OPTION value=\"GOA:$goID\">$goAnalyses{$goID}[0]</OPTION>\n";
-                    }
+	if (scalar keys %goAnalyses) {
+		foreach my $goID (sort{lc($goAnalyses{$a}[0]) cmp lc($goAnalyses{$b}[0])} keys %goAnalyses) {
+			print "<OPTION value=\"GOA:$goID\">$goAnalyses{$goID}[0]</OPTION>\n";
 		}
-		else {print "<OPTION value=\"\" disabled>** No GO annotations **</OPTION>\n";}
-		print qq
+	}
+	else {print "<OPTION value=\"\" disabled>** No GO annotations **</OPTION>\n";}
+	print qq
 |								</OPTGROUP>
 								<OPTGROUP label="Custom Lists:">
 |;
 		if (scalar keys %listThemes) {
-                    foreach my $themeID (sort{lc($listThemes{$a}) cmp lc($listThemes{$b})} keys %listThemes) {
-                        print "<OPTION value=\"TH:$themeID\">$listThemes{$themeID}</OPTION>\n";
-                    }
+			foreach my $themeID (sort{lc($listThemes{$a}) cmp lc($listThemes{$b})} keys %listThemes) {
+				print "<OPTION value=\"TH:$themeID\">$listThemes{$themeID}</OPTION>\n";
+			}
 		}
 		else {print "<OPTION value=\"\" disabled>** No List found **</OPTION>\n";}
 		print qq
@@ -1035,13 +1113,28 @@ document.getElementById('resultDIV').style.visibility='visible';
 /********* HIGHLIGHTS PCA *********/
 highlightPCA();
 
+/********* FULL 3D PCA *********/
+if ($numDimensions >= 3) {document.getElementById('full3dBUT').disabled=false;}
+
 </SCRIPT>
+
+<FORM name="full3dForm" method="POST" target="full3dWindow">
+<INPUT type="hidden" name="ACT" value="full3D"/>
+<INPUT type="hidden" name="explorID" value="$explorID"/>
+<INPUT type="hidden" name="pcaName" value="$pcaName"/>
+<INPUT type="hidden" name="axisTitles" value="Dim 1 ($dimContribution{1} %);Dim 2 ($dimContribution{2} %);Dim 3 ($dimContribution{3} %)"/>
+<INPUT type="hidden" name="pointLabels" value="$pointLabelStrg"/>
+<INPUT type="hidden" name="pointData" value="$pointDataStrg"/>
+<INPUT type="hidden" name="highlight" value=""/>
+
+</FORM>
+
 </BODY>
 </HTML>
 |;
 
 #$dbh -> disconnect;
-sub ajaxChangeDimensions {
+sub changeDimensions {
     my ($dimX, $dimY, $dimZ, $return) = @_;
 
     if ($return eq 'false') {
@@ -1307,7 +1400,7 @@ sub ajaxGetCustomLists {
     $sthList->finish;
     $dbh->disconnect;
 
-    print "<SELECT id=\"listHlSEL\" class=\"highlight title3\" onchange=\"ajaxListDecorateGraph(this.value)\">\n";
+    print "<SELECT id=\"listHlSEL\" class=\"highlight title3\" onchange=\"ajaxListDecorateGraph([this.value])\">\n";
     if ($htmlCode) {
         print "<OPTION value=\"\">-= Select a List =-</OPTION>\n$htmlCode";
     }
@@ -1518,7 +1611,205 @@ sub stopOnError {
 	exit;
 }
 
+sub displayFull3D {
+	my $pcaName=param('pcaName');
+	my @axisTitles=split(';',param('axisTitles'));
+	my $pointLabelStrg=param('pointLabels');
+	my $pointDataStrg=param('pointData');
+	my $highlightStrg=param('highlight');
+	
+	####>Processing data<####
+	my @pointLabels=split(';',$pointLabelStrg);
+	my (%id2Index,@idList,%coord,%traces,%usedMatched);
+	foreach my $pointStrg (split(';',$pointDataStrg)) {
+		my ($id,$x,$y,$z)=split(',',$pointStrg);
+		push @{$coord{x}},$x;
+		push @{$coord{y}},$y;
+		push @{$coord{z}},$z;
+		push @idList,$id;
+		$id2Index{$id}=$#{$coord{x}};
+		$usedMatched{$id}{0}=1; # default (no highlight)
+	}
+
+	##>W/o highlight (default)
+	%{$traces{0}}=(name=>'Other',color=>'#555555',matched=>\@idList);
+	
+	##>With highlight: Keeping only the last highlight if point matches multiple
+	foreach my $highlight (split(':%:',$highlightStrg)) {
+		my ($name,$pos,$color,$matchStrg)=split('&&',$highlight);
+		my @matched;
+		foreach my $match (split(';',$matchStrg)) {
+			next unless defined($id2Index{$match}); # eg for GO: corresponding prot IDs are not used in PCA
+			$usedMatched{$match}{$pos}=1;
+			push @matched,$match;
+		}
+		%{$traces{$pos}}=(name=>$name,color=>$color,matched=>\@matched);
+	}
+	foreach my $match (keys %usedMatched) {
+		next if scalar keys %{$usedMatched{$match}}==1;
+		my $finalPos;
+		foreach my $pos (sort{$b<=>$a} keys %{$usedMatched{$match}}) {
+			if ($finalPos) {
+				foreach my $i (0..$#{$traces{$pos}{matched}}) {
+					if ($traces{$pos}{matched}[$i] eq $match) {
+						splice @{$traces{$pos}{matched}},$i,1;
+						delete $traces{$pos} unless scalar @{$traces{$pos}{matched}};
+						last;
+					}
+				}
+			}
+			else {$finalPos=$pos;} # keep this one
+		}
+	}
+	
+	####>Starting HTML<####
+	print header(-'content-encoding'=>'no',-charset=>'utf-8');
+	warningsToBrowser(1);
+	print qq
+|<HTML>
+<HEAD>
+<TITLE>3D PCA</TITLE>
+<LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
+</HEAD>
+<BODY background="$promsPath{images}/bgProMS.gif">
+
+<!--
+<SCRIPT src="$promsPath{html}/js/plotly/plotly-gl3d-latest.min.js"></SCRIPT>
+-->
+<SCRIPT src="https://cdn.plot.ly/plotly-gl3d-latest.min.js"></SCRIPT>
+<SCRIPT type="text/javascript">
+    var figure = {
+    frames: [],
+    layout: {
+        title: '3D view of $pcaName',
+		titlefont: {
+			color: 'black',
+			size: 22
+		},
+        autosize: true,
+        dragmode: 'zoom',
+        scene: {
+            xaxis: {title: '$axisTitles[0]'},
+            yaxis: {title: '$axisTitles[1]'},
+            zaxis: {title: '$axisTitles[2]'},
+            dragmode: 'orbit'
+        },
+        xaxis: {autorange: true},
+        yaxis: {autorange: true},
+        zaxis: {autorange: true},
+		legend: {
+			x: 1,
+			y: 1,
+			traceorder: 'normal',
+			font: {
+			  size: 14,
+			  color: '#000'
+			},
+			bgcolor: '#E2E2E2',
+			bordercolor: '#FFFFFF',
+			borderwidth: 2
+		}
+    },
+	data: [
+|;
+	my $firstTrace=1;
+	foreach my $pos (sort{$a<=>$b} keys %traces) {
+		print ",\n" unless $firstTrace;
+		
+		print qq
+|		{
+			name: '$traces{$pos}{name}',
+            marker: {
+				opacity: 1,
+				color: '$traces{$pos}{color}',
+				colorscale: []
+			},
+			type: 'scatter3d',
+			mode: 'markers+text',
+			hoverinfo: 'text',
+			hovertext: [|;
+		my $count=0;
+		#>hoverText
+		foreach my $match (@{$traces{$pos}{matched}}) {
+			my $idx=$id2Index{$match};
+			if ($count) {
+				print ',' ;
+				print "\n" unless $count % 100;
+			}
+			print "'$pointLabels[$idx]'";
+			$count++;
+		}
+		print "],\n";
+		#>Point coordinates
+		foreach my $axis ('x','y','z') {
+			print "			$axis: [";
+			$count=0;
+			foreach my $match (@{$traces{$pos}{matched}}) {
+				my $idx=$id2Index{$match};
+				if ($count) {
+					print ',' ;
+					print "\n" unless $count % 100;
+				}
+				print $coord{$axis}[$idx];
+				$count++;
+			}
+			print ']';
+			print ',' if $axis ne 'z';
+			print "\n";
+		}
+		print '		}';
+		$firstTrace=0;
+	}
+	my $showLegendStatus=(scalar keys %traces > 1)? 'true' : 'false';
+	print qq
+|	]
+}
+</SCRIPT>
+<CENTER>
+<!--
+<FONT class="title">PCA : <FONT color=#DD0000>$pcaName</FONT></FONT><BR><BR>
+-->
+<DIV id="PCA_3dDIV" style="width:100%;height:100%;" class="plotly-graph-div"></DIV>
+</CENTER>
+<SCRIPt type="text/javascript">
+(function(){
+	window.PLOTLYENV={'BASE_URL': 'https://plot.ly'};
+
+	var gd = document.getElementById('PCA_3dDIV')
+	var resizeDebounce = null;
+
+	function resizePlot() {
+		var bb = gd.getBoundingClientRect();
+		Plotly.relayout(gd, {
+			width: bb.width,
+			height: bb.height
+		});
+	}
+	
+	window.addEventListener('resize', function() {
+		if (resizeDebounce) {
+			window.clearTimeout(resizeDebounce);
+		}
+		resizeDebounce = window.setTimeout(resizePlot, 100);
+	});
+	
+	Plotly.plot(gd, {
+		data: figure.data,
+		layout: figure.layout,
+		frames: figure.frames,
+		config: {displayModeBar: true,showlegend: $showLegendStatus} // displaylogo: false, linkText: 'Export to plot.ly',showLink: true
+	});
+
+}());
+</SCRIPT>
+</BODY>
+</HTML>
+|;
+	exit;
+}
+
 ####>Revision history<####
+# 1.2.0 Added full 3D view with plotly.js & avoid asynchronous ajax (PP 17/12/18)
 # 1.1.2 Minor improvement in highlighting annotations sorting (PP 21/06/18)
 # 1.1.1 Compatible with sites list (PP 14/12/17)
 # 1.1.0 Minor bug fix on selection of max number dimensions (PP 18/01/17)

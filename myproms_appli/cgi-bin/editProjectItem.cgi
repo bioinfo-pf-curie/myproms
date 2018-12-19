@@ -1,8 +1,8 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# editProjectItem.cgi    3.1.5                                                 #
-# Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
+# editProjectItem.cgi    3.1.8                                                 #
+# Authors: P. Poullet, G. Arras, F. Yvon, V. Sabatet (Institut Curie)          #
 # Contact: myproms@curie.fr                                                    #
 # Generates the interface allowing                                             #
 # the user to create new project items in myProMS                              #
@@ -328,7 +328,7 @@ function ajaxProteinSummary() {
 			var [warnStrg1,warnStrg2]=(numDbTypes*1 < 2)? ['',''] : ['<FONT style="color:#DD0000"><SUP>*</SUP></FONT>','<FONT style="font-size:11px;color:#DD0000"><BR>&nbsp;'+numDbTypes+' identifier types used: Different instances of the same protein may occur.</FONT>'];
 			document.getElementById('protSPAN1').innerHTML='&nbsp;'+visProt+warnStrg1;
 			var sStrg=(visProt*1 > 1)? 's' : '';
-			protSpan2.innerHTML='&nbsp;Protein'+sStrg+' ('+totProt+' max) <INPUT type="button" class="font11" value="List ambiguities" onclick="window.location=\\'$promsPath{cgi}/listConflicts.cgi?TYPE=$item&ID=$rowID&ACT=ambiguity\\'"/> <INPUT type="button" class="font11" value="Visible & Hidden" onclick="window.location=\\'promsPath{cgi}/listConflicts.cgi?TYPE=$item&ID=$rowID&ACT=switch\\'"/>'+warnStrg2;
+			protSpan2.innerHTML='&nbsp;Protein'+sStrg+' ('+totProt+' max) <INPUT type="button" class="font11" value="List ambiguities" onclick="window.location=\\'$promsPath{cgi}/listConflicts.cgi?TYPE=$item&ID=$rowID&ACT=ambiguity\\'"/> <INPUT type="button" class="font11" value="Visible & Hidden" onclick="window.location=\\'$promsPath{cgi}/listConflicts.cgi?TYPE=$item&ID=$rowID&ACT=switch\\'"/>'+warnStrg2;
 			document.getElementById('protSPAN3').innerHTML='&nbsp;'+pcMapped;
 			document.getElementById('protSPAN4').innerHTML='&nbsp;% Proteins mapped to biological resources.';
 			document.getElementById('protMapTR').style.display='';
@@ -653,7 +653,7 @@ if ($action eq 'summary' && $item eq 'ANALYSIS' && $showParameters==1) {
 |;
 	foreach my $param (sort {$a cmp $b} keys %infoSubmit) {
 		(my $trueParam=$param)=~s/^\w+://; # remove sort tag
-		if ($trueParam eq 'Databank' || $trueParam eq 'MS/MS tolerance' || $trueParam eq 'Spectral library' || $trueParam eq 'Library export options' || $trueParam eq 'TRIC option') { # => multi-db search
+		if (ref($infoSubmit{$param}) eq 'HASH') { # => multi-db search
 			#>Fetching number of databanks searched
 			my $lastIndex=0;
 			foreach my $subParam (keys %{$infoSubmit{$param}}) {
@@ -669,8 +669,9 @@ if ($action eq 'summary' && $item eq 'ANALYSIS' && $showParameters==1) {
 				}
 				print "</TD></TR>\n";
 			}
+		} else {
+			print "<TR valign=top><TH align=right bgcolor=$dark nowrap>&nbsp;$trueParam :</TH><TD nowrap bgcolor=$light>&nbsp;$infoSubmit{$param}</TD></TR>\n";
 		}
-		else {print "<TR valign=top><TH align=right bgcolor=$dark nowrap>&nbsp;$trueParam :</TH><TD nowrap bgcolor=$light>&nbsp;$infoSubmit{$param}</TD></TR>\n";}
 	}
 	unless (scalar keys %infoSubmit) {
 		print "<TR><TH align=left bgcolor=$light colspan=2>No search parameters found.</TH></TR>\n";
@@ -2255,6 +2256,9 @@ sub getRemapButton{
 }
 
 ####>Revision history<####
+# 3.1.8 Restored classical $promsPath{cgi} instead of ${promsPath{cgi} (PP 21/11/18)
+# 3.1.7 Fix handling of complex search parameters (hash), used in DIA and TDA (VS 20/11/18)
+# 3.1.6 Minor bug fix on paths building (VS 18/10/18)
 # 3.1.5 Added check on number of identifier types used in ajaxProteinSummary call (PP 19/09/18)
 # 3.1.4 Added count of prot quantifications and exploratory/functional analyses to Experiment summary (PP 01/08/18)
 # 3.1.3 [Fix] Minor typo in &getRemapButton (PP 29/06/18)

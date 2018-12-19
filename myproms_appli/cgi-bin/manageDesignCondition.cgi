@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# manageDesignCondition.cgi    1.3.1m                                           #
+# manageDesignCondition.cgi    1.3.1m2                                           #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Create, edit & store Design, Experimental States & associate observations    #
@@ -40,6 +40,7 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 #-------------------------------------------------------------------------------
+
 $| = 1;
 use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI ':standard';
@@ -184,7 +185,7 @@ if ($action =~ /edit/ || $action eq 'summary'){
 								);
 
 	###> Get Analysis information in order to fill OBSERVATION, OBS_EXPCONDITION & OBS_MODIFICATION tables
-	my (%hierarchy,%position,%expState,%stateChildren,%fractionGroup,%numAnaCondQuantif,%technicalRepGroup); # %validStatus
+	my (%hierarchy,%position,%expState,%stateChildren,%fractionGroup,%numFractionsInGroup,%numAnaCondQuantif,%technicalRepGroup,%numTechRepsInGroup,%usedTechRepGroups); # %validStatus
 	my (%obs,%pool,%numPools,%techRepGr,%noQuantifAna); # for State summary
 	my $i=0;
 	foreach my $sthGAI (@sthGetAnaInfo) {
@@ -328,7 +329,10 @@ if ($action =~ /edit/ || $action eq 'summary'){
 				$obsCode.=",$modCode" if $modCode;
 				$expState{$obsCode}=$expStateID; # if $expStateID;
 				$fractionGroup{$obsCode}=$fracGroup;
+				$numFractionsInGroup{$expStateID}{$fracGroup}++ if $fracGroup;
 				$technicalRepGroup{$obsCode}=$techRepGroup;
+				$numTechRepsInGroup{$expStateID}{$techRepGroup}++ if $techRepGroup;
+				$usedTechRepGroups{$expStateID}{$techRepGroup}=1 if $techRepGroup;
 				$sthGetQ2->execute($expStateID,$anaID);
 				($numAnaCondQuantif{$obsCode})=$sthGetQ2->fetchrow_array;
 				$stateChildren{$expStateID}+=$numAnaCondQuantif{$obsCode};
@@ -399,8 +403,8 @@ if ($action =~ /edit/ || $action eq 'summary'){
 		my $numBioRep=($techRepGr{$expStateID})? scalar keys %{$techRepGr{$expStateID}} : 0;
 		my $summaryStrg='';
 		if ($numBioRep > 1) {
-			$summaryStrg.="$numBioRep biological replicate";
-			$summaryStrg.='s' if $numBioRep > 1;
+			$summaryStrg.="$numBioRep biological replicates";
+			#$summaryStrg.='s' if $numBioRep > 1;
 		}
 		if ($fractSamp) {
 			$summaryStrg.=' / ' if $summaryStrg;
@@ -447,7 +451,8 @@ if ($action =~ /edit/ || $action eq 'summary'){
 				}
 			}
 			my $bgColor=$dark;
-			foreach my $obsCode (sort{$position{$a}<=>$position{$b}} keys %position){
+my %fracGr2bioSamp;
+			foreach my $obsCode (sort{$position{$a}<=>$position{$b}} keys %position) {
 				my ($anaID,$targetPos,@mods)=split(',',$obsCode);
 				if (($action eq 'editAE' && $trueItem eq 'EXPCONDITION' && $trueItemID == $expStateID && !$expState{$obsCode}) || ($expState{$obsCode} && $expState{$obsCode}==$expStateID)) {
 					#my $anaCode=($validStatus{$anaID}==-1)? 'analysis:no_scan' : ($validStatus{$anaID}==0)? 'analysis:no_val' : ($validStatus{$anaID}==1)? 'analysis:part_val' : 'analysis:val';
@@ -506,23 +511,56 @@ if ($action =~ /edit/ || $action eq 'summary'){
 								$visStrg='';
 							}
 							#>Pool groups
-							$obsString.="<TD><SELECT name=\"fractionGroup\" onchange=\"extendFractionSelection($chkIdx,this.options.selectedIndex)\" $visStrg$disabStrg><OPTION value=\"-1\">No pooling</OPTION>";
+							$obsString.="<TD><SELECT name=\"fractionGroup\" onchange=\"extendFractionSelection($chkIdx,this.options.selectedIndex)\" $visStrg$disabStrg><OPTION value=\"-1\">No fractions</OPTION>";
 							foreach my $f (1..$maxFracGroup) { # $maxNumGroups
 								my $selStrg=($fractionGroup{$obsCode} && $fractionGroup{$obsCode}==$f)? ' selected' : '';
-								$obsString.="<OPTION value=\"$f\"$selStrg>Sample #$f</OPTION>";
+								#$obsString.="<OPTION value=\"$f\"$selStrg>Sample #$f</OPTION>";
+								$obsString.="<OPTION value=\"$f\"$selStrg>Fraction of Sample #$f</OPTION>";
 							}
 							$obsString.="</SELECT></TD>";
 							#>Technical replicates
 							$obsString.="<TD><SELECT name=\"techRepGroup\" onchange=\"extendTechRepSelection($chkIdx,this.options.selectedIndex)\" $visStrg$disabStrg><OPTION value=\"-1\">No tech. replicates</OPTION>";
 							foreach my $f (1..$maxTechRepGroup) { # $maxNumGroups
 								my $selStrg=($technicalRepGroup{$obsCode} && $technicalRepGroup{$obsCode}==$f)? ' selected' : '';
-								$obsString.="<OPTION value=\"$f\"$selStrg>Bio. repl #$f</OPTION>";
+								#$obsString.="<OPTION value=\"$f\"$selStrg>Bio. repl #$f</OPTION>";
+								$obsString.="<OPTION value=\"$f\"$selStrg>Tech. repl. of BioSample #$f</OPTION>";
 							}
 							$obsString.="</SELECT></TD>";
 						}
 						else {
-							$obsString.=($fractionGroup{$obsCode})? "<TD nowrap>&nbsp;&nbsp;[Sample #$fractionGroup{$obsCode}]</TD>" : "<TD></TD>";
-							$obsString.=($technicalRepGroup{$obsCode})? "<TD nowrap>&nbsp;&nbsp;[Bio. repl. #$technicalRepGroup{$obsCode}]</TD>" : "<TD></TD>";
+							#$obsString.=($fractionGroup{$obsCode})? "<TD nowrap>&nbsp;&nbsp;[Sample #$fractionGroup{$obsCode}]</TD>" : "<TD></TD>";
+							#$obsString.=($technicalRepGroup{$obsCode})? "<TD nowrap>&nbsp;&nbsp;[Bio. repl. #$technicalRepGroup{$obsCode}]</TD>" : "<TD></TD>";
+							#>Fractions declaration
+							if ($fractionGroup{$obsCode}) {
+								my $fractionStrg=($numFractionsInGroup{$expStateID}{ $fractionGroup{$obsCode} } > 1)? 'Fraction of Sample' : 'Sample';
+								$obsString.="<TD nowrap>&nbsp;&nbsp;[$fractionStrg #$fractionGroup{$obsCode}]</TD>";
+							}
+							else {$obsString.="<TD></TD>";}
+							#>Tech Reps declaration
+							if ($technicalRepGroup{$obsCode}) {
+								my $techRepStrg=($numTechRepsInGroup{$expStateID}{ $technicalRepGroup{$obsCode} } > 1)? 'Tech. repl. of BioSample' : 'BioSample';
+								$obsString.="<TD nowrap>&nbsp;&nbsp;[$techRepStrg #$technicalRepGroup{$obsCode}]</TD>";
+								$fracGr2bioSamp{ $fractionGroup{$obsCode} }{ $technicalRepGroup{$obsCode} }=1 if $fractionGroup{$obsCode};
+							}
+							#else {$obsString.="<TD></TD>";}
+							else {
+								if ($numBioRep > 1 && ($usedTechRepGroups{$expStateID} || !$numFractionsInGroup{$expStateID})) { # Auto-generate BioSample number based on fraction & techRep context
+									my $bioSampNumStrg='';
+									if ($fractionGroup{$obsCode} && $fracGr2bioSamp{ $fractionGroup{$obsCode} }) {$bioSampNumStrg='&nbsp;#'.$fracGr2bioSamp{ $fractionGroup{$obsCode} };}
+									else {
+										my $newNum=1;
+										if ($usedTechRepGroups{$expStateID}) {
+											$newNum=(sort{$b<=>$a} keys %{$usedTechRepGroups{$expStateID}})[0];
+											$newNum++;
+											$fracGr2bioSamp{ $fractionGroup{$obsCode} }=$newNum if $fractionGroup{$obsCode};
+										}
+										$usedTechRepGroups{$expStateID}{$newNum}=1;
+										$bioSampNumStrg='&nbsp;#'.$newNum;
+									}
+									$obsString.="<TD>&nbsp;&nbsp;[BioSample$bioSampNumStrg]</TD>";
+								}
+								else {$obsString.="<TD></TD>";}
+							}
 						}
 					}
 					$obsString.="<TD width=100%></TD></TR>\n";
@@ -1231,7 +1269,7 @@ function extendFractionSelection(chkIdx,selIdx) {
 function extendTechRepSelection(chkIdx,selIdx) {
 	var autoExtCount=(document.getElementById('autoExtend').value * 1) - 1;
 	if (autoExtCount==0) return;
-	var techRepInfo=document.getElementByName('techRepGroup');
+	var techRepInfo=document.getElementsByName('techRepGroup');
 	var checkBoxInfo=document.getElementsByName('obsList');
 	for (var i=chkIdx+1; i < techRepInfo.length; i++) {
 		if (checkBoxInfo[i].checked) {
@@ -1406,6 +1444,7 @@ print "$expStateStrg</CENTER>\n<BR><BR></BODY>\n</HTML>\n";
 
 
 ####>Revision history<####
+# 1.3.1m2 Improved fraction/tech. rep./biosample declaration (PP 13/11/18)
 # 1.3.1m [Fix] minor bug in SOFTWARE string removal from QUANTIF_ANNOT field value (PP 13/09/18)
 # 1.3.1 Multiple Designs duplication at once (PP 14/03/18)
 # 1.3.0 Added option to duplicate entire Design from another Experiment (PP 18/01/18)

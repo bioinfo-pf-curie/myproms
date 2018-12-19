@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# scanDatabank.pl               3.0.7                                          #
+# scanDatabank.pl               3.0.8                                          #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -145,7 +145,7 @@ $sthDB->execute;
 while (my ($dbID,$dbName,$dbRank)=$sthDB->fetchrow_array) {
 	$numDatabanks++;
 	print "+ Scanning databank #$numDatabanks ($dbName)...";
-	my ($error)=&promsMod::getProtInfo('silent',$dbh,$dbID,\@analysisList,\%protDes,\%protMW,\%protOrg,\%protLength,$protList{$dbRank});
+	my ($error)=&promsMod::getProtInfo('silent',$dbh,$dbID,\@analysisList,\%protDes,\%protMW,\%protOrg,\%protLength,undef,$protList{$dbRank});
 	if ($error) {
 		print $error;
 		$protInfoErrors++;
@@ -192,6 +192,7 @@ print "<JOB END $jobEndTime\n";
 
 
 ####>Revision history<####
+# 3.0.8 Minor modification on the getProtInfo call (VS 16/11/2018)
 # 3.0.7 Bug fix by better separation of multi-databanks (PP 25/03/14)
 # 3.0.6 Uses mkdir instead of make_path (PP 10/03/14)
 # 3.0.5 Minor typo correction (PP 30/10/13)

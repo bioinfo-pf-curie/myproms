@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# exportProteinList.cgi        2.4.0                                           #
+# exportProteinList.cgi        2.4.1                                           #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Exports a list of proteins in MS Excel or HTML format                        #
@@ -50,10 +50,8 @@ use promsConfig;
 use promsMod;
 use phosphoRS;
 use XML::Simple;
-use Data::Dumper;
 use Storable 'dclone';
 use strict;
-
 
 #print header; warningsToBrowser(1); # DEBUG
 #######################
@@ -131,6 +129,16 @@ print qq
 <STYLE type="text/css">
 .{font-weight:bold;}
 .notMapped{color:#555555; text-decoration:line-through}
+
+
+
+#varMod {
+	display: inline-block;
+    position: relative;
+    right: 3px;
+    margin-top: 4px;
+    margin-bottom: 2px;
+}
 </STYLE>
 <SCRIPT LANGUAGE="JavaScript">
 |;
@@ -252,6 +260,8 @@ function chooseDepth(depth) {
 			document.exportForm.sel_cumSeqPep.checked=false;
 			document.exportForm.sel_seqPep.disabled=false;
 			document.exportForm.sel_modPep.disabled=true;
+			document.exportForm.sel_modPepProt.disabled=true;
+			document.exportForm.sel_etPep.disabled=true;
 			document.exportForm.sel_posPep.disabled=true;
 			document.exportForm.sel_flkPep.disabled=true;
 			document.exportForm.sel_occPep.disabled=true;
@@ -294,7 +304,7 @@ function checkSelection(box) {
 		alert('Data used to sort proteins must be exported.');
 	}
 }
-var peptideOptions=['sel_modPep','sel_posPep','sel_flkPep','sel_occPep','sel_isSpec','sel_scorePep','sel_qvalPep','sel_chargePep','sel_massPep','sel_titlePep','sel_commentPep','sel_phosphoRS','sel_pepPSM']
+var peptideOptions=['sel_modPep','sel_modPepProt','sel_etPep','sel_posPep','sel_flkPep','sel_occPep','sel_isSpec','sel_scorePep','sel_qvalPep','sel_chargePep','sel_massPep','sel_titlePep','sel_commentPep','sel_phosphoRS','sel_pepPSM']
 function checkPepSequence(box) {
 	var disStatus;
 	if (box.checked) {
@@ -314,6 +324,7 @@ function checkPepSequence(box) {
 	}
 	for (var i=0; i<peptideOptions.length; i++) {document.exportForm[peptideOptions[i]].disabled=disStatus;}
 }
+
 function checkForm(myForm) {
 	if (!myForm.view.value) {
 		alert('Select a sort option');
@@ -454,7 +465,10 @@ print qq
 	&nbsp;&nbsp;&nbsp;<INPUT type="checkbox" name="sel_seqPep" value="1" onclick="checkPepSequence(this)">&nbsp;Sequences in best analysis&nbsp&nbsp&nbsp<BR>
 	&nbsp;&nbsp;&nbsp;<INPUT type="checkbox" name="sel_cumSeqPep" value="1" onclick="checkPepSequence(this)" $disabledString2>&nbsp;Sequences in displayed Item<SUP>*</SUP><BR>
 	&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<INPUT type="checkbox" name="sel_flkPep" value="1" disabled>&nbsp;Flanking residues<BR>
-	&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<INPUT type="checkbox" name="sel_modPep" value="1" disabled>&nbsp;Variable modifications<BR>
+	<span id='varMod'>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Variable modifications<BR/>
+	&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<INPUT type="checkbox" name="sel_modPep" style="margin-top: 5px" value="1" disabled>&nbsp;Position in peptide<BR>
+	&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<INPUT type="checkbox" name="sel_modPepProt" value="1" disabled>&nbsp;Position in protein</span><br/>
+	&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<INPUT type="checkbox" name="sel_etPep" value="1" disabled>&nbsp;Retention time<BR>
 	&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<INPUT type="checkbox" name="sel_phosphoRS" value="1" disabled>&nbsp;PhosphoRS results<BR>
 	&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<INPUT type="checkbox" name="sel_posPep" value="1" disabled>&nbsp;Position(s)<BR>
 	&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<INPUT type="checkbox" name="sel_occPep" value="1" disabled>&nbsp;Occurence in protein<BR>
@@ -707,9 +721,12 @@ sub exportList {
 		$pepLabel.=')';
 		push @selColName,$pepLabel;
 		push @selPepColName,('#','Sequence');
-		if (param('sel_modPep') || param('sel_phosphoRS')|| param('sel_posPep')|| param('sel_occPep') ||  param('sel_isSpec') || param('sel_scorePep') || param('sel_qvalPep') || param('sel_chargePep') || param('sel_massPep') || param('sel_commentPep') || param('sel_titlePep')) {
+		if (param('sel_modPep') || param('sel_modPepProt') || param('sel_etPep') || param('sel_phosphoRS')|| param('sel_posPep')|| param('sel_occPep') ||  param('sel_isSpec') || param('sel_scorePep') || param('sel_qvalPep') || param('sel_chargePep') || param('sel_massPep') || param('sel_commentPep') || param('sel_titlePep')) {
 			$rowSpan=2;
-			push @selPepColName,'Variable modifications' if param('sel_modPep');
+			push @selPepColName,'Variable modifications (in peptide)' if param('sel_modPep');
+			push @selPepColName,'Variable modifications (in protein)' if param('sel_modPepProt');
+			push @selPepColName,'Variable modifications summary' if param('sel_modPepProt') || param('sel_modPep');
+			push @selPepColName,'Retention time' if param('sel_etPep');
 			push @selPepColName,'PhosphoRS results' if param('sel_phosphoRS');
 			push @selPepColName,'PhosphoRS Probabilities' if param('sel_phosphoRS');
 			push @selPepColName,'Start..End' if param('sel_posPep');
@@ -724,9 +741,10 @@ sub exportList {
 		}
 	}
 	foreach my $colName (@selPepColName) {
-		my $colSize=($colName eq '#')? 4 : ($colName eq 'Sequence')? 35 : length($colName)*1.2;
+		my $colSize = ($colName eq '#') ? 4 : ($colName eq 'Sequence') ? 35 : length($colName)*1.2;
 		push @columnSizes,$colSize;
 	}
+
 	$colSpanPep=scalar @selPepColName;
 	$colSpan+=$colSpanPep;
 
@@ -839,6 +857,69 @@ sub exportList {
 |;
 	}
 	exit;
+}
+
+################################################################################
+####   Generate modifications summary text based on a given varMod string   ####
+################################################################################
+sub generateVarModSummary {
+	my ($varMod, $pepSeq, $shift) = @_;
+	my @matches = ( $varMod =~ /([A-Za-z]+)\s\([A-Za-z-]+:([0-9.?]+)?\[?([0-9,]+)?\]?|([A-Za-z]+)\s\((Protein N-term|N-term|C-term|Protein C-term)\)/g );
+	my $comments = "";
+	my %varMods;
+	
+	if(@matches) {
+		my (@varModPos, $aa, $modType, $posInPeptide);
+		my $nbMatches = scalar @matches;
+		
+		for(my $i=0; $i < $nbMatches; $i += 5) {
+			# Mod in numeric position 
+			if($matches[$i]) {
+				$modType = $matches[$i];
+				@varModPos = split('\.', $matches[$i+1]);
+				
+				foreach my $pos (@varModPos) {
+					# Add nb of sites to total for the modType
+					$varMods{$modType}{"amount"}++;
+					
+					next if ($pos eq '?');
+					
+					$posInPeptide = ($shift) ? $pos-$shift : $pos;
+					$aa = substr($pepSeq, $posInPeptide-1, 1);
+					push(@{$varMods{$modType}{"regular"}}, "$aa$pos");
+				}
+				
+				# Has ambigous
+				if($matches[$i+2]) {
+					@varModPos = split(',', $matches[$i+2]);
+					foreach my $pos (@varModPos) {
+						$posInPeptide = ($shift) ? $pos-$shift : $pos;
+						$aa = substr($pepSeq, $posInPeptide-1, 1);
+						push(@{$varMods{$modType}{"ambigous"}}, "$aa$pos");
+					}
+				}
+			}
+			
+			# Mod in special position (Protein N-term / N-term / C-term / Protein C-term)
+			if($matches[$i+3]) {
+				$modType = $matches[$i+3];
+				my $pos = $matches[$i+4];
+				
+				push(@{$varMods{$modType}{"regular"}}, "$pos");
+				
+				$varMods{$modType}{"amount"}++;
+			}
+		}
+		
+		foreach $modType (keys %varMods) {
+			my $nbModType = $varMods{$modType}{"amount"};
+			$comments .= " <br/> " if ($comments);
+			$comments .= "$nbModType $modType : ".join(', ', @{$varMods{$modType}{"regular"}});
+			$comments .= "; ambigous : ".join(' and/or ', @{$varMods{$modType}{"ambigous"}}) if ($varMods{$modType}{"ambigous"});
+		}
+	}
+	
+	return ($comments) ? $comments : '-';
 }
 
 ###############################################################
@@ -1245,10 +1326,10 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 
 
 	###<Peptide data>###
-	my (%pepSequences,%pepBoundaries,%flankingAA,%pepScores,%pepVarMods,%firstPepStart,%pepTitle,%pepQValue,%pepCharge,%pepMass,%isSpecific,%pepComments,%pepPhosphoRS,%probPhosphoRS,%varModName);
+	my (%pepSequences,%pepBoundaries,%flankingAA,%pepScores,%pepVarMods,%pepVarModsProt,%pepVarModsComment,%pepElutionTime,%firstPepStart,%pepTitle,%pepQValue,%pepCharge,%pepMass,%isSpecific,%pepComments,%pepPhosphoRS,%probPhosphoRS,%varModName);
 	if (param('sel_pepNr') || param('sel_cumPepNr') || scalar @selPepColName || param('sel_protVmod')) {
 		#my $sthPep2=$dbh->prepare("SELECT ID_PROTEIN,P.ID_PEPTIDE,PEP_SEQ,PEP_BEG,PEP_END,FLANKING_AA,SCORE,CHARGE,MR_OBS,IS_SPECIFIC,COMMENTS,DATA,SPEC_COUNT FROM PEPTIDE_PROTEIN_ATTRIB PPA,PEPTIDE P WHERE P.ID_PEPTIDE=PPA.ID_PEPTIDE AND P.ID_ANALYSIS=? $addSpecificStg ORDER BY ID_PROTEIN");
-		my $sthPep2=$dbh->prepare("SELECT ID_PROTEIN,P.ID_PEPTIDE,PEP_SEQ,GROUP_CONCAT(PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),PEP_BEG,PEP_END,FLANKING_AA,SCORE,CHARGE,MR_OBS,IS_SPECIFIC,COMMENTS,DATA,SPEC_COUNT
+		my $sthPep2=$dbh->prepare("SELECT ID_PROTEIN,P.ID_PEPTIDE,PEP_SEQ,ELUTION_TIME,GROUP_CONCAT(PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),PEP_BEG,PEP_END,FLANKING_AA,SCORE,CHARGE,MR_OBS,IS_SPECIFIC,COMMENTS,DATA,SPEC_COUNT
 											FROM PEPTIDE P
 											LEFT JOIN PEPTIDE_MODIFICATION PM ON P.ID_PEPTIDE=PM.ID_PEPTIDE
 											INNER JOIN PEPTIDE_PROTEIN_ATTRIB PPA ON P.ID_PEPTIDE=PPA.ID_PEPTIDE
@@ -1268,7 +1349,7 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 				}
 				my $prevProtID=0;
 				my (%bestPepScore,%refPeptide,%distinctPep); # in case no sel_modPep => do not duplicate peptides with same sequence
-				while (my ($protID,$pepID,$pepSeq,$modCode,$beg,$end,$flankingAA,$score,$charge,$massObs,$isSpec,$comments,$data,$specCount)=$sthPep2->fetchrow_array) {
+				while (my ($protID,$pepID,$pepSeq,$elutionTime,$modCode,$beg,$end,$flankingAA,$score,$charge,$massObs,$isSpec,$comments,$data,$specCount)=$sthPep2->fetchrow_array) {
 					next if (!$listProteins{$protID} || $bestAnalysis{$protID}[0] != $anaID);
 					if ($protID != $prevProtID) { # reset for each prot
 						$numPeptides{$prevProtID}{'BA_NR'}=scalar keys %distinctPep if (param('sel_pepNr') && $listProteins{$prevProtID});
@@ -1283,6 +1364,10 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 					#my $vMod=&promsMod::toStringVariableModifications($dbh,'PEPTIDE',$pepID,$bestAnalysis{$protID}[0],$pepSeq); #!!! TODO: improve this. TOO SLOW!!!!!!!!!!!!!
 					my $vMod=&promsMod::decodeVarMod($dbh,$pepSeq,$modCode,\%varModName);
 					$vMod='-' unless $vMod;
+					
+					my $vModProt=&promsMod::decodeVarMod($dbh,$pepSeq,$modCode,\%varModName, $beg-1);
+					$vModProt = '-' unless $vModProt;
+					
 					#$vMod=~s/([:.])-1/$1?/g; # -1 -> ? (position ambiguity)
 					$comments='-' unless $comments;
 					if (param('sel_pepNr')) {$distinctPep{"$pepSeq$vMod"}=1;}
@@ -1309,7 +1394,19 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 						$pepSequences{$protID}{$pepID}=$flkNter.$pepSeq.$flkCter;
 						$pepBoundaries{$protID}{$pepID}{$beg}=$end; # always computed
 						$pepScores{$protID}{$pepID}=$score if param('sel_scorePep');
-						$pepVarMods{$protID}{$pepID}=$vMod if param('sel_modPep') || param('sel_protVmod');
+
+						if(param('sel_modPep') || param('sel_modPepProt') || param('sel_protVmod')) {
+							($pepVarMods{$protID}{$pepID}= $vMod) =~ s/\[[0-9,]+\]//g;
+							($pepVarModsProt{$protID}{$pepID} = $vModProt) =~ s/\[[0-9,]+\]//g;
+							$pepVarModsComment{$protID}{$pepID} = generateVarModSummary($vModProt, $pepSeq, $beg-1);
+						}
+						
+						if(param('sel_etPep')) {
+							my @elutionTimeParsed = ( $elutionTime =~ /et([0-9.]+);?/);
+							$elutionTime = (scalar @elutionTimeParsed == 1) ? $elutionTimeParsed[0] : '-';
+							$pepElutionTime{$protID}{$pepID} = $elutionTime;
+						}
+						
 						$pepCharge{$protID}{$pepID}=$charge if param('sel_chargePep');
 						if (param('sel_qvalPep') ){
 							if ($data && $data =~ /QVAL=([^,]+)/) {
@@ -1356,7 +1453,7 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 				}
 				my $prevProtID=0;
 				my (%bestPepScore,%refPeptide,%distinctPep);
-				while (my ($protID,$pepID,$pepSeq,$modCode,$beg,$end,$flankingAA,$score,$charge,$massObs,$isSpec,$comments,$data,$specCount)=$sthPep2->fetchrow_array) {
+				while (my ($protID,$pepID,$pepSeq,$elutionTime,$modCode,$beg,$end,$flankingAA,$score,$charge,$massObs,$isSpec,$comments,$data,$specCount)=$sthPep2->fetchrow_array) {
 					next unless $listProteins{$protID};
 					if ($protID != $prevProtID) { # reset for each prot
 						$numPeptides{$prevProtID}{'CUM_NR'}=scalar keys %distinctPep if (param('sel_cumPepNr') && $listProteins{$prevProtID});
@@ -1366,6 +1463,10 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 					#my $vMod=&promsMod::toStringVariableModifications($dbh,'PEPTIDE',$pepID,$anaID,$pepSeq); #!!! TODO: improve this. TOO SLOW!!!!!!!!!!!!!
 					my $vMod=&promsMod::decodeVarMod($dbh,$pepSeq,$modCode,\%varModName);
 					$vMod='-' unless $vMod;
+					
+					my $vModProt=&promsMod::decodeVarMod($dbh,$pepSeq,$modCode,\%varModName, $beg-1);
+					$vModProt = '-' unless $vModProt;
+					
 					$comments='-' unless $comments;
 					if (param('sel_cumPepNr')) {$distinctPep{"$pepSeq$vMod"}=1;}
 					if (param('sel_cumSeqPep')) {
@@ -1391,7 +1492,19 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 						$pepSequences{$protID}{$pepID}=$flkNter.$pepSeq.$flkCter;
 						$pepBoundaries{$protID}{$pepID}{$beg}=$end ;#if param('sel_posPep'); #order by pos !
 						$pepScores{$protID}{$pepID}=$score if param('sel_scorePep');
-						$pepVarMods{$protID}{$pepID}=$vMod if param('sel_modPep') || param('sel_protVmod');
+						
+						if(param('sel_modPep') || param('sel_modPepProt') || param('sel_protVmod')) {
+							($pepVarMods{$protID}{$pepID}= $vMod) =~ s/\[[0-9,]+\]//g;
+							($pepVarModsProt{$protID}{$pepID} = $vModProt) =~ s/\[[0-9,]+\]//g;
+							$pepVarModsComment{$protID}{$pepID} = generateVarModSummary($vModProt, $pepSeq, $beg-1);
+						}
+						
+						if(param('sel_etPep')) {
+							my @elutionTimeParsed = split(';et', $elutionTime);
+							$elutionTime = (scalar @elutionTimeParsed > 1) ? $elutionTimeParsed[1] : '-';
+							$pepElutionTime{$protID}{$pepID} = $elutionTime;
+						}
+						
 						$pepCharge{$protID}{$pepID}=$charge if param('sel_chargePep');
 						if (param('sel_qvalPep') ){
 							if ($data && $data =~ /QVAL=([^,]+)/) {
@@ -1555,7 +1668,8 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 	if ($exportFormat eq 'XLS') {
 		$xlsRow++;
 		my $xlsCol=0;
-		my ($pepMatchCol,$pepDataCol);
+		my $pepDataCol = 0;
+		my $pepMatchCol;
 		foreach my $colName (@selColName) {
 			$colName=~s/#ITEM#/$itemType/;
 			if ($colName eq "Matching${addColMatchPeptides}peptides") {
@@ -1806,7 +1920,10 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 					$pepCount++;
 					$worksheet->write_number($pepRow,++$pepCol,$pepCount,$format{'number'});
 					$worksheet->write_string($pepRow,++$pepCol,$pepSequences{$protID}{$pepID},$format{'seq'});
-					$worksheet->write_string($pepRow,++$pepCol,$pepVarMods{$protID}{$pepID},$format{'text'}) if param('sel_modPep');
+					$worksheet->write_string($pepRow,++$pepCol,$pepVarMods{$protID}{$pepID},$format{'text'}) if (param('sel_modPep'));
+					$worksheet->write_string($pepRow,++$pepCol,$pepVarModsProt{$protID}{$pepID},$format{'text'}) if (param('sel_modPepProt'));
+					$worksheet->write_string($pepRow,++$pepCol,$pepVarModsComment{$protID}{$pepID},$format{'text'}) if (param('sel_modPepProt') || param('sel_modPep'));
+					$worksheet->write_string($pepRow,++$pepCol,$pepElutionTime{$protID}{$pepID},$format{'text'}) if (param('sel_etPep'));
 					$worksheet->write_string($pepRow,++$pepCol,$pepPhosphoRS{$protID}{$pepID},$format{'text'}) if param('sel_phosphoRS');
 					$worksheet->write_string($pepRow,++$pepCol,$probPhosphoRS{$protID}{$pepID},$format{'text'}) if param('sel_phosphoRS');
 					if (param('sel_posPep')) {
@@ -1840,7 +1957,10 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 					print "<TR>" if $pepCount>1;
 					#$firstPep=0;
 					print "<TD align=right bgcolor=\"$rowColor\">$pepCount</TD><TD bgcolor=\"$rowColor\">$pepSequences{$protID}{$pepID}</TD>";
-					print "<TD bgcolor=\"$rowColor\">$pepVarMods{$protID}{$pepID}</TD>" if param('sel_modPep');
+					print "<TD bgcolor=\"$rowColor\">$pepVarMods{$protID}{$pepID}</TD>" if (param('sel_modPep')); 
+					print "<TD bgcolor=\"$rowColor\">$pepVarModsProt{$protID}{$pepID}</TD>" if (param('sel_modPepProt'));
+					print "<TD bgcolor=\"$rowColor\">$pepVarModsComment{$protID}{$pepID}</TD>" if (param('sel_modPepProt') || param('sel_modPep'));
+					print "<TD bgcolor=\"$rowColor\">$pepElutionTime{$protID}{$pepID}</TD>" if (param('sel_etPep')); 
 					print "<TD bgcolor=\"$rowColor\">$pepPhosphoRS{$protID}{$pepID}</TD>" if param('sel_phosphoRS');
 					print "<TD bgcolor=\"$rowColor\">$probPhosphoRS{$protID}{$pepID}</TD>" if param('sel_phosphoRS');
 
@@ -1945,6 +2065,7 @@ sub getPhosphoRsProbString{
 
 
 ####>Revision history<####
+# 2.4.1 Added new export options: variable modifications based on protein sequence + retention time (VS 14/12/18)
 # 2.4.0 Faster form display by moving mapped identifiers detection to user-dependent ajax call (PP 11/04/18)
 # 2.3.8 Export PhosphoRS probabilities (GA 31/01/18)
 # 2.3.7 fix little bug with index L1029 (SL 17/06/16)

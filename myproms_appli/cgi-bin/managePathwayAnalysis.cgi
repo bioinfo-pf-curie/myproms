@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# managePathwayAnalysis.cgi       1.0.3                                        #
+# managePathwayAnalysis.cgi       1.0.4                                        #
 # Authors: P. Poullet, S.Liva (Institut Curie)                                 #
 # Contact: myproms@curie.fr                                                    #
 # summary, edit, delete a pathway analysis                                     #
@@ -185,8 +185,8 @@ else {#summary
 <TR><TH align="right" bgcolor="$dark" nowrap>Status :</TH><TD nowrap bgcolor="$light">&nbsp;&nbsp;$statusStrg</TD></TR>
 <TR><TH align="right" valign="top" bgcolor="$dark" nowrap>Proteins used :</TH><TD nowrap bgcolor="$light">|;
     if ($catID) {
-		my $catName=$dbh->selectrow_array("SELECT NAME from CATEGORY where ID_CATEGORY=$catID");
-		print qq|&nbsp;List :$catName|;
+		my ($catName)=$dbh->selectrow_array("SELECT CONCAT(CL.NAME,' > ',CA.NAME) FROM CATEGORY CA,CLASSIFICATION CL WHERE CL.ID_CLASSIFICATION=CA.ID_CLASSIFICATION AND CA.ID_CATEGORY=$catID");
+		print "&nbsp;List: $catName";
     }
     else {
 		print qq|<INPUT type="button" class="font11" value="Show item list" onclick="window.location='./selectAnalyses.cgi?callType=list&ID=PATHWAY_ANALYSIS:$pathwayID'">|;
@@ -210,6 +210,7 @@ print qq
 $dbh -> disconnect;
 
 ####>Revision history<####
+# 1.0.4 Added classification name to list name (PP 07/12/18)
 # 1.0.3 Change so that "Pathway Analyses" branch is selected after deletion instead of Experiment (PP 26/10/15)
 # 1.0.2 Change reload window by reload optionFrame (SL 03/09/15)
 # 1.0.1 Auto reload page if analysis is on-going (PP 13/11/14)

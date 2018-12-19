@@ -1,5 +1,5 @@
 ################################################################################
-# AnalysisDiffLimma.R         4.1.2                                            #
+# AnalysisDiffLimma.R         4.2.0                                            #
 # Authors: Matthieu Lhotellier & Alexandre Sta (Institut Curie)                #
 # Contact: myproms@curie.fr                                                    #
 # Statiscal Methods for protein quantification by mass spectrometry            #
@@ -70,9 +70,17 @@ if(sum(list.files("data/")=="normProtein.txt")){
   normProtein = NULL
 }
 
+#### Load dataRef ####
+if( !( is.null(parameters$normalization.ref.test)  ) ){
+  dataRef <- fread(file.path("data","tableRef.txt"),sep="\t",header=TRUE,data.table=FALSE,integer64 = "numeric")
+  dataRef = .reshapeData(dataRef)
+}else{
+  dataRef = NULL
+}  
+
 #### Control ####
 
-.control(data,parameters,normProtein)
+.control(data,parameters,normProtein,dataRef)
 
 #### Missing sample ####
 .missingSample(data,step="Brut_")
@@ -81,13 +89,6 @@ if(sum(list.files("data/")=="normProtein.txt")){
 data<-.calculLog2Ratio(data,parameters)
 historyData$dataRatio = data
 
-#### Normalisation in prot ####
-if( ifelse(!is.null(parameters$normalization.ref),parameters$normalization.ref,"notNone") =="none.none" ){
-  dataRef <- fread(file.path("data","tableRef.txt"),sep="\t",header=TRUE,data.table=FALSE,integer64 = "numeric")
-  dataRef = .reshapeData(dataRef)
-  dataRef = .calculLog2Ratio(dataRef,parameters)
-  data = .normEachProt( data , dataRef , parameters )
-}
 
 #### Normalisation  ####
 tmp = .normalizeData(data,parameters,normProtein)
@@ -96,6 +97,16 @@ bias = tmp$bias
 rm("tmp")
 historyData$dataNorm = data
 
+#### Normalisation in prot ####
+if (!is.null(dataRef)) {
+  dataRef = .calculLog2Ratio(dataRef,parameters)
+  parametersTmp = parameters
+  parametersTmp$normalization.method = paste(unlist(strsplit(parameters$normalization.ref.test,
+                                                             split="\\."))[1:2],collapse=".")
+  dataRef = .normalizeData(dataRef,parametersTmp,normProtein)$data 
+  data = .normEachProt( data , dataRef , parameters )
+  historyData$dataNormEachProt = data
+}
 
 #### Remove outliers  ####
 # historyData$rawData %>% select(sample,experiment,proteinId,proteinName,peptide,peptideId) %>%
@@ -265,10 +276,21 @@ for(i in 1:(dim(tmp)[1]) ){
 #### Distribution the fold change ####
 tmp = historyData$dataQuanti %>%  group_by(term) %>% nest
 for(i in 1:(dim(tmp)[1]) ){
-  title = tmp$term[i]
-  path = paste0("results/graph/distriblog2FC_",title,".jpeg")
-  nProt = tmp$data[[i]] %>% filter(!is.na(estimate)) %>% .$estimate %>% length
-  p = tmp$data[[i]] %>% filter(!is.na(estimate)) %>%
+  title  = tmp$term[i]
+  path   = paste0("results/graph/distriblog2FC_",title,".jpeg")
+  nProt  = tmp$data[[i]] %>% filter(!is.na(estimate)) %>% .$estimate %>% length
+  for_outliers_step1 = tmp$data[[i]] %>% filter(!is.na(estimate)) %>%
+    dplyr::summarise(outq1 = quantile(estimate, probs=0.25) - 1.5*IQR(estimate),
+                     outq3 = quantile(estimate, probs=0.75) + 1.5*IQR(estimate) )
+  for_outliers_step2 = tmp$data[[i]] %>% filter(!is.na(estimate)) %>% 
+    filter (estimate < for_outliers_step1$outq1 | estimate > for_outliers_step1$outq3 )  %>% .$estimate
+  noutliers = for_outliers_step2  %>% length
+  routliers = for_outliers_step2  %>% range 
+  title = paste(title, paste0("(There are ",noutliers," outliers, min is ", 
+                              round(routliers[1],0), ", max is ", round(routliers[2],0),")"), sep= "     ")
+  
+  p = tmp$data[[i]] %>% filter(!is.na(estimate)) %>% 
+    filter (estimate > for_outliers_step1$outq1 & estimate < for_outliers_step1$outq3 ) %>% 
     ggplot(aes(estimate)) + geom_histogram(aes(y=..density..),bins = min(nProt,100),fill="white",color="black") +
     geom_density(color="black") + ggtitle(title)
   ggsave(plot = p,path,width=10,height=10)
@@ -282,6 +304,9 @@ write.table(parameters$design,paste("results/design.txt"),row.names = FALSE,col.
 print("End of the quantification")
 
 ####>Revision history<####
+# 4.3.0 normalization.ref.test has now 4 items, 1 and 2 for normalisation of tableRef and 3 and 4 for correction of data with tableRef (IB 29/11/2018)
+# 4.2.0 change Licence from GPL to CeCILL, change order of table.ref reading, create dataRef object (NULL when there isn't table.ref) and add dataRef in .control arguments, remove outliers from data in the graph "distriblog2FC_....jpeg" (16/11/18)
+# 4.1.3 invert the order of normalization and normalization by ref and correct the test on the parameter of normalization of ref (28/06/18)
 # 4.1.2 correction of the test on normalization.ref (15/06/18)
 # 4.1.1 do not normalize in each protein if normalization.ref is none.none (12/06/18)
 # 4.1.0 add the normalization in the protein (12/06/18)

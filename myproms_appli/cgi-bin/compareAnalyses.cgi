@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# compareAnalyses.cgi               2.2.2                                      #
+# compareAnalyses.cgi               2.3.1                                      #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Compares the protein & peptide contents of multiple (groups of) analyses     #
@@ -40,6 +40,7 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 #-------------------------------------------------------------------------------
+
 $|=1;
 use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI ':standard';
@@ -1212,17 +1213,24 @@ my ($filterLogic,%autocheckParams,$selectedRefPTM,$okAutocheck);
 if ($autochkStrg) {
 	#my $autochkStrg='1:>=:3;2:>=:4';
 	($filterLogic,my $pepFilterStrg,$selectedRefPTM,my $ptmFilterStrg)=split('#',$autochkStrg);
-	foreach my $grData (split(';',$pepFilterStrg)) {
-		my ($aGr,$rel,$numPep)=split(':',$grData);
-		@{$autocheckParams{'PEP'}{$aGr}}=($rel,$numPep);
-		$okAutocheck=1 if ($rel ne '>=' || $numPep>0); # do not check all proteins if ">=0" for all anaGroups
-	}
 	$selectedRefPTM=undef if ($selectedRefPTM && !$projectVarMods{$selectedRefPTM}); # in case project PTMs list has changed after comparison was saved
-	if ($selectedRefPTM) {
-		foreach my $grData (split(';',$ptmFilterStrg)) {
-			my ($aGr,$rel,$numPtm)=split(':',$grData);
-			@{$autocheckParams{'PTM'}{$aGr}}=($rel,$numPtm);
-			$okAutocheck=1 if ($rel ne '>=' || $numPtm>0); # do not check all proteins if ">=0" for all anaGroups
+	if ($filterLogic eq 'frequency') {
+		($autocheckParams{'FREQ_ANAGR'},$autocheckParams{'FREQ_PEP'})=split(';',$pepFilterStrg);
+		$autocheckParams{'FREQ_PTM'}=$ptmFilterStrg if $selectedRefPTM;
+		$okAutocheck=1;
+	}
+	else { # and,or
+		foreach my $grData (split(';',$pepFilterStrg)) {
+			my ($aGr,$rel,$numPep)=split(':',$grData);
+			@{$autocheckParams{'PEP'}{$aGr}}=($rel,$numPep);
+			$okAutocheck=1 if ($rel ne '>=' || $numPep>0); # do not check all proteins if ">=0" for all anaGroups
+		}
+		if ($selectedRefPTM) {
+			foreach my $grData (split(';',$ptmFilterStrg)) {
+				my ($aGr,$rel,$numPtm)=split(':',$grData);
+				@{$autocheckParams{'PTM'}{$aGr}}=($rel,$numPtm);
+				$okAutocheck=1 if ($rel ne '>=' || $numPtm>0); # do not check all proteins if ">=0" for all anaGroups
+			}
 		}
 	}
 }
@@ -1260,7 +1268,7 @@ if ($numAllProteins==0) {
 #print "SETS:<BR>"; foreach my $set (keys %vennDiagram) {print ">$set => $vennDiagram{$set}<BR>\n";}; exit;
 my $onloadStrg=''; #onload="refreshChkProteins()"';
 #$onloadStrg.="autoCheck(0);" if ($okAutocheck && scalar keys %proteinList);
-$onloadStrg.=($okAutocheck && $numAllProteins)? 'autoCheck(0); hideShowUnchecked(0);' : ($numProtChecked)? 'update2ndVennDiagram();' : ''; # $numProtChecked after Export?, save list or change in list display
+$onloadStrg.=($okAutocheck && $numAllProteins)? "updateComparisonStrategy('$filterLogic'); autoCheck(0); hideShowUnchecked(0);" : ($numProtChecked)? 'update2ndVennDiagram();' : ''; # $numProtChecked after Export?, save list or change in list display
 #$onloadStrg.="displayPtmImages(document.getElementById('refPTM').value);" if $projectPtmString;
 
 ###>PTMs
@@ -1348,21 +1356,32 @@ function generateAutoCheckString() {
 	var protForm=document.protView;
 	//logic;
 	var autoChkStrg=protForm.logic.value+'#';
-	//peptides
-	for (var g=0; g<$numAnaGroups; g++) {
-		if (g>0) {autoChkStrg+=';'}
-		var aGr=g+1;
-		autoChkStrg+=aGr+':'+protForm['pepCompSign_'+g].value+':'+protForm['numPep_'+g].value;
+	if (protForm.logic.value=='frequency') {
+		autoChkStrg+=protForm.freqAnaGr.value+';'+protForm.freqPep.value;
+		if (protForm.refPTM) { // relevant PTMs in project
+			var refPtm=protForm.refPTM.value;
+			if (refPtm) {
+				autoChkStrg+='#'+refPtm+'#'+protForm.freqPtm.value;
+			}
+		}
 	}
-	//PTMs
-	if (protForm.refPTM) { // relevant PTMs in project
-		var refPtm=protForm.refPTM.value;
-		if (refPtm) {
-			autoChkStrg+='#'+refPtm+'#';
-			for (var g=0; g<$numAnaGroups; g++) {
-				if (g>0) {autoChkStrg+=';'}
-				var aGr=g+1;
-				autoChkStrg+=aGr+':'+protForm['ptmCompSign_'+g].value+':'+protForm['numPtm_'+g].value;
+	else { // and,or
+		//peptides
+		for (var g=0; g<$numAnaGroups; g++) {
+			if (g>0) {autoChkStrg+=';'}
+			var aGr=g+1;
+			autoChkStrg+=aGr+':'+protForm['pepCompSign_'+g].value+':'+protForm['numPep_'+g].value;
+		}
+		//PTMs
+		if (protForm.refPTM) { // relevant PTMs in project
+			var refPtm=protForm.refPTM.value;
+			if (refPtm) {
+				autoChkStrg+='#'+refPtm+'#';
+				for (var g=0; g<$numAnaGroups; g++) {
+					if (g>0) {autoChkStrg+=';'}
+					var aGr=g+1;
+					autoChkStrg+=aGr+':'+protForm['ptmCompSign_'+g].value+':'+protForm['numPtm_'+g].value;
+				}
 			}
 		}
 	}
@@ -1426,10 +1445,29 @@ function manualCheck(chkStatus) {
 }
 function activatePtmFiltering(refPtm) {
 	parent.selItemsFrame.setComparisonAsModified(1);
-	var disabStatus=(refPtm)? false : true;
-	for (var a=0; a < $numAnaGroups; a++) {
-		document.getElementById('ptmCompSign_'+a).disabled=disabStatus;
-		document.getElementById('numPtm_'+a).disabled=disabStatus;
+	var logicPtmDisabStatus=(refPtm && document.getElementById('logic').value != 'frequency')? false : true;
+	for (let a=0; a < $numAnaGroups; a++) {
+		document.getElementById('ptmCompSign_'+a).disabled=logicPtmDisabStatus;
+		document.getElementById('numPtm_'+a).disabled=logicPtmDisabStatus;
+	}
+	document.getElementById('freqPtm').disabled=(refPtm)? !logicPtmDisabStatus : true; // Warning: not defined if no relevant PTMs in project}
+}
+function updateComparisonStrategy(strategy) {
+	var logicPepDisabStatus=(strategy=='frequency')? true : false;
+	var refPTM=document.getElementById('refPTM');
+	var logicPtmDisabStatus=(logicPepDisabStatus \|\| (refPTM && !refPTM.value))? true : false;
+	for (let a=0; a < $numAnaGroups; a++) {
+		document.getElementById('pepCompSign_'+a).disabled=logicPepDisabStatus;
+		document.getElementById('numPep_'+a).disabled=logicPepDisabStatus;
+		if (refPTM) {
+			document.getElementById('ptmCompSign_'+a).disabled=logicPtmDisabStatus;
+			document.getElementById('numPtm_'+a).disabled=logicPtmDisabStatus;
+		}
+	}
+	document.getElementById('freqAnaGr').disabled = !logicPepDisabStatus;
+	document.getElementById('freqPep').disabled = !logicPepDisabStatus;
+	if (refPTM) {
+		document.getElementById('freqPtm').disabled = (refPTM.value)? !logicPtmDisabStatus : true;
 	}
 }
 function autoCheck(warn) {
@@ -1438,24 +1476,28 @@ function autoCheck(warn) {
 	var checkBoxList=protForm.chkProt;
 	//Peptides
 	var pepDistribList=protForm.pepDistrib;
-	var pepCompSign=new Array();
-	var numPep=new Array();
-	for (var a=0; a < $numAnaGroups; a++) {
+	var pepCompSign=[];
+	var numPep=[];
+	for (let a=0; a < $numAnaGroups; a++) {
 		pepCompSign[a]=document.getElementById('pepCompSign_'+a).value;
 		numPep[a]=document.getElementById('numPep_'+a).value*1; //convert to number
 	}
 	var logic=document.getElementById('logic').value; //inter-group logic
+	var freqAnaGr=protForm.freqAnaGr;
+	var freqPep=protForm.freqPep;
+	var freqPtm=protForm.freqPtm;
+	
 	//PTMs
 	var refPTM;
 	var refPtmIndex;
 	var ptmDistribList;
-	var ptmCompSign=new Array();
-	var numPtm=new Array();
+	var ptmCompSign=[];
+	var numPtm=[];
 	if (protForm.ptmDistrib) {
 		refPTM=document.getElementById('refPTM').value;
 		refPtmIndex=document.getElementById('refPTM').selectedIndex - 1; // -=Select=- -> 0
 		ptmDistribList=protForm.ptmDistrib;
-		for (var a=0; a < $numAnaGroups; a++) {
+		for (let a=0; a < $numAnaGroups; a++) {
 			ptmCompSign[a]=document.getElementById('ptmCompSign_'+a).value;
 			numPtm[a]=document.getElementById('numPtm_'+a).value*1; //convert to number
 		}
@@ -1463,36 +1505,33 @@ function autoCheck(warn) {
 	//Scanning protein list
 	var numMatch=0;
 	var allMatches=0;
-	PROT: for (var i=0; i<pepDistribList.length; i++) {
+	PROT: for (let i=0; i<pepDistribList.length; i++) {
+		var anaDistrib=pepDistribList[i].value.split(':');
+		var allPtmDistib;
+		var refPtmDistrib;
+		if (refPTM) {
+			allPtmDistib=ptmDistribList[i].value.split(';');
+			refPtmDistrib=allPtmDistib[refPtmIndex].split(':');
+		}
 		if (logic=='and') {
 			//Peptides
-			var anaDistrib=pepDistribList[i].value.split(':');
-			for (var a=0; a<pepCompSign.length; a++) {
+			for (let a=0; a<pepCompSign.length; a++) {
 				if ((pepCompSign[a]=='>=' && anaDistrib[a]*1<numPep[a]) \|\| (pepCompSign[a]=='<=' && anaDistrib[a]*1>numPep[a])) {
 					continue PROT;
 				}
 			}
 			//PTMs
 			if (refPTM) {
-				var allPtmDistib=ptmDistribList[i].value.split(';');
-				var refPtmDistrib=allPtmDistib[refPtmIndex].split(':');
-				for (var a=0; a<ptmCompSign.length; a++) {
+				for (let a=0; a<ptmCompSign.length; a++) {
 					if ((ptmCompSign[a]=='>=' && refPtmDistrib[a]*1<numPtm[a]) \|\| (ptmCompSign[a]=='<=' && refPtmDistrib[a]*1>numPtm[a])) {
 						continue PROT;
 					}
 				}
 			}
 		}
-		else { //logic = or
-			var anaDistrib=pepDistribList[i].value.split(':');
-			var allPtmDistib;
-			var refPtmDistrib;
-			if (refPTM) {
-				allPtmDistib=ptmDistribList[i].value.split(';');
-				refPtmDistrib=allPtmDistib[refPtmIndex].split(':');
-			}
+		else if (logic=='or') {
 			var okMatch;
-			for (var a=0; a<pepCompSign.length; a++) { // same length than ptmCompSign
+			for (let a=0; a<pepCompSign.length; a++) { // same length than ptmCompSign
 				okMatch=true; // reset for each group
 				//Peptides
 				if ((pepCompSign[a]=='>=' && anaDistrib[a]*1<numPep[a]) \|\| (pepCompSign[a]=='<=' && anaDistrib[a]*1>numPep[a])) {
@@ -1507,6 +1546,22 @@ function autoCheck(warn) {
 				if (okMatch==true) {break;}
 			}
 			if (okMatch==false) {continue PROT;}
+		}
+		else { // frequency
+			//Peptides
+			var numMatchPep=0;
+			for (let a=0; a<anaDistrib.length; a++) {
+				if (anaDistrib[a]*1 >= freqPep.value) {numMatchPep++;}
+			}
+			if (numMatchPep < freqAnaGr.value) {continue PROT;}
+			//PTMs
+			if (refPTM) {
+				var numMatchPtm=0;
+				for (let a=0; a<refPtmDistrib.length; a++) {
+					if (refPtmDistrib[a]*1 >= freqPtm.value) {numMatchPtm++;}
+				}
+				if (numMatchPtm < freqAnaGr.value) {continue PROT;}
+			}
 		}
 		//Result
 		if (!checkBoxList[i].checked) { //okMatch &&
@@ -1667,6 +1722,7 @@ function resetSelection() {
 		activatePtmFiltering('');
 	}
 	document.getElementById('logic').selectedIndex=0; // logic = 'and'
+	updateComparisonStrategy('and');
 	uncheckAll(myForm.chkProt);
 	//hideShowUnchecked(0);
 	for (var a=0; a < $numAnaGroups; a++) {
@@ -1755,14 +1811,47 @@ foreach my $g (0..$#analysisGroups) {
 }
 my $disSaveCompStrg=($projectStatus > 0 || $projectAccess eq 'guest' || $call eq '1v1_prot')? 'disabled' : ''; # project was ended/archived
 my $disSaveProtStrg=($projectStatus > 0 || $projectAccess eq 'guest')? 'disabled' : ''; # project was ended/archived
-my $selOrStatus=($filterLogic eq 'or')? ' selected' : '';
+my ($selOrStatus,$selFreqStatus)=($filterLogic eq 'or')? (' selected','') : ($filterLogic eq 'frequency')? ('',' selected') : ('','');
 my $thTableColSpan=($numAnaGroups==2 && !$listComparison)? 4 : 2;
+my $freqStrg='';
+foreach my $g (0..$#analysisGroups) {
+	my $gNum=$g+1;
+	$freqStrg.="<OPTION value=\"$gNum\"";
+	$freqStrg.=' selected' if ($autocheckParams{'FREQ_ANAGR'} && $autocheckParams{'FREQ_ANAGR'}==$gNum);
+	$freqStrg.=">$gNum</OPTION>";
+}
+my (%allNumPeptides,%allNumPepStrg);
+foreach my $g (0..$#analysisGroups) {
+	foreach my $numPep (keys %{$groupPeptides[$g]}) {$allNumPeptides{PEP}{$numPep}=1;}
+	if (scalar keys %projectVarMods>=1) {
+		if ($ptmOccurences{$g}) {
+			foreach my $occ (keys %{$ptmOccurences{$g}}) {$allNumPeptides{PTM}{$occ}=1;}
+		}
+	}
+}
+foreach my $type (keys %allNumPeptides) {
+	$allNumPepStrg{$type}='';
+	foreach my $num (sort{$a<=>$b} keys %{$allNumPeptides{$type}}) {
+		$allNumPepStrg{$type}.="<OPTION value=\"$num\"";
+		$allNumPepStrg{$type}.=' selected' if ($autocheckParams{'FREQ_'.$type} && $autocheckParams{'FREQ_'.$type}==$num);
+		$allNumPepStrg{$type}.=">$num</OPTION>";
+	}
+}
+$allNumPepStrg{PTM}='' unless $allNumPepStrg{PTM};
 print qq
 |<TH class="rbBorder" rowspan=2 colspan=$thTableColSpan height=100% valign=top><TABLE border=0 cellpadding=0 cellspacing=0 height=100%><TR>
+	<TH class="rBorder" bgcolor=$color2 nowrap valign="top">&nbsp;Frequency:<SELECT name="freqAnaGr" id="freqAnaGr" class="font11" disabled>$freqStrg</SELECT>/$numAnaGroups&nbsp;
+<BR><FONT class="font11">&nbsp;Num. Pept.&ge;<SELECT name="freqPep" id="freqPep" class="font11" disabled>$allNumPepStrg{PEP}</SELECT>&nbsp;
+|;
+print qq |<BR>&nbsp;Num. PTM&ge;<SELECT name="freqPtm" id="freqPtm" class="font11" disabled><OPTION value="0">0</OPTION>$allNumPepStrg{PTM}</SELECT>&nbsp;| if scalar keys %projectVarMods; #$allNumPepStrg{PTM};
+print qq
+|</FONT>
+	</TH>
 	<TH class="rBorder" bgcolor=$color2 nowrap>
+&nbsp;Strategy<SUP onmouseover="popup('Select<BR>&nbsp;&nbsp;&nbsp;-A <B>logic</B> between Group filters: <B>And</B> (intersection) or <B>Or</B> (union)<BR>&nbsp;&nbsp;&nbsp;or<BR>&nbsp;&nbsp;&nbsp;-a global <B>frequency</B> of detection')\" onmouseout=\"popout()\">*</SUP>:
+<SELECT name="logic" id="logic" class="font11" onchange="updateComparisonStrategy(this.value)"><OPTION value="and">And</OPTION><OPTION value="or"$selOrStatus>Or</OPTION><OPTION value="frequency"$selFreqStatus>Frequency</OPTION></SELECT>&nbsp;<BR>
 &nbsp;<INPUT type="button" value="Check Matching" class="font11" style="width:110px" onclick="autoCheck(1)">&nbsp;<INPUT type="button" value="Uncheck All" class="font11" style="width:85px" onclick="uncheckAll(document.protView.chkProt)">&nbsp;
-<BR><FONT class="font11" onmouseover="popup('<B>Logic between Group filters:</B><BR>&nbsp;-And: Intersection.<BR>&nbsp;-Or: Union.')\" onmouseout=\"popout()\">&nbsp;Logic:</FONT><SELECT name="logic" id="logic" class="font11"><OPTION value="and">And</OPTION><OPTION value="or"$selOrStatus>Or</OPTION></SELECT>
-&nbsp;<INPUT type="button" name="hideShowButton" value="$hideShowStrg" class="font11" style="width:110px" onclick="hideShowUnchecked(1)">&nbsp;
+<BR>&nbsp;<INPUT type="button" name="hideShowButton" value="$hideShowStrg" class="font11" style="width:110px" onclick="hideShowUnchecked(1)">&nbsp;
 	</TH>
 	<TH nowrap valign=top><INPUT type="button" value="Save Comparison..." style="width:150px" onclick="showSaveCompForm('show')" $disSaveCompStrg><BR>
 <INPUT type="button" id="saveFormBUTTON" value="Save Selected..." style="width:150px" onclick="ajaxManageSaveProteins('getThemes');" $disSaveProtStrg></TH>
@@ -3048,7 +3137,7 @@ window.onload=function() {
 <TD valign=middle><BR><INPUT type="button" class="formButton" name="up" value="Up" style="width:50px" onclick="moveAnalyses('up')"/><BR><INPUT type="button" class="formButton" name="down" value="Down" style="width:50px" onclick="moveAnalyses('down')"/><BR><INPUT type="button" class="formButton" value="Clear" style="width:50px" onclick="clearAnalyses()"/></TD>
 </TR>
 <TR><TH colspan=3 align=left>
-<INPUT type="checkbox" name="virtualData" value="1" /><FONT class="formText" onmouseover="popup('Peptides added by quantification algorithms<BR>using the \\'<B>M</B>atch <B>B</B>etween <B>R</B>uns\\' option')" onmouseout="popout()">Include MBR-rescued peptides<SUP>*</SUP></FONT>
+<INPUT type="checkbox" name="virtualData" value="1" /><FONT class="formText" onmouseover="popup('Peptides added by quantification algorithms<BR>using the \\'<B>M</B>atch <B>B</B>etween <B>R</B>uns\\' feature')" onmouseout="popout()">Include MBR-rescued peptides<SUP>*</SUP></FONT>
 &nbsp;&nbsp;&nbsp;&nbsp;<FONT class="formText" onmouseover="popup('-<B>Proteotypic:</B> Peptides found in only 1 protein.<BR>-<B>Proteotypic + shared:</B> Use all peptides found for a protein if at least 1 is proteotypic.')" onmouseout="popout()">Peptide specificity<SUP>*</SUP>:</FONT><SELECT name="pepSpecificity"><OPTION value="all">All</OPTION><OPTION value="unique"$selUniquePep>Proteotypic</OPTION><OPTION value="unique_shared"$selUniqueSharedPep>Proteotypic + shared</OPTION></SELECT>
 
 <DIV id="pepCompOptions">
@@ -3269,14 +3358,19 @@ sub compareModificationSites {
 	my $MID_CONTEXT=int($CONTEXT_SIZE/2);
 
 	####<Fetching Comparison autocheck parameters (if any)>####
-	my ($filterLogic,%autocheckParams,$selectedRefPTM,$okAutocheck);
+	my ($filterLogic,%autocheckParams,$okAutocheck);
 	if ($autochkStrg) {
 		#my $autochkStrg='1:>=:3;2:>=:4';
-		($filterLogic,my $pepFilterStrg,my $selectedRefPTM,my $ptmFilterStrg)=split('#',$autochkStrg);
-		foreach my $grData (split(';',$pepFilterStrg)) {
-			my ($aGr,$rel,$numPep)=split(':',$grData);
-			@{$autocheckParams{'PEP'}{$aGr}}=($rel,$numPep);
-			$okAutocheck=1 if ($rel ne '>=' || $numPep>0); # do not check all proteins if ">=0" for all anaGroups
+		($filterLogic,my $pepFilterStrg)=split('#',$autochkStrg);
+		if ($filterLogic eq 'frequency') {
+			($autocheckParams{'FREQ_ANAGR'})=split(';',$pepFilterStrg); # just in case usi
+		}
+		else { # and,or
+			foreach my $grData (split(';',$pepFilterStrg)) {
+				my ($aGr,$rel,$numPep)=split(':',$grData);
+				@{$autocheckParams{'PEP'}{$aGr}}=($rel,$numPep);
+				$okAutocheck=1 if ($rel ne '>=' || $numPep>0); # do not check all proteins if ">=0" for all anaGroups
+			}
 		}
 	}
 	else {$filterLogic='and';}
@@ -3397,13 +3491,18 @@ function generateAutoCheckString() {
 	var protForm=document.protView;
 	//logic;
 	var autoChkStrg=protForm.logic.value+'#';
-	//peptides
-	for (var g=0; g<$numAnaGroups; g++) {
-		if (g>0) {autoChkStrg+=';'}
-		//var aGr=g+1;
-		//autoChkStrg+=aGr+':'+protForm['pepCompSign_'+g].value+':'+protForm['numPep_'+g].value;
-		autoChkStrg+=(g+1)+':';
-		autoChkStrg+=(protForm['numPep_'+g].value*1 >= 0)? '>=:'+protForm['numPep_'+g].value : '<=:0'; // 0/1='Any,Found' : -1='Not found'
+	if (protForm.logic.value=='frequency') {
+		autoChkStrg+=protForm.freqAnaGr.value+';1';
+	}
+	else {
+		//peptides
+		for (var g=0; g<$numAnaGroups; g++) {
+			if (g>0) {autoChkStrg+=';'}
+			//var aGr=g+1;
+			//autoChkStrg+=aGr+':'+protForm['pepCompSign_'+g].value+':'+protForm['numPep_'+g].value;
+			autoChkStrg+=(g+1)+':';
+			autoChkStrg+=(protForm['numPep_'+g].value*1 >= 0)? '>=:'+protForm['numPep_'+g].value : '<=:0'; // 0/1='Any,Found' : -1='Not found'
+		}
 	}
 	return autoChkStrg;
 }
@@ -3462,34 +3561,41 @@ function manualCheck(chkStatus) {
 	var newChecked=(chkStatus)? 1 : -1;
 	updateNumChecked(newChecked);
 }
+function updateComparisonStrategy(strategy) {
+	var logicPepDisabStatus=(strategy=='frequency')? true : false;
+	for (let a=0; a < $numAnaGroups; a++) {
+		document.getElementById('numPep_'+a).disabled=logicPepDisabStatus;
+	}
+	document.getElementById('freqAnaGr').disabled = !logicPepDisabStatus;
+}
 function autoCheck(warn) {
 	var protForm=document.protView;
 	var checkBoxList=protForm.chkProt;
 	//Peptides
 	var pepDistribList=protForm.pepDistrib;
-	var numPep=new Array();
-	for (var a=0; a < $numAnaGroups; a++) {
+	var numPep=[];
+	for (let a=0; a < $numAnaGroups; a++) {
 		numPep[a]=document.getElementById('numPep_'+a).value*1; //convert to number
 	}
 	var logic=document.getElementById('logic').value; //inter-group logic
+	var freqAnaGr=protForm.freqAnaGr;
 
 	//Scanning protein list
 	var numMatch=0;
 	var allMatches=0;
-	PROT: for (var i=0; i<pepDistribList.length; i++) {
+	PROT: for (let i=0; i<pepDistribList.length; i++) {
+		var anaDistrib=pepDistribList[i].value.split(':');
 		if (logic=='and') {
 			//Peptides
-			var anaDistrib=pepDistribList[i].value.split(':');
-			for (var a=0; a<anaDistrib.length; a++) {
+			for (let a=0; a<anaDistrib.length; a++) {
 				if ((anaDistrib[a]*1==1 && numPep[a]==-1) \|\| (anaDistrib[a]*1==0 && numPep[a]==1)) {
 					continue PROT;
 				}
 			}
 		}
-		else { //logic = or
-			var anaDistrib=pepDistribList[i].value.split(':');
+		else if (logic=='or') {
 			var okMatch;
-			for (var a=0; a<anaDistrib.length; a++) {
+			for (let a=0; a<anaDistrib.length; a++) {
 				okMatch=true; // reset for each group
 				if ((anaDistrib[a]*1==1 && numPep[a]==-1) \|\| (anaDistrib[a]*1==0 && numPep[a]==1)) {
 					okMatch=false;
@@ -3497,6 +3603,13 @@ function autoCheck(warn) {
 				if (okMatch==true) {break;}
 			}
 			if (okMatch==false) {continue PROT;}
+		}
+		else { //logic = frequency
+			var numMatchGr=0;
+			for (let a=0; a<anaDistrib.length; a++) {
+				if (anaDistrib[a]*1==1) {numMatchGr++;}
+			}
+			if (numMatchGr < freqAnaGr.value) {continue PROT;}
 		}
 		//Result
 		if (!checkBoxList[i].checked) { //okMatch &&
@@ -4173,6 +4286,7 @@ function updateSiteList(set) { // called when a set is selected in Venn diagram
 function resetSelection() {
 	var myForm=document.protView;
 	document.getElementById('logic').selectedIndex=0; // logic = 'and'
+	updateComparisonStrategy('and');
 	uncheckAll(myForm.chkProt);
 	//hideShowUnchecked(0);
 	for (var a=0; a < $numAnaGroups; a++) {
@@ -4233,19 +4347,29 @@ function resetSelection() {
 <TABLE border=0 cellspacing=0 cellpadding=2>
 <TR><TH class="rbBorder" bgcolor=$color2 class="font11" rowspan=2 colspan=2 valign=top nowrap>&nbsp;<FONT class="title3">Auto-check :</FONT><BR>(<SPAN id=\"numProtChecked\">$numProtChecked</SPAN> checked)</TH>
 |;
+	my $freqStrg='';
 	foreach my $g (0..$#analysisGroups) {
 		print "<TH class=\"rbBorder\" bgcolor=$color2 nowrap><FONT onmouseover=\"popup('<B>$groupLabels[$g][1]</B>')\" onmouseout=\"popout()\">&nbsp;$groupLabels[$g][0]</FONT>&nbsp;</TH>\n";
+		my $gNum=$g+1;
+		$freqStrg.="<OPTION value=\"$gNum\"";
+		$freqStrg.=' selected' if ($autocheckParams{'FREQ_ANAGR'} && $autocheckParams{'FREQ_ANAGR'}==$gNum);
+		$freqStrg.=">$gNum</OPTION>";
 	}
 	my $disSaveCompStrg=($projectStatus > 0 || $projectAccess eq 'guest')? 'disabled' : ''; # project was ended/archived
 	my $disSaveProtStrg=($projectStatus > 0 || $projectAccess eq 'guest')? 'disabled' : ''; # project was ended/archived
-	my $selOrStatus=($filterLogic eq 'or')? ' selected' : '';
+	my ($selOrStatus,$selFreqStatus)=($filterLogic eq 'or')? (' selected','') : ($filterLogic eq 'frequency')? ('',' selected') : ('','');
 	my $thTableColSpan=($numAnaGroups==2 && !$listComparison)? 4 : 2;
 	print qq
 |<TH class="rbBorder" rowspan=2 colspan=$thTableColSpan height=100% valign=top><TABLE border=0 cellpadding=0 cellspacing=0 height=100%><TR>
+	<TH class="rBorder" bgcolor=$color2 nowrap valign="top">
+&nbsp;Frequency:&nbsp;<BR>&nbsp;<SELECT name="freqAnaGr" id="freqAnaGr" class="font11" disabled>$freqStrg</SELECT>/$numAnaGroups&nbsp;
+	</TH>
 	<TH class="rBorder" bgcolor=$color2 nowrap>
-&nbsp;<INPUT type="button" value="Check Matching" class="font11" style="width:110px" onclick="autoCheck(1)">&nbsp;<INPUT type="button" value="Uncheck All" class="font11" style="width:85px" onclick="uncheckAll(document.protView.chkProt)">&nbsp;
-<BR><FONT class="font11" onmouseover="popup('<B>Logic between Group filters:</B><BR>&nbsp;-And: Intersection.<BR>&nbsp;-Or: Union.')\" onmouseout=\"popout()\">&nbsp;Logic:</FONT><SELECT name="logic" id="logic" class="font11"><OPTION value="and">And</OPTION><OPTION value="or"$selOrStatus>Or</OPTION></SELECT>
-&nbsp;<INPUT type="button" name="hideShowButton" value="$hideShowStrg" class="font11" style="width:110px" onclick="hideShowUnchecked(1)">&nbsp;
+&nbsp;Strategy<SUP onmouseover="popup('Select<BR>&nbsp;&nbsp;&nbsp;-A <B>logic</B> between Group filters: <B>And</B> (intersection) or <B>Or</B> (union)<BR>&nbsp;&nbsp;&nbsp;or<BR>&nbsp;&nbsp;&nbsp;-a global <B>frequency</B> of detection')\" onmouseout=\"popout()\">*</SUP>:
+<SELECT name="logic" id="logic" class="font11" onchange="updateComparisonStrategy(this.value)"><OPTION value="and">And</OPTION><OPTION value="or"$selOrStatus>Or</OPTION><OPTION value="frequency"$selFreqStatus>Frequency</OPTION></SELECT>&nbsp;
+<BR>&nbsp;<INPUT type="button" value="Check Matching" class="font11" style="width:110px" onclick="autoCheck(1)">
+<INPUT type="button" value="Uncheck All" class="font11" style="width:85px" onclick="uncheckAll(document.protView.chkProt)">
+<INPUT type="button" name="hideShowButton" value="$hideShowStrg" class="font11" style="width:110px" onclick="hideShowUnchecked(1)">&nbsp;
 	</TH>
 	<TH nowrap valign=top><INPUT type="button" value="Save Comparison..." style="width:150px" onclick="showSaveCompForm('show')" $disSaveCompStrg><BR>
 <INPUT type="button" id="saveFormBUTTON" value="Save Selected..." style="width:150px" onclick="ajaxManageSaveProteins('getThemes');" $disSaveProtStrg></TH>
@@ -5527,6 +5651,8 @@ my %convertPos2Text=('-'=>'Protein N-term','='=>'Any N-term','+'=>'Protein C-ter
 }
 
 ####>Revision history<####
+# 2.3.1 Minor JS bug fix occuring when no project-relevant PTMs are found (PP 14/11/18)
+# 2.3.0 Added 'Frequency' filter (PP 23/10/18)
 # 2.2.2 Handles project status=-1 [no auto-end validation] (PP 07/06/18)
 # 2.2.1 Minor bug correction for Phospho-sites Venn Diagram (GA 23/05/18)
 # 2.2.0 Added peptide specificity filter (PP 18/05/18)

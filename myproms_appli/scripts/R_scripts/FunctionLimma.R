@@ -1,5 +1,5 @@
 ################################################################################
-# FunctionLimma.R         4.2.1                                                #
+# FunctionLimma.R         4.4.0                                               #
 # Authors: Matthieu Lhotellier & Alexandre Sta (Institut Curie)                #
 # Contact: myproms@curie.fr                                                    #
 # Function of AnalysisDiffLimma.R                                              #
@@ -594,7 +594,7 @@ library(readr) # for the function ???
 #################################################################################
 .analysisDiff <- function(object,params)
 {
-  print("Excution of .analysisDiff")
+  print("Execution of .analysisDiff")
   if(params$design == "PEP_INTENSITY"){ # Case PEP_INTENSITY
     object = object %>% mutate(sample=as.factor(sample)) %>%  group_by(proteinId)
     .lmRepParam = function( x ){ .lmProteinPEP_INTENSITY( subObject = x , params = params )}
@@ -688,7 +688,7 @@ library(readr) # for the function ???
   .myCorrectionCI <- function(x){
     n = dim(x)
     alpha = 0.05/n
-    x = x %>% mutate( ci2.5 = estimate+std.error*qt(1-alpha,df), ci97.5 = estimate+std.error*qt(1-alpha,df) ) 
+    x = x %>% mutate( ci2.5 = estimate+std.error*qt(1-alpha,df), ci97.5 = estimate+std.error*qt(alpha,df) ) 
     return(x)
   }
   if(params$pAdj.method!="none"){
@@ -1210,8 +1210,22 @@ library(readr) # for the function ???
 ## Description : check the frequent errors in the data, the parameters or in the
 ##               protein of normalization.
 #################################################################################
-.control <- function(object,params,normProt){
+.control <- function(object,params,normProt,dataRef){
+  
   message = NULL
+  # ---------- Control the correct number and type of files
+  condition = sum(exists("data"), exists("params"))
+  if( !condition ){
+    message = "files table.txt or param_char.txt (or both) is(are) missing"
+    stop(message)
+  }
+  
+  condition = sum(exists("dataRef"),c("normalization.ref.test") %in% names(params))
+  if( prod(condition, c("normalization.ref.test") %in% names(params)) == 1){ 
+    message = "file tableRef.txt is missing"
+    stop(message)
+  }
+  
   # ---------- Control the correct type of the parameters
   condition = prod(c("design","normalization.method","pAdj.method","residual.variability") %in% names(params))
   if( !condition ){
@@ -1238,6 +1252,41 @@ library(readr) # for the function ???
   condition = params$normalization.method %in% p
   if( !condition ){
     message = paste(c("wrong name of normalization.method,\n         parameters allowed :",p),collapse="\n                             ")
+    stop(message)
+  }
+  
+  # normalization.ref.test
+  p =  c("none.none.mean.var",
+         "none.none.mean.scale",
+         "none.none.median.var",
+         "none.none.median.scale",
+         "none.scale.mean.var" ,
+         "none.scale.mean.scale",
+         "none.scale.median.var",
+         "none.scale.median.scale",
+         "median.none.mean.var",
+         "median.none.mean.scale",
+         "median.none.median.var",
+         "median.none.median.scale",
+         "median.scale.mean.var",
+         "median.scale.mean.scale",
+         "median.scale.median.var",
+         "median.scale.median.scale",
+         "mean.none.mean.var",
+         "mean.none.mean.scale",
+         "mean.none.median.var",
+         "mean.none.median.scale",
+         "mean.scale.mean.var",
+         "mean.scale.mean.scale",
+         "mean.scale.median.var",
+         "mean.scale.median.scale",
+         "quantile.none.mean.var",
+         "quantile.none.mean.scale",
+         "quantile.none.median.var",
+         "quantile.none.median.scale"  )
+  if ("normalization.ref.test" %in% names(params)) condition = params$normalization.ref.test %in% p
+  if ( !condition ){
+    message = paste(c("wrong name of normalization.ref.test,\n         parameters allowed :",p),collapse="\n                             ")
     stop(message)
   }
   
@@ -1295,13 +1344,13 @@ library(readr) # for the function ???
 #################################################################################
 .normEachProt <- function(object,objectRef,params){
   # Convert the parameter from params to function for buildNormFactors
-  normRef = params$normalization.ref %>% str_split(pattern = "\\.") %>% unlist
-  switch(normRef[1],
+  normRef = params$normalization.ref.test %>% str_split(pattern = "\\.") %>% unlist
+  switch(normRef[3],
          mean = {fctMean = mean},
          median = {fctMean = median},
          none = {fctMean = function(x) return(0)}
   )
-  switch(normRef[2],
+  switch(normRef[4],
          var = {fctVar = var},
          scale = {fctVar = mad},
          none = {fctVar = function(x) return(1)}
@@ -1314,14 +1363,14 @@ library(readr) # for the function ???
   }
   
   # Build the table of protein of reference and the normalization factors
-  objectRef = objectRef %>% group_by( proteinId , experiment , replicate , repTech , sample ) %>% nest %>% 
+  objectRef = objectRef %>% group_by( proteinId , sample ) %>% nest %>% 
     mutate( normFactor = map(data,function(x) builfNormFactors(x,fctMean,fctVar) ) ) %>% select(-data) %>% unnest %>%
     rename(proteinIdKey=proteinId) %>% mutate(proteinIdKey=as.character(proteinIdKey))
   
   # Join the datable with the table of reference with the normalization factor
   object = object %>% separate(proteinId,c("proteinIdKey","modif"),sep="-",remove=FALSE) %>% 
     mutate(proteinIdKey=as.character(proteinIdKey)) %>% left_join(objectRef) %>% select(-proteinIdKey,-modif) %>% 
-    group_by( proteinId , experiment , replicate , repTech , sample ) %>% 
+    group_by( proteinId , sample ) %>% 
     mutate( M = (M - meanNormFactor)/varNormFactor ) %>% mutate(M = ifelse(is.infinite(M),NA,M)) %>% ungroup %>% 
     select(-meanNormFactor,-varNormFactor) %>% filter(!is.na(M))
   
@@ -1329,6 +1378,10 @@ library(readr) # for the function ???
 }
 
 ####>Revision history<####
+# 4.4.0 normalization.ref.test has now 4 items, 1 and 2 for normalisation of tableRef and 3 and 4 for correction of data with tableRef (IB 29/11/2018)
+# 4.3.1 correct .control if normalization.ref.test doesn't existe (IB 29/11/2018)
+# 4.3.0 change Licence from GPL to CeCILL, add dataRef in .control arguments, add in .control function:  Control the correct number and type of files, Control the correct type of the normalization.ref.test parameter (16/11/18)
+# 4.2.2 correction of the ic and correction of the normalization in prot (29/06/18)
 # 4.2.1 correction of the outlier detection (15/06/18)
 # 4.2.0 add the function .normEachProt (12/06/18)
 # 4.1.13 add a control function to check the parameters, data and normalization protein (12/06/18)

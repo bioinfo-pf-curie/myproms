@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# importBatchAnalyses.cgi         2.8.0                                        #
+# importBatchAnalyses.cgi         2.8.1                                        #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -61,6 +61,7 @@ my $batchDir="$promsPath{tmp}/batch";
 mkdir $batchDir unless -e $batchDir;
 $CGITempFile::TMPDIRECTORY=$batchDir;
 my $userID=$ENV{'REMOTE_USER'};
+mkdir "$batchDir/$userID" unless -e "$batchDir/$userID";
 my ($color1,$color2)=&promsConfig::getRowColors;
 my $maxUpFiles=10;
 my $maxRank=&promsConfig::getMaxRank;
@@ -240,7 +241,7 @@ parent.document.fileAccessForm.mascotAction.value='get'; // switch search to get
 
 		####>Parameters<####
 		my $batchFilesDir="$batchDir/$userID";
-		mkdir $batchFilesDir unless -e $batchFilesDir;
+		#mkdir $batchFilesDir unless -e $batchFilesDir;
 		mkdir "$batchFilesDir/.percolator" unless -e "$batchFilesDir/.percolator"; # to store percolatot *.pop files created in Mascot DAT searches
 		my ($itemType,@datFiles)=split(/[:,]/,param('datFiles'));
 
@@ -559,7 +560,7 @@ function cancelAction() {
 	else {
 		my $selUserDir=($action eq 'UseUserDirectory' && param('userDir'))? param('userDir') : $userID;
 		$batchFilesDir="$batchDir/$selUserDir";
-		mkdir $batchFilesDir unless -e $batchFilesDir;
+		#mkdir $batchFilesDir unless -e $batchFilesDir;
 		$batchDirLabel="'$selUserDir' directory";
 		$checkDeleteStrg=($selUserDir eq $userID)? 'checked' : 'disabled';
 	}
@@ -2306,6 +2307,7 @@ sub updateWaitBox {
 }
 
 ####>Revision history<####
+# 2.8.1 Creates batch/<userID> at start up if not exists (PP 04/12/18)
 # 2.8.0 Added Shared directory as file source (requires promsMod 3.7.5+) & msf display update (PP 03/11/17)
 # 2.7.1 Set default CGI file upload dir to $promsPath{tmp}/batch dir (PP 18/09/17)
 # 2.7.0 Add "good.gif" in "mzXML file" column on the "Select Files to be Imported" form, if mzXML file is present in tmp dir (MLP 03/08/17)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# startExploratoryAnalysis.cgi       2.1.8                                    #
+# startExploratoryAnalysis.cgi       2.1.8D                                    #
 # Authors: P. Poullet, S.Liva (Institut Curie)                                 #
 # Contact: myproms@curie.fr                                                    #
 # run PCA or Clustering exploratory analysis                                   #
@@ -1682,7 +1682,7 @@ print qq
 			<SELECT name="feature" onchange="javascript:changeFeature(this.value)">
 			<OPTION value="">-= Select =-</OPTION>
 			<OPTION value="protQuant" selected>Protein quantifications</OPTION>
-			<OPTION value="pepCount"$disabFeature> Peptide counts</OPTION>
+			<!--<OPTION value="pepCount"$disabFeature> Peptide counts</OPTION>-->
 			</SELECT>
 			<SPAN>&nbsp;&nbsp;<B>Quantification type:<SELECT name="quantifFam" id="QF" onchange="ajaxDisplayData('quantifFam',this.value)">
 			<OPTION value="">-= Select =-</OPTION>
@@ -2325,6 +2325,7 @@ sub ajaxPropAnnotate {
 }
 
 ####>Revision history<####
+# 2.1.8D Option for peptide PCA disabled (PP 19/12/18)
 # 2.1.8 Adds proteinID in exported matrices to prevent row duplicates due to different proteins having same ALIAS (PP 26/09/18)
 # 2.1.7 minor changes (SL ??/??/18)
 # 2.1.6 minor changes, change protein selection (SL 07/03/18)
