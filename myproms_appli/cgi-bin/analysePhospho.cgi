@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 #############################################################################
-# analysePhospho.cgi         2.0.0                                          #
+# analysePhospho.cgi         2.0.1                                          #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                   #
 # Contact: myproms@curie.fr                                                 #
 # Script processing PhosphoRS analyses started by selectAnalyses.cgi        #
@@ -242,7 +242,7 @@ my $fullDataFileName = "$anadir/$dataFile";
 my $phosphoRS = new phosphoRS(AnaID => $anaID, fullJobDir =>$fullJobDir, File => $fullDataFileName, FileFormat => $fileFormat, MassTolerance => $massTolerance, ActivationType => $activationType);
 
 my %noAmbiguityQueries;
-if ($fullDataFileName =~ /([^\/]+)\.pdm$/){
+if ($fullDataFileName =~ /([^\/]+)\.pdm$/) {
 	
 	open(FILESTAT,">>$fileStat") || die "Error while opening $fileStat";
 	print FILESTAT "1.1/3 Fetching spectra from MSF file\n";
@@ -300,8 +300,14 @@ if ($fullDataFileName =~ /([^\/]+)\.pdm$/){
 
 	my $numSpectra=scalar @spectrumList;
 	open(FILESTAT,">>$fileStat") || die "Error while opening $fileStat";
-	print FILESTAT "1.2/3 Extracting $numSpectra spectra from MSF file\n";
+	print FILESTAT "1.2/3 Extracting $numSpectra spectra from MSF file: 0%\n";
 	close FILESTAT;
+	
+	my @fracList;
+	foreach my $i (1..10) {
+		push @fracList,int($i*$numSpectra/10);
+	}
+	my $spCount=0; my $fracIdx=0;
 
 	my $dbsqlite = DBI->connect("dbi:SQLite:$msfFileName","","",{PrintError=>1,RaiseError=>1});
 	foreach my $refSpectrum (@spectrumList) {
@@ -317,8 +323,17 @@ if ($fullDataFileName =~ /([^\/]+)\.pdm$/){
 		$peaks =~ s/,$//;
 
 		$phosphoRS->addSpectrumInfo(Peaks => $peaks, Charge => $charge, Activation => $activationType, Query => $queryNum) or die "Cannot add spectrum info for query $queryNum";
+
+		$spCount++;
+		if ($spCount==$fracList[$fracIdx]) {
+			open(FILESTAT,">>$fileStat") || die "Error while opening $fileStat";
+			print FILESTAT "1.2/3 Extracting $numSpectra spectra from MSF file: ",(($fracIdx+1)*10),"%\n";
+			close FILESTAT;
+			$fracIdx++;
+		}
 	}
 	$dbsqlite->disconnect;
+	sleep 3;
 }
 
 ####>Running PhosphoRS<####
@@ -520,7 +535,7 @@ sub launchAllJobs { # Globals: $phosphoRSDir,$currentPRSDir
 		my %baseJobParameters=(
 			maxMem=>'20Gb',
 			numCPUs=>2,
-			maxHours=>48,
+			maxHours=>168, # 7 days
 			pbsRunDir=>$cgiUnixDir,
 			noWatch=>1 # do not wait for job to end
 		);
@@ -690,6 +705,7 @@ sub deletePRS{
 }
 
 ####>Revision history<####
+# 2.0.1 Added 10% step progression for msf spectra extraction (PP 07/01/19)
 # 2.0.0 Major code rewrite for full background run support with call of watchPhosphoAnalyses.cgi (PP 08/11/18)
 # 1.1.3 Minor bug fix in call for a new PhosphoRS analysis (PP 15/06/18)
 # 1.1.2 Modification to avoid positionStg stored in INFO_PEP (GA 31/01/18)

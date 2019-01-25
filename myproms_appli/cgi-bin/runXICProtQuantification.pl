@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# runXICProtQuantification.pl       2.8.0                                      #
+# runXICProtQuantification.pl       2.9.0                                      #
 # Component of site myProMS Web Server                                         #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
@@ -484,13 +484,13 @@ $sthALM->finish;
 #close DEBUG;
 #$dbh->disconnect; die "Test is complete!";
 
-###>Handling Modification Quantif phosphoRS threshold & PTM position ambiguity settings
+###>Handling Modification Quantif phosphoRS/MaxQuant threshold & PTM position ambiguity settings
 #my $ambiguousModifPos=($quantifiedModifID && $quantifParameters{'DB'}{'AMBIGUOUS_QPTM_POS'})? $quantifParameters{'DB'}{'AMBIGUOUS_QPTM_POS'}[0] : 0;
-my ($isPhosphoQuantif,$prsThreshold,$ambiguousModifPos,$quantifResMatchStrg,$qQuantifResMatchStrg)=(0,0,0,'',''); # default ($qQuantifResMatchStrg PP 2017/06/22)
+my ($ptmProbSoftCode,$ptmProbThreshold,$ambiguousModifPos,$quantifResMatchStrg,$qQuantifResMatchStrg)=('',0,0,'',''); # default ($qQuantifResMatchStrg PP 2017/06/22)
 if ($quantifiedModifID) {
-	if ($quantifParameters{'DB'}{'PTM_POS'}[0]=~/PRS:(\d+)/) { # Phospho
-		$prsThreshold=$1;
-		$isPhosphoQuantif=1;
+	if ($quantifParameters{'DB'}{'PTM_POS'}[0]=~/(\w+):(\d+)/) { # PRS Phospho or MQ any PTM
+		$ptmProbSoftCode=$1; # PRS or MQ
+		$ptmProbThreshold=$2; $ptmProbThreshold/=100 if $ptmProbSoftCode eq 'MQ'; # 0-1
 		$ambiguousModifPos=1 if $quantifParameters{'DB'}{'PTM_POS'}[1] eq 'ambiguous';
 	}
 	elsif ($quantifParameters{'DB'}{'PTM_POS'}[0] eq 'ambiguous') { # other PTMs
@@ -596,9 +596,9 @@ my $filterQueryStrg=($normalizeWithAll)? ',PPA.IS_SPECIFIC,AP.PEP_SPECIFICITY,MI
 #}
 #$quantiQuery.=($labeling eq 'FREE')? ' AND PQ.TARGET_POS IS NULL' : ' AND PQ.TARGET_POS=?';
 #$quantiQuery.=' GROUP BY PPA.ID_PROTEIN,P.ID_PEPTIDE ORDER BY AP.NUM_PEP DESC,ABS(PEP_BEG) ASC';
-
+my $ptmProbQueryStrg=($ptmProbSoftCode eq 'MQ')? "GROUP_CONCAT(DISTINCT PM.ID_MODIFICATION,'%',COALESCE(PM.REF_POS_STRING,'') ORDER BY PM.ID_MODIFICATION SEPARATOR '&')" : "'-'";
 my $quantiQuery=qq
-|SELECT GROUP_CONCAT(DISTINCT PPA.ID_PROTEIN),P.ID_PEPTIDE,ABS(PEP_BEG),PEP_SEQ,GROUP_CONCAT(DISTINCT PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),CHARGE,PPA.IS_SPECIFIC,MISS_CUT,DATA,P.SCORE $filterQueryStrg
+|SELECT GROUP_CONCAT(DISTINCT PPA.ID_PROTEIN),P.ID_PEPTIDE,ABS(PEP_BEG),PEP_SEQ,GROUP_CONCAT(DISTINCT PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),$ptmProbQueryStrg,CHARGE,PPA.IS_SPECIFIC,MISS_CUT,DATA,P.SCORE $filterQueryStrg
 	FROM PEPTIDE P
 	LEFT JOIN PEPTIDE_MODIFICATION PM ON P.ID_PEPTIDE=PM.ID_PEPTIDE
 	INNER JOIN PEPTIDE_PROTEIN_ATTRIB PPA ON P.ID_PEPTIDE=PPA.ID_PEPTIDE
@@ -738,7 +738,7 @@ foreach my $observationSet (@quantiOrder) {
 		my $labelModStrg=join('|',keys %{$anaLabelModifs{$anaID}}) if $labeling eq 'SILAC'; # needed for SILAC
 		my %mcqXICs; # SILAC only
 		$sthGetPepData->execute($anaID);
-		while (my ($protID,$pepID,$pepBeg,$pepSeq,$varModStrg,$charge,$specif,$misscut,$pepData,$score,$isSpecif,$bestSpecif,$missCut)=$sthGetPepData->fetchrow_array) { # executed multiple time for labeled quantif
+		while (my ($protID,$pepID,$pepBeg,$pepSeq,$varModStrg,$varProbStrg,$charge,$specif,$misscut,$pepData,$score,$isSpecif,$bestSpecif,$missCut)=$sthGetPepData->fetchrow_array) { # executed multiple time for labeled quantif
 			next if ($manualPepSelection && !$manualPeptides{$pepID});
 			next if (!$pepQuantifValues{$pepID} || !$pepQuantifValues{$pepID}{$targetPos} || $pepQuantifValues{$pepID}{$targetPos} <= 0); # no quantif for pepID or Isobaric bug
 			my $quantifValue=$pepQuantifValues{$pepID}{$targetPos};
@@ -758,7 +758,7 @@ foreach my $observationSet (@quantiOrder) {
 #next if $preInfRatios{$protID};
 ###################################
 #next if $excludedProteins{$protID}; # beta
-			if ($quantifiedModifID && (!$varModStrg || $varModStrg !~ /(^|&)$quantifiedModifID:/)) {
+			if (($quantifiedModifID && (!$varModStrg || $varModStrg !~ /(^|&)$quantifiedModifID:/)) || ($varModStrg && $varModStrg=~/\d:(\D|$)/) ) { # missing mod pos data!
 				if ($normalizeWithAll) {$notUsed4Quantif{$pepID}=1;}
 				else {next;} # skip peptides not containing quantified modif
 			}
@@ -822,10 +822,18 @@ $proteinInConds{$protID}{$poolGroup2Cond{$observationSet}}=1; # protein "exists"
 			}
 
 			# Non-SILAC phospho quantif
-			if ($isPhosphoQuantif && $labeling ne 'SILAC') {
-				my ($prsProb)=($pepData=~/PRS=\d;([^;]+);/);
-				#next if (defined $prsProb && $prsProb < $prsThreshold);
-				next if (!defined $prsProb || $prsProb < $prsThreshold); # Changed by PP 19/12/18
+			if ($ptmProbSoftCode && $labeling ne 'SILAC' && !$notUsed4Quantif{$pepID}) {
+				my $ptmPosProb;
+				if ($ptmProbSoftCode eq 'PRS') { 
+					($ptmPosProb)=($pepData=~/PRS=\d;([^;]+);/);
+				}
+				else { # assume MQ
+					$ptmPosProb=&extractPtmPosProbability($quantifiedModifID,$varModCode,$varProbStrg);
+				}
+				if (!defined $ptmPosProb || $ptmPosProb < $ptmProbThreshold) {
+					if ($normalizeWithAll) {$notUsed4Quantif{$pepID}=1;}
+					else {next;} 
+				}
 			}
 
 			#$intensity{$pepID}=$quantifValue;
@@ -925,10 +933,16 @@ if ($xicEngine{$xicQuantif} eq 'MCQ' && $labeling eq 'SILAC') { # $labeling !~ /
 			##>Record best varMod of qSet in case incoherence (assumes same pepSeq!)
 			#if ($labeling ne 'FREE') { #} qSET has no meaning in label-free ***Also for FREE because of possible duplicate scan for same pepID with MassChroQ***
 			if ($labeling eq 'SILAC') {
-				if ($isPhosphoQuantif) { # PRS filtered earlier for non-SILAC
-					my ($prsProb)=($pepData=~/PRS=\d;([^;]+);/);
-					$prsProb=0 unless $prsProb;
-					@{$qSetBestVarMod{$qSet}}=($prsProb,$varModCode) if (!$qSetBestVarMod{$qSet} || $qSetBestVarMod{$qSet}[0] < $prsProb); # record best phosphoRS score & vmod (both peptides in qSet will be filtered bas on best PRS)
+				if ($ptmProbSoftCode) { # Position confidence filtered earlier for non-SILAC
+					my $ptmPosProb;
+					if ($ptmProbSoftCode eq 'PRS') {
+						($ptmPosProb)=($pepData=~/PRS=\d;([^;]+);/);
+					}
+					else { # assume MQ
+						$ptmPosProb=&extractPtmPosProbability($quantifiedModifID,$varModCode,$varProbStrg);
+					}
+					$ptmPosProb=0 unless $ptmPosProb;
+					@{$qSetBestVarMod{$qSet}}=($ptmPosProb,$varModCode) if (!$qSetBestVarMod{$qSet} || $qSetBestVarMod{$qSet}[0] < $ptmPosProb); # record best phosphoRS/MaxQuant prob & vmod (both peptides in qSet will be filtered based on best prob)
 				}
 				else {
 					@{$qSetBestVarMod{$qSet}}=($score,$varModCode) if (!$qSetBestVarMod{$qSet} || $qSetBestVarMod{$qSet}[0] < $score); # record best
@@ -989,7 +1003,7 @@ if ($labeling eq 'SILAC') {
 				next unless $tempIntensity{$pepIon}{$dataSrc}{$fraction};
 				foreach my $qSet (keys %{$tempIntensity{$pepIon}{$dataSrc}{$fraction}}) {
 					next if $qSetIsBad{$qSet}; # bad qset (matches more than 1 sequence or labeling issues)
-					next if ($isPhosphoQuantif && $qSetBestVarMod{$qSet}[0] < $prsThreshold && !$ambiguousModifPos);
+					next if ($ptmProbSoftCode && $qSetBestVarMod{$qSet}[0] < $ptmProbThreshold && !$ambiguousModifPos);
 #next if $qSetBestVarMod{$qSet}[1] ne $varModCode; # qSet should be associated with another PTM isoform
 					my $usedVmod=$qSetBestVarMod{$qSet}[1]; # can be different from $varModCode (eg. incoherent Phospho pos in same qSet)
 					$qSetList{$usedVmod}{$qSet}=1;
@@ -1025,7 +1039,7 @@ if ($labeling eq 'SILAC') {
 						##>Updating %qSetBestVarMod
 #print DEBUG "P=$pepIon S=$dataSrc Q=$qSet\n" unless $qSetBestVarMod{$qSet};
 	#					next unless $qSetBestVarMod{$qSet};
-						@{$qSetBestVarMod{$qSetMerged}}=@{$qSetBestVarMod{$qSet}} if (!$qSetBestVarMod{$qSetMerged} || $qSetBestVarMod{$qSetMerged}[0] < $qSetBestVarMod{$qSet}[0]); # record best
+						@{$qSetBestVarMod{$qSetMerged}}=@{$qSetBestVarMod{$qSet}} if (!$qSetBestVarMod{$qSetMerged} || $qSetBestVarMod{$qSetMerged}[0] > $qSetBestVarMod{$qSet}[0]); # record the worse (PP 04/01/19)
 						# DO NOT DELETE $qSetBestVarMod{$qSet} -> Can be reused in another pepIon context!
 					}
 				}
@@ -1369,8 +1383,8 @@ unless (scalar keys %{$usableData{$pepSeq}{$vmod}{$charge}}) {
 						my $modProtID=$nonAmbigModProtID; # default
 						my $usedVmod=($labeling eq 'SILAC')? $qSetBestVarMod{$qSet}[1] : $vmod; # can be different from $vmod in case qSet incoherence (eg. phospho pos after phosphoRS update on ambiguous pepSeq)
 						if ($seqIsAmbig && $labeling eq 'SILAC') {
-							if ($isPhosphoQuantif) {
-								if ($qSetBestVarMod{$qSet}[0] >= $prsThreshold) { # check Phospho pos coherence inside qSet (=0 if no PRS data)
+							if ($ptmProbSoftCode) {
+								if ($qSetBestVarMod{$qSet}[0] >= $ptmProbThreshold) { # check Phospho pos coherence inside qSet (=0 if no PRS data)
 									if ($qSetBestVarMod{$qSet}[2]) { # best nonAmbigModProtID has already been generated
 										###if ($qSetBestVarMod{$qSet}[1] ne $vmod) { # *** Position incoherence detected!!! ***
 										###	$usedVmod=$qSetBestVarMod{$qSet}[1];
@@ -1386,7 +1400,7 @@ unless (scalar keys %{$usableData{$pepSeq}{$vmod}{$charge}}) {
 											#foreach my $pos (split(/\./,$posStrg)) {push @pos,$seq[$pos-1].($peptideBeg{$protID}{$pepSeq}+$pos-1);}
 											foreach my $pos (split(/\./,$posStrg)) {
 if (!$pos || ($pos=~/\d+/ && (!$seq[$pos-1])) || !$peptideBeg{$protID}{$pepSeq}) { # (PP 2017/06/22)
-	die "Pos Error: PROT=$protID, PEP=$pepSeq, VMOD=$vmod, UVMOD=$usedVmod, QSET=$qSet, SEP=$sep, STRG=$posStrg, BEG=$peptideBeg{$protID}{$pepSeq}\n";
+	die "PTM position Error: PROT=$protID, PEP=$pepSeq, VMOD=$vmod, UVMOD=$usedVmod, QSET=$qSet, SEP=$sep, STRG=$posStrg, BEG=$peptideBeg{$protID}{$pepSeq}\n";
 }
 
 												push @pos,$seq[$pos-1].($peptideBeg{$protID}{$pepSeq}+$pos-1);
@@ -2775,6 +2789,28 @@ my $context=($Rdesign eq 'PEP_RATIO')? $ratio : 'NA'; # Experiment != context (r
 #	push @{$refCodedModResList},$modRes[-2].$modRes[-1];
 #}
 
+sub extractPtmPosProbability {
+	my ($quantifiedModifID,$varModCode,$varProbStrg)=@_;
+	my ($a,$posStrg)=($varModCode =~ /(^|&)$quantifiedModifID:([^&]+)/);
+return -1 unless $posStrg; # in case missing MQ data
+	my ($b,$probStrg)=($varProbStrg =~ /(^|&)$quantifiedModifID%.*##PRB_([^&]+)/); # (...&)9%##PRB_MQ=1:0.998,3:0.966,10:0.036(&...)
+	my $ptmPosProb;
+	if ($probStrg) {
+		if ($probStrg=~/=-1$/) { # no prob data available during search import
+			$ptmPosProb=-1;
+		}
+		else {
+			$ptmPosProb=1; # max by default
+			foreach my $pos (split(/\./,$posStrg)) {
+				my ($prob)=($varProbStrg =~ /\D$pos:([\d\.]+)/);
+				$ptmPosProb=$prob if ($prob && $ptmPosProb > $prob); # record worse prob if multiple PTMs
+			}
+		}
+	}
+	else {$ptmPosProb=1;} # no prob data => 100% (no recording of 100% prob at import)
+	return $ptmPosProb;
+}
+
 sub checkForErrors {
 	#my ($errorFile) = glob "$promsPath{tmp}/quantification/current/*_$quantifDate\_error.txt";
 	my $errorFile = "$promsPath{tmp}/quantification/current/$quantifID\_$quantifDate\_error.txt";
@@ -2828,10 +2864,10 @@ sub generateReferenceProtFromQuantif { # globals: %promsPath,%quantifParameters,
 }
 
 
-# TODO: Handle MaxQuant phospho probability instead of PhosphoRS
 # TODO: Make clear choice for labeled quantif done with PEP_INTENSITY algo: treat as 100% Label-Free or mixed LF/Label ?????
 # TODO: Move label-free peptide matching check further downstream for compatibility with PTM quantif
 ####>Revision history<####
+# 2.9.0 Also handles MaxQuant any PTM probability (PP 24/04/01/19)
 # 2.8.0 Added protein-level normalization for site quantification (PP 19/12/18)
 # 2.7.0 Now runs on cluster itself: R is launcher by system command (PP 17/09/18)
 # 2.6.2 [Fix] bug in splitting peptide id string during results parsing (PP 13/09/18)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# editProjectItem.cgi    3.1.8                                                 #
+# editProjectItem.cgi    3.1.9                                                 #
 # Authors: P. Poullet, G. Arras, F. Yvon, V. Sabatet (Institut Curie)          #
 # Contact: myproms@curie.fr                                                    #
 # Generates the interface allowing                                             #
@@ -597,7 +597,7 @@ if ($action ne 'summary') {
 }
 
 ####>Printing data in table<####
-print "<TABLE border=0 width=800>\n";
+print "<TABLE border=0 width=850>\n";
 print "<TR><TD bgcolor=$dark>";
 print "<TABLE border=0 cellpadding=2 width=100%>\n";
 for my $i (0..$#nameText) {
@@ -1486,7 +1486,7 @@ sub analysis {
 		my ($totProt,$visProt,$beforeMCQtotProt,$beforeMCQvisProt)=(0,0,0,0);
 		while (my ($visibility,$confLevel,$count)=$sthcountProt->fetchrow_array){
 			$totProt+=$count;
-			if ($visibility>0){
+			if ($visibility){
 				$beforeMCQvisProt=$count if $confLevel==2;
 				$visProt+=$count;
 			}
@@ -1506,7 +1506,7 @@ sub analysis {
 			my $pcMapped=1*(sprintf "%.1f",($numMapped/$totProt)*100);
 			my $protString=($visProt>1)? 'Proteins' : 'Protein';
 			#my $geneString=($numGenes>1)? "$numGenes Genes mapped" : "$numGenes Gene mapped";
-			my $mapString="<TH align=right>&nbsp;$pcMapped</TH><TH align=left>&nbsp;% Proteins mapped to biological resources.".&checkOnGoingMapping."</TH>";
+			my $mapString="<TH align=right valign=top>&nbsp;$pcMapped</TH><TH align=left>&nbsp;% Proteins mapped to biological resources.".&checkOnGoingMapping."</TH>";
 			$statusString=($validStatus==1)? '<B>Partially v' : '<B>V';
 			$statusString.="alidated. $historyButtonStrg$lowerScoresString";
 			$statusString.="&nbsp;".&getPtmDistributionButton."&nbsp;" if $totProt ;
@@ -1836,6 +1836,7 @@ sub analysis {
 			push @valueText,"&nbsp;$statusString";
 			#if ($statusString !~ /not /i) { #} fully or partially validated (Not validated | ... annotations not imported)
 			if ($validStatus >= 1) {
+				push @valueText,$pepQuantifStrg;
 				push @valueText,$bioSampleStrg;
 				my $validDateStrg='&nbsp;'.&promsMod::formatDate($validDate);
 				$validDateStrg.=" by <B>$validUser</B>" if $projectAccess=~/bioinfo|mass|manag/;
@@ -2256,6 +2257,7 @@ sub getRemapButton{
 }
 
 ####>Revision history<####
+# 3.1.9 [fix] minor display bugs (PP 10/01/19)
 # 3.1.8 Restored classical $promsPath{cgi} instead of ${promsPath{cgi} (PP 21/11/18)
 # 3.1.7 Fix handling of complex search parameters (hash), used in DIA and TDA (VS 20/11/18)
 # 3.1.6 Minor bug fix on paths building (VS 18/10/18)

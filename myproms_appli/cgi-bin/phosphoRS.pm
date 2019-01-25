@@ -1,5 +1,5 @@
 ###############################################################################
-# phosphoRS.pm               1.3.1                                            #
+# phosphoRS.pm               1.3.2                                            #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                     #
 # Contact: myproms@curie.fr                                                   #
 # Class used to determinate phosphorylation sites on peptides using PhosphoRS #
@@ -165,7 +165,7 @@ sub addSpectrumInfo{
 sub getIsoforms{
     # This method returns an array reference of all isoforms corresponding to the provided query number and rank.
     # Isoforms are array references where 1st element is the calculated probability and
-    # the second element is an array reference of all phosphopositions.
+    # the second element is an array reference of all phospho-positions.
     # Data is processed in a new hash structure first time this method is called, in order to be accessed efficiently the following times.
 
     my ($this, $queryNum, $peptideNum) = @_;
@@ -212,17 +212,20 @@ sub getIsoformsFromFile{
     my ($spectrumOK,$peptideOK) = (0,0);
     my $XMLstring; # will contain the XML part of interest
     while(<XML>){
-	if(/<Spectrum ID="$queryNum">/){
-	    $spectrumOK = 1;
-	} elsif ($spectrumOK and /<Peptide ID="$peptideNum">/){
-	    $peptideOK = 1;
-	    $XMLstring = $_;
-	} elsif ($spectrumOK and $peptideOK and $_ !~ /<\/Peptide>/){
-	    $XMLstring .= $_;
-	} elsif ($spectrumOK and $peptideOK and /<\/Peptide>/) {
-	    $XMLstring .= $_;
-	    last;
-	}
+		if(/<Spectrum ID="$queryNum">/){
+			$spectrumOK = 1;
+		}
+		elsif ($spectrumOK and /<Peptide ID="$peptideNum">/){
+			$peptideOK = 1;
+			$XMLstring = $_;
+		}
+		elsif ($spectrumOK and $peptideOK and $_ !~ /<\/Peptide>/){
+			$XMLstring .= $_;
+		}
+		elsif ($spectrumOK and $peptideOK and /<\/Peptide>/) {
+			$XMLstring .= $_;
+			last;
+		}
     }
     close XML;
 
@@ -230,11 +233,11 @@ sub getIsoformsFromFile{
 
     my @isoforms;
     foreach my $isoformRef ( @{$xmlRef->{'Isoforms'}{'Isoform'}}){
-	my @positions;
-	foreach my $phosphoSiteRef (@{$isoformRef->{'PhosphoSites'}{'PhosphoSite'}}){
-	    push @positions, $phosphoSiteRef->{'SeqPos'};
-	}
-	push @isoforms, [ $isoformRef->{'PepProb'}, $isoformRef->{'PepScore'}, \@positions ];
+		my @positions;
+		foreach my $phosphoSiteRef (@{$isoformRef->{'PhosphoSites'}{'PhosphoSite'}}){
+			push @positions, $phosphoSiteRef->{'SeqPos'};
+		}
+		push @isoforms, [ $isoformRef->{'PepProb'}, $isoformRef->{'PepScore'}, \@positions ];
     }
 
     return \@isoforms;
@@ -458,369 +461,368 @@ sub _addSpectraFromParagonFile{
     package ParagonSAXHandler;
     use base qw(XML::SAX::Base);{
 
-	our @el = (); # list of atoms with their symbol and isotope mass and probability
-	our $currentMss = '';
-	our $currentPry = '';
-	our $currentSym = '';
-
-	our @mod = ();
-	our $currentTgt = '';
-	our $currentNme = '';
-	our $currentFma = '';
-	our $currentRpF = '';
-	our $currentNLF = '';
-
-	our @phosphoSpectra = ();
-	our $currentSpectrum;
-	our $currentSpectrumID;
-	our @currentPhosphoMatches = ();
-	our $currentMatch;
-	our $currentMatchID;
-	our @currentMods;
-	our @currentSubs;
-	our $currentPeakData = '';
-
-	our %interestVMods;
-
-	sub new {
-	    my ($class,$ref,$activationType) = @_;
-	    return bless({ref => $ref, activationType => $activationType},$class);
-	}
-
-	sub start_document{
-	    $currentSpectrumID = 0;
-	}
-
-	sub end_document{
-	    # constructing the entire XML input-PRS-file reference
-	    my $this = shift;
-
-	    my %aaCode=('Alanine'=>'A',
-			'Arginine'=>'R',
-			'Asparagine'=>'N',
-			'AsnOrAsp'=>'B',
-			'Aspartic Acid'=>'D',
-			'Cysteine'=>'C',
-			'Glutamine'=>'Q',
-			'GlnOrGlu'=>'Z',
-			'Glutamic Acid'=>'E',
-			'Glycine'=>'G',
-			'Histidine'=>'H',
-			'Isoleucine'=>'I',
-			'Leucine'=>'L',
-			'Lysine'=>'K',
-			'Methionine'=>'M',
-			'Phenylalanine'=>'F',
-			'Proline'=>'P',
-			'Serine'=>'S',
-			'Threonine'=>'T',
-			'Tryptophan'=>'W',
-			'Tyrosine'=>'Y',
-			'Valine'=>'V',
-			'Selenocysteine'=>'U',
-			);
-
-	    # Atom masses
-	    my %atomMass;
-	    while (my $el = shift @el) {
-		my $avgMass = 0;
-		while (my $iso = shift @{$el->{Iso}}) {
-		    $avgMass += $iso->{Mss} * $iso->{Pry};
+		our @el = (); # list of atoms with their symbol and isotope mass and probability
+		our $currentMss = '';
+		our $currentPry = '';
+		our $currentSym = '';
+	
+		our @mod = ();
+		our $currentTgt = '';
+		our $currentNme = '';
+		our $currentFma = '';
+		our $currentRpF = '';
+		our $currentNLF = '';
+	
+		our @phosphoSpectra = ();
+		our $currentSpectrum;
+		our $currentSpectrumID;
+		our @currentPhosphoMatches = ();
+		our $currentMatch;
+		our $currentMatchID;
+		our @currentMods;
+		our @currentSubs;
+		our $currentPeakData = '';
+	
+		our %interestVMods;
+	
+		sub new {
+			my ($class,$ref,$activationType) = @_;
+			return bless({ref => $ref, activationType => $activationType},$class);
 		}
-		$atomMass{$el->{Sym}} = $avgMass;
-	    }
-	    $this->{atomMass} = \%atomMass;
-
-	    # ModificationInfos
-	    my $modSymbol = 0;
-	    my %modSymbol;
-	    while (my $mod = shift @mod) {
-		next unless (exists $interestVMods{$mod->{Nme}} && $interestVMods{$mod->{Nme}} == 1);
-		$interestVMods{$mod->{Nme}} = 2; # avoid duplicates
-
-		$modSymbol = _incrementSymbol($modSymbol);
-		$modSymbol{$mod->{Nme}} = $modSymbol;
-
-		$mod->{Nme} =~ s/://g; # ':' is separator in modificationInfo value string
-
-		# Mass
-		my $modMass = $this->_computeMolMass($mod->{Fma});
-		$modMass -= $this->_computeMolMass($mod->{RpF}) if $mod->{RpF}; # atom(s) lost during bound
-
-		# Neutral loss
-		if ($mod->{Nme} eq 'Phospho') {
-		    $mod->{NLF} = 'H3PO4';
-		    # because the phospho neutralLoss is only indicated for Phospho(Ser,Thr) modification,
-		    # and despite this specification, this is the modification called 'Phospho' which is used for phosphorylation located on Ser and Thr residues
+	
+		sub start_document{
+			$currentSpectrumID = 0;
 		}
-
-		my($neutralLossName,$neutralLossMass);
-		if ($mod->{NLF}) {
-		    $neutralLossName = $mod->{Nme} . 'Loss';
-		    $neutralLossMass = $this->_computeMolMass($mod->{NLF});
-		}
-		else {
-		    $neutralLossName = 'null';
-		    $neutralLossMass = 0;
-		}
-
-		# Targets
-		my $targets = '';
-		while (my $tgt = shift @{$mod->{Tgt}}) {
-		    $targets .= $aaCode{$tgt};
-		}
-
-		my $modValue = join ':', ($modSymbol,$mod->{Nme},$mod->{Nme},$modMass,$neutralLossName,$neutralLossMass,$targets);
-
-		push @{$this->{ref}{ModificationInfos}{ModificationInfo}}, {Symbol => $modSymbol, Value => $modValue};
-
-		if ($mod->{Nme} eq 'Phospho') {
-		    $this->{ref}{Phosphorylation}{Symbol} = $modSymbol;
-		    # Phospho (ST) is separated from other phosphos in Paragon files,
-		    # but PhosphoRS does not seem to care about provided phosphorylable residues and always put 'STY'
-		}
-
-	    }
-
-	    # Spectra
-	    while (my $paragonSpectrum = shift @phosphoSpectra) {
-		# Peaks
-		my $peakString = '';
-		my @peaks = split /\n/, $paragonSpectrum->{Peaks};
-		shift @peaks; # 1st line is empty
-		foreach my $peakData (@peaks){
-		    my ($mz,$charge,$intensity) = split /\t/, $peakData;
-		    $peakString .= "$mz:$intensity,";
-		}
-		$peakString =~ s/,$//;
-		my $peaks = { content => $peakString };
-
-		# Peptides
-		my @peptides;
-		while (my $match = shift @{$paragonSpectrum->{Matches}}) {
-		    # Mods
-		    my @modList = map {0} (1..length($match->{seq}));
-		    while (my $modFeature = shift @{$match->{Mods}}) {
-			# Be sure to have all phosphos in 1 entity
-			my $modSymbol = ($modFeature->{mod} =~ /^Phospho\(?/)? $this->{ref}{Phosphorylation}{Symbol} : $modSymbol{$modFeature->{mod}};
-			$modList[$modFeature->{pos} - 1] = $modSymbol;
-		    }
-		    my $modString = '0.'.join('',@modList).'.0';
-		    # Subs
-		    if ($match->{Subs}) {
-			my @seqList = split //, $match->{seq};
-			while (my $sub = shift @{$match->{Subs}}) {
-			    $seqList[$sub->{pos}-1] = $sub->{'sub'};
+	
+		sub end_document{
+			# constructing the entire XML input-PRS-file reference
+			my $this = shift;
+	
+			my %aaCode=('Alanine'=>'A',
+				'Arginine'=>'R',
+				'Asparagine'=>'N',
+				'AsnOrAsp'=>'B',
+				'Aspartic Acid'=>'D',
+				'Cysteine'=>'C',
+				'Glutamine'=>'Q',
+				'GlnOrGlu'=>'Z',
+				'Glutamic Acid'=>'E',
+				'Glycine'=>'G',
+				'Histidine'=>'H',
+				'Isoleucine'=>'I',
+				'Leucine'=>'L',
+				'Lysine'=>'K',
+				'Methionine'=>'M',
+				'Phenylalanine'=>'F',
+				'Proline'=>'P',
+				'Serine'=>'S',
+				'Threonine'=>'T',
+				'Tryptophan'=>'W',
+				'Tyrosine'=>'Y',
+				'Valine'=>'V',
+				'Selenocysteine'=>'U',
+				);
+	
+			# Atom masses
+			my %atomMass;
+			while (my $el = shift @el) {
+				my $avgMass = 0;
+				while (my $iso = shift @{$el->{Iso}}) {
+					$avgMass += $iso->{Mss} * $iso->{Pry};
+				}
+				$atomMass{$el->{Sym}} = $avgMass;
 			}
-			$match->{seq} = join '',@seqList;
-		    }
-
-
-		    push @peptides, { ID => $match->{ID}, Sequence => $match->{seq}, ModificationInfo => $modString};
-		}
-		my $peptides = { Peptide => \@peptides};
-
-		push @{$this->{ref}{'Spectra'}{'Spectrum'}}, { ID => $paragonSpectrum->{ID},
-							      PrecursorCharge => $paragonSpectrum->{charge},
-							      ActivationTypes => $this->{activationType},
-							      Peaks => $peaks,
-							      IdentifiedPhosphorPeptides => $peptides}
-	    }
-
-	}
-
-	sub start_element{
-	    my ($this,$element) = @_;
-
-	    if ($this->_isOn('DataDictionary')) {
-		if ($element->{Name} eq 'El') {
-		    push @el, {};
-		}
-		elsif ($element->{'Name'} eq 'Mod'){
-		    push @mod, {};
-		}
-	    }
-	    elsif($element->{Name} eq 'SPECTRUM'){
-		$currentSpectrumID++;
-		$currentMatchID = 0;
-		$currentSpectrum = { ID => $currentSpectrumID , charge => $element->{'Attributes'}->{'{}charge'}->{'Value'} };
-	    }
-	    elsif($this->_isOn('SPECTRUM')){
-		if ($element->{Name} eq 'MATCH') {
-		    $currentMatchID++;
-		    $currentMatch = { ID => $currentMatchID, seq => $element->{'Attributes'}->{'{}seq'}->{'Value'}}
-		}
-		elsif($this->_isOn('MATCH') && $element->{Name} eq 'MOD_FEATURE'){
-		    push @currentMods, { mod => $element->{'Attributes'}->{'{}mod'}->{'Value'}, pos => $element->{'Attributes'}->{'{}pos'}->{'Value'}};
-		}
-		elsif($this->_isOn('MATCH') && $element->{Name} eq 'SUBSTITUTION_FEATURE'){
-		    push @currentSubs, { 'sub' => $element->{'Attributes'}->{'{}sub'}->{'Value'}, pos => $element->{'Attributes'}->{'{}pos'}->{'Value'}};
-		}
-	    }
-
-	    $this->_toggleElement($element,1);
-	}
-
-	sub end_element{
-	    my ($this,$element) = @_;
-
-	    # Elements dictionary (used to compute modification masses)
-	    if ($this->_isOn('DataDictionary')) {
-		if ($this->_isOn('El')) {
-		    if ($element->{Name} eq 'Iso') {
-			push @{$el[-1]{Iso}}, {Mss => $currentMss, Pry => $currentPry};
-			$currentMss = '';
-			$currentPry = '';
-		    }
-		    elsif($element->{Name} eq 'Sym'){
-			$el[-1]{Sym} = $currentSym;
-			$currentSym = '';
-		    }
-		}
-		elsif($this->_isOn('Mod')){
-		    if ($element->{Name} eq 'Nme') {
-			$mod[-1]{Nme} = $currentNme;
-			$currentNme = '';
-		    }
-		    elsif($element->{Name} eq 'Fma'){
-			$mod[-1]{Fma} = $currentFma;
-			$currentFma = '';
-		    }
-		    elsif($element->{Name} eq 'RpF'){
-			$mod[-1]{RpF} = $currentRpF;
-			$currentRpF = '';
-		    }
-		    elsif($element->{Name} eq 'NLF'){
-			$mod[-1]{NLF} = $currentNLF if $currentNLF =~ /\w/;
-			$currentNLF = '';
-		    }
-		    elsif($element->{Name} eq 'Tgt'){
-			push @{$mod[-1]{Tgt}}, $currentTgt;
-			$currentTgt = '';
-		    }
-		}
-	    }
-	    elsif($this->_isOn('SPECTRUM')){
-		if ($element->{Name} eq 'MSMSPEAKS') {
-		    $currentSpectrum->{Peaks} = $currentPeakData;
-		    $currentPeakData = '';
-		}
-		elsif($element->{Name} eq 'MATCH'){
-		    # check if match contains phosphos
-		    if (scalar grep {$_->{mod} eq 'Phospho'} @currentMods) {
-			@{$currentMatch->{Mods}} = @currentMods;
-			@{$currentMatch->{Subs}} = @currentSubs if scalar @currentSubs;
-			push @currentPhosphoMatches, $currentMatch;
-			foreach my $mod (@currentMods){ $interestVMods{$mod->{mod}} = 1 }; # keep only mods found in phosphopeptides
-		    }
-		    @currentMods = ();
-		    @currentSubs = ();
-		    $currentMatch = {};
-		}
-		elsif($element->{Name} eq 'SPECTRUM'){
-		    if (scalar @currentPhosphoMatches) {
-			@{$currentSpectrum->{Matches}} = @currentPhosphoMatches;
-			push @phosphoSpectra, $currentSpectrum;
-		    }
-		    @currentPhosphoMatches = ();
-		    $currentSpectrum = {};
-		    print "<!-- -->\n" unless $currentSpectrumID % 1000; # avoids time out
-		}
-	    }
-
-	    $this->_toggleElement($element,0);
-	}
-
-	sub characters{
-	    my ($this,$element) = @_;
-
-	    if ($this->_isOn('DataDictionary')) {
-
-		# El
-		if ($this->_isOn('El')) {
-		    if ($this->_isOn('Sym')) {
-			$currentSym .= $element->{Data};
-		    }
-		    elsif($this->_isOn('Iso')){
-			if ($this->_isOn('Mss')) {
-			    $currentMss .= $element->{Data};
+			$this->{atomMass} = \%atomMass;
+	
+			# ModificationInfos
+			my $modSymbol = 0;
+			my %modSymbol;
+			while (my $mod = shift @mod) {
+				next unless (exists $interestVMods{$mod->{Nme}} && $interestVMods{$mod->{Nme}} == 1);
+				$interestVMods{$mod->{Nme}} = 2; # avoid duplicates
+		
+				$modSymbol = _incrementSymbol($modSymbol);
+				$modSymbol{$mod->{Nme}} = $modSymbol;
+		
+				$mod->{Nme} =~ s/://g; # ':' is separator in modificationInfo value string
+		
+				# Mass
+				my $modMass = $this->_computeMolMass($mod->{Fma});
+				$modMass -= $this->_computeMolMass($mod->{RpF}) if $mod->{RpF}; # atom(s) lost during bound
+		
+				# Neutral loss
+				if ($mod->{Nme} eq 'Phospho') {
+					$mod->{NLF} = 'H3PO4';
+					# because the phospho neutralLoss is only indicated for Phospho(Ser,Thr) modification,
+					# and despite this specification, this is the modification called 'Phospho' which is used for phosphorylation located on Ser and Thr residues
+				}
+		
+				my($neutralLossName,$neutralLossMass);
+				if ($mod->{NLF}) {
+					$neutralLossName = $mod->{Nme} . 'Loss';
+					$neutralLossMass = $this->_computeMolMass($mod->{NLF});
+				}
+				else {
+					$neutralLossName = 'null';
+					$neutralLossMass = 0;
+				}
+		
+				# Targets
+				my $targets = '';
+				while (my $tgt = shift @{$mod->{Tgt}}) {
+					$targets .= $aaCode{$tgt};
+				}
+		
+				my $modValue = join ':', ($modSymbol,$mod->{Nme},$mod->{Nme},$modMass,$neutralLossName,$neutralLossMass,$targets);
+		
+				push @{$this->{ref}{ModificationInfos}{ModificationInfo}}, {Symbol => $modSymbol, Value => $modValue};
+		
+				if ($mod->{Nme} eq 'Phospho') {
+					$this->{ref}{Phosphorylation}{Symbol} = $modSymbol;
+					# Phospho (ST) is separated from other phosphos in Paragon files,
+					# but PhosphoRS does not seem to care about provided phosphorylable residues and always put 'STY'
+				}
+	
 			}
-			elsif($this->_isOn('Pry')){
-			    $currentPry .= $element->{Data};
+	
+			# Spectra
+			while (my $paragonSpectrum = shift @phosphoSpectra) {
+			# Peaks
+			my $peakString = '';
+			my @peaks = split /\n/, $paragonSpectrum->{Peaks};
+			shift @peaks; # 1st line is empty
+			foreach my $peakData (@peaks){
+				my ($mz,$charge,$intensity) = split /\t/, $peakData;
+				$peakString .= "$mz:$intensity,";
 			}
-		    }
-		}
-
-		# Mod
-		elsif ($this->_isOn('Mod')){
-		    if ($this->_isOn('Nme')) {
-			$currentNme .= $element->{'Data'};
-		    }
-		    elsif($this->_isOn('Fma')){
-			$currentFma .= $element->{'Data'};
-		    }
-		    elsif($this->_isOn('RpF')){
-			$currentRpF .= $element->{'Data'};
-		    }
-		    elsif($this->_isOn('NLF')){
-			$currentNLF .= $element->{'Data'};
-		    }
-		    elsif($this->_isOn('Tgt')){
-			$currentTgt .= $element->{'Data'};
-		    }
-		}
-	    }
-	    # Peaks
-	    elsif($this->_isOn('SPECTRUM') && $this->_isOn('MSMSPEAKS')){
-		$currentPeakData .= $element->{'Data'};
-	    }
-
-	}
-
-	sub _toggleElement{
-	    my ($this,$element,$boolean) = @_;
-
-	    $this->{isOn}{$element->{Name}} = $boolean;
-	}
-
-	sub _isOn{
-	    my ($this,$elementName) = @_;
-	    my $elName=($this->{isOn}->{$elementName})? $this->{isOn}->{$elementName} : 0;
-	    return $elName;
-	}
-
-	sub _computeMolMass{
-	    my ($this,$fma) = @_;
-
-	    my $mass = 0;
-
-	    while ($fma =~ /([A-Z][a-z]?)(\d+)*/g) {
-			my $sym = $1;
-			my $n = (defined $2)? $2 : 1;
-
-			$mass += $this->{atomMass}{$sym} * $n;
-	    }
-
-	    return $mass;
-	}
-
-	sub _incrementSymbol{
-	    my $symbol = shift;
-
-	    my @alphaNum = ((0..9),('A'..'Z'),('a'..'z'));
-	    my $nextSymbol;
-
-	    for(my $i=0;$i<=$#alphaNum;$i++){
-			if ($alphaNum[$i] eq $symbol) {
-				$nextSymbol = (defined $alphaNum[$i+1])? $alphaNum[$i+1] : undef;
-				last;
+			$peakString =~ s/,$//;
+			my $peaks = { content => $peakString };
+	
+			# Peptides
+			my @peptides;
+			while (my $match = shift @{$paragonSpectrum->{Matches}}) {
+				# Mods
+				my @modList = map {0} (1..length($match->{seq}));
+				while (my $modFeature = shift @{$match->{Mods}}) {
+					# Be sure to have all phosphos in 1 entity
+					my $modSymbol = ($modFeature->{mod} =~ /^Phospho\(?/)? $this->{ref}{Phosphorylation}{Symbol} : $modSymbol{$modFeature->{mod}};
+					$modList[$modFeature->{pos} - 1] = $modSymbol;
+				}
+				my $modString = '0.'.join('',@modList).'.0';
+				# Subs
+				if ($match->{Subs}) {
+					my @seqList = split //, $match->{seq};
+					while (my $sub = shift @{$match->{Subs}}) {
+						$seqList[$sub->{pos}-1] = $sub->{'sub'};
+					}
+					$match->{seq} = join '',@seqList;
+				}
+	
+				push @peptides, { ID => $match->{ID}, Sequence => $match->{seq}, ModificationInfo => $modString};
 			}
-	    }
-
-	    unless ($nextSymbol) {die 'Too many modifications on phosphopeptides. The process aborted.'}
-
-	    return $nextSymbol;
-	}
+			my $peptides = { Peptide => \@peptides};
+	
+			push @{$this->{ref}{'Spectra'}{'Spectrum'}}, { ID => $paragonSpectrum->{ID},
+									  PrecursorCharge => $paragonSpectrum->{charge},
+									  ActivationTypes => $this->{activationType},
+									  Peaks => $peaks,
+									  IdentifiedPhosphorPeptides => $peptides}
+			}
+	
+		}
+	
+		sub start_element{
+			my ($this,$element) = @_;
+	
+			if ($this->_isOn('DataDictionary')) {
+				if ($element->{Name} eq 'El') {
+					push @el, {};
+				}
+				elsif ($element->{'Name'} eq 'Mod'){
+					push @mod, {};
+				}
+			}
+			elsif($element->{Name} eq 'SPECTRUM'){
+				$currentSpectrumID++;
+				$currentMatchID = 0;
+				$currentSpectrum = { ID => $currentSpectrumID , charge => $element->{'Attributes'}->{'{}charge'}->{'Value'} };
+			}
+			elsif($this->_isOn('SPECTRUM')){
+				if ($element->{Name} eq 'MATCH') {
+					$currentMatchID++;
+					$currentMatch = { ID => $currentMatchID, seq => $element->{'Attributes'}->{'{}seq'}->{'Value'}}
+				}
+				elsif($this->_isOn('MATCH') && $element->{Name} eq 'MOD_FEATURE'){
+					push @currentMods, { mod => $element->{'Attributes'}->{'{}mod'}->{'Value'}, pos => $element->{'Attributes'}->{'{}pos'}->{'Value'}};
+				}
+				elsif($this->_isOn('MATCH') && $element->{Name} eq 'SUBSTITUTION_FEATURE'){
+					push @currentSubs, { 'sub' => $element->{'Attributes'}->{'{}sub'}->{'Value'}, pos => $element->{'Attributes'}->{'{}pos'}->{'Value'}};
+				}
+			}
+	
+			$this->_toggleElement($element,1);
+		}
+	
+		sub end_element{
+			my ($this,$element) = @_;
+	
+			# Elements dictionary (used to compute modification masses)
+			if ($this->_isOn('DataDictionary')) {
+				if ($this->_isOn('El')) {
+					if ($element->{Name} eq 'Iso') {
+						push @{$el[-1]{Iso}}, {Mss => $currentMss, Pry => $currentPry};
+						$currentMss = '';
+						$currentPry = '';
+					}
+					elsif($element->{Name} eq 'Sym'){
+						$el[-1]{Sym} = $currentSym;
+						$currentSym = '';
+					}
+				}
+				elsif($this->_isOn('Mod')){
+					if ($element->{Name} eq 'Nme') {
+						$mod[-1]{Nme} = $currentNme;
+						$currentNme = '';
+					}
+					elsif($element->{Name} eq 'Fma'){
+						$mod[-1]{Fma} = $currentFma;
+						$currentFma = '';
+					}
+					elsif($element->{Name} eq 'RpF'){
+						$mod[-1]{RpF} = $currentRpF;
+						$currentRpF = '';
+					}
+					elsif($element->{Name} eq 'NLF'){
+						$mod[-1]{NLF} = $currentNLF if $currentNLF =~ /\w/;
+						$currentNLF = '';
+					}
+					elsif($element->{Name} eq 'Tgt'){
+						push @{$mod[-1]{Tgt}}, $currentTgt;
+						$currentTgt = '';
+					}
+				}
+			}
+			elsif($this->_isOn('SPECTRUM')){
+				if ($element->{Name} eq 'MSMSPEAKS') {
+					$currentSpectrum->{Peaks} = $currentPeakData;
+					$currentPeakData = '';
+				}
+				elsif($element->{Name} eq 'MATCH'){
+					# check if match contains phosphos
+					if (scalar grep {$_->{mod} eq 'Phospho'} @currentMods) {
+						@{$currentMatch->{Mods}} = @currentMods;
+						@{$currentMatch->{Subs}} = @currentSubs if scalar @currentSubs;
+						push @currentPhosphoMatches, $currentMatch;
+						foreach my $mod (@currentMods){ $interestVMods{$mod->{mod}} = 1 }; # keep only mods found in phosphopeptides
+					}
+					@currentMods = ();
+					@currentSubs = ();
+					$currentMatch = {};
+				}
+				elsif($element->{Name} eq 'SPECTRUM'){
+					if (scalar @currentPhosphoMatches) {
+						@{$currentSpectrum->{Matches}} = @currentPhosphoMatches;
+						push @phosphoSpectra, $currentSpectrum;
+					}
+					@currentPhosphoMatches = ();
+					$currentSpectrum = {};
+					#print "<!-- -->\n" unless $currentSpectrumID % 1000; # avoids time out
+				}
+			}
+	
+			$this->_toggleElement($element,0);
+		}
+	
+		sub characters{
+			my ($this,$element) = @_;
+	
+			if ($this->_isOn('DataDictionary')) {
+	
+				# El
+				if ($this->_isOn('El')) {
+					if ($this->_isOn('Sym')) {
+						$currentSym .= $element->{Data};
+					}
+					elsif($this->_isOn('Iso')){
+						if ($this->_isOn('Mss')) {
+							$currentMss .= $element->{Data};
+						}
+						elsif($this->_isOn('Pry')){
+							$currentPry .= $element->{Data};
+						}
+					}
+				}
+		
+				# Mod
+				elsif ($this->_isOn('Mod')){
+					if ($this->_isOn('Nme')) {
+						$currentNme .= $element->{'Data'};
+					}
+					elsif($this->_isOn('Fma')){
+						$currentFma .= $element->{'Data'};
+					}
+					elsif($this->_isOn('RpF')){
+						$currentRpF .= $element->{'Data'};
+					}
+					elsif($this->_isOn('NLF')){
+						$currentNLF .= $element->{'Data'};
+					}
+					elsif($this->_isOn('Tgt')){
+						$currentTgt .= $element->{'Data'};
+					}
+				}
+			}
+			# Peaks
+			elsif($this->_isOn('SPECTRUM') && $this->_isOn('MSMSPEAKS')){
+				$currentPeakData .= $element->{'Data'};
+			}
+	
+		}
+	
+		sub _toggleElement{
+			my ($this,$element,$boolean) = @_;
+	
+			$this->{isOn}{$element->{Name}} = $boolean;
+		}
+	
+		sub _isOn{
+			my ($this,$elementName) = @_;
+			my $elName=($this->{isOn}->{$elementName})? $this->{isOn}->{$elementName} : 0;
+			return $elName;
+		}
+	
+		sub _computeMolMass{
+			my ($this,$fma) = @_;
+	
+			my $mass = 0;
+	
+			while ($fma =~ /([A-Z][a-z]?)(\d+)*/g) {
+				my $sym = $1;
+				my $n = (defined $2)? $2 : 1;
+	
+				$mass += $this->{atomMass}{$sym} * $n;
+			}
+	
+			return $mass;
+		}
+	
+		sub _incrementSymbol{
+			my $symbol = shift;
+	
+			my @alphaNum = ((0..9),('A'..'Z'),('a'..'z'));
+			my $nextSymbol;
+	
+			for(my $i=0;$i<=$#alphaNum;$i++){
+				if ($alphaNum[$i] eq $symbol) {
+					$nextSymbol = (defined $alphaNum[$i+1])? $alphaNum[$i+1] : undef;
+					last;
+				}
+			}
+	
+			unless ($nextSymbol) {die 'Too many modifications on phosphopeptides. The process aborted.'}
+	
+			return $nextSymbol;
+		}
     }
 }
 
@@ -857,7 +859,7 @@ sub _writeInputFile{
 
     # Cleaning undefined spectra #
     my $i=0;
-    my $nbSpectra=0;
+    #my $nbSpectra=0;
     while($i<=$#{$ref->{'Spectra'}{'Spectrum'}}){
 		if($ref->{'Spectra'}{'Spectrum'}[$i]){
 			$i++;
@@ -865,11 +867,11 @@ sub _writeInputFile{
 		else{
 			splice(@{$ref->{'Spectra'}{'Spectrum'}}, $i, 1);
 		}
-		$nbSpectra++;
-		if ($nbSpectra > 100000) {
-		    $nbSpectra=0;
-		    print ".";
-		}
+		#$nbSpectra++;
+		#if ($nbSpectra > 100000) {
+		#    $nbSpectra=0;
+		#    print ".";
+		#}
     }
     # Cleaning undefined modification infos (when there are previously merges PTMs)
     my $j=0;
@@ -981,6 +983,7 @@ sub _setInputRef{
 1;
 
 ####>Revision history<####
+# 1.3.2 Code indentation correction & remove obsolete prints (PP 24/01/19)
 # 1.3.1 Add in _storeResults a copy of xml file (GA 12/12/18)
 # 1.3.0 Major code update for improved background run (PP 09/11/18)
 # 1.2.1 Changed $maxHours from 12 to 48 (PP 19/06/18)

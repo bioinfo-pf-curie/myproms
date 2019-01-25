@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# convertMsf2Pdm.cgi     1.2.6                                                 #
+# convertMsf2Pdm.cgi     1.2.9                                                 #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Converts Proteome Discoverer .msf file into a Mascot-like .pdm file          #
@@ -147,40 +147,40 @@ my $boundary='--gc0p4Jq0M2Yt08jU534c0p';
 ####> Specific functions for PD 2.2 <####
 #########################################
 if ($proteomeDiscovererVersion >= 2.2) {
-		my ($dbFile,$decoy,$minScorePep)=&printParametersMSF2_2(\%modifications,\%masses);
-		#my $addSpInfoStg=($fileID)?" AND StudyFileId=$fileID":" "; # If a merge was done
-		my $addSpInfoStg=($fileID)?" WHERE SpectrumFileID=$fileID":" "; # If a merge was done
-		my $sthSpInfo = $dbsqlite->prepare("SELECT SpectrumID, Mass, Charge, MassOverCharge FROM MSnSpectrumInfo $addSpInfoStg ORDER BY Mass ASC, Charge ASC");# Change the order to be like mascot
-		$sthSpInfo->execute;
-		my $queryNum=0;
-		while (my ($spectrumID,$mass,$charge,$massPeak)= $sthSpInfo->fetchrow_array) {
-			$queryOrder{++$queryNum}=$spectrumID;
-			@{$spectrumInfo{$spectrumID}}=(
-				$mass-$masses{'Hydrogen'}+$masses{'Electron'},	# 0 MR
-				$charge,										# 1 CHARGE
-				$massPeak										# 2 MASSPEAK
-			)
-		}
-		$sthSpInfo->finish;
-		&printHeaderMSF2_2($dbFile,$queryNum);
-		&printSummaryMSF($decoy,\%queryOrder,\%spectrumInfo);
-		&printPeptidesMSF2_2($decoy,$minScorePep,\%queryOrder,\%spectrumInfo,\%modifications,\%masses);
-		close FILE;
-		$dbsqlite->disconnect;
-		my $processEnd;
-		if ($fileID) {
-			($processEnd=$msfFile)=~s/\.msf\Z/_$processingNodeNumber\.$fileID\.$userID\.end/;
-		}else{
-			($processEnd=$msfFile)=~s/\.msf\Z/_$processingNodeNumber\.$userID\.end/;
-		}
-		
-		open (P_END,">$promsPath{tmp}/pdm/$processEnd");
-		print P_END "__END__\n";
-		close P_END;
-		
-		print "<!--__OK__--></BODY>\n</HTML>\n";
-		
-		exit;
+	my ($dbFile,$decoy,$minScorePep)=&printParametersMSF2_2(\%modifications,\%masses);
+	#my $addSpInfoStg=($fileID)?" AND StudyFileId=$fileID":" "; # If a merge was done
+	my $addSpInfoStg=($fileID)?" WHERE SpectrumFileID=$fileID":" "; # If a merge was done
+	my $sthSpInfo = $dbsqlite->prepare("SELECT SpectrumID, Mass, Charge, MassOverCharge FROM MSnSpectrumInfo $addSpInfoStg ORDER BY Mass ASC, Charge ASC");# Change the order to be like mascot
+	$sthSpInfo->execute;
+	my $queryNum=0;
+	while (my ($spectrumID,$mass,$charge,$massPeak)= $sthSpInfo->fetchrow_array) {
+		$queryOrder{++$queryNum}=$spectrumID;
+		@{$spectrumInfo{$spectrumID}}=(
+			$mass-$masses{'Hydrogen'}+$masses{'Electron'},	# 0 MR
+			$charge,										# 1 CHARGE
+			$massPeak										# 2 MASSPEAK
+		)
+	}
+	$sthSpInfo->finish;
+	&printHeaderMSF2_2($dbFile,$queryNum);
+	&printSummaryMSF($decoy,\%queryOrder,\%spectrumInfo);
+	&printPeptidesMSF2_2($decoy,$minScorePep,\%queryOrder,\%spectrumInfo,\%modifications,\%masses);
+	close FILE;
+	$dbsqlite->disconnect;
+	my $processEnd;
+	if ($fileID) {
+		($processEnd=$msfFile)=~s/\.msf\Z/_$processingNodeNumber\.$fileID\.$userID\.end/;
+	}else{
+		($processEnd=$msfFile)=~s/\.msf\Z/_$processingNodeNumber\.$userID\.end/;
+	}
+	
+	open (P_END,">$promsPath{tmp}/pdm/$processEnd");
+	print P_END "__END__\n";
+	close P_END;
+	
+	print "<!--__OK__--></BODY>\n</HTML>\n";
+	
+	exit;
 }
 
 ####<1st step: Print header section & load hashes>####
@@ -335,7 +335,7 @@ sub printParametersMSF { # GLOBALS: $dbsqlite, $processingNodeNumber, $refSearch
 			#next unless ($processingNodeParameters->{ProcessingNodeName} eq 'SpectrumFilesNode'  || $processingNodeParameters->{ProcessingNodeNumber} == $processingNodeNumber);
 			if ($processingNodeParameters->{ProcessingNodeName} eq 'SpectrumFilesNode') {
 				my @msfFiles=split(/;/,$processingNodeParameters->{ProcessingNodeParameters}->{ProcessingNodeParameter}->{content});
-				my $addQuery=($fileID)?" AND FileID=$fileID":'';
+				#my $addQuery=($fileID)?" AND FileID=$fileID":'';
 				foreach my $mFile (@msfFiles){
 					my @name=split(/\\/,$mFile);
 					my $fName=pop(@name);
@@ -1134,8 +1134,11 @@ sub printPeptidesMSF { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber, $r
 					# Remove on 03/10/12
 					#next if $refModifications->{$modif}{'PRINTED_NAME'} !~ /[NC]-term/; # terminal Modif => skip regular ones [eg. Acetyl(Protein N-term) vs Acetyl (K)]
 					next if $refModifications->{$modif}{'PRINTED_NAME'} !~ /[NC][-_]term/i; # added by PP 10/01/13, modified 01/07/16
-					if ($modificationName =~ /$refModifications->{$modif}{'SUBST'}/) {
+					if ($modificationName =~ /$refModifications->{$modif}{'SUBST'}/ && $refModifications->{$modif}{'PRINTED_NAME'} =~ /N[-_]term/i) {
 						substr($peptidesInfo{$peptideID}[5] , 0 , 1 , $refModifications->{$modif}{'VALUE'});
+					}
+					if ($modificationName =~ /$refModifications->{$modif}{'SUBST'}/ && $refModifications->{$modif}{'PRINTED_NAME'} =~ /C[-_]term/i) {
+						substr($peptidesInfo{$peptideID}[5] , length($peptidesInfo{$peptideID}[1])+1 , 1 , $refModifications->{$modif}{'VALUE'});
 					}
 				}
 			#}
@@ -1441,14 +1444,25 @@ sub printParametersMSF2_2 { # GLOBALS: $dbsqlite, $processingNodeNumber, $refSea
 	my $xmlData = $xml->XMLin($wfXML);
 	foreach my $processingNodeParameters (sort{$a->{ParentProcessingNodeNumber} cmp $b->{ParentProcessingNodeNumber}} @{$xmlData->{WorkflowTree}->{WorkflowNode}}) {
 		if ($processingNodeParameters->{ProcessingNodeName} eq 'SpectrumFilesNode') {
-				my @msfFiles=split(/;/,$processingNodeParameters->{ProcessingNodeParameters}->{ProcessingNodeParameter}->{content});
-				my $addQuery=($fileID)?" AND FileID=$fileID":'';
-				foreach my $mFile (@msfFiles){
-					my @name=split(/\\/,$mFile);
+				if ($fileID) { # For merge file splited... need for the rawfile name
+					my ($physicalFileN)=$dbsqlite->selectrow_array("SELECT PhysicalFileName FROM WorkflowInputFiles WHERE FileID=$fileID");
+					my @name=split(/\\/,$physicalFileN);
 					my $fName=pop(@name);
+					shift(@name); # Otherwise, it will print out three '\' like in this example => File Path: \\\10.200.10.200\QExactive HF-X\2018\05-2018
 					my $fPath=join("\\",@name);
-					$file.="File Name: $fName\n";
-					$file.="File Path: \\$fPath\n";
+					$file="File Name: $fName\nFile Path: \\$fPath\n";
+				}
+				else{
+					my @msfFiles=split(/;/,$processingNodeParameters->{ProcessingNodeParameters}->{ProcessingNodeParameter}->{content});
+					my $addQuery=($fileID)?" AND FileID=$fileID":'';
+					foreach my $mFile (@msfFiles){
+						my @name=split(/\\/,$mFile);
+						my $fName=pop(@name);
+						shift(@name);
+						my $fPath=join("\\",@name);
+						$file.="File Name: $fName\n";
+						$file.="File Path: \\$fPath\n";
+					}
 				}
 		}
 		next unless ($processingNodeParameters->{ProcessingNodeNumber} == $processingNodeNumber);
@@ -1816,15 +1830,28 @@ sub printPeptidesMSF2_2 { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber,
 	}
 	open (FASTA,">$tempDbFile");
 #	print "";
-	my $sthProt = $dbsqlite->prepare("SELECT UniqueSequenceID, Sequence, FastaTitleLines, Accession FROM TargetProteins");
+	my $sthProt = $dbsqlite->prepare("SELECT UniqueSequenceID, Sequence, FastaTitleLines FROM TargetProteins");
 	$sthProt->execute;
-	while (my ($proteinID,$sequence,$description,$accession)= $sthProt->fetchrow_array) {
-		$accession=~s/,//g; # Need to remove all comma from accession to avoid further problem in storeAnalyses PDM parsing
+	while (my ($proteinID,$sequence,$description)= $sthProt->fetchrow_array) {
 		print FASTA "$description\n$sequence\n";
 		@{$proteinsInfo{$proteinID}}=(
-			[$accession], 		# 0 identifiers
+			[], 		# 0 identifiers
 			$sequence	# 1
 		);
+		$description=~s/^>//;
+		foreach my $entry (split "\001",$description) { #\001 means SOH<-> Start of header
+			my ($identifier)=($entry=~/$idRule/);
+			if ($identifier && $identType eq 'UNIPROT_ID') { #check for isoforms in 1st keyword before |
+				$entry=~s/^sp\|//;
+				if ($entry=~/^[^|]+-(\d+)\|/) {
+					$identifier.="-$1";
+				}
+			}
+			else {
+				($identifier)=($description=~/^(\S+)/) unless $identifier; # fall back to fasta full identifier
+			}
+			push @{$proteinsInfo{$proteinID}[0]},$identifier;
+		}
 	}
 	$sthProt->finish;
 	close FASTA;
@@ -1865,7 +1892,8 @@ sub printPeptidesMSF2_2 { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber,
 #print "2 $typeName>";
 		###<Percolator filtering>###
 		#my $sthPepInfo=$dbsqlite->prepare("SELECT PeptideID,$scoreName,MSnSpectrumInfoSpectrumID,MatchedIonsCount,Sequence,MissedCleavages,PercolatorqValue,PercolatorPEP FROM ${typeName}Psms TP, ${typeName}PsmsMSnSpectrumInfo TPMSI WHERE TP.WorkflowID=TPMSI.${typeName}PsmsWorkflowID AND TP.PeptideID=TPMSI.${typeName}PsmsPeptideID");
-		my $sthPepInfo=$dbsqlite->prepare("SELECT PeptideID,$scoreName,MSnSpectrumInfoSpectrumID,MatchedIonsCount,Sequence,MissedCleavages$percolatorStrg FROM ${typeName}Psms TP, ${typeName}PsmsMSnSpectrumInfo TPMSI WHERE TP.WorkflowID=TPMSI.${typeName}PsmsWorkflowID AND TP.PeptideID=TPMSI.${typeName}PsmsPeptideID");
+		my $addPepInfoStg=($fileID)?" AND TP.SpectrumFileId=$fileID":" "; # If a merge was done
+		my $sthPepInfo=$dbsqlite->prepare("SELECT PeptideID,$scoreName,MSnSpectrumInfoSpectrumID,MatchedIonsCount,Sequence,MissedCleavages$percolatorStrg FROM ${typeName}Psms TP, ${typeName}PsmsMSnSpectrumInfo TPMSI WHERE TP.WorkflowID=TPMSI.${typeName}PsmsWorkflowID AND TP.PeptideID=TPMSI.${typeName}PsmsPeptideID$addPepInfoStg");
 		#my $step=5000; #1000; # int($numPeptides/10);
 		my $count=0;
 		$sthPepInfo->execute;
@@ -1932,6 +1960,15 @@ sub printPeptidesMSF2_2 { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber,
 				#if (uc($refModifications->{$modif}{'PRINTED_NAME'}) =~ /^$modificationName \(\w*$sequence[$position]\w*\)/){
 				if (uc($refModifications->{$modif}{'PRINTED_NAME'}) =~ /^$modificationName \(\w*$sequence[$position]\w*\)/){ # if ' is forgotten, then, for Methyl, Dimethyl, Trimethyl modification, it does not find the correct one!
 					substr($peptidesInfo{$peptideID}[5] , $position+1 , 1 , $refModifications->{$modif}{'VALUE'} );
+				}
+				elsif (uc($refModifications->{$modif}{'PRINTED_NAME'}) =~ /[NC][-_]TERM/){
+					my $substModUC=uc($refModifications->{$modif}{'SUBST'});
+					if ($modificationName =~ /$substModUC/ && uc($refModifications->{$modif}{'PRINTED_NAME'}) =~ /N[-_]TERM/) {
+						substr($peptidesInfo{$peptideID}[5] , 0 , 1 , $refModifications->{$modif}{'VALUE'});
+					}
+					if ($modificationName =~ /$substModUC/ && uc($refModifications->{$modif}{'PRINTED_NAME'}) =~ /C[-_]TERM/) {
+						substr($peptidesInfo{$peptideID}[5] , length($peptidesInfo{$peptideID}[1])+1 , 1 , $refModifications->{$modif}{'VALUE'});
+					}
 				}
 			}
 		}
@@ -2000,24 +2037,13 @@ sub printPeptidesMSF2_2 { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber,
 					}
 				}
 				else { #< Decoy ###################################
-					if ($proteomeDiscovererVersion >= 1.3) { # && scalar @{$peptidesInfo{$peptideID}[6]}
-						foreach my $prot (@{$peptidesInfo{$peptideID}[6]}) {
-							my $end=length($peptidesInfo{$peptideID}[1]);
-							#Add all identifiers corresponding to the same protein
-							foreach my $ident (@{$proteinsInfo{$prot}[0]}){
-								$proteinString="$proteinString,\"$ident\":0:1:$end:0";
-								$termsString="$termsString:-,-";
-							}
-						}
-					}
-					else {
-						# Before v1.3: no PeptidesProteins_decoy table => all decoy peptides are linked to the same fake decoy protein in pdm
-						# Decoy searches: there is not the same information in a mascot(.dat) and a proteomediscover(.msf) file
-						# In MASCOT.DAT => there is the sequence and a link to a fake gi accession number
-						# In SEQUEST.MSF => there is just a peptide and its score
+					foreach my $prot (@{$peptidesInfo{$peptideID}[6]}) {
 						my $end=length($peptidesInfo{$peptideID}[1]);
-						$proteinString=",\"no_identifier\":0:1:$end:0";
-						$termsString=":-,-";
+						#Add all identifiers corresponding to the same protein
+						foreach my $ident (@{$proteinsInfo{$prot}[0]}){
+							$proteinString="$proteinString,\"$ident\":0:1:$end:0";
+							$termsString="$termsString:-,-";
+						}
 					}
 				}
 
@@ -2057,6 +2083,9 @@ sub printPeptidesMSF2_2 { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber,
 }
 
 ####>Revision history<####
+# 1.2.9 Corrected fasta header parsing in &printPeptidesMSF2_2 (PP 22/01/19)
+# 1.2.8 Bug correction for Acetyl (N-Terminus) modification (GA 18/01/19)
+# 1.2.7 Modification in &printPeptidesMSF2_2 for merged files to add rawName files and retrieve related peptides (GA 08/01/19)
 # 1.2.6 Handles optional Percolator fields in (Target/Decoy)Psms tables (PP 19/11/18)
 # 1.2.5 Minor modification to avoid wrong PDM identifier format (GA 04/10/18)
 # 1.2.4 Minor modification for split mode file (GA 08/12/17)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# importMaxquant.cgi       1.3.5                                               #
+# importMaxquant.cgi       1.3.6                                               #
 # Component of site myProMS Web Server                                         #
 # Authors: P. Poullet, G. Arras, S. Liva (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
@@ -142,10 +142,6 @@ function cancelAction() {
 }
 function checkFileForm(importForm) {
 	if (document.getElementById('formSubmit').disabled==true) return false; // in case "Enter" key is pressed after 1st submission
-//	if (importForm.mqpar.files.length == 0) {
-//		alert('ERROR: Select the XML parameter file for your MaxQuant analysis.');
-//		return false;
-//	}
 	var missingFiles=false;
 	if (importForm.uplArch.files.length == 0) { // nothing in upload option
 		missingFiles=true;
@@ -154,13 +150,11 @@ function checkFileForm(importForm) {
 				var numFiles=0;
 				for (let i=0; i<importForm.sharedDirFiles.length; i++) {
 					if (importForm.sharedDirFiles[i].checked) {
-//console.log(importForm.sharedDirFiles[i].value);
 						if (importForm.sharedDirFiles[i].value.match(/\\.(zip\|gz)\$/)) {
 							missingFiles=false;
 							break;
 						}
 						else if (importForm.sharedDirFiles[i].value.match(/(evidence\|peptides)\\.txt\$/)) {
-//console.log('OK',i);
 							if (++numFiles==2) {
 								missingFiles=false;
 								break;
@@ -184,8 +178,10 @@ function checkFileForm(importForm) {
 		alert('ERROR: Select a rule for Match groups generation !');
 		return false;
 	}
-	document.getElementById('formSubmit').disabled=true;
-	document.getElementById('waitDIV').style.display='block';
+	if (importForm.uplArch.files.length) {
+		document.getElementById('formSubmit').disabled=true;
+		document.getElementById('waitDIV').style.display='block';
+	}
 	return true;
 }
 </SCRIPT>
@@ -202,11 +198,7 @@ function checkFileForm(importForm) {
 <TR><TD colspan=2>
 	<TABLE bgcolor=$color2 style="min-width:800px">
 	<TR>
-		<TH align=right width=250 valign=top>MaxQuant parameter file :</TH>
-		<TD bgcolor=$color1 nowrap><INPUT type="file" name="mqpar"><BR>(The mqpar.xml file used for your MaxQuant analysis)</TD>
-	</TR>
-	<TR>
-		<TH align=right valign=top>MaxQuant data files* :</TH>
+		<TH align=right valign=top>MaxQuant files* :</TH>
 		<TD bgcolor=$color1 nowrap>
 		<TABLE cellpadding=0>
 			<TR><TH align="right">Upload archive file**:</TH><TD><INPUT type="file" name="uplArch"></TD></TR>
@@ -216,7 +208,7 @@ function checkFileForm(importForm) {
 |			<TR><TH align="right">or</TH><TH></TH></TR>
 			<TR><TH align="right" valign=top nowrap>Use shared directory:</TH><TD><DIV id="sharedDirDIV" style="width:600px;max-height:300px;overflow:auto;border:2px solid $color2">
 |;
-		&promsMod::browseDirectory_getFiles($promsPath{'shared'},'sharedDirFiles',{fileMatch=>qr/\.(txt|gz|zip)$/i}); # List of handled file extensions
+		&promsMod::browseDirectory_getFiles($promsPath{'shared'},'sharedDirFiles',{fileMatch=>qr/\.(txt|xml|gz|zip)$/i}); # List of handled file extensions
 		print qq
 |		</DIV></TD>
 	</TR>
@@ -257,13 +249,14 @@ function checkFileForm(importForm) {
 </TABLE></TD></TR>
 <TR>
 	<TD valign=top nowrap>
-	<DIV style="float:left">*</DIV><DIV style="float:left;height:100px">MaxQuant files from the 'combined/txt' directory:
+	<DIV style="float:left">*</DIV><DIV style="float:left;height:100px"><B>mqpar.xml</B> <I>(optional)</I><BR>and files from MaxQuant 'combined/txt' directory:
 	<UL style="margin:0">
-		<LI>evidence.txt</LI>
-		<LI>msms.txt <I>(Optional. For MS/MS spectrum display)</I></LI>
-		<LI>peptides.txt</LI><LI>proteinGroups.txt <I>(Required for protein quantification only)</I></LI>
-		<LI>parameters.txt <I>(Required only if mqpar.xml is not available)</I></LI>
-		<LI>summary.txt <I>(Required only if mqpar.xml is not available)</I></LI>
+		<LI><B>evidence.txt</B></LI>
+		<LI><B>msms.txt</B> <I>(optional. For MS/MS spectrum display)</I></LI>
+		<LI><B>peptides.txt</B></LI>
+		<LI><B>proteinGroups.txt</B> <I>(required only if protein quantification is needed)</I></LI>
+		<LI><B>parameters.txt</B> <I>(required only if <B>mqpar.xml</B> is not provided)</I></LI>
+		<LI><B>summary.txt</B> <I>(required only if <B>mqpar.xml</B> is not provided)</I></LI>
 	</UL>
 	</DIV>
 	<DIV>&nbsp;**zip or gz archive&nbsp;</DIV>
@@ -311,20 +304,11 @@ mkdir $tmpFilesDir;
 my $importPepQuantif=1;
 my $importProtQuantif=param('protQuantif');
 
-my ($mqparFile);
-if (param('mqpar')) {
-		$mqparFile=(split(/[\\\/]/,param('mqpar')))[-1]; # XML-formatted parameters & design (replaces parameters.txt & summary.txt)
-move(tmpFileName(upload('mqpar')),"$tmpFilesDir/$mqparFile");
-}
-
 my $newFile;
 my $numFiles=0;
 if (param('uplArch')) {
-	#my $uplFile=(split(/[\\\/]/,param('uplArch')))[-1]; # Windows or Linux
 	my (undef,$path,$uplFile)=splitpath(param('uplArch'));
-
 	$newFile="$tmpFilesDir/$uplFile";
-#my $tmpfile = tmpFileName(upload("uplArch"));
 	move(tmpFileName(upload("uplArch")),$newFile); # name of temp file being uploaded
 	$numFiles=1;
 }
@@ -372,20 +356,23 @@ if ($numFiles==1) { # Must be an archive
 	}
 }
 
-###>Moving all txt files to top work directory (Only 1st-level sub-directories are checked!) <- in case extracted from archive with extra hierarchy
+###>Moving all MQ files to top work directory (Only 1st-level sub-directories are checked!) <- in case extracted from archive with extra hierarchy
 opendir (DIR,$tmpFilesDir);
 while (my $item = readdir (DIR)) {
 	next if $item=~/^\.+$/; #  skip '.' & '..' directories
 	if (-d "$tmpFilesDir/$item") { # directory
-		foreach my $txtFile (glob("$tmpFilesDir/$item/*.txt")) {
-			my (undef, $path, $fileName) = splitpath($txtFile);
-			move($txtFile,"$tmpFilesDir/$fileName");
+		foreach my $mqFile (glob("$tmpFilesDir/$item/*.txt"),glob("$tmpFilesDir/*.xml")) {
+			my (undef,$path,$fileName) = splitpath($mqFile);
+			move($mqFile,"$tmpFilesDir/$fileName");
 		}
-		rmtree "$tmpFilesDir/$item";
+		rmtree "$tmpFilesDir/$item"; rmdir "$tmpFilesDir/$item" if -e "$tmpFilesDir/$item";
 	}
 }
 close DIR;
 
+my $mqparFile;
+my $fullMqparFile=(glob("$tmpFilesDir/*.xml"))[0];
+(undef,my $tmpFilesPath,$mqparFile) = splitpath($fullMqparFile) if $fullMqparFile;
 my @requiredFiles=($evidenceFile,$peptideFile);
 push @requiredFiles,$mqparFile if $mqparFile;
 push @requiredFiles,$proteinGroupsFile if $importProtQuantif;
@@ -580,10 +567,11 @@ else {
 			$parameters[1]=~s/\s+$//; # trailing spaces if any
 			$versionStrg=";$parameters[1]";
 		}
-		elsif($parameters[0] eq 'PSM FDR') {
+		elsif ($parameters[0] eq 'PSM FDR') {
 			$fdrPc=$parameters[1] * 100;
 		}
-		elsif($parameters[0] eq 'Fixed modifications' && $parameters[1] =~ /\w+/ ) {
+		elsif ($parameters[0] eq 'Fixed modifications') {
+			next if (!$parameters[1] || $parameters[1] !~ /\w+/);
 			my $fixStg=$parameters[1];
 			$fixStg=~ s/\s+$//g; # Remove last whitespace: 'Carbamidomethyl (C) ' becomes 'Carbamidomethyl (C)'
 			foreach my $modifStrg (split(/;/,$fixStg)){
@@ -594,7 +582,7 @@ else {
 				$modifName2ID{$varModName}=$modID;
 			}
 		}
-		elsif($parameters[0] eq 'Modifications included in protein quantification') {
+		elsif ($parameters[0] eq 'Modifications included in protein quantification') {
 			$peptideFilterStrg=";1;"; # peptide used;missedCut;
 			#>Check if all varMods are listed
 			my @matchedVmods;
@@ -618,16 +606,16 @@ else {
 				}
 			}
 		}
-		elsif($parameters[0] eq 'Peptides used for protein quantification') {
+		elsif ($parameters[0] eq 'Peptides used for protein quantification') {
 			$pepUsed=($parameters[1]=~ /Razor/)? 'razor' : ($parameters[1]=~ /Unique/)? 'unique' : 'all';
 		}
-		elsif($parameters[0] eq 'Discard unmodified counterpart peptides') {
+		elsif ($parameters[0] eq 'Discard unmodified counterpart peptides') {
 			$peptideFilterStrg=$peptideFilterStrg."-" if $parameters[1] =~ /True/;
 			$peptideFilterStrg=$pepUsed.$peptideFilterStrg.$addPepString;
 		}
 	}
 	close PARAMFILE;
-	if (!$peptideFilterStrg){ $peptideFilterStrg="$pepUsed;1;0"; }
+	if (!$peptideFilterStrg) { $peptideFilterStrg="$pepUsed;1;0"; }
 	$peptideFilterStrg.=';all;all'; # charge;source used
 	print " Done.</FONT><BR>\n";
 }
@@ -1387,6 +1375,15 @@ my (%evidenceColNum,%pepInfo,%queryNum,%pepVmod);
 my (%evidence2peptide,%maxProtMatch,%actualSeq2seq,%protDbRank,%matchList,%bestScore,%proteinRank); #,%bestScorebad
 my (%seq2posString,%peptideXIC,%isGhost,%featureCount);
 my %raw2UsedIdentifiers;
+my %skipPeptide; # in case Contaminants are excluded
+
+my %residue2varMod;
+foreach my $refVarMod (@varMods) {
+	foreach my $res (split(',',$refVarMod->[1])) {
+		$residue2varMod{$res}=$refVarMod->[2]; # assumes only 1 varMod for a given residue
+	}
+}
+
 my $missedCutData=1;
 $counter=0;
 while (my $line=<EVIDENCE>) {
@@ -1407,8 +1404,13 @@ while (my $line=<EVIDENCE>) {
 	$queryNum{$analysisID}++;
 	###> $parameters[$evidenceColNum{'Proteins'}] can be empty if only one REV__ protein is matched !
 	my $actualSequence=$parameters[$evidenceColNum{uc('Modified sequence')}];
-	my ($matchGood,$matchBad,$matchCON)=(0,0,0);
+	my ($matchGood,$matchBad)=(0,0); #,$matchCON,0
 	my $proteinList=($parameters[$evidenceColNum{uc('Proteins')}])? $parameters[$evidenceColNum{uc('Proteins')}] : $parameters[$evidenceColNum{uc('Leading proteins')}];
+my $skipThisPeptide=0; # local var for speed
+if ($excludeCON && $proteinList=~/^CON__/) {
+	$skipPeptide{$parameters[$evidenceColNum{uc('Sequence')}]}=1;
+	$skipThisPeptide=1;
+}
 #my $protRank=1;
 	foreach my $rawIdentifier (split(/;/,$proteinList)) {
 		my $identifier=$rawIdentifier; # default
@@ -1417,9 +1419,12 @@ while (my $line=<EVIDENCE>) {
 			#$identifier =~ s/REV__/DECOY_/g;
 			$matchBad=1;
 		}
-		elsif ($excludeCON && $identifier=~/CON__/) {
-			$matchCON=1;
-		}
+		#elsif ($excludeCON && $identifier=~/CON__/) {
+		#	$matchCON=1;
+		#}
+elsif ($skipThisPeptide) {
+	$matchGood=1;
+}
 		else {
 			$matchGood=1;
 			my $tmpIdenfitier;
@@ -1454,12 +1459,13 @@ while (my $line=<EVIDENCE>) {
 # NOT NEEDED # @{$evidence2peptide{$parameters[$evidenceColNum{uc('id')}]}}=($analysisID,"-$queryNum{$analysisID},$actualSequence") unless $evidence2peptide{$actualSequence}{$parameters[$evidenceColNum{uc('id')}]};
 #print "Bad '$actualSequence' $analysisID -$queryNum{$analysisID} score$bestScorebad{$analysisID}{$actualSequence}<BR>\n";
 	}
-	elsif ($matchCON && !$matchGood) {
-		$featureCount{'TARGET'}{$analysisID}{$actualSequence}++; # for FDR
-	}
+	#elsif ($matchCON && !$matchGood) {
+	#	$featureCount{'TARGET'}{$analysisID}{$actualSequence}++; # for FDR
+	#}
 	next unless $matchGood;
 	#if ($matchGood) {
 	$featureCount{'TARGET'}{$analysisID}{$actualSequence}++; # for FDR
+next if $skipThisPeptide;
 
 	#>Missed Cleavages
 	my $missedCut=0;
@@ -1544,8 +1550,9 @@ while (my $line=<EVIDENCE>) {
 		if ($parameters[$evidenceColNum{uc($vmod)}] && $evidenceColNum{uc($vmod)} >= 1) {
 			@{$pepVmod{$analysisID}{$queryNum{$analysisID}}{$vmod}}=(undef); # default
 			#next if $seq2posString{$actualSequence}{$vmod}; # If already computed, no need to search for position...
+my $nbMod=$parameters[$evidenceColNum{uc($vmod)}];
 			my $posString;
-			if ($evidenceColNum{uc("$vmod Probabilities")}) {
+			if ($evidenceColNum{uc("$vmod Probabilities")} && $parameters[$evidenceColNum{uc("$vmod Probabilities")}]) {
 				my $probSequence=$parameters[$evidenceColNum{uc("$vmod Probabilities")}]; # "C(0.837)DPRLGKYMAC(0.16)C(0.003)LLYR"
 				my @probValues= $probSequence =~ /\(([^\)]+)\)/g; # @probValues = ((0.837) , (0.16) , (0.003))
 				my @slices=split(/\([^\)]+\)/,$probSequence);
@@ -1564,7 +1571,7 @@ while (my $line=<EVIDENCE>) {
 				}
 				$pepVmod{$analysisID}{$queryNum{$analysisID}}{$vmod}[0]=$probString if $keepProb;
 				next if $seq2posString{$actualSequence}{$vmod}; # If already computed, no need to search for position...
-				my $nbMod=$parameters[$evidenceColNum{uc($vmod)}];
+				#my $nbMod=$parameters[$evidenceColNum{uc($vmod)}];
 				foreach my $pos (sort {$probMod{$b} <=> $probMod{$a} || $a<=>$b} keys %probMod) {
 					last if $nbMod == 0;
 					$nbMod--;
@@ -1576,9 +1583,26 @@ while (my $line=<EVIDENCE>) {
 				if ($vmod =~ /C-TERM/i) {
 					$posString=($vmod =~ /PROTEIN/i) ? '+' : '*';
 				}
-				if ($vmod =~ /N-TERM/i) {
+				elsif ($vmod =~ /N-TERM/i) {
 					$posString=($vmod =~ /PROTEIN/i) ? '-' : '=';
 				}
+				
+else { # No prob data at all! MaxQuant bug? => extract pos info from actualSequence string: _SEQ(mod1)UENC(mod2)E_
+	my @positions;
+	my ($numExtraChars,$numFound)=(0,0);
+	while ($actualSequence=~/(.)(\([^)]+\))/g) {
+		my ($res,$modLength,$pos)=($1,length($2),$-[0]-$numExtraChars);
+		if ($residue2varMod{$res} && $residue2varMod{$res} eq $vmod) { # in case different vMods on same sequence
+			push @positions,$pos;
+			$numFound++;
+			last if $numFound==$nbMod;
+		}
+		$numExtraChars+=$modLength;
+	}
+	$posString=join('.',@positions);
+	$pepVmod{$analysisID}{$queryNum{$analysisID}}{$vmod}[0]='##PRB_MQ=-1';
+}			
+				
 			}
 			$seq2posString{$actualSequence}{$vmod}=$posString;
 		}
@@ -1592,7 +1616,7 @@ close EVIDENCE;
 
 ##>Update FDR info
 my $sthUpAna=$dbh->prepare("UPDATE ANALYSIS SET FALSE_DISCOVERY=? WHERE ID_ANALYSIS=?");
-foreach my $analysisID (keys %maxProtMatch) {
+foreach my $analysisID (keys %queryNum) { # %maxProtMatch
 	my %pepCount=(TARGET=>0,DECOY=>0);
 	my %specCount=(TARGET=>0,DECOY=>0);
 	foreach my $type (keys %pepCount) {
@@ -1746,10 +1770,11 @@ foreach my $analysisID (@anaIDs) {
 				my $newIdentifier=$1;
 				if ($sequence && $maxProtMatch{$analysisID}{$identifier}) { # test
 					$sequenceList{$identifier}=$sequence;
+if (!$numMatches{$analysisID} || !$numMatches{$analysisID}{$identifier}) {	
 					foreach my $actualSequence (keys %{$maxProtMatch{$analysisID}{$identifier}}) {
 						my $pepSeq=$actualSeq2seq{$actualSequence};
 						#my ($seqBefore,$resEnd)=($sequence=~/(.*)$pepSeq(\w?)/);
-						if (!$numMatches{$analysisID} || !$numMatches{$analysisID}{$identifier} || !$numMatches{$analysisID}{$identifier}{$pepSeq}) {
+						if (!$numMatches{$analysisID}{$identifier}{$pepSeq}) { # !$numMatches{$analysisID} || !$numMatches{$analysisID}{$identifier} || 
 							while ($sequence=~/(\w?)$pepSeq(\w?)/g) { # potential multiple matches
 								my ($resBeg,$resEnd)=($1,$2);
 								my $startPos=$-[0] + 1;
@@ -1763,6 +1788,7 @@ foreach my $analysisID (@anaIDs) {
 							}
 						}
 					}
+}
 				}
 				$identifier=$newIdentifier;
 				$sequence='' if defined($identifier);
@@ -1781,9 +1807,10 @@ foreach my $analysisID (@anaIDs) {
 
 		if ($sequence && $maxProtMatch{$analysisID}{$identifier}) {
 			$sequenceList{$identifier}=$sequence;
+if (!$numMatches{$analysisID} || !$numMatches{$analysisID}{$identifier}) {			
 			foreach my $actualSequence (keys %{$maxProtMatch{$analysisID}{$identifier}}) {
 				my $pepSeq=$actualSeq2seq{$actualSequence};
-				if (!$numMatches{$analysisID} || !$numMatches{$analysisID}{$identifier} || !$numMatches{$analysisID}{$identifier}{$pepSeq}) {
+				if (!$numMatches{$analysisID}{$identifier}{$pepSeq}) { # !$numMatches{$analysisID} || !$numMatches{$analysisID}{$identifier} || 
 					while ($sequence=~/(\w?)$pepSeq(\w?)/g) { # potential multiple matches
 						my ($resBeg,$resEnd)=($1,$2);
 						my $startPos=$-[0] + 1;
@@ -1797,6 +1824,7 @@ foreach my $analysisID (@anaIDs) {
 					}
 				}
 			}
+}
 		}
 		unlink "$promsPath{peptide}/proj_$projectID/ana_$analysisID/analysis.fasta"; # no longer needed
     }
@@ -1822,16 +1850,16 @@ while (my $line=<PEPTIDE>) {
 		}
 		next;
 	}
+next if $skipPeptide{$parameters[$evidenceColNum{uc('Sequence')}]};
 	#'Proteins'
 	#'Evidence IDs' --> Get the evidence that gave this peptide
 	my $rawRazorProtein=$parameters[$peptideColNum{'Leading razor protein'}];
 	$rawRazorProtein =~ s/REV__/DECOY_/;
 	my $razorProtein = $raw2UsedIdentifiers{$rawRazorProtein} || $rawRazorProtein;
 	foreach my $rawIdentifier ( split(/;/,$parameters[$peptideColNum{'Proteins'}]) ) { # Be careful : CON__ prefix stands for contaminants and REV__ prefix stands for decoy/reverse db
-		my $matchGood=($rawIdentifier !~ /REV__/ && ($rawIdentifier !~ /CON__/ || !$excludeCON))? 1 : 0;
-		#if ($matchingProt =~ /REV__/ ) {
-			$rawIdentifier =~ s/REV__/DECOY_/;
-		#}
+		#my $matchGood=($rawIdentifier !~ /REV__/ && ($rawIdentifier !~ /CON__/ || !$excludeCON))? 1 : 0;
+my $matchGood=($rawIdentifier =~ /REV__/)? 0 : 1;
+		$rawIdentifier =~ s/REV__/DECOY_/;
 		my $identifier=$raw2UsedIdentifiers{$rawIdentifier} || $rawIdentifier;
 		foreach my $evID (split(/;/,$parameters[$peptideColNum{'Evidence IDs'}])) {
 			next unless $evidence2peptide{$evID}; # matches a decoy or excluded contaminant (or skipped parameter group data????????????????????)
@@ -1854,7 +1882,8 @@ if ($identifier eq $razorProtein && $peptideColNum{'Start position'}) { # info a
 	@{$numMatches{$analysisID}{$identifier}{$pepSeq}{$startPos}}=($parameters[$peptideColNum{'Amino acid before'}],$parameters[$peptideColNum{'Amino acid after'}],$endPos);
 }
 elsif (!$numMatches{$analysisID} || !$numMatches{$analysisID}{$identifier} || !$numMatches{$analysisID}{$identifier}{$pepSeq}) {
-	@{$numMatches{$analysisID}{$identifier}{$pepSeq}{0}}=('X','X',0); # non-razor not mapped in fasta file
+	#@{$numMatches{$analysisID}{$identifier}{$pepSeq}{0}}=('X','X',0); # non-razor not mapped in fasta file
+	@{$numMatches{$analysisID}{$identifier}{$pepSeq}{1}}=('X','X',length($pepSeq)); # non-razor not mapped in fasta file
 }
 		}
 	}
@@ -2096,7 +2125,6 @@ if ($importPepQuantif) {
 
 print "<BR><FONT class='title3'>Recording peptide XIC data:</FONT><BR>\n";
 
-#my $sthInsPepQ=$dbh->prepare("INSERT INTO PEPTIDE_QUANTIFICATION (ID_QUANTIFICATION,ID_QUANTIF_PARAMETER,ID_PEPTIDE,QUANTIF_VALUE,TARGET_POS) VALUES (?,?,?,?,?)");
 mkdir "$promsPath{quantification}/project_$projectID" unless -e "$promsPath{quantification}/project_$projectID";
 my %pepQuantHandle;
 foreach my $pepQuantifID (values %ana2pepQuantification) {
@@ -2176,14 +2204,12 @@ if ($labeling eq 'SILAC') {
 							$sthAtt->execute($vpPepID,$protID,$analysisID,-abs($beg),-abs($end),$matchInfo,$isSpecific);
 						}
 						###> Add quantification for this specific Ghost peptide
-#$sthInsPepQ->execute($ana2pepQuantification{$analysisID},$areaParamID,$vpPepID,$peptideXIC{$analysisID}{$queryNum}{'XIC'}{$colLabel},$targetPos);
-print {$pepQuantHandle{$ana2pepQuantification{$analysisID}}{$targetPos}} "$areaParamID\t$vpPepID\t$peptideXIC{$analysisID}{$queryNum}{XIC}{$colLabel}\n";
+						print {$pepQuantHandle{$ana2pepQuantification{$analysisID}}{$targetPos}} "$areaParamID\t$vpPepID\t$peptideXIC{$analysisID}{$queryNum}{XIC}{$colLabel}\n";
 						#print "$quantiSILAC{$analysisID},$areaParamID,$vpPepID,$peptideXIC{$analysisID}{$queryNum}{\"XIC $colLabel\"},$labelInfos{$analysisID}{$colLabel}{'TARGET_POS'}<BR>\n";
 					}
 					else { # No modification ID was found so this is Light label
 						#print "$quantiSILAC{$analysisID},$areaParamID,$peptideXIC{$analysisID}{$queryNum}{'ID_PEPTIDE'},$peptideXIC{$analysisID}{$queryNum}{\"XIC $colLabel\"},$labelInfos{$analysisID}{$colLabel}{'TARGET_POS'}<BR>";
-#$sthInsPepQ->execute($ana2pepQuantification{$analysisID},$areaParamID,$peptideXIC{$analysisID}{$queryNum}{'ID_PEPTIDE'},$peptideXIC{$analysisID}{$queryNum}{'XIC'}{$colLabel},$targetPos);
-print {$pepQuantHandle{$ana2pepQuantification{$analysisID}}{$targetPos}} "$areaParamID\t$peptideXIC{$analysisID}{$queryNum}{ID_PEPTIDE}\t$peptideXIC{$analysisID}{$queryNum}{XIC}{$colLabel}\n";
+						print {$pepQuantHandle{$ana2pepQuantification{$analysisID}}{$targetPos}} "$areaParamID\t$peptideXIC{$analysisID}{$queryNum}{ID_PEPTIDE}\t$peptideXIC{$analysisID}{$queryNum}{XIC}{$colLabel}\n";
 						#my ($data)=$dbh->selectrow_array("SELECT DATA FROM PEPTIDE WHERE ID_PEPTIDE=$peptideXIC{$analysisID}{$queryNum}{'ID_PEPTIDE'}");
 						#$data.="##QSET=$qsetNum";
 						$sthUpPep->execute("##QSET=$qsetNum",$peptideXIC{$analysisID}{$queryNum}{'ID_PEPTIDE'});
@@ -2213,9 +2239,8 @@ elsif ($isobarModifInfo{ID}) { # $labeling=~/ITRAQ|TMT/
 					print '.';
 					$counter=0;
 				}
-#$sthInsPepQ->execute($ana2pepQuantification{$analysisID},$areaParamID,$peptideXIC{$analysisID}{$queryNum}{'ID_PEPTIDE'},$peptideXIC{$analysisID}{$queryNum}{'XIC'}{$repIdx},$repIdx+1);
-my $targetPos=$repIdx+1;
-print {$pepQuantHandle{$ana2pepQuantification{$analysisID}}{$targetPos}} "$areaParamID\t$peptideXIC{$analysisID}{$queryNum}{ID_PEPTIDE}\t$peptideXIC{$analysisID}{$queryNum}{XIC}{$repIdx}\n";
+				my $targetPos=$repIdx+1;
+				print {$pepQuantHandle{$ana2pepQuantification{$analysisID}}{$targetPos}} "$areaParamID\t$peptideXIC{$analysisID}{$queryNum}{ID_PEPTIDE}\t$peptideXIC{$analysisID}{$queryNum}{XIC}{$repIdx}\n";
 			}
 		}
 #$dbh->commit;
@@ -2234,14 +2259,12 @@ elsif ($labeling eq 'FREE') {
 				print '.';
 				$counter=0;
 			}
-#$sthInsPepQ->execute($ana2pepQuantification{$analysisID},$areaParamID,$peptideXIC{$analysisID}{$queryNum}{'ID_PEPTIDE'},$peptideXIC{$analysisID}{$queryNum}{'XIC'}{'NONE'},undef) if $peptideXIC{$analysisID}{$queryNum}{'XIC'};
-print {$pepQuantHandle{$ana2pepQuantification{$analysisID}}{0}} "$areaParamID\t$peptideXIC{$analysisID}{$queryNum}{ID_PEPTIDE}\t$peptideXIC{$analysisID}{$queryNum}{XIC}{NONE}\n" if $peptideXIC{$analysisID}{$queryNum}{'XIC'};
+			print {$pepQuantHandle{$ana2pepQuantification{$analysisID}}{0}} "$areaParamID\t$peptideXIC{$analysisID}{$queryNum}{ID_PEPTIDE}\t$peptideXIC{$analysisID}{$queryNum}{XIC}{NONE}\n" if $peptideXIC{$analysisID}{$queryNum}{'XIC'};
 		}
 		$dbh->commit;
 		print " Done.<BR>\n";
 	}
 }
-#$sthInsPepQ->finish;
 foreach my $pepQuantifID (keys %pepQuantHandle) {
 	foreach my $targetPos (keys %{$pepQuantHandle{$pepQuantifID}}) {close $pepQuantHandle{$pepQuantifID}{$targetPos};}
 }
@@ -2544,15 +2567,17 @@ sub getModIDforReporterIon { # Modification with corresponding Unimod ID as chec
 	return(%mqRepIon);
 }
 
-
+# TODO: tests with iTRAQ data
+# TODO: test the import of many groups
 ####>Revision history<####
+# 1.3.6 mqpar.xml file now managed like the other files & bug fix linked to missing position probability in evidence.txt (PP 10/01/19)
 # 1.3.5 Adapted to MaxQuant versions 1.6 (PP 19/12/18)
 # 1.3.4 Minor change on the getProtInfo call (VS 16/11/2018)
 # 1.3.3 Minor change to revert code block for modifications allowed for quantification to v1.3.1 (PP 01/10/18)
 # 1.3.2 Add extra files for maxquant import other than TMT or iTRAQ: summary.txt and parameters.txt (GA 09/08/18)
 # 1.3.1 [Fix] bug peptide specificity computation now excludes decoy and optionally contaminent matches (PP 15/06/18)
 # 1.3.0 Peptide quantification data now written to file $promsPath{quantification}/project_$projectID/quanti_$quantifID/peptide_quantification(_$targetPos).txt (PP 09/05/18)
-# 1.2.1 Minor modification in myProMS import (GA 10/04/18)<BR> TODO : test the import of many groups
+# 1.2.1 Minor modification in myProMS import (GA 10/04/18)
 # 1.2.0 Updated for auto-increment in tables ANALYSIS,PROTEIN,QUANTIFICATION & added compatibility with shared directory (PP 23/03/18)
 # 1.1.5 Modification in <EVIDENCE> parsing because of GlyGly modification (GA 06/12/17)
 # 1.1.4 Added MaxQuant version string in QUANTIF_ANNOT field (PP 13/09/17)
@@ -2565,5 +2590,5 @@ sub getModIDforReporterIon { # Modification with corresponding Unimod ID as chec
 # 1.0.4 Minor modification (GA 05/10/2016)
 # 1.0.3 No import for quantitative data if values are articially put to zero (GA 12/09/2016)
 # 1.0.2 Minor change for MaxQuant query. MAXQUANT code becomes MQ (GA 27/07/2016)
-# 1.0.1 Add labeled import (SILAC) & update design information (GA 09/05/2016)<BR> TODO : tests with iTRAQ data
+# 1.0.1 Add labeled import (SILAC) & update design information (GA 09/05/2016)
 # 1.0.0 Import for MaxQuant quantitated folder<BR> TODO: check for replicate<->fraction depedencies and update Observation according to technical replicates (GA 24/09/15)<BR>TODO Import as well Light and Heavy information

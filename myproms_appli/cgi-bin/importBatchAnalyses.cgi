@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# importBatchAnalyses.cgi         2.8.1                                        #
+# importBatchAnalyses.cgi         2.8.2                                        #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -762,7 +762,19 @@ function cancelAction() {
 				$sthGetParams->finish;
 			}
 			($filesInfo{$currentDatFile}{'MERGE_FILE_NUMBER'})=$dbsqlite->selectrow_array("SELECT COUNT(DISTINCT FileID) FROM $fileInfoTable");
-			($filesInfo{$currentDatFile}{'MERGE_FILE_IDS'})=$dbsqlite->selectrow_array("SELECT GROUP_CONCAT(FileID,';') FROM $fileInfoTable");
+			#($filesInfo{$currentDatFile}{'MERGE_FILE_IDS'})=$dbsqlite->selectrow_array("SELECT GROUP_CONCAT(FileID,';') FROM $fileInfoTable");
+			###> Get Readable Name for MERGE Files 2018/12/20
+			my $sthGetFileNames=$dbsqlite->prepare("SELECT FileID,Filename FROM $fileInfoTable");
+			$sthGetFileNames->execute;
+			my @tableFiles=();
+			while(my ($fileID,$rawfileName) = $sthGetFileNames->fetchrow_array){
+				my @filePath=split(/\\/,$rawfileName);
+				my $searchFile=pop(@filePath);
+				$searchFile=~s/.raw//g;
+				push @tableFiles,"${fileID}££$searchFile";
+			}
+			$sthGetFileNames->finish;
+			($filesInfo{$currentDatFile}{'MERGE_FILE_IDS'})=join(';',@tableFiles);
 			$dbsqlite->disconnect;
 			&updateWaitBox;
 			next;
@@ -2307,6 +2319,7 @@ sub updateWaitBox {
 }
 
 ####>Revision history<####
+# 2.8.2 Modification of merge-file string (GA 08/01/19)
 # 2.8.1 Creates batch/<userID> at start up if not exists (PP 04/12/18)
 # 2.8.0 Added Shared directory as file source (requires promsMod 3.7.5+) & msf display update (PP 03/11/17)
 # 2.7.1 Set default CGI file upload dir to $promsPath{tmp}/batch dir (PP 18/09/17)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# compareQuantifications.cgi          1.6.3                                    #
+# compareQuantifications.cgi          1.6.4                                    #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Simple display of multiple quantifications                                   #
@@ -60,9 +60,7 @@ use File::Path qw(rmtree); # remove_tree
 my %promsPath=&promsConfig::getServerInfo;
 my ($lightColor,$darkColor)=&promsConfig::getRowColors;
 my $userID=$ENV{'REMOTE_USER'};
-my $MAX_INF_RATIO_DB=1000; # true infinite value in database
-my $MIN_INF_RATIO_DB=0.001;
-my ($MIN_INF_RATIO,$MAX_INF_RATIO)=&promsQuantif::getExtremeRatios; # Max ratios allowed before switching to infinite
+my ($MIN_INF_RATIO,$MAX_INF_RATIO,$MAX_INF_RATIO_DB,$MIN_INF_RATIO_DB)=&promsQuantif::getExtremeRatios; # Max ratios allowed before switching to infinite
 my $infChar=encode_utf8('∞');
 my %proteinQuantifFamilies=&promsQuantif::getProteinQuantifFamilies;
 my %maxQuantMeasures; #=('MQ_INT'=>'Intensity','MQ_IBAQ'=>'iBAQ','MQ_LFQ'=>'LFQ','MQ_SC'=>'MS/MS count');
@@ -2987,6 +2985,7 @@ sub ajaxListSelectedProteins { # also called by displayClustering.cgi & displayP
 
 
 ####>Revision history<####
+# 1.6.4 DB +/-inf ratio value now fetched from promsQuantif.pm (PP 24/01/19)
 # 1.6.3 Various improvements for EMPAI (PP 30/10/18)
 # 1.6.2 Desactivate no-scroll option in FRAMESET designeb by &generateFrames fuinction (GA 29/06/18)
 # 1.6.1 heatMap.js always loaded because needed by ajaxPepSwath in case of DIA quantif (PP 08/02/18)

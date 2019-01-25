@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# selAna4Quantification.cgi      2.1.0                                         #
+# selAna4Quantification.cgi      2.2.0                                         #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -224,7 +224,7 @@ my $numProtInDesign=0;
 my ($selCondStrg1,$selCondStrg2)=("<OPTION value=\"Select\">-= Select =-</OPTION>","<OPTION value=\"Select\">-= Select =-</OPTION>");
 my $varGlobSelCond="var stateCondVal=[];\n"; # JS array to record Index of selected cond for each State
 my $jsXicSoftStrg; # for DESIGN only
-my $phosphoProbSoft='PhosphoRS'; # default
+my ($ptmProbSoft,$ptmProbSoftCode)=('PhosphoRS','PRS'); # default
 if ($quantifType eq 'DESIGN') {
 	#($numChannels,$maxReplicates,$nbCond)=(0,0,0);
 
@@ -318,7 +318,8 @@ if ($quantifType eq 'DESIGN') {
 			my ($fileFormat)=$sthAna->fetchrow_array;
 			$xicSoftCode=($fileFormat=~/\.PDM\Z/)? 'PD' : ($fileFormat=~/^MASCOT/)? 'MAS' : ($fileFormat=~/PARAGON/)? 'PAR' : '?';
 		}
-		$phosphoProbSoft='MaxQuant' if $xicSoftCode eq 'MQ';
+		$ptmProbSoft='MaxQuant' if $xicSoftCode eq 'MQ';
+		$ptmProbSoftCode='MQ' if $xicSoftCode eq 'MQ';
 		my $labelType=($quantifAnnot=~/LABEL=([^:;]+)/)? $1 : 'FREE';
 		$labelType=uc($labelType);
 		if ($labelType=~/FREE|NONE/) {
@@ -809,7 +810,7 @@ function useTemplate(quantiID,skipLabeling){
 	var biasCorrection='';
 	var ambiguousPos=0;
 	var ptmID=(quantifTemplate[quantiID][2])? quantifTemplate[quantiID][2] : '';
-	var prsPos;
+	var badProbAct;
 
 	// Template : select template name
 	var selTemplate=document.getElementById('template');
@@ -922,7 +923,7 @@ function useTemplate(quantiID,skipLabeling){
 		if (param[0] == 'PTM_POS'){
 			if (param[1].match(';')){
 				var ptmPosInfo=param[1].split(';');
-				prsPos=ptmPosInfo[1];
+				badProbAct=ptmPosInfo[1];
 			}
 			else if (param[1] == 'ambiguous'){
 				ambiguousPos=1;
@@ -1078,8 +1079,8 @@ function useTemplate(quantiID,skipLabeling){
 		if (ambiguousPos){
 			document.getElementsByName('ambiguousPos')[0].checked=true;
 		}
-		else if (prsPos){
-			document.getElmentsByName('badPRS')[0].selectedIndex=(prsPos == 'ambiguous')? 1 : 0;
+		else if (badProbAct){
+			document.getElmentsByName('badProb')[0].selectedIndex=(badProbAct == 'ambiguous')? 1 : 0;
 		}
 	}
 }
@@ -1129,7 +1130,7 @@ function updateRefQuantification(ptmID) {
 	document.getElementById('phosphoSPAN').style.display='none';
 	document.getElementById('ptmSPAN').style.display='none';
 	if (ptmID != 0) { // cannot be SSPA
-		if (ptmID==$phosphoID && !document.selAnaForm.algoType.value.match('MSstats')) {
+		if ((ptmID==$phosphoID \|\| '$ptmProbSoftCode'=='MQ') && !document.selAnaForm.algoType.value.match('MSstats')) {
 			document.getElementById('phosphoSPAN').style.display='';
 		}
 		else {
@@ -1829,8 +1830,8 @@ elsif ($quantifType eq 'DESIGN') {
 |	//name
 	if (!myForm.quantifName.value) {alert('ERROR: Missing name for quantification!'); return false;}
 	//phosphoProbSoft settings
-	if (myForm.ptmScope.value==$phosphoID && (myForm.okPRS.value<0 \|\| myForm.okPRS.value>100)) {
-		alert('ERROR: $phosphoProbSoft probability must be between 0 and 100%');
+	if (('$ptmProbSoftCode'=='MQ' \|\| myForm.ptmScope.value==$phosphoID) && (myForm.okProb.value<0 \|\| myForm.okProb.value>100)) {
+		alert('ERROR: $ptmProbSoft probability must be between 0 and 100%');
 		return false;
 	}
 	//PTM filter
@@ -1954,6 +1955,7 @@ if ($quantifType eq 'DESIGN') { # Design-based quanti method
 	print qq
 |<INPUT type="hidden" name="nbMaxCond" value="$nbCond">
 <INPUT type="hidden" name="phosphoID" value="$phosphoID">
+<INPUT type="hidden" name="ptmProbSoftCode" value="$ptmProbSoftCode">
 <TABLE bgcolor="$darkColor">
 <TR><TH class="title3" align=right valign=top>Name :</TH><TD bgcolor="$lightColor"><INPUT type="text" name="quantifName" value="" placeholder="Name of quantification" class="title3" style="width:400px"/>
 	<DIV id="multiQuantifDIV" style="display:none">&nbsp;<B>Use: "<FONT color="#DD0000">%TEST%</FONT>", "<FONT color="#DD0000">%REF%</FONT>" and  "<FONT color="#DD0000">%#%</FONT>" for test-state name, reference-state name and quantification rank respectively.</B></DIV>
@@ -2044,7 +2046,7 @@ print qq |
 	}
 	print qq
 |</SELECT>
-<SPAN id="phosphoSPAN" style="display:none" class="template">&nbsp;&nbsp;Positions with $phosphoProbSoft probability&ge;<INPUT type="text" name="okPRS" class="title3 template" value="75" size="2">% are confirmed. The others are <SELECT name="badPRS" class="title3 template"><OPTION value="exclude" selected>excluded</OPTION><OPTION value="ambiguous">delocalized</OPTION></SELECT></SPAN>
+<SPAN id="phosphoSPAN" style="display:none" class="template">&nbsp;&nbsp;Positions with $ptmProbSoft probability&ge;<INPUT type="text" name="okProb" class="title3 template" value="75" size="2">% are confirmed. The others are <SELECT name="badProb" class="title3 template"><OPTION value="exclude" selected>excluded</OPTION><OPTION value="ambiguous">delocalized</OPTION></SELECT></SPAN>
 <SPAN id="ptmSPAN" style="display:none" class="template">&nbsp;&nbsp;<INPUT type="checkbox" name="ambiguousPos" value="1" class="template">Positions of modification sites are not reliable</SPAN>
 <DIV id="refQuantifDIV" style="display:none">
 &nbsp;Protein-level fold change correction:<SELECT name="refQuantifType" class="title3" onchange="ajaxFetchReferenceQuantif(this.value)"><OPTION value="0">None</OPTION><OPTION value="-1">Use current dataset</OPTION><OPTGROUP label="Use dataset from:">
@@ -2773,8 +2775,9 @@ sub launchQuantifications {
 				print INFO "PTM_SCOPE\t\t$ptmScope\n";
 				print INFO "PTM_POS\t\t";
 				my $phosphoID=param('phosphoID');
-				if ($ptmScope==$phosphoID && $algoType ne 'MSstats') { # phospho quantif
-					print INFO 'PRS:',param('okPRS'),"\t",param('badPRS'),"\n"; # No PRS for DIA
+				my $ptmProbSoftCode=param('ptmProbSoftCode');
+				if (($ptmScope==$phosphoID || $ptmProbSoftCode eq 'MQ') && $algoType ne 'MSstats') { # phospho-quantif w PRS or anyPTM-quantif with MaxQuant (Not for DIA)
+					print INFO "$ptmProbSoftCode:",param('okProb'),"\t",param('badProb'),"\n"; # PRS or MQ
 				}
 				else { # other PTM quantif
 					my $ambigPos=(param('ambiguousPos'))? 'ambiguous' : 'valid';
@@ -3323,6 +3326,7 @@ sub ajaxFetchRefProtPeptides {
 }
 
 ####> Revision history
+# 2.2.0 Compatible with PTM-quantif with MaxQuant probabilities for any PTM (PP 04/01/19)
 # 2.1.0 Added protein-level normalization options for site quantification (PP 07/12/18)
 # 2.0.1 [Fix] minor bug in %#% replacement (PP 05/12/18)
 # 2.0.0 Full support for multi-job launches (PP 17/09/18)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# launchQuantifications.pl       1.6.5                                         #
+# launchQuantifications.pl       1.6.6                                         #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Launches multiple quantifications +/- paralellization                        #
@@ -648,7 +648,6 @@ if ($cluster{'on'} && $quantifType =~ /^DESIGN/) { #'DESIGN' or 'DESIGN:MSstats'
 		$maxHours=int(0.5+($numPepValues/25000)); $maxHours=2 if $maxHours < 2; $maxHours=48 if $maxHours > 48; # 1 M lines -> 40 h
 		$maxMem=int(1.5 + 1E-6 * $numPepValues * $numStates);
 ##		$maxMem=$cluster{'maxMem'} if $maxMem > $cluster{'maxMem'};  done in $cluster{runJob}
-		$maxMem=1 if $maxMem < 1;
 		$maxMem.='Gb';
 		$numCPU=2;
 		$jobName="myProMS_protQuant_DDA_$quantifID";
@@ -664,9 +663,8 @@ if ($cluster{'on'} && $quantifType =~ /^DESIGN/) { #'DESIGN' or 'DESIGN:MSstats'
 			$numPepValues+=$numLines;
 		}
 		$maxHours=96;
-		$maxMem=int(1E-5 * $numPepValues * 2);
+		$maxMem=int(1.5 + 2E-5 * $numPepValues * $numStates);
 ##		$maxMem=($maxMem < 10)? 10 : ($maxMem > $cluster{'maxMem'}) ? $cluster{'maxMem'} : $maxMem;  done in $cluster{runJob}
-		$maxMem=1 if $maxMem < 1;
 		$maxMem.='Gb';
 ##		$numCPU=($cluster{'maxCPUs'} < 10)? $cluster{'maxCPUs'} : 10;  done in $cluster{runJob}
 		$numCPU=10;
@@ -809,6 +807,7 @@ if (-e $quantifDir) {
 ###}
 
 #####>Revision history<####
+# 1.6.6 New cluster memory calculation for DIA (PP 22/01/19) 
 # 1.6.5 Compatible with protein-level normalization of site quantification (PP 07/11/18)
 # 1.6.4 Update swath files path (VS 08/11/18)
 # 1.6.3 Removed useless 'use File::Copy' package (PP 12/10/18)

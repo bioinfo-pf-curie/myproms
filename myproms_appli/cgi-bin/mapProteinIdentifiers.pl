@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# mapProteinIdentifiers.pl        1.5.0                                        #
+# mapProteinIdentifiers.pl        1.5.1                                        #
 # Authors: P. Poullet, G. Arras & F. Yvon (Institut Curie)                     #
 # Contact: myproms@curie.fr                                                    #
 # Maps protein identifiers over the internet.                                  #
@@ -1682,7 +1682,7 @@ sub updateProteinOrganism {
 sub checkForUnlocalizedPeptides {
 	my ($dbh,$refAnaList)=@_;
 	print "+Checking for unlocalized peptides...";
-	my $sthBad=$dbh->prepare("SELECT P.ID_PROTEIN,PE.ID_PEPTIDE,PEP_SEQ,IS_SPECIFIC,VALID_STATUS FROM PEPTIDE_PROTEIN_ATTRIB PPA,PROTEIN P,PEPTIDE PE WHERE PPA.ID_PROTEIN=P.ID_PROTEIN AND PPA.ID_PEPTIDE=PE.ID_PEPTIDE AND PEP_BEG=0 AND PROT_SEQ != '-' AND PROT_SEQ IS NOT NULL AND PPA.ID_ANALYSIS=? ORDER BY P.ID_PROTEIN,PE.ID_PEPTIDE");
+	my $sthBad=$dbh->prepare("SELECT P.ID_PROTEIN,PE.ID_PEPTIDE,PEP_SEQ,IS_SPECIFIC,VALID_STATUS FROM PEPTIDE_PROTEIN_ATTRIB PPA,PROTEIN P,PEPTIDE PE WHERE PPA.ID_PROTEIN=P.ID_PROTEIN AND PPA.ID_PEPTIDE=PE.ID_PEPTIDE AND (PEP_BEG=0 OR FLANKING_AA='XX') AND PROT_SEQ != '-' AND PROT_SEQ IS NOT NULL AND PPA.ID_ANALYSIS=? ORDER BY P.ID_PROTEIN,PE.ID_PEPTIDE");
 	my $sthPS=$dbh->prepare("SELECT PROT_SEQ,ID_MASTER_PROTEIN FROM PROTEIN WHERE ID_PROTEIN=?");
 	my $sthMP=$dbh->prepare("SELECT PROT_SEQ FROM MASTER_PROTEIN WHERE ID_MASTER_PROTEIN=?");
 	my $sthDelPPA=$dbh->prepare("DELETE FROM PEPTIDE_PROTEIN_ATTRIB WHERE ID_PROTEIN=? AND ID_PEPTIDE=?");
@@ -1790,6 +1790,7 @@ sub correctDuplicateMaster {
 }
 
 ####>Revision history<####
+# 1.5.1 Minor change in query for detecting unlocalized peptides (PP 24/01/19)
 # 1.5.0 Major improvement in project-wide annotation update (PP 25/09/18)
 # 1.4.6 Uses get instead of post for www.uniprot.org/mapping service (PP 18/09/18)
 # 1.4.5 Uniprot response content is written to log file in case unexpected format (PP 02/07/18)

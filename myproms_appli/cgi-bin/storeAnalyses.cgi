@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# storeAnalyses.cgi     3.7.5                                                  #
+# storeAnalyses.cgi     3.7.7                                                  #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Stores analysis data into myProMS server and DB                              #
@@ -261,7 +261,8 @@ elsif ($action eq 'anaBatch') {
 				my $nbFile=0;
 				my @fileIDs=split(/;/,$fileIDstring);
 				my $totalMergedFiles=scalar @fileIDs;
-				foreach my $fileID (@fileIDs) {
+				foreach my $fileIDandRaw (@fileIDs) {
+					my ($fileID,$rawName)=split(/££/,$fileIDandRaw);
 					$nbFile++;
 					
 					#>Process tracking files<#
@@ -384,7 +385,7 @@ setTimeout('getWindowStream()',1500);
 						}
 					}
 					print "<FONT class=\"title3\">&nbsp;&nbsp;Done.</FONT><BR>\n";
-					$fileList{$usedFileName}{'anaName'} = "$anaNames[$i]_$fileID";
+					$fileList{$usedFileName}{'anaName'} = "$anaNames[$i]_${fileID}_$rawName";
 					$fileList{$usedFileName}{'file_path'} = "$usedFilePath/$usedFileName";
 					$fileList{$usedFileName}{'file_id'} = $fileID;
 					if ($decoyFile) {
@@ -414,7 +415,7 @@ setTimeout('getWindowStream()',1500);
 |<FONT class=\"title3\">&nbsp;-Extracting search #$searchNodeNumber from $msfFile:</FONT><BR>
 <DIV id="streamDIV_$i">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<B>Waiting for process...</B></DIV>
 <SCRIPT LANGUAGE="JavaScript">
-systemFrame.location="./convertMsf2Pdm.cgi?minScore=$selMinScore$percolParamStrg&databankID=$databankIDs[0]&node=$searchNodeNumber&file=$msfFile&path=$filePath";
+systemFrame.location="./convertMsf2Pdm.cgi?minScore=$selMinScore$percolParamStrg&databankID=$databankIDs[0]&node=$searchNodeNumber&file="+encodeURIComponent('$msfFile')+"&path=$filePath";
 divID='streamDIV_$i'; // reset
 streamLength=0; // reset
 paramString='&node=$searchNodeNumber&file=$msfFile'; // reset
@@ -1974,10 +1975,18 @@ sub parseMascotDAT_MIS {
 				#my $sthSpec= $dbsqlite->prepare("SELECT SpectrumID, RetentionTime, ScanNumbers FROM SpectrumHeaders ORDER BY Charge ASC, Mass ASC");
 				my ($proteomeDiscovererVersion)=$dbsqlite->selectrow_array("SELECT SoftwareVersion FROM SchemaInfo ORDER BY rowid ASC LIMIT 1"); # last record
 				$proteomeDiscovererVersion=~s/^(\d\.\d+).*/$1/; # x.x.x.xx -> x.x (numerical value)
-				my ($specTableN)=($proteomeDiscovererVersion >=2.2)?"MSnSpectrumInfo":"SpectrumHeaders";
-				my $sthSpec= $dbsqlite->prepare("SELECT SpectrumID, RetentionTime, ScanNumbers FROM $specTableN ORDER BY Mass ASC, Charge ASC");
+				my ($specTableN,$addWhere)=('','');
+				if ($proteomeDiscovererVersion >=2.2) {
+						$specTableN="MSnSpectrumInfo";
+						$addWhere=" WHERE SpectrumFileID=$fileList{$msFileName}{'file_id'}" if $splitMsfFiles; # Avoid to get queries from other rawFiles in case of merged-msf-files
+				}
+				else{
+						$specTableN="SpectrumHeaders";
+				}
+				my $sthSpec= $dbsqlite->prepare("SELECT SpectrumID, RetentionTime, ScanNumbers FROM $specTableN$addWhere ORDER BY Mass ASC, Charge ASC");
 				$sthSpec->execute;
 				my $queryNum=0;
+				(%extSpectrum,%elutionTime)=((),());
 				while (my ($spectrumID,$retentionTime,$scanNumber) = $sthSpec->fetchrow_array) {
 					$queryNum++;
 					$extSpectrum{$queryNum}=$extSpectrum{"-$queryNum"}=$spectrumID; # in case of decoy data
@@ -5159,6 +5168,8 @@ sub getPercolatorScores {
 
 
 ####>Revision history<####
+# 3.7.7 Javascript now encodes MSF file name when calling convertMsf2Pdm.cgi (PP 22/01/19)
+# 3.7.6 Add rawName to analysis name for merged MSF files (GA 08/01/19)
 # 3.7.5 Minor modification on the promsDIA XTandemXML and XTandemPepXML parsers calling (VS 22/11/18)
 # 3.7.4 Moved msf to pdm temporary files to $promsPath{tmp}/pdm (PP 19/11/18)
 # 3.7.3 Minor modif on the getProtInfo call (VS 16/11/18)

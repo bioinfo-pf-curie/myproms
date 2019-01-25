@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# displayPCA.cgi       1.2.0                                                   #
+# displayPCA.cgi       1.2.1                                                   #
 # Authors: P. Poullet, S.Liva (Institut Curie)      	                       #
 # Contact: myproms@curie.fr                                                    #
 # display and store the results of PCA analysis        	                       #
@@ -1117,12 +1117,19 @@ highlightPCA();
 if ($numDimensions >= 3) {document.getElementById('full3dBUT').disabled=false;}
 
 </SCRIPT>
+|;
+my @axisTitlesArray;
+foreach my $i (1..$numDimensions){
+	push @axisTitlesArray, "Dim $i ($dimContribution{$i} %)";
+}
+my $axisTitleStrg=join(";",@axisTitlesArray);
 
+print qq|
 <FORM name="full3dForm" method="POST" target="full3dWindow">
 <INPUT type="hidden" name="ACT" value="full3D"/>
 <INPUT type="hidden" name="explorID" value="$explorID"/>
 <INPUT type="hidden" name="pcaName" value="$pcaName"/>
-<INPUT type="hidden" name="axisTitles" value="Dim 1 ($dimContribution{1} %);Dim 2 ($dimContribution{2} %);Dim 3 ($dimContribution{3} %)"/>
+<INPUT type="hidden" name="axisTitles" value="$axisTitleStrg"/>
 <INPUT type="hidden" name="pointLabels" value="$pointLabelStrg"/>
 <INPUT type="hidden" name="pointData" value="$pointDataStrg"/>
 <INPUT type="hidden" name="highlight" value=""/>
@@ -1809,6 +1816,7 @@ sub displayFull3D {
 }
 
 ####>Revision history<####
+# 1.2.1 check number of dimension to skip warning (SL 11/01/19)
 # 1.2.0 Added full 3D view with plotly.js & avoid asynchronous ajax (PP 17/12/18)
 # 1.1.2 Minor improvement in highlighting annotations sorting (PP 21/06/18)
 # 1.1.1 Compatible with sites list (PP 14/12/17)

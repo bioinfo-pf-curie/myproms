@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# watchPhosphoAnalyses.cgi      1.0.1                                          #
+# watchPhosphoAnalyses.cgi      1.0.2                                          #
 # Authors: P. Poullet (Institut Curie)                                         #
 # Contact: myproms@curie.fr                                                    #
 # Monitors all on-going PhosphoRS analyses                                     #
@@ -430,7 +430,7 @@ sub getJobList {
 sub getPhosphoAnaInfo {
 	my ($jobDir,$anaID)=@_;
 	my ($anaStatus,$scanAgain,$anaError)=('',1,'');
-	my $delButtonStrg="&nbsp;<INPUT type=\"button\" value=\"Delete job\" onclick=\"deleteJob($jobDir,$anaID)\">";
+	my $delButtonStrg="&nbsp;<INPUT type=\"button\" value=\"Delete job\" onclick=\"deleteJob('$jobDir',$anaID)\">";
 
 	unless (-e "$prsHomeDir/$jobDir") {return(3,0,'');} # dir has just been deleted!
 	if (-e "$prsHomeDir/current/$anaID\_$jobDir\_wait.flag") {
@@ -463,8 +463,8 @@ sub getPhosphoAnaInfo {
 			my $now=strftime("%s",localtime); # in sec
 			my $waitTime=strftime("%Hh %Mm %Ss",localtime($now-$lastChangeInSec-3600));
 			$anaStatus.="$progressStrg (Updated $waitTime ago)]&nbsp;";
-			my $maxWaitTime=3600; # in sec
-			$anaStatus.="<BR><B><FONT color='#DD0000'>Wait &gt ".($maxWaitTime/60)." min! Possible job failure. </FONT>$delButtonStrg</B>" if $now-$lastChangeInSec > $maxWaitTime; # in sec
+			my $maxWaitTime=14400; # 4 h in sec
+			$anaStatus.="<BR><B><FONT color='#DD0000'>Wait &gt ".($maxWaitTime/3600)." h! Possible job failure. </FONT>$delButtonStrg</B>" if $now-$lastChangeInSec > $maxWaitTime; # in sec
 		}
 
 		my $error=0;
@@ -507,5 +507,6 @@ sub ajaxDeleteJob {
 }
 
 ####>Revision history<####
+# 1.0.2 [Fix] JS bug in deleteJob function (PP 07/01/19)
 # 1.0.1 [Fix] Bug undef $anaID when job finishes during prs_info.txt file scan (PP 05/12/18)
 # 1.0.0 Forked from watchQuantifications.cgi 1.3.6 (PP 08/11/18)
