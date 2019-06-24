@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# manageBioSample.cgi               1.0.4                                      #
+# manageBioSample.cgi               1.0.5                                      #
 # Authors: P. Poullet, G. Arras, S.Liva (Institut Curie)              	       #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -626,7 +626,7 @@ if ($action eq 'summary') {
 			@{$hierarchy{$obsID}}=$sthGAI->fetchrow_array;
 		}
 		if ($targetPos==0) { # Label-free
-			push @{$hierarchy{$obsID}},'Label-free';
+			push @{$hierarchy{$obsID}},('FREE','Label-free');
 		}
 		else { # Label
 			$sthLQ->execute($anaID);
@@ -970,6 +970,7 @@ sub getConcentrationUnits {
 
 
 ####>Revision history<####
+# 1.0.5 Minor bug fix in label-free observation display (PP 11/04/19)
 # 1.0.4 Minor modification for TMT (GA 03/04/17)
 # 1.0.3 Restrict sample unique naming to project & minor display improvement for iTRAQ Observations (PP 15/04/15)
 # 1.0.2 Minor change to maintain bioSample tree view in itemFrame (PP 27/08/14)

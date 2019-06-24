@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# compareAnalyses.cgi               2.3.1                                      #
+# compareAnalyses.cgi               2.3.2                                      #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Compares the protein & peptide contents of multiple (groups of) analyses     #
@@ -3066,7 +3066,10 @@ window.onload=function() {
 <BODY topmargin=2 background="$promsPath{images}/bgProMS.gif"> <!--refreshSelAnalyses(document.compForm)-->
 <CENTER>
 <IFRAME name="storeFrame" style="display:none"></IFRAME>
-<FORM name="compForm" method="post" target="listFrame" onsubmit="return checkSelectedAnalyses(this)">
+
+<DIV style="overflow:auto">
+
+<FORM name="compForm" method="post" target="listFrame" onsubmit="return checkSelectedAnalyses(this)" style="margin:0px">
 <DIV style="white-space:nowrap">
 <SELECT name="compType" id="compType" style="font-weight:bold;font-size:18px;color:#DD0000" onchange="selectComparisonType(this.value)"><OPTION value="1v1_pep"
 |;
@@ -3108,7 +3111,7 @@ window.onload=function() {
 <TABLE bgcolor=$darkColor2 cellpadding=0 border=0><TR>
 <TR>
 <TH valign=top rowspan=2><FONT class="title3">Select :</FONT><SELECT name="anaParent" class="title4" style="width:350px;font-weight:bold;font-size:12px" onchange="ajaxGetAnalysesList(this.value)">
-<OPTION value="" disabled style="color:black;">----- Project items -----</OPTION>
+<OPTION value="" disabled style="color:black">----- Project items -----</OPTION>
 |;
 	####<Looping through list of analyses>####
 	foreach my $refItem (@itemList) {
@@ -3136,7 +3139,7 @@ window.onload=function() {
 <SELECT multiple name="usedAna" class="formSelect" style="width:450px;height:70px"></SELECT></TH>
 <TD valign=middle><BR><INPUT type="button" class="formButton" name="up" value="Up" style="width:50px" onclick="moveAnalyses('up')"/><BR><INPUT type="button" class="formButton" name="down" value="Down" style="width:50px" onclick="moveAnalyses('down')"/><BR><INPUT type="button" class="formButton" value="Clear" style="width:50px" onclick="clearAnalyses()"/></TD>
 </TR>
-<TR><TH colspan=3 align=left>
+<TR><TH colspan=3 align=left nowrap>
 <INPUT type="checkbox" name="virtualData" value="1" /><FONT class="formText" onmouseover="popup('Peptides added by quantification algorithms<BR>using the \\'<B>M</B>atch <B>B</B>etween <B>R</B>uns\\' feature')" onmouseout="popout()">Include MBR-rescued peptides<SUP>*</SUP></FONT>
 &nbsp;&nbsp;&nbsp;&nbsp;<FONT class="formText" onmouseover="popup('-<B>Proteotypic:</B> Peptides found in only 1 protein.<BR>-<B>Proteotypic + shared:</B> Use all peptides found for a protein if at least 1 is proteotypic.')" onmouseout="popout()">Peptide specificity<SUP>*</SUP>:</FONT><SELECT name="pepSpecificity"><OPTION value="all">All</OPTION><OPTION value="unique"$selUniquePep>Proteotypic</OPTION><OPTION value="unique_shared"$selUniqueSharedPep>Proteotypic + shared</OPTION></SELECT>
 
@@ -3187,6 +3190,9 @@ window.onload=function() {
 	print qq
 |</DIV>
 </FORM>
+
+</DIV>
+
 </CENTER>
 <DIV id="divDescription" class="clDescriptionCont"></DIV>
 <SCRIPT type="text/javascript">setPopup();</SCRIPT>
@@ -5651,6 +5657,7 @@ my %convertPos2Text=('-'=>'Protein N-term','='=>'Any N-term','+'=>'Protein C-ter
 }
 
 ####>Revision history<####
+# 2.3.2 Improved form display for small screens (PP 15/05/19)
 # 2.3.1 Minor JS bug fix occuring when no project-relevant PTMs are found (PP 14/11/18)
 # 2.3.0 Added 'Frequency' filter (PP 23/10/18)
 # 2.2.2 Handles project status=-1 [no auto-end validation] (PP 07/06/18)

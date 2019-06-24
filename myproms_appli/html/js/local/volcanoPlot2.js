@@ -1,6 +1,6 @@
 /*
 ################################################################################
-# volcanoPlot2.js      1.1.6                                                   #
+# volcanoPlot2.js      1.1.7                                                   #
 # Authors: P. Poullet                                                          #
 # Contact: patrick.poullet@curie.fr                                            #
 ################################################################################
@@ -139,15 +139,15 @@ this.activeCharts=[];
 	pi.name='plusInf';
 
 	/* Axes */
-	vp.axisXtext='Log2(fold change)'; //,minusInf:null,plusInf:null
+	vp.axisXtext='Log2(fold change B/A)'; //,minusInf:null,plusInf:null
 	vp.axisYtext='-Log10(p-value)';
 mi.axisXtext=pi.axisXtext='';
 	mi.axisYtext=pi.axisYtext='#Peptides/100 aa';
 	vp.forceXto0=mi.forceXto0=pi.forceXto0=0;
 	mi.forceYto0=pi.forceYto0=1; // 0 or null: auto, 1: 0, 2: ~0
 	vp.forceYto0=2;
-	mi.noTicksX='-∞'; // any text or true for nothing
-	pi.noTicksX='+∞';
+	mi.noTicksX='Only in A'; // '-∞'; // any text or true for nothing
+	pi.noTicksX='Only in B'; //'+∞';
 	vp.convertValue=function(axis,startValue) {
 		var convertedValue=(axis=='X')? Math.log(startValue)/0.693147181 : -Math.log(startValue)/2.302585093; //LOG2 LOG10
 		return convertedValue;
@@ -332,6 +332,7 @@ vp.thresholdLines=this.thresholdLines;
 
 /*
 ####>Revision history<####
+# 1.1.7 "+/-∞" replaced by "Only in A/B" (PP 31/05/19)
 # 1.1.6 Uses chart registering for dynamic html calls (PP 20/02/16)
 # 1.1.5 Renamed dataPoint object to vpDataPoint for compatiblity with genericPlot library (PP 28/10/15)
 # 1.1.4 Handle dataSet.params.sizeRule (PP 21/10/15)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# openProject.cgi        1.6.8                                                 #
+# openProject.cgi        1.6.9                                                 #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Generates the project's main navigation frames                               #
@@ -853,22 +853,28 @@ elsif ($action eq 'project') {
 	$treeOptions{'AUTOSAVE'}='top.itemTreeStatus';
 
 	@{$treeOptions{'SELECTION'}}=($selBranchID)? split(':',$selBranchID) : undef;
+	
+	my $sthUsedBioSample=$dbh->prepare("SELECT 'used' FROM OBSERVATION WHERE ID_BIOSAMPLE=? LIMIT 1");
 
 	my $existBiosample = 0;
  	my @bioSampTree=(0,'all',$projectID,'','',1,'All BioSamples','');
 	if ($sampleView eq 'name') {
-		my $sthSelBioSample = $dbh -> prepare("SELECT BS.ID_BIOSAMPLE, BS.NAME FROM BIOSAMPLE BS
+		my $sthSelBioSample = $dbh->prepare("SELECT BS.ID_BIOSAMPLE, BS.NAME FROM BIOSAMPLE BS
 												INNER JOIN PROJECT_BIOSAMPLE PB ON BS.ID_BIOSAMPLE = PB.ID_BIOSAMPLE
 												WHERE PB.ID_PROJECT = $projectID");
-		$sthSelBioSample -> execute;
+		$sthSelBioSample->execute;
 		my %bioSamples;
-		while (my ($bioSampID, $bioSampName) = $sthSelBioSample -> fetchrow_array) {
+		while (my ($bioSampID, $bioSampName) = $sthSelBioSample->fetchrow_array) {
 			$existBiosample=1;
-			$bioSamples{$bioSampID}=$bioSampName;
+			$sthUsedBioSample->execute($bioSampID);
+			my ($usedStatus)=$sthUsedBioSample->fetchrow_array;
+			$usedStatus='not_used' unless $usedStatus;
+			@{$bioSamples{$bioSampID}}=($bioSampName,$usedStatus);
 		}
 		$sthSelBioSample->finish;
-		foreach my $bioSampID (sort{&promsMod::sortSmart(lc($bioSamples{$a}),lc($bioSamples{$b}))} keys %bioSamples) {
-			push @bioSampTree,[1,'biosample',$bioSampID,'','',1,$bioSamples{$bioSampID},''];
+
+		foreach my $bioSampID (sort{&promsMod::sortSmart(lc($bioSamples{$a}[0]),lc($bioSamples{$b}[0]))} keys %bioSamples) {
+			push @bioSampTree,[1,'biosample',$bioSampID,'',$bioSamples{$bioSampID}[1],1,$bioSamples{$bioSampID}[0],''];
 		}
 	}
 	elsif ($sampleView eq 'species') {
@@ -878,16 +884,19 @@ elsif ($action eq 'project') {
 												WHERE PB.ID_PROJECT = $projectID");
 		$sthSelBioSample -> execute;
 		my (%bioSamples,%species);
-		while (my ($bioSampID, $bioSampName, $speciesID,$scientificName,$commonName) = $sthSelBioSample -> fetchrow_array) {
+		while (my ($bioSampID,$bioSampName,$speciesID,$scientificName,$commonName) = $sthSelBioSample -> fetchrow_array) {
 			$existBiosample=1;
-			$bioSamples{$speciesID}{$bioSampID}=$bioSampName;
+			$sthUsedBioSample->execute($bioSampID);
+			my ($usedStatus)=$sthUsedBioSample->fetchrow_array;
+			$usedStatus='not_used' unless $usedStatus;
+			@{$bioSamples{$speciesID}{$bioSampID}}=($bioSampName,$usedStatus);
 			@{$species{$speciesID}}=($scientificName,$commonName) unless $species{$speciesID};
 		}
 		$sthSelBioSample->finish;
 		foreach my $speciesID (sort{lc($species{$a}[0]) cmp lc($species{$b}[0])} keys %species) {
 			my @speciesTree=(1,'species',$speciesID,'','',0,"$species{$speciesID}[0] ($species{$speciesID}[1])",'');
-			foreach my $bioSampID (sort{&promsMod::sortSmart(lc($bioSamples{$speciesID}{$a}),lc($bioSamples{$speciesID}{$b}))} keys %{$bioSamples{$speciesID}}) {
-				push @speciesTree,[2,'biosample',$bioSampID,'','',1,$bioSamples{$speciesID}{$bioSampID},''];
+			foreach my $bioSampID (sort{&promsMod::sortSmart(lc($bioSamples{$speciesID}{$a}[0]),lc($bioSamples{$speciesID}{$b}[0]))} keys %{$bioSamples{$speciesID}}) {
+				push @speciesTree,[2,'biosample',$bioSampID,'',$bioSamples{$speciesID}{$bioSampID}[1],1,$bioSamples{$speciesID}{$bioSampID}[0],''];
 			}
 			push @bioSampTree,\@speciesTree;
 		}
@@ -905,7 +914,10 @@ elsif ($action eq 'project') {
 		$sthSelBioSample -> execute;
 		while (my ($bioSampID,$bioSampName,$propID) = $sthSelBioSample -> fetchrow_array) {
 			$existBiosample=1;
-			$bioSampleName{$bioSampID}=$bioSampName;
+			$sthUsedBioSample->execute($bioSampID);
+			my ($usedStatus)=$sthUsedBioSample->fetchrow_array;
+			$usedStatus='not_used' unless $usedStatus;
+			@{$bioSampleName{$bioSampID}}=($bioSampName,$usedStatus);
 			if ($propID) {
 				unless ($properties{$propID}) {
 					$sthSelProp->execute($propID);
@@ -923,8 +935,8 @@ elsif ($action eq 'project') {
 		foreach my $treatID (sort{lc($properties{$a}[0]) cmp lc($properties{$b}[0])} keys %treatBioSamples) {
 			next if $treatID==0;
 			my @treatmentTree=(1,'treatment',$treatID,'','',0,$properties{$treatID}[0],'');
-			foreach my $bioSampID (sort{&promsMod::sortSmart(lc($bioSampleName{$a}),lc($bioSampleName{$b}))} keys %{$treatBioSamples{$treatID}}) {
-				push @treatmentTree,[2,'biosample',"$bioSampID:$treatID",'','',1,$bioSampleName{$bioSampID},''];
+			foreach my $bioSampID (sort{&promsMod::sortSmart(lc($bioSampleName{$a}[0]),lc($bioSampleName{$b}[0]))} keys %{$treatBioSamples{$treatID}}) {
+				push @treatmentTree,[2,'biosample',"$bioSampID:$treatID",'',$bioSampleName{$bioSampID}[1],1,$bioSampleName{$bioSampID}[0],''];
 				delete $treatBioSamples{0}{$bioSampID} if $treatBioSamples{0}{$bioSampID}; # IMPORTANT:sample can be "untreated" for another treatment!
 				if ($bioSampID==$selBioSampID) { # matches 1st occurence of $bioSampID in tree
 					@{$treeOptions{'SELECTION'}}=('biosample',"$bioSampID:$treatID"); # overwrites previous init
@@ -935,8 +947,8 @@ elsif ($action eq 'project') {
 		}
 		if (scalar keys %{$treatBioSamples{0}}) {
 			my @treatmentTree=(1,'treatment',0,'','',0,'*Untreated*','');
-			foreach my $bioSampID (sort{lc($bioSampleName{$a}) cmp lc($bioSampleName{$b})} keys %{$treatBioSamples{0}}) {
-				push @treatmentTree,[2,'biosample',"$bioSampID:0",'','',1,$bioSampleName{$bioSampID},''];
+			foreach my $bioSampID (sort{lc($bioSampleName{$a}[0]) cmp lc($bioSampleName{$b}[0])} keys %{$treatBioSamples{0}}) {
+				push @treatmentTree,[2,'biosample',"$bioSampID:0",'',$bioSampleName{$bioSampID}[1],1,$bioSampleName{$bioSampID}[0],''];
 				if ($bioSampID==$selBioSampID) { # matches 1st occurence of $bioSampID in tree
 					@{$treeOptions{'SELECTION'}}=('biosample',"$bioSampID:0"); # overwrites previous init
 					$selBioSampID=0;
@@ -956,7 +968,10 @@ elsif ($action eq 'project') {
 		while (my ($bioSampID, $bioSampName, $propValue) = $sthSelBioSample -> fetchrow_array) {
 			$existBiosample=1;
 			$propValue=' ' unless $propValue; # too make sure it comme first in sort
-			$bioSamples{$propValue}{$bioSampID}=$bioSampName;
+			$sthUsedBioSample->execute($bioSampID);
+			my ($usedStatus)=$sthUsedBioSample->fetchrow_array;
+			$usedStatus='not_used' unless $usedStatus;
+			@{$bioSamples{$propValue}{$bioSampID}}=($bioSampName,$usedStatus);
 		}
 		$sthSelBioSample->finish;
 		my $valueRank=0;
@@ -964,13 +979,15 @@ elsif ($action eq 'project') {
 			$valueRank++;
 			my $dispValue=($propValue eq ' ')? '*No value*' : $propValue;
 			my @propertyTree=(1,'property',$valueRank,'','',0,$dispValue,'');
-			foreach my $bioSampID (sort{&promsMod::sortSmart(lc($bioSamples{$propValue}{$a}),lc($bioSamples{$propValue}{$b}))} keys %{$bioSamples{$propValue}}) {
-				push @propertyTree,[2,'biosample',$bioSampID,'','',1,$bioSamples{$propValue}{$bioSampID},''];
+			foreach my $bioSampID (sort{&promsMod::sortSmart(lc($bioSamples{$propValue}{$a}[0]),lc($bioSamples{$propValue}{$b}[0]))} keys %{$bioSamples{$propValue}}) {
+				push @propertyTree,[2,'biosample',$bioSampID,'',$bioSamples{$propValue}{$bioSampID}[1],1,$bioSamples{$propValue}{$bioSampID}[0],''];
 			}
 			push @bioSampTree,\@propertyTree;
 		}
 	}
 
+	$sthUsedBioSample->finish;
+	
 	push @bioSampTree,[1,'none',$projectID,'','',0,'None',''] unless $existBiosample;
 
 	#######################
@@ -1150,6 +1167,7 @@ sub createPeptideQuantificationBranches {
 }
 
 ####>Revision history<####
+# 1.6.9 Display different icons for used and unused BioSample. Requires promsConfig &ge; 2.9.10 (PP 11/04/19)
 # 1.6.8 Minor update to handle unexpected undefined quantification name (PP 13/09/18)
 # 1.6.7 order cluster and PCA by ana_type (SL 31/01/18)
 # 1.6.6 Last open date also updated by bioinfo (PP 11/10/17)

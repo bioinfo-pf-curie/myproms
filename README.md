@@ -10,8 +10,8 @@ myProMS is freely available under [CeCILL license](LICENSE).
 ## Requirements
 * Docker: [https://www.docker.com](https://www.docker.com)
 Two Docker images are required:
-  * [myproms/myproms\_base:1.1.17](https://hub.docker.com/r/myproms/myproms_base): Tools and system dependencies.
-  * [mysql:5.5](https://hub.docker.com/_/mysql): For database management).
+  * [myproms/myproms\_base:1.2.7](https://hub.docker.com/r/myproms/myproms_base): Tools and system dependencies.
+  * [mysql:5.7](https://hub.docker.com/_/mysql): For database management).
 These images will be automatically pulled at first launch of the server.
 * Git: [https://git-scm.com](https://git-scm.com) - *Recommanded*
 
@@ -26,8 +26,8 @@ This repository contains:
 2. Open a console.
 3. Pull the required docker images (optional):
 ```
-docker pull myproms/myproms_base:1.1.17
-docker pull mysql:5.5
+docker pull myproms/myproms_base:1.2.7
+docker pull mysql:5.7
 ```
 4. Create a home directory for your docker projects (optional):
 ```
@@ -72,12 +72,15 @@ The database connection credentials will be transferred to the `promsConfig.pm` 
 myProMS time zone is set to `Europe/Paris` by default. This can be changed by editing the variable `TZ` in the two `.env` files described above.
 
 #### Network ports
-The default port used to access the myProMS server with your browser is set to `8080. You can change this by opening the file [docker-compose.yml](docker-compose.yml) with any text editor and go to the section below:
+The default port used to access the myProMS server with your browser is set to `8080`. You can change this by opening the file [docker-compose.yml](docker-compose.yml) with any text editor and go to the section below:
 ```markdown
  ports:
    - "8080:80"
 ```
 **Note**: You can use the default Apache port `80` (`   - "80:80"`) if no other services installed on your system are served on it. This will allow you to skip the port declaration in myProMS URL: `http://localhost`.  
+
+#### Your email contact
+An email contact is displayed on myProMS startup page. The default is `myproms@curie.fr`. You recommand using a contact local to your institute instead.
 
 ## Data persistence
 Because Docker containers are created/deleted each time you start/shut down the myProMS Server, all data are stored outside these containers through mounted [volumes](https://docs.docker.com/storage/volumes/) to insure they are not lost when the server is shut down.

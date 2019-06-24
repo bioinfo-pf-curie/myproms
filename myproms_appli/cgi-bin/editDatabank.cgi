@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# editDatabank.cgi         2.4.2                                               #
+# editDatabank.cgi         2.5.0                                               #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -46,6 +46,7 @@ use CGI ':standard';
 use POSIX qw(strftime); # to get the time
 use strict;
 use LWP::UserAgent;
+use Net::FTP;
 #use URI::Escape;
 use IO::Uncompress::Gunzip qw(gunzip);
 use IO::Uncompress::Unzip qw(unzip $UnzipError);
@@ -305,7 +306,7 @@ else { # add
 |<INPUT type="radio" name="fileOption" value="mascotFile" onclick="updateFileOptions(this.value)"$mascotDisabStatus/><B>Use Mascot databank:</B>&nbsp;<SELECT name="mascotFile" id="mascotFile" onchange="updateRulesButton()" disabled>$mascotOptionsStrg</SELECT>
 <BR><INPUT type="radio" name="fileOption" value="sharedFile" onclick="updateFileOptions(this.value)"$sharedDisabStatus/><B>Use shared directory:</B>&nbsp;$selectShareStrg
 <BR><INPUT type="radio" name="fileOption" value="localFile" onclick="updateFileOptions(this.value)"/><B>Upload a local file:</B><BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<INPUT type="file" name="localFile" size="60" disabled/>
-<BR><INPUT type="radio" name="fileOption" value="internetFile" onclick="updateFileOptions(this.value)"/><B>Download a file from Internet:<BR>URL:</B><INPUT type="text" name="internetFile" value="" size="60" disabled/>
+<BR><INPUT type="radio" name="fileOption" value="internetFile" onclick="updateFileOptions(this.value)"/><B>Download a file from the Internet:<BR>URL:</B><INPUT type="text" name="internetFile" value="" size="80" disabled/>
 <BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<FONT style="font-size:11px;font-style:italic">http or ftp path - Normal or compressed (.gz,.zip) FASTA files are accepted.</FONT>
 |;
 	push @valueText,$fileString; # fasta file
@@ -595,9 +596,16 @@ sub processForm {
 	####<Add>####
 	if ($action eq 'add') {
 
-		###<Computing new DB ID>###
+		###<Inserting data into tables DATABANK>###
 		($databankID)=$dbh->selectrow_array("SELECT MAX(ID_DATABANK) FROM DATABANK");
 		$databankID++;
+		my $dbTypeID=&promsMod::cleanNumericalParameters(param('dbType'));
+		push @colName,'ID_DBTYPE';
+		push @colValue,$dbTypeID;
+		my $colNameString=join(",",@colName);
+		my $colValueString=join(",",@colValue);
+		$dbh->do("INSERT INTO DATABANK (ID_DATABANK,IS_CRAP,$colNameString,NUM_ENTRY,USE_STATUS) VALUES ($databankID,$isContaminant,$colValueString,0,'yes')") || die $dbh->errstr;
+		$dbh->commit;
 
 		###<Copying file to dbPath/db_ID>###
 		my ($mascotServer,$dbankName,$fileName,$fullDbankfile,$fileString);
@@ -645,61 +653,150 @@ sub processForm {
 			#<internet file
 			elsif ($fileOption eq 'internetFile') {
 				my $internetFile=param('internetFile');
-				$fileName=(split(/\//,$internetFile))[-1];
+				my ($protoStrg,$empty,$host,@dirsAndFile)=split('/',$internetFile);
+				$fileName=pop @dirsAndFile;
 				$fullDbankfile="$dbDir/$fileName";
-				my $agent = LWP::UserAgent->new(agent=>'libwww-perl myproms@curie.fr');
-				$agent->timeout(360);
-				if (!$promsPath{'http_proxy'}) {$agent->env_proxy;}
-				elsif (lc($promsPath{'http_proxy'}) eq 'no') {$agent->no_proxy;}
-				else {$agent->proxy(['http','ftp'], $promsPath{'http_proxy'});}
-				my $prevPc=0;
-				my $thPc=10;
-				print "<BR><BR><FONT class=\"title2\">Downloading file:</FONT>\n<BR><B>0%";
-				open (DB,">$fullDbankfile");
-				my $expectedLength;
-				my $bytesReceived=0;
-				my $response=$agent->request(HTTP::Request->new(GET => $internetFile),
-								sub {
-									my($chunk, $res) = @_;
-									$bytesReceived += length($chunk);
-									unless (defined $expectedLength) {
-									   $expectedLength = $res->content_length || 0;
-									}
-									if ($expectedLength) {
-										my $currPc=int(100 * $bytesReceived / $expectedLength);
-										if ($currPc > $prevPc) {
-											foreach my $pc ($prevPc+1..$currPc) {
-												if ($pc == $thPc) {
-													print "$thPc%";
-													$thPc+=10;
-												}
-												else {print '.';}
-											}
-											$prevPc=$currPc;
-										}
-									}
-									print DB $chunk;
-								});
-
-				close DB;
-				if ($thPc <= 100) { # download was incomplete (complete= 110%!)
-					unlink $fullDbankfile;
-					$dbh->rollback;
+				
+				#<FTP protocole
+				if ($protoStrg=~/^ftp/i) {
+					my %ftpConfig=&promsConfig::getFTPconfig;
+					my $remoteDir=join('/',@dirsAndFile);
+					my $ftpPassiveMode=($ftpConfig{mode} && $ftpConfig{mode} =~ /passive/i)? 1 : 0;
+					
+					#<Check file and size
+					my $ftp = Net::FTP->new("$host", Passive => $ftpPassiveMode) or die "Cannot connect to $host: $@";
+					$ftp->login() or die "Cannot login ", $ftp->message;
+					if ($remoteDir) {$ftp->cwd($remoteDir) or die "Cannot change working directory ", $ftp->message;}
+					my $fileSize=$ftp->size($fileName);
+					$ftp->quit;
+					my $hashSize=int(0.5 + $fileSize/100); $hashSize=1 unless $hashSize;
+					
+					#<Get file with child process. Parent watches progress file
 					$dbh->disconnect;
-					print "FAILED !<BR>\nError return: '",$response->status_line,"'";
-					if ($internetFile=~/^ftp/) {
-						$internetFile=&promsMod::resize($internetFile,200);
-						$internetFile=~s/^ftp/<FONT color=#DD0000>http<\/FONT>/;
-						print "<BR>Try again using http protocole instead ($internetFile)";
+					my $childPid = fork;
+					unless ($childPid) { # child here
+						open (STDOUT, '>/dev/null') or die "Can't open /dev/null: $!";
+						open (STDIN, '</dev/null') or die "Can't open /dev/null: $!";
+						open (STDERR, ">$dbDir/error.txt") or die "Can't open $dbDir/error.txt: $!";
+						my $remoteDir=join('/',@dirsAndFile);
+						my $ftp = Net::FTP->new("$host", Passive => $ftpPassiveMode) or die "Cannot connect to $host: $@"; # , Hash => \*STDOUT
+						$ftp->login() or die "Cannot login ", $ftp->message;
+						if ($remoteDir) {$ftp->cwd($remoteDir) or die "Cannot change working directory ", $ftp->message;}
+						open(PROG,">$dbDir/progress.txt") or die "Can't open $dbDir/progress.txt: $!";
+						$ftp->hash(\*PROG,$hashSize); # will print a hash '#' to PROG every 1% of file retrieved
+						$ftp->binary() if $fileName=~/\.(gz|zip)\Z/;
+						$ftp->get($fileName,$fullDbankfile);
+						$ftp->quit;
+						print PROG '!';
+						close PROG;
+						exit;
 					}
-					print qq
-|</B><BR><BR>&nbsp;&nbsp;&nbsp;&nbsp;<INPUT type="button" value=" Try again " onclick="history.back()"/>&nbsp;&nbsp;<INPUT type="button" value=" Cancel " onclick="window.location='./selectDatabank.cgi'" />
-</BODY>
-</HTML>
-|;
-					exit;
+					
+					#<Checking FTP transaction
+					my $numLoops=0;
+					while ($numLoops < 60) { # ~5min
+						if (-e $fullDbankfile) {last;}
+						if (-e "$dbDir/error.txt" && -s "$dbDir/error.txt") { # an error has occured
+							my $errorStrg=`cat $dbDir/error.txt`;
+							&fileTransferError($databankID,$errorStrg);
+							exit;
+						}
+						sleep 5;
+						$numLoops++;
+					}
+					#<Watching file transfer
+					print "<BR><BR><FONT class=\"title2\">Downloading file:</FONT>\n<BR><B>0%";
+					my $prevPc=0;
+					my $thPc=10;
+					$numLoops=0;
+					while ($numLoops < 60) { # ~5min
+						my $hashStrg=`cat $dbDir/progress.txt`;
+						chomp($hashStrg);
+						my $numHash=length($hashStrg);
+						if ($numHash) {
+							my $currPc=$numHash;
+							if ($currPc > $prevPc) {
+								foreach my $pc ($prevPc+1..$currPc) {
+									if ($pc == $thPc) {
+										print "$thPc%";
+										$thPc+=10;
+									}
+									else {print '.';}
+								}
+								$prevPc=$currPc;
+								$numLoops=0; # reset
+							}
+						}
+						last if $thPc > 100;
+						sleep 5;
+						$numLoops++;
+					}
+					if ($thPc <= 100) { # > 5min to download 1% of db file!
+						&fileTransferError($databankID,'Download is too slow. Aborting!');
+						exit;
+					}
+					unlink "$dbDir/error.txt";
+					unlink "$dbDir/progress.txt";
 				}
-				print " Done</B>\n<BR><FONT class=\"title2\">Download is complete.<BR>\n";
+				else { # assumes http protocole
+					#$fileName=(split(/\//,$internetFile))[-1];
+					#$fullDbankfile="$dbDir/$fileName";
+					my $agent = LWP::UserAgent->new(agent=>'libwww-perl myproms@curie.fr');
+					$agent->timeout(360);
+					if (!$promsPath{'http_proxy'}) {$agent->env_proxy;}
+					elsif (lc($promsPath{'http_proxy'}) eq 'no') {$agent->no_proxy;}
+					else {$agent->proxy(['http','ftp'], $promsPath{'http_proxy'});}
+					my $prevPc=0;
+					my $thPc=10;
+					print "<BR><BR><FONT class=\"title2\">Downloading file:</FONT>\n<BR><B>0%";
+					open (DB,">$fullDbankfile");
+					my $expectedLength;
+					my $bytesReceived=0;
+					my $response=$agent->request(HTTP::Request->new(GET => $internetFile),
+									sub {
+										my($chunk, $res) = @_;
+										$bytesReceived += length($chunk);
+										unless (defined $expectedLength) {
+										   $expectedLength = $res->content_length || 0;
+										}
+										if ($expectedLength) {
+											my $currPc=int(100 * $bytesReceived / $expectedLength);
+											if ($currPc > $prevPc) {
+												foreach my $pc ($prevPc+1..$currPc) {
+													if ($pc == $thPc) {
+														print "$thPc%";
+														$thPc+=10;
+													}
+													else {print '.';}
+												}
+												$prevPc=$currPc;
+											}
+										}
+										print DB $chunk;
+									});
+					
+					close DB;
+					if ($thPc <= 100) { # download was incomplete (complete= 110%!)
+#						unlink $fullDbankfile;
+#						$dbh->rollback;
+#						$dbh->disconnect;
+#						print "FAILED !<BR>\nError return: '",$response->status_line,"'";
+#						if ($internetFile=~/^ftp/) {
+#							$internetFile=&promsMod::resize($internetFile,200);
+#							$internetFile=~s/^ftp/<FONT color=#DD0000>http<\/FONT>/;
+#							print "<BR>Try again using http protocole instead ($internetFile)";
+#						}
+#						print qq
+#|</B><BR><BR>&nbsp;&nbsp;&nbsp;&nbsp;<INPUT type="button" value=" Try again " onclick="history.back()"/>&nbsp;&nbsp;<INPUT type="button" value=" Cancel " onclick="window.location='./selectDatabank.cgi'" />
+#</BODY>
+#</HTML>
+#|;
+						my $errorStrg="Error return: '".$response->status_line."'";
+						&fileTransferError($databankID,$errorStrg);
+						exit;
+					}
+				}
+				print " Done.</B>\n<BR><FONT class=\"title2\">Download is complete.<BR>\n";
 			}
 
 			###<Inflating file>###
@@ -760,27 +857,27 @@ sub processForm {
 				$totNumEntry=$1 if /^\S+\s+(\d+)/;
 			}
 		}
-		else {$totNumEntry=`grep -c '>' $fullDbankfile`; chomp $totNumEntry;}
+		else {
+			$totNumEntry=`grep -c '>' $fullDbankfile`;
+			chomp $totNumEntry;
+		}
 
+		$dbh=&promsConfig::dbConnect;
+		my $qFileString=$dbh->quote($fileString);
+		$dbh->do("UPDATE DATABANK SET FASTA_FILE=$qFileString,NUM_ENTRY=$totNumEntry WHERE ID_DATABANK=$databankID");
+		
 		if ($totNumEntry > 0) {
 			print "Done ($totNumEntry entries).</FONT><BR>\n";
-
-			###<Inserting data into tables DATABANK>###
-			my $dbTypeID=param('dbType');
-			push @colName,('FASTA_FILE','ID_DBTYPE');
-			push @colValue,($dbh->quote($fileString),$dbTypeID);
-			my $colNameString=join(",",@colName);
-			my $colValueString=join(",",@colValue);
-			$dbh->do("INSERT INTO DATABANK (ID_DATABANK,IS_CRAP,$colNameString,NUM_ENTRY,USE_STATUS) VALUES ($databankID,$isContaminant,$colValueString,$totNumEntry,'yes')") || die $dbh->errstr;
+			####<Inserting data into tables DATABANK>###
+			#my $dbTypeID=&promsMod::cleanNumericalParameters(param('dbType'));
+			#push @colName,('FASTA_FILE','ID_DBTYPE');
+			#push @colValue,($dbh->quote($fileString),$dbTypeID);
+			#my $colNameString=join(",",@colName);
+			#my $colValueString=join(",",@colValue);
+			#$dbh->do("INSERT INTO DATABANK (ID_DATABANK,IS_CRAP,$colNameString,NUM_ENTRY,USE_STATUS) VALUES ($databankID,$isContaminant,$colValueString,$totNumEntry,'yes')") || die $dbh->errstr;
 		}
-		else {
-			print "<BR><FONT color=#DD0000>ERROR: No entries found.</FONT></FONT>\n";
-			#system "rm -r $promsPath{banks}/db_$databankID"; # not for mascot files
-			#remove_tree("$promsPath{banks}/db_$databankID");
-#rmtree("$promsPath{banks}/db_$databankID");
-			print "&nbsp;&nbsp;&nbsp;<INPUT type=\"button\" value=\" Try again \" onclick=\"history.back()\" />&nbsp;&nbsp;<INPUT type=\"button\" value=\" Cancel \" onclick=\"window.location='./selectDatabank.cgi'\" />\n";
-			print "</BODY>\n</HTML>\n";
-			exit;
+		else { # allow empty db file
+			print "Done. <FONT color=#DD0000>WARNING: No sequence entries found.</FONT></FONT><BR>\n";
 		}
 		sleep 2;
 	}
@@ -806,6 +903,19 @@ window.location ="./selectDatabank.cgi";
 	exit;
 }
 
+sub fileTransferError {
+	my ($databankID,$errorStrg)=@_;
+	print "<BR><FONT color=#DD0000>ERROR: $errorStrg</FONT></FONT>\n";
+	my $dbDir="$promsPath{banks}/db_$databankID";
+	rmtree($dbDir);
+	$dbh=&promsConfig::dbConnect;
+	$dbh->do("DELETE FROM DATABANK WHERE ID_DATABANK=$databankID");
+	$dbh->commit;
+	$dbh->disconnect;
+	print "&nbsp;&nbsp;&nbsp;<INPUT type=\"button\" value=\" Try again \" onclick=\"history.back()\" />&nbsp;&nbsp;<INPUT type=\"button\" value=\" Cancel \" onclick=\"window.location='./selectDatabank.cgi'\" />\n";
+	print "</BODY>\n</HTML>\n";
+	exit;
+}
 
 #############################
 ####<Deleting a databank>####
@@ -1030,6 +1140,7 @@ sub getParseRules {
 }
 
 ####>Revision history<####
+# 2.5.0 Uses Net::FTP for FTP connection (PP 24/05/19)
 # 2.4.2 [Fix] bug in shared file path resolution (PP 11/10/18)
 # 2.4.1 [Fix] Javascript bugs when no shared directory declared (PP 13/04/18)
 # 2.4.0 Uses &promsMod::browseDirectory_getFiles for shared folder files (PP 04/12/17)

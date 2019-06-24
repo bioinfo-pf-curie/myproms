@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# searchInteractors.cgi       1.0.1                                            #
+# searchInteractors.cgi       1.1.0                                            #
 # Authors: P. Poullet, S.Liva (Institut Curie)	                               #
 # Contact: myproms@curie.fr                                                    #
 # Fetch and provide proteins and parameters for GO enrichment analysis         #
@@ -393,50 +393,79 @@ sub ajaxSearchProteins {
 }
 
 sub ajaxSearchInteractors {
+    my (%concatInteract, %interactorsList, %responseList);
     my $agent = LWP::UserAgent->new(agent=>'libwww-perl myproms@curie.fr');
     $agent->timeout(10);
     $agent->env_proxy;
 
-    #my $uniAC=param('uniAC');
-    my $response = $agent->get('http://www.ebi.ac.uk/Tools/webservices/psicquic/intact/webservices/current/search/query/'.$uniAC);
+    $responseList{"imex"} = $agent->get('http://www.ebi.ac.uk/Tools/webservices/psicquic/imex/webservices/current/search/query/'.$uniAC);
+    $responseList{"intact"} = $agent->get('http://www.ebi.ac.uk/Tools/webservices/psicquic/intact/webservices/current/search/query/'.$uniAC);
+    $responseList{"innatedb-all"} = $agent->get('https://psicquic.all.innatedb.com/webservices/current/search/query/'.$uniAC);
+    $responseList{"irefindex"} = $agent->get('http://irefindex.vib.be/webservices/current/search/query/'.$uniAC);
+    $responseList{"reactome-fi"} = $agent->get('http://www.ebi.ac.uk/Tools/webservices/psicquic/reactome-fi/webservices/current/search/query/'.$uniAC);
+    $responseList{"uniprot"} = $agent->get('http://www.ebi.ac.uk/Tools/webservices/psicquic/uniprot/webservices/current/search/query/'.$uniAC);
 
-    #print header("text/plain"); warningsToBrowser(1);
     print header; warningsToBrowser(1);
-    my @resultLines;
-    if ($response->is_success) {
-		@resultLines = split("\n",$response->content);
-		#print $response->decoded_content;  # or whatever
-    }
-    else {
-		die $response->status_line;
-    }
+    
+    for my $responseDB (keys %responseList) {
+        my $response = $responseList{$responseDB};
+        
+        my @resultLines;
+        if ($response->is_success) {
+            @resultLines = split("\n",$response->content);
+            #print $response->decoded_content;  # or whatever
+        }
+        else {
+            die $response->status_line;
+        }
+        
+        for (my $i=0; $i<scalar(@resultLines); $i++) {
+            my ($uniqInteract_A, $uniqInteract_B, $alterInteract_A, $alterInteract_B, $aliasesA, $aliasesB, $interactMethod, $firstAuthor, $publi, $taxonA, $taxonB, $interactType, $databases, $interactIdent, $score) = (split("\t", $resultLines[$i]));
+            
+            next if($responseDB eq 'irefindex' && $uniqInteract_A =~ /complex:/);
+            
+            my @interA=split(":", $uniqInteract_A);
+            my @interB=split(":", $uniqInteract_B);
+            shift(@interA);
+            shift(@interB);
+            my $interA=join(":",@interA);
+            my $interB=join(":",@interB);
+            $interA=~s/"//g;
+            $interB=~s/"//g;
+            
+            my $geneAliasesA = ($responseDB eq 'reactome-fi') ? $alterInteract_A : $aliasesA; 
+            my $geneAliasesB = ($responseDB eq 'reactome-fi') ? $alterInteract_B : $aliasesB; 
+            
+            my ($uniqInter, $uniqAliases) = ($interA ne $uniAC)? ($interA, $geneAliasesA) : ($interB, $geneAliasesB);
+            my ($strgMeth)=($interactMethod=~ /\((.+)\)/ );
+            my ($strgType)=($interactType=~ /\((.+)\)/ );
+            $uniqAliases=~ s/"//g;
+            
+            # Compute uniProt aliases
+            my @uniprotAliases = &getXrefByDbName($uniqAliases, "uniprotkb");
+            if($responseDB eq 'innatedb-all') {
+                $uniqInter = $uniprotAliases[0];
+                @uniprotAliases = &getXrefByDbName($uniqAliases, "hgnc|mgi");
+            }
+            my $strgAliase=join("<br>\n", @uniprotAliases);
+            
+            # Compute Author reference
+            if($responseDB eq 'irefindex') {
+                $firstAuthor =~ s/[-_]/ /g;
+                $firstAuthor = substr($firstAuthor, 0, -2);
+                $firstAuthor =~ s/ (\d+)/. \($1\)/g;
+            }
+            $firstAuthor = "Article" if(!$firstAuthor);
+            $firstAuthor = ucfirst($firstAuthor);
+            my $pubmed=join(",", &getXrefByDbName($publi,"pubmed"));
+            my $strgPubMed="<A href='http://www.ncbi.nlm.nih.gov/pubmed/?term=$pubmed' target='blank'>$firstAuthor</A>";#join(",",&getXrefByDbName($publi, "pubmed"));
 
-    my (%concatInteract, %interactorsList);
-    for (my $i=0; $i<scalar(@resultLines); $i++) {
-		my ($uniqInteract_A, $uniqInteract_B, $alterInteract_A, $alterInteract_B, $aliasesA, $aliaseB, $interactMethod, $firstAuthor, $publi, $taxonA, $taxonB, $interactType, $databases, $interactIdent, $score) = (split("\t", $resultLines[$i]));
-		my @interA=split(":", $uniqInteract_A);
-		my @interB=split(":", $uniqInteract_B);
-		shift(@interA);
-		shift(@interB);
-		my $interA=join(":",@interA);
-		my $interB=join(":",@interB);
-		$interA=~s/"//g;
-		$interB=~s/"//g;
-		my ($uniqInter, $uniqAlter, $uniqAliases) = ($interA ne $uniAC)? ($interA, $alterInteract_A, $aliasesA) : ($interB, $alterInteract_B, $aliaseB);
-		my ($strgMeth)=($interactMethod=~ /\((.+)\)/ );
-		my ($strgType)=($interactType=~ /\((.+)\)/ );
-		$uniqAliases=~ s/"//g;
-		#print "unik:".$uniqAliases."<br>";
-		my $strgAliase=join("<br>\n",&getXrefByDbName($uniqAliases, "uniprotkb"));
-		my $pubmed=join(",",&getXrefByDbName($publi,"pubmed"));
-		$pubmed=~s/&nbsp;//g;
-		my $strgPubMed="<A href='http://www.ncbi.nlm.nih.gov/pubmed/?term=$pubmed' target='blank'>$firstAuthor</A>";#join(",",&getXrefByDbName($publi, "pubmed"));
-		#print "$strgAliase<br>";#strgMeth : $strgType<br>\n";#: $firstAuthor : $publi<br>\n";
-		push @{$concatInteract{$uniqInter}}, [$uniqAlter,$strgAliase,$strgMeth,$firstAuthor, $strgPubMed, $strgType, $databases];
-		$interactorsList{$uniqInter}=1;
-		#print "inter => $uniqInter => $strgPubMed<br>\n";#$strgAliase###$strgMeth###$firstAuthor###$publi###$strgType###$databases<br>\n";
+            next if($concatInteract{$uniqInter} || $uniqInter eq $uniAC || $uniqInter eq '');
+            push @{$concatInteract{$uniqInter}}, [$strgAliase, $strgMeth, $firstAuthor, $strgPubMed, $strgType, $databases];
+            $interactorsList{$uniqInter}=1;
+        }
     }
-
+    
 	my $referenceStrg='<FONT class="font11" style="font-weight:bold">Search performed with <A href="http://code.google.com/p/psicquic" target="_blank">PSICQUIC</A> (<A href="http://www.nature.com/nmeth/journal/v8/n7/full/nmeth.1637.html" target="_blank">Aranda, B. et al. Nature Methods 8, 2011</A>).</FONT>';
     if (!scalar keys %interactorsList) {
 		print qq
@@ -447,63 +476,57 @@ $referenceStrg
     }
 
     #exit;
+    my (%proteinList, @queriesList);
     my $dbh=&promsConfig::dbConnect;
     #my ($itemName)=$dbh->selectrow_array("SELECT NAME FROM $item WHERE ID_$item=$itemID");
-    my $itemType=&promsMod::getItemType($item);
-    my $existMatches=0;
-    my @sthItem;
+    my $itemType = &promsMod::getItemType($item);
+    my $existMatches = 0;
+    my $idList = join(',', @itemIDList);
+    
     if ($refItem eq 'PROJECT') {
-	    $sthItem[0]=$dbh->prepare("SELECT P.ID_PROTEIN,ID_ANALYSIS,AP.VISIBILITY FROM PROTEIN P,ANALYSIS_PROTEIN AP WHERE P.ID_PROTEIN=AP.ID_PROTEIN AND ID_PROJECT=? GROUP BY AP.ID_PROTEIN ORDER BY NUM_PEP DESC,VISIBILITY DESC,CONF_LEVEL DESC"); # best ana 1st
+	    push(@queriesList, "SELECT P.ID_PROTEIN,ID_ANALYSIS,AP.VISIBILITY FROM PROTEIN P,ANALYSIS_PROTEIN AP WHERE P.ID_PROTEIN=AP.ID_PROTEIN AND ID_PROJECT IN ($idList) GROUP BY AP.ID_PROTEIN ORDER BY NUM_PEP DESC,VISIBILITY DESC,CONF_LEVEL DESC"); # best ana 1st
     }
     elsif ($refItem eq 'EXPERIMENT') {
-	    $sthItem[0]=$dbh->prepare("SELECT ID_PROTEIN,AP.ID_ANALYSIS,AP.VISIBILITY FROM ANALYSIS_PROTEIN AP,ANALYSIS A,SAMPLE S WHERE AP.ID_ANALYSIS=A.ID_ANALYSIS AND A.ID_SAMPLE=S.ID_SAMPLE AND S.ID_SPOT IS NULL AND ID_EXPERIMENT=? GROUP BY AP.ID_PROTEIN ORDER BY NUM_PEP DESC,VISIBILITY DESC,CONF_LEVEL DESC");
-	    $sthItem[1]=$dbh->prepare("SELECT ID_PROTEIN,AP.ID_ANALYSIS,AP.VISIBILITY FROM ANALYSIS_PROTEIN AP,ANALYSIS A,SAMPLE S,SPOT SP,GEL2D G WHERE AP.ID_ANALYSIS=A.ID_ANALYSIS AND A.ID_SAMPLE=S.ID_SAMPLE AND S.ID_SPOT=SP.ID_SPOT AND SP.ID_GEL2D=G.ID_GEL2D AND G.ID_EXPERIMENT=? ORDER BY NUM_PEP DESC,VISIBILITY DESC,CONF_LEVEL DESC");
+	    push(@queriesList, "SELECT ID_PROTEIN,AP.ID_ANALYSIS,AP.VISIBILITY FROM ANALYSIS_PROTEIN AP,ANALYSIS A,SAMPLE S WHERE AP.ID_ANALYSIS=A.ID_ANALYSIS AND A.ID_SAMPLE=S.ID_SAMPLE AND S.ID_SPOT IS NULL AND ID_EXPERIMENT IN ($idList) GROUP BY AP.ID_PROTEIN ORDER BY NUM_PEP DESC,VISIBILITY DESC,CONF_LEVEL DESC");
+	    push(@queriesList, "SELECT ID_PROTEIN,AP.ID_ANALYSIS,AP.VISIBILITY FROM ANALYSIS_PROTEIN AP,ANALYSIS A,SAMPLE S,SPOT SP,GEL2D G WHERE AP.ID_ANALYSIS=A.ID_ANALYSIS AND A.ID_SAMPLE=S.ID_SAMPLE AND S.ID_SPOT=SP.ID_SPOT AND SP.ID_GEL2D=G.ID_GEL2D AND G.ID_EXPERIMENT IN ($idList) ORDER BY NUM_PEP DESC,VISIBILITY DESC,CONF_LEVEL DESC");
     }
     elsif ($refItem eq 'GEL2D') {
-	    $sthItem[0]=$dbh->prepare("SELECT ID_PROTEIN,AP.ID_ANALYSIS,AP.VISIBILITY FROM ANALYSIS_PROTEIN AP,ANALYSIS A,SAMPLE S,SPOT SP WHERE AP.ID_ANALYSIS=A.ID_ANALYSIS AND A.ID_SAMPLE=S.ID_SAMPLE AND S.ID_SPOT=SP.ID_SPOT AND ID_GEL2D=? GROUP BY AP.ID_PROTEIN ORDER BY NUM_PEP DESC,VISIBILITY DESC,CONF_LEVEL DESC");
+	    push(@queriesList, "SELECT ID_PROTEIN,AP.ID_ANALYSIS,AP.VISIBILITY FROM ANALYSIS_PROTEIN AP,ANALYSIS A,SAMPLE S,SPOT SP WHERE AP.ID_ANALYSIS=A.ID_ANALYSIS AND A.ID_SAMPLE=S.ID_SAMPLE AND S.ID_SPOT=SP.ID_SPOT AND ID_GEL2D IN ($idList) GROUP BY AP.ID_PROTEIN ORDER BY NUM_PEP DESC,VISIBILITY DESC,CONF_LEVEL DESC");
     }
     elsif ($refItem eq 'SPOT') {
-	    $sthItem[0]=$dbh->prepare("SELECT ID_PROTEIN,AP.ID_ANALYSIS,AP.VISIBILITY FROM ANALYSIS_PROTEIN AP,ANALYSIS A,SAMPLE S WHERE AP.ID_ANALYSIS=A.ID_ANALYSIS AND A.ID_SAMPLE=S.ID_SAMPLE AND ID_SPOT=? GROUP BY AP.ID_PROTEIN ORDER BY NUM_PEP DESC,VISIBILITY DESC,CONF_LEVEL DESC");
+	    push(@queriesList, "SELECT ID_PROTEIN,AP.ID_ANALYSIS,AP.VISIBILITY FROM ANALYSIS_PROTEIN AP,ANALYSIS A,SAMPLE S WHERE AP.ID_ANALYSIS=A.ID_ANALYSIS AND A.ID_SAMPLE=S.ID_SAMPLE AND ID_SPOT IN ($idList) GROUP BY AP.ID_PROTEIN ORDER BY NUM_PEP DESC,VISIBILITY DESC,CONF_LEVEL DESC");
     }
     elsif ($refItem eq 'SAMPLE') {
-	    $sthItem[0]=$dbh->prepare("SELECT ID_PROTEIN,AP.ID_ANALYSIS,AP.VISIBILITY FROM ANALYSIS_PROTEIN AP,ANALYSIS A WHERE AP.ID_ANALYSIS=A.ID_ANALYSIS AND ID_SAMPLE=? GROUP BY AP.ID_PROTEIN ORDER BY NUM_PEP DESC,VISIBILITY DESC,CONF_LEVEL DESC");
+	    push(@queriesList, "SELECT ID_PROTEIN,AP.ID_ANALYSIS,AP.VISIBILITY FROM ANALYSIS_PROTEIN AP,ANALYSIS A WHERE AP.ID_ANALYSIS=A.ID_ANALYSIS AND ID_SAMPLE IN ($idList) GROUP BY AP.ID_PROTEIN ORDER BY NUM_PEP DESC,VISIBILITY DESC,CONF_LEVEL DESC");
     }
     elsif ($refItem eq 'ANALYSIS') {
-	    $sthItem[0]=$dbh->prepare("SELECT ID_PROTEIN,ID_ANALYSIS,VISIBILITY FROM ANALYSIS_PROTEIN WHERE ID_ANALYSIS=?");
+	    push(@queriesList, "SELECT ID_PROTEIN,ID_ANALYSIS,VISIBILITY FROM ANALYSIS_PROTEIN WHERE ID_ANALYSIS IN ($idList)");
     }
     else { #LIST
-	    $sthItem[0]=$dbh->prepare("SELECT ID_PROTEIN,-1,2 FROM CATEGORY_PROTEIN WHERE ID_CATEGORY=?");
+	    push(@queriesList, "SELECT ID_PROTEIN,-1,2 FROM CATEGORY_PROTEIN WHERE ID_CATEGORY IN ($idList)");
     }
 
-    my %proteinList;
-    foreach my $id (@itemIDList) {
-		foreach my $sth (@sthItem) {
-			$sth->execute($id);
-			while (my ($protID,$anaID, $visible)=$sth->fetchrow_array) {
-				#print "prot:$protID<br>";
-				@{$proteinList{$protID}}=($anaID, $visible) ;
-			}
-		}
-		#$sth->finish;
-    }
-
-    foreach my $sth (@sthItem) {
+    foreach my $query (@queriesList) {
+        my $sth = $dbh->prepare($query);
+        $sth->execute();
+        while (my ($protID, $anaID, $visible) = $sth->fetchrow_array) {
+            #print "prot:$protID<br>";
+            @{$proteinList{$protID}} = ($anaID, $visible);
+        }
 		$sth->finish;
     }
 
-    my $codeIdent="AC";
-    my ($identifierID)=$dbh->selectrow_array("SELECT ID_IDENTIFIER FROM IDENTIFIER WHERE CODE='$codeIdent'");
-    my $sthExistProt=$dbh->prepare("SELECT P.ID_PROTEIN,P.ALIAS FROM MASTERPROT_IDENTIFIER MI,MASTER_PROTEIN MP,PROTEIN P where MI.ID_IDENTIFIER=? and MI.ID_MASTER_PROTEIN=MP.ID_MASTER_PROTEIN and MP.ID_MASTER_PROTEIN=P.ID_MASTER_PROTEIN and MI.VALUE=?");
     my %uniprotInfo;
-    foreach my $uniAC (keys %interactorsList) {
-	#print "uni:$uniAC<br>\n";
-        $sthExistProt->execute($identifierID,$uniAC);
-		while (my($protID, $alias)=$sthExistProt->fetchrow_array) {
-			next unless $proteinList{$protID};
-			$uniprotInfo{$uniAC}{$protID}=$alias;
-			$interactorsList{$uniAC}=2;
-			#print "uni:$uniAC##prot=$proteinID##alias=$alias<br>\n";
-		}
+    my $codeIdent="AC";
+    my $allUniAC = "'".join("','", keys %interactorsList)."'";
+    my $identifierID = $dbh->selectrow_array("SELECT ID_IDENTIFIER FROM IDENTIFIER WHERE CODE='$codeIdent'");
+    my $sthExistProt=$dbh->prepare("SELECT MI.VALUE, P.ID_PROTEIN, P.ALIAS FROM MASTERPROT_IDENTIFIER MI INNER JOIN MASTER_PROTEIN MP ON MP.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN INNER JOIN PROTEIN P ON P.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN WHERE MI.ID_IDENTIFIER=$identifierID AND MI.VALUE IN ($allUniAC)");
+    $sthExistProt->execute();
+    while (my ($uniAC, $protID, $alias) = $sthExistProt->fetchrow_array) {
+        next unless $proteinList{$protID};
+        $uniprotInfo{$uniAC}{$protID}=$alias;
+        $interactorsList{$uniAC}=2;
+        #print "uni:$uniAC##prot=$proteinID##alias=$alias<br>\n";
     }
 
     print qq
@@ -543,7 +566,7 @@ $referenceStrg
 		my (%methVal, %typeVal, %aliasVal, %pubVal);
 		my (@interMethod,@interType, @interAlias, $strgAliase);
 		foreach my $refInfo (@{$concatInteract{$interact}}) {
-			my ($alter, $aliases, $method, $author, $publi, $type, $databases)=@{$refInfo};
+			my ($aliases, $method, $author, $publi, $type, $databases)=@{$refInfo};
 			$methVal{$method}="&nbsp;$method&nbsp;";
 			$typeVal{$type}="&nbsp;$type&nbsp;";
 			$pubVal{$publi}="&nbsp;$publi&nbsp;";
@@ -577,13 +600,14 @@ sub getXrefByDbName { ##from EBI
 	#print "1:$xref<br>\n";
 	my ($db, $id,$txt)=split/[:\(\)]/, $xref;
 	#print "2: $db, $id; $txt<br>\n";
-	if ($db eq $dbname) {
+	if ($db =~ /$dbname/) {
 	    #print "3:$id<br>\n";
-	    push @listXref, "&nbsp;&nbsp;$id&nbsp;&nbsp";
+	    push @listXref, "$id";
 	}
     }
     return @listXref;
 }
 ####>Revision history<####
+# 1.1.0 Add more services to retrieve Interactors (VS 04/06/19)
 # 1.0.1 Minor display changes (PP 29/10/14)
 # 1.0.0 new script to retrieve protein interactions through web services (SL 26/09/14)

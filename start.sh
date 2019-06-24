@@ -9,6 +9,9 @@ fi
 chown -Rh www-data:root ${APPLI_DIR}
 chown -Rh www-data:root ${DATA_DIR}
 
+### Update index.html file with ENV variable
+sed -i "s@EMAIL_CONTACT@${EMAIL_CONTACT}@g" ${APPLI_DIR}/html/index.html
+
 ### Update promsConfig.pm file with ENV variables
 if [ ! -e ${APPLI_DIR}/cgi-bin/promsConfig.bck ]; then
     cp ${APPLI_DIR}/cgi-bin/promsConfig.pm ${APPLI_DIR}/cgi-bin/promsConfig.bck
@@ -67,6 +70,10 @@ cat << EOF > /etc/apache2/sites-enabled/000-default.conf
                 order allow,deny
                 allow from all
         </Directory>
+
+        <IfModule env_module>
+                SetEnv PERL5LIB "${APPLI_DIR}/cgi-bin"
+        </IfModule>
 
 </VirtualHost>
 EOF

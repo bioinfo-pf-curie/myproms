@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# testMyProMS.cgi         2.4.13                                               #
+# testMyProMS.cgi         2.5.1                                                #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -62,7 +62,6 @@ my @execPath=qw(
 
 ###>List of R packages<###
 my @Rpackages=qw(
-	affy
 	broom
 	data.table
 	dplyr
@@ -89,6 +88,7 @@ my @Rpackages=qw(
 	tidyr
 	tidyverse
 );
+#	affy
 #	Biobase
 #	BiocGenerics
 #	ellipse
@@ -346,7 +346,7 @@ $refClusInfo->{'runJob'}->($runDir,$commandFile,\%jobParams);
 						my $version;
 						my %sessionPackages; # for R only
 						if ($pathName eq 'java') {
-							($version)=($response[0] && $response[0]=~/java version "(\S+)"/);
+							($version)=($response[0] && $response[0]=~/ version "([^"]+)"/);
 						}
 						elsif ($pathName eq 'R') {
 							#($version)=($response[0] && $response[0]=~/R batch front end: (\S+)/);
@@ -396,7 +396,7 @@ $refClusInfo->{'runJob'}->($runDir,$commandFile,\%jobParams);
 							#		last if $version;
 							#	}
 							#}
-							($version)=($response[0] && $response[0]=~/^([\d\.]+)/);
+							($version)=($response[0] && $response[0]=~/([\d\.]+)/);
 						}
 						&printVersionResponse($pathName,$refClusInfo->{path}{$pathName},$version,\@response,$clusterIdx,\%sessionPackages);
 					}
@@ -635,6 +635,7 @@ my @requiredModules=qw(
 	LWP::Simple
 	LWP::UserAgent
 	MIME::Base64
+	Net::FTP
 	Spreadsheet::WriteExcel
 	Storable
 	String::Util
@@ -906,7 +907,8 @@ if ($clusterInfo{'on'} || ($clusterInfo{'list'} && scalar @{$clusterInfo{'list'}
 		if ($i==0) {$refClusInfo=\%clusterInfo;}
 		else {%{$refClusInfo}=&promsConfig::getClusterInfo($clusterInfo{'list'}[$i]);}
 		next unless $refClusInfo->{'on'};
-		print "<TD valign='top'>&nbsp;&nbsp;<B>$refClusInfo->{name}:</B>&nbsp;<INPUT type=\"button\" id=\"cluster${i}BUT\" value=\"Check\" onclick=\"checkBinaries($i,'$refClusInfo->{name}')\"/>&nbsp;&nbsp;<DIV id=\"cluster${i}DIV\"></DIV></TD>\n";
+		my $singularityImageStrg=($refClusInfo->{singularityImage})? " (using Singularity image '".$refClusInfo->{singularityImage}."')" : '';
+		print "<TD valign='top'>&nbsp;&nbsp;<B>$refClusInfo->{name}$singularityImageStrg :</B>&nbsp;<INPUT type=\"button\" id=\"cluster${i}BUT\" value=\"Check\" onclick=\"checkBinaries($i,'$refClusInfo->{name}')\"/>&nbsp;&nbsp;<DIV id=\"cluster${i}DIV\"></DIV></TD>\n";
 		print "<TD>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</TD>\n" if $i < $#{$clusterInfo{'list'}};
 	}
 	print "</TR></TABLE><BR>\n";
@@ -1161,6 +1163,7 @@ sub printScriptVersion {
 
 sub checkInternetConnection {
 	require LWP::UserAgent;
+	require Net::FTP;
 	require promsConfig;
 	%promsPath=&promsConfig::getServerInfo('no_user') unless $call eq 'server';
 
@@ -1175,7 +1178,7 @@ sub checkInternetConnection {
 <H3>Checking myProMS' Internet connection with $proxySettingStrg:</H3>
 |;
 	my $agent = LWP::UserAgent->new(agent=>'libwww-perl myproms@curie.fr');
-	$agent->timeout(30);
+	#$agent->timeout(30);
 	if ($action eq 'internet_myproms') {
 		if (lc($promsPath{'http_proxy'}) eq 'no') {$agent->no_proxy;}
 		else {$agent->proxy('http', $promsPath{'http_proxy'});}
@@ -1206,49 +1209,51 @@ sub checkInternetConnection {
 		print "<FONT color=red>&nbsp;&nbsp;&nbsp;&nbsp;-ERROR: ",$response->status_line,"</FONT><BR>\n";
 	}
 
-	foreach my $refProto (['FTP','ftp'],['HTTP/FTP','http']) {
-		my ($protoName,$protoCode)=@{$refProto};
-		my $urlFTP="$protoCode://ftp.ebi.ac.uk/pub/databases/fastafiles/uniprot/README.txt";
-		print qq
-|<BR>&nbsp;&nbsp;<B>+$protoName:</B> ($urlFTP)<BR>
-&nbsp;&nbsp;&nbsp;&nbsp;-Downloading test file: 0%|;
-		my $prevPc=0;
-		my $thPc=10;
-		my $expectedLength;
-		my $bytesReceived=0;
-		$response=$agent->request(
-			HTTP::Request->new(GET => $urlFTP),
-			sub {
-				my ($chunk, $res) = @_;
-				$bytesReceived += length($chunk);
-				unless (defined $expectedLength) {
-				   $expectedLength = $res->content_length || 0;
-				}
-				if ($expectedLength) {
-					my $currPc=int(100 * $bytesReceived / $expectedLength);
-					if ($currPc > $prevPc) {
-						foreach my $pc ($prevPc+1..$currPc) {
-							if ($pc == $thPc) {
-								print "$thPc%";
-								$thPc+=10;
-							}
-							else {print '.';}
-						}
-						$prevPc=$currPc;
+	###>FTP connection
+	print "<BR><H3>Checking FTP connection:</H3>\n";
+	my %ftpConfig=&promsConfig::getFTPconfig;
+	my $ftpHost='ftp.ebi.ac.uk';
+	my $remoteDir='/pub/databases/fastafiles/uniprot';
+	my $localDir=$promsPath{'tmp'};
+	my $file='README.txt';
+	my $localFile="$localDir/$file";
+	unlink $localFile if -e $localFile;
+	my %okModes;
+
+	foreach my $refFTPmode (['Active',0],['Passive',1]) {
+		unlink $localFile if -e $localFile;
+		my ($modeName,$modValue)=@{$refFTPmode};
+		my $error='';
+		print "&nbsp;&nbsp;<B>+$modeName</B> mode:<BR>\n";
+		my $ftp = Net::FTP->new($ftpHost, Passive => $modValue) or $error="Cannot connect to $ftpHost: $@";
+		unless ($error) {
+			$ftp->login() or $error=$ftp->message; #login("anonymous",'-anonymous@') <- default
+			unless ($error) {
+				$ftp->cwd($remoteDir) or $error=$ftp->message." ($remoteDir)";
+				unless ($error) {
+					$ftp->get($file,$localFile) or $error=$ftp->message." ($remoteDir/$file)";
+					if (-e $localFile) {
+						unlink $localFile;
+						print "&nbsp;&nbsp;&nbsp;&nbsp;-FTP in ",lc($modeName)," mode is <B>OK</B> (file '<B>$remoteDir/$file</B>' was successfully retrieved from '<B>$ftpHost</B>' server).<BR>\n";
+						$okModes{lc($modeName)}=1;
 					}
 				}
 			}
-		);
-		print "<BR>\n";
-		if ($thPc <= 100) { # download was incomplete (complete= 110%!)
-			#unlink $fullDbankfile;
-			print "<FONT color=red>&nbsp;&nbsp;&nbsp;&nbsp;-ERROR: ",$response->status_line,"</FONT><BR>\n";
 		}
-		else {
-			#print " Done</B>\n<BR><FONT class=\"title2\">Download is complete.<BR>\n";
-			print "&nbsp;&nbsp;&nbsp;&nbsp;-$protoName connection is <B>OK</B> (File was <B>successfully downloaded</B> from the EBI resource).<BR>\n";
+		$ftp->quit if $ftp;
+		if ($error) {
+			print "<FONT color=red>&nbsp;&nbsp;&nbsp;&nbsp;-ERROR: $error</FONT><BR>\n";
 		}
 	}
+	my $mypromsFTPmode=($ftpConfig{mode} && $ftpConfig{mode} =~ /passive/i)? 'passive' : 'active';
+	if (!$okModes{$mypromsFTPmode} && scalar keys %okModes) {
+		my ($otherMode)=(keys %okModes)[0];
+		print "&nbsp;&nbsp;<FONT color=red><B>+WARNING:</B></FONT> FTP mode is set to <B>$mypromsFTPmode</B> in promsConfig.pm. You must change it to <B>$otherMode</B> mode.<BR>\n";
+	}
+	else {
+		print "&nbsp;&nbsp;+FTP mode is set to <B>$mypromsFTPmode</B> in promsConfig.pm<BR>\n";
+	}
+	
 	print qq
 |<H3>Done.</H3><BR><BR>
 </BODY>
@@ -1259,6 +1264,9 @@ sub checkInternetConnection {
 
 
 ####>Revision history<####
+# 2.5.1 Added Singularity image info for cluster (PP 19/06/19)
+# 2.5.0 Uses Net::FTP for testing default and passive FTP connection (PP 06/05/19)
+# 2.4.14 Updated to docker image 1.2.x (PP 29/03/19)
 # 2.4.13 [Fix] myProMS version detection for docker instance (PP 07/10/18)
 # 2.4.12 Updated parsing rule for MassChroQ version also in local binaries section (PP 06/10/18)
 # 2.4.11 Writes Perl $0 and `pwd` (PP 03/10/18)

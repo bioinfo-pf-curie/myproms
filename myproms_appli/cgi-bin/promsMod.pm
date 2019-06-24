@@ -1,5 +1,5 @@
 ####################################################################################
-# promsMod.pm           4.0.1                                                      #
+# promsMod.pm           4.0.6                                                      #
 # Authors: P. Poullet, G. Arras, S.Liva, M. Le Picard, V. Sabatet (Institut Curie) #
 # Contact: myproms@curie.fr                                                    	   #
 ####################################################################################
@@ -95,6 +95,7 @@ my %type=(
 	'QUANTIFICATION'=>'Quantification',
 	'SPECIES'=>'Species',
 	'EXPLORANA' => 'Exploratory Analyses',
+	'METADATA' => 'Metadata',
 	'PATHWAY_ANALYSIS' => 'Pathway analysis'
 );
 
@@ -407,7 +408,7 @@ sub getItemInfo {
 	my ($dbh,$startItem,$startID,$childID)=@_;
 	$startItem=uc($startItem);
 	my @itemInfo; # Contains item hierarchy  (project--->analysis) [i]{'ID'=>$itemID,'NAME'=>$itemName,'ITEM'=>$itemList[$i],'TYPE'=>$itemType,'POS'=>$displayPos,...} Optional: Analysis='VALID','DECOY'; project='STATUS'
-	my @itemList=('EXPLORANALYSIS','ANALYSIS','SAMPLE','QUANTIFICATION','DESIGN','SPOT','GEL2D','EXPERIMENT','PROJECT');
+	my @itemList=('ANNOTATION_ITEM','META_ANNOTATION','EXPLORANALYSIS','ANALYSIS','SAMPLE','QUANTIFICATION','DESIGN','SPOT','GEL2D','EXPERIMENT','PROJECT');
 
 	my $itemOK=0;
 	my $parentID=$startID;
@@ -474,7 +475,24 @@ sub getItemInfo {
 				($itemName,$parentID)=$dbh->selectrow_array("SELECT NAME,ID_EXPERIMENT FROM EXPLORANALYSIS WHERE ID_EXPLORANALYSIS=$itemID");
 				$increment+=6;
 			}
-			else {
+			elsif ($itemList[$i] eq 'META_ANNOTATION' || $itemList[$i] eq 'ANNOTATION_ITEM') {
+				if($itemList[$i] eq 'ANNOTATION_ITEM') {
+					$itemID = $dbh->selectrow_array("SELECT ID_META_ANNOTATION FROM ANNOTATION_ITEM WHERE ID_ANNOTATION_ITEM=$itemID");
+				}
+
+				($itemName, my $projectID, my $experimentID, my $sampleID)=$dbh->selectrow_array("SELECT NAME, ID_PROJECT, ID_EXPERIMENT, ID_SAMPLE FROM META_ANNOTATION WHERE ID_META_ANNOTATION=$itemID");
+				
+				if($sampleID) {
+					$parentID = $sampleID;
+					$increment += 2; # skip until Sample
+				} elsif($experimentID) {
+					$parentID = $experimentID;
+					$increment += 8; # skip until Experiment
+				} else {
+					$parentID = $projectID;
+					$increment += 9; # skip until Project
+				}
+			} else {
 				($itemName,$parentID)=$dbh->selectrow_array("SELECT NAME,ID_$itemList[$i+1] FROM $itemList[$i] WHERE ID_$itemList[$i]=$itemID");
 			}
 			unshift @itemInfo,{'ID'=>$itemID,'NAME'=>$itemName,'ITEM'=>$itemList[$i],'TYPE'=>$type{$itemList[$i]},'POS'=>$displayPos}; # add at begining of array
@@ -1266,7 +1284,7 @@ sub getProtInfo { # called by scanDatank.pl, storeAnalysis.cgi (only for MSF) an
 	my %massAAave=&promsConfig::getMassAAave; # Average mass, needed for protein mass calculation
 	my %massATave=&promsConfig::getMassATave; # Average mass, needed for protein mass calculation
 	my $userID=($ENV{'REMOTE_USER'})? $ENV{'REMOTE_USER'} : 'myproms'; # no REMOTE_USER when called from cron
-	$refProtSeq = {} if (not defined $refProtSeq);
+	$refProtSeq = {} if !defined $refProtSeq;
 	
 	##>Check $refProtList structure (multi vs single analysis)
 	my $multiAnalysis=(scalar @{$refAnaList} > 1)? 1 : 0;
@@ -1429,7 +1447,7 @@ sub getProtInfo { # called by scanDatank.pl, storeAnalysis.cgi (only for MSF) an
 									':content_file'=>$masterFastaFile
 								   );
 		unless ($response->is_success) {
-			print "**ERROR: Bad anwser from Mascot server!**</TH></TR></TABLE>\n" if $action eq 'verbose';
+			print "**ERROR: Bad answer from Mascot server!**</TH></TR></TABLE>\n" if $action eq 'verbose';
 			return $!;
 		}
 		if ($response->content=~/^#Error/) {
@@ -1449,7 +1467,7 @@ sub getProtInfo { # called by scanDatank.pl, storeAnalysis.cgi (only for MSF) an
 				}
 				sleep 1;
 				my $lastLine=`tail -1 $masterFastaFile`;
-				$lwpEnd=1 if $lastLine=~/^##END/;
+				$lwpEnd=1 if ($lastLine && $lastLine=~/^##END/);
 				$count++;
 			}
 			print "</TH></TR></TABLE>\n";
@@ -1499,11 +1517,12 @@ sub getProtInfo { # called by scanDatank.pl, storeAnalysis.cgi (only for MSF) an
 						$refProtOrg->{"$prefixID$identifier"}=$org;
 						$refProtMW->{"$prefixID$identifier"}=$mw;
 						$refProtLength->{"$prefixID$identifier"}=$length;
-						#if ($multiAnalysis) {
+						if ($multiAnalysis) {
 							foreach my $anaID (keys %{$refProtList->{"$prefixID$identifier"}}) {
 								$matchedAnaList{$anaID}=1; # hash in case same analysis for 2 sub-entries ()
 							}
-						#}
+						}
+						else {$matchedAnaList{$analysisID}=1;}
 					}
 				} 
 				#elsif ($multiAnalysis && $_ !~ /^#/) {$protEntry.=$_;} # add sequence line(s) except ##END
@@ -1715,12 +1734,58 @@ sub getProtInfo { # called by scanDatank.pl, storeAnalysis.cgi (only for MSF) an
 		}
 
 		if ($action eq 'verbose') {
-			print " (",$maxProtID-$counter1," unmatched proteins).</FONT>" if $counter1<$maxProtID;
+			print " (",$maxProtID-$counter1,"/$maxProtID unmatched proteins).</FONT>" if $counter1<$maxProtID;
 			print "</FONT><BR>\n";
 		}
 	}
 
+	##<Trying to annotate proteins from DB
+	my ($sthMaster,$all2accRules,$sthProt);
+	if ($identType=~/UNIPROT_/) {
+		my $identCode=($identType eq 'UNIPROT_ID')? 'ID' : 'AC';
+		my ($identID)=$dbh->selectrow_array("SELECT ID_IDENTIFIER FROM IDENTIFIER WHERE CODE='$identCode'");
+		$sthMaster=$dbh->prepare("SELECT 1,PROT_DES,PROT_LENGTH,MW,PROT_SEQ,SCIENTIFIC_NAME FROM MASTERPROT_IDENTIFIER I,MASTER_PROTEIN MP,SPECIES S WHERE I.ID_MASTER_PROTEIN=MP.ID_MASTER_PROTEIN AND MP.ID_SPECIES=S.ID_SPECIES AND I.ID_IDENTIFIER=$identID AND I.VALUE=? ORDER BY UPDATE_DATE DESC LIMIT 1");
+		if ($identType eq 'UNIPROT_ALL') {
+			my ($accParseRules)=$dbh->selectrow_array("SELECT PARSE_RULES FROM DATABANK_TYPE WHERE DEF_IDENT_TYPE='UNIPROT_ACCESSION' ORDER BY ID_DBTYPE DESC LIMIT 1");
+			my @rules=split(',:,',$accParseRules);
+			($all2accRules)=($rules[0]=~/ID=(.+)/);
+		}
+		$sthProt=$dbh->prepare("SELECT IDENTIFIER,PROT_DES,PROT_LENGTH,MW,PROT_SEQ,ORGANISM FROM PROTEIN WHERE IDENTIFIER LIKE ? ORDER BY UPDATE_DATE DESC");
+	}
+	
+	my ($protCount,$numMatched,$verboseAnnot)=(0,0,0);
 	foreach my $identifier (keys %{$refProtList}) { # can be overwritten by next call of &getProtInfo if multi-db search
+		next if $refProtDes->{$identifier};
+		if ($protCount < 500 || $action ne 'verbose') {
+			my $match=0;
+			#<Check if protein already recorded in DB as master protein
+			if ($sthMaster) {
+				if ($protCount==0 && $action eq 'verbose') {
+					print '<FONT class="title3">&nbsp;-Annotating unmatched proteins from database...';
+					$verboseAnnot=1;
+				}
+				my ($usedIdentifier)=($all2accRules)? ($identifier=~/$all2accRules/) : ($identifier);
+				$sthMaster->execute($usedIdentifier);
+				($match,$refProtDes->{$identifier},$refProtLength->{$identifier},$refProtMW->{$identifier},$refProtSeq->{$identifier},$refProtOrg->{$identifier})=$sthMaster->fetchrow_array;
+			}
+			#<Check if protein already recorded in DB as simple protein
+			if (!$match && $sthProt) {
+				$sthProt->execute("%$identifier%");
+				my $qIdent=quotemeta($identifier);
+				while (my ($ident,$des,$ln,$mw,$seq,$org)=$sthProt->fetchrow_array) {
+					if ($ident=~/(^|\|)$qIdent(\||$)/) {
+						($refProtDes->{$identifier},$refProtLength->{$identifier},$refProtMW->{$identifier},$refProtSeq->{$identifier},$refProtOrg->{$identifier})=($des,$ln,$mw,$seq,$org);
+						$match=1;
+						last;
+					}
+				}
+			}
+			$numMatched++ if $match;
+		}
+		if ($protCount==500 && $verboseAnnot) {
+			print '[Aborting: too many unmatched proteins]';
+		}
+		
 		$refProtDes->{$identifier}='no description' unless $refProtDes->{$identifier};
 		if ($dbOrganism) {
 			$refProtOrg->{$identifier}=$dbOrganism if (!$refProtOrg->{$identifier} || $refProtOrg->{$identifier} eq 'unknown organism');
@@ -1731,8 +1796,14 @@ sub getProtInfo { # called by scanDatank.pl, storeAnalysis.cgi (only for MSF) an
 		#$refProtOrg->{$identifier}= 'unknown organism' unless $refProtOrg->{$identifier} ;
 		$refProtMW->{$identifier}=0 unless $refProtMW->{$identifier};
 		$refProtLength->{$identifier}=0 unless $refProtLength->{$identifier};
+		
+		$protCount++;
+		print '.' if ($verboseAnnot && !($protCount % 50));
 	}
+	$sthMaster->finish if $sthMaster;
+	$sthProt->finish if $sthProt;
 
+	print " Done ($numMatched/$protCount additional proteins matched).</FONT><BR>\n" if $verboseAnnot;
 	#print "<FONT class=\"title2\">&nbsp;Done.</FONT><BR><BR>\n" if $action eq 'verbose';
 }
 
@@ -1881,12 +1952,18 @@ sub deleteUnusedSpecies {
 	$sthDelSp->finish;
 }
 
-###################################
-####<Cleaning export directory>####
-###################################
+######################################## creates directory if not exists
+####<Clean directory or delete file>#### delete everything inside older than maxAge (directory itself is never deleted!)
+######################################## returns the number of elements remaining
 sub cleanDirectory {
 	my ($dir,$maxAge)=@_;
+		
+	if (!-e $dir) {
+		mkdir $dir;
+		return 1;
+	}
 	return 1 if -l $dir; # skip links
+	
 	if ($maxAge) {
 		if ($maxAge=~/^(\d+)s/i) {$maxAge=$1;} # seconds
 		elsif ($maxAge=~/^(\d+)m/) {$maxAge=$1*60;} # minutes
@@ -1900,7 +1977,7 @@ sub cleanDirectory {
 
 	my $numChildren=0;
 	my $now=time;
-	if (-d $dir) {
+	if (-d $dir) { # is a directory
 		return 1 if -e "$dir/no_delete.txt"; # safety net for dev data
 
 		##>Clean previous job dirs & files
@@ -1920,12 +1997,12 @@ sub cleanDirectory {
 		}
 		close $DIR;
 	}
-	elsif (-e $dir) { # a file
+	elsif (-e $dir) { # is a file
 		my $modTime=(stat($dir))[9];
 		if ($modTime && $now-$modTime > $maxAge) {unlink $dir;}
 		else {$numChildren=1;}
 	}
-	else {mkdir $dir;}
+
 	return $numChildren;
 }
 
@@ -2122,32 +2199,85 @@ sub getSearchParam {
 	##<MaxQuant
 	if ($fileFormat eq 'MAXQUANT.DIR') {
 		$infoSubmit{'a:Search title'} = $rawName;
-
-my $paramGrIdx=0; # Assumes only 1 parameter group!!!!!!!!!!!!!!!!!!!!!
-		require XML::Simple;
-		my $xml = new XML::Simple();
-		my $xmlParams = $xml->XMLin("$anaDir/$fileName",ForceArray=>['parameterGroup','string','short','int'],SuppressEmpty=>undef);
-		my $xmlGroupParams=$xmlParams->{parameterGroups}{parameterGroup}[$paramGrIdx];
-		$infoSubmit{'c:MaxQuant version'} = $xmlParams->{maxQuantVersion} if $xmlParams->{maxQuantVersion};
-		$infoSubmit{'d:Enzyme'}=join(',',@{$xmlGroupParams->{enzymes}{string}});
-		$infoSubmit{'e:Max. missed cleavages'}=$xmlGroupParams->{maxMissedCleavages};
-		$infoSubmit{'f:Fixed modifications'}=join(', ',@{$xmlParams->{fixedModifications}{string}}) if $xmlParams->{fixedModifications}{string}[0];
-		$infoSubmit{'g:Variable modifications'}=join(', ',@{$xmlGroupParams->{variableModifications}{string}}) if $xmlGroupParams->{variableModifications}{string}[0];
-		my $lKey=97; # chr(97)='a'
-		foreach my $refMsmsParam (@{$xmlParams->{msmsParamsArray}{msmsParams}}) {
-			my $name=$refMsmsParam->{Name};
-			my $tol=$refMsmsParam->{MatchTolerance};
-			my $unit=($refMsmsParam->{MatchToleranceInPpm} eq 'true')? 'ppm' : 'Da';
-			push @{$infoSubmit{'h:MS/MS tolerance'}{chr($lKey).":$name"}},"$tol $unit";
-			$lKey++;
+		if ($fileName eq 'parameters.txt') { # no mqpar.xml provided
+			my %allParameters;
+			open(PARAM,"$anaDir/parameters.txt");
+			while(<PARAM>) {
+				next if $.==1;
+				s/\s+$//; # chomp is not enough <- Windows
+				my ($param,$valueStrg)=split(/\t/,$_);
+				$valueStrg='' unless $valueStrg;
+				$allParameters{$param}=$valueStrg;
+			}
+			close PARAM;
+			$infoSubmit{'c:MaxQuant version'}=$allParameters{'Version'} || 'Unknown';
+			$infoSubmit{'f:Fixed modifications'}=join(', ',split(';',$allParameters{'Fixed modifications'})) || 'None';
+			#$infoSubmit{'g:Variable modifications'}=join(', ',split(';',$allParameters{'Site tables'})) || 'None'; $infoSubmit{'g:Variable modifications'}=~s/Sites\.txt//g;
+			my $lKey=97; # chr(97)='a'
+			foreach my $param (keys %allParameters) {
+				if ($param=~/^MS\/MS tol/) {
+					push @{$infoSubmit{'h:MS/MS tolerance'}{chr($lKey).':'.$param}},$allParameters{$param};
+					$lKey++;
+				}
+			}
+			foreach my $file (split(';',$allParameters{'Fasta file'})) {
+				my $fastaFile=(split(/[\\\/]/,$file))[-1];
+				push @{$infoSubmit{'l:Databank'}{'a:File'}},$fastaFile;
+			}
+			$infoSubmit{'m:Include contaminants'}=$allParameters{'Include contaminants'};
+			$infoSubmit{'n:Decoy mode'}=$allParameters{'Decoy mode'};
+			
+			my %summaryColNum;
+			open(SUMM,"$anaDir/summary.txt");
+			while(<SUMM>) {
+				s/\s+$//; # chomp is not enough <- Windows
+				my @parameters=split(/ *\t */,$_);
+				if ($.==1) {
+					my %msmsColNum;
+					my $ncol=0;
+					foreach my $colName (@parameters) {
+						$summaryColNum{$colName}=$ncol;
+						$ncol++;
+					}
+					next;
+				}
+				foreach my $i (0..$#parameters) {$parameters[$i]='' unless $parameters[$i];} # just to be safe
+				# take only line 2 => assume same parameters for all raw files
+				$infoSubmit{'d:Enzyme'}=$parameters[$summaryColNum{'Enzyme'}];
+				$infoSubmit{'e:Max. missed cleavages'}=$parameters[$summaryColNum{'Max. missed cleavages'}] || 'Unknown';
+				$infoSubmit{'g:Variable modifications'}=join(', ',split(';',$parameters[$summaryColNum{'Variable modifications'}])) || 'None';
+				last;
+			}
+			close SUMM;
+			$infoSubmit{'o:Parameter files'}='parameters.txt, summary.txt';
 		}
-		foreach my $file (@{$xmlParams->{fastaFiles}{string}}) {
-			my $fastaFile=(split(/[\\\/]/,$file))[-1];
-			push @{$infoSubmit{'l:Databank'}{'a:File'}},$fastaFile;
+		elsif ($fileName=~/\.xml$/) { # mqpar.xml
+			require XML::Simple;
+			my $xml = new XML::Simple();
+			my $xmlParams = $xml->XMLin("$anaDir/$fileName",ForceArray=>['parameterGroup','string','short','int'],SuppressEmpty=>undef);	
+			my $paramGrIdx=0; # Assumes only 1 parameter group!!!!!!!!!!!!!!!!!!!!!
+			my $xmlGroupParams=$xmlParams->{parameterGroups}{parameterGroup}[$paramGrIdx];
+			$infoSubmit{'c:MaxQuant version'} = $xmlParams->{maxQuantVersion} if $xmlParams->{maxQuantVersion};
+			$infoSubmit{'d:Enzyme'}=join(',',@{$xmlGroupParams->{enzymes}{string}});
+			$infoSubmit{'e:Max. missed cleavages'}=$xmlGroupParams->{maxMissedCleavages};
+			$infoSubmit{'f:Fixed modifications'}=join(', ',@{$xmlParams->{fixedModifications}{string}}) if $xmlParams->{fixedModifications}{string}[0];
+			$infoSubmit{'g:Variable modifications'}=join(', ',@{$xmlGroupParams->{variableModifications}{string}}) if $xmlGroupParams->{variableModifications}{string}[0];
+			my $lKey=97; # chr(97)='a'
+			foreach my $refMsmsParam (@{$xmlParams->{msmsParamsArray}{msmsParams}}) {
+				my $name=$refMsmsParam->{Name};
+				my $tol=$refMsmsParam->{MatchTolerance};
+				my $unit=($refMsmsParam->{MatchToleranceInPpm} eq 'true')? 'ppm' : 'Da';
+				push @{$infoSubmit{'h:MS/MS tolerance'}{chr($lKey).':'.$name}},"$tol $unit";
+				$lKey++;
+			}
+			foreach my $file (@{$xmlParams->{fastaFiles}{string}}) {
+				my $fastaFile=(split(/[\\\/]/,$file))[-1];
+				push @{$infoSubmit{'l:Databank'}{'a:File'}},$fastaFile;
+			}
+			$infoSubmit{'m:Include contaminants'}=$xmlParams->{includeContaminants};
+			$infoSubmit{'n:Decoy mode'}=$xmlParams->{decoyMode};
+			$infoSubmit{'o:XML parameter file'}=$fileName;
 		}
-		$infoSubmit{'m:Include contaminants'}=$xmlParams->{includeContaminants};
-		$infoSubmit{'n:Decoy mode'}=$xmlParams->{decoyMode};
-		$infoSubmit{'o:XML parameter file'}=$fileName;
 		return %infoSubmit;
 	}
 	##<All other search engines
@@ -2269,7 +2399,7 @@ my $paramGrIdx=0; # Assumes only 1 parameter group!!!!!!!!!!!!!!!!!!!!!
 			push @{$infoSubmit{'b:Spectral library'}{'d:Proteins'}},$value if $name=~/LIBRARY_PROTEINS/;
 			push @{$infoSubmit{'b:Spectral library'}{'e:Specific proteins'}},$value if $name=~/LIBRARY_SPECIFICS_PROTEINS/;
 
-			###>export options
+			## Library export options
 			push @{$infoSubmit{'c:Library export options'}{'a:Ion mass limits'}},$value if $name=~/ION_MASS_LIMITS/;
 			push @{$infoSubmit{'c:Library export options'}{'b:Ion type'}},$value if $name=~/ION_TYPE/;
 			push @{$infoSubmit{'c:Library export options'}{'c:Ion charge'}},$value if $name=~/ION_CHARGE/;
@@ -2283,8 +2413,8 @@ my $paramGrIdx=0; # Assumes only 1 parameter group!!!!!!!!!!!!!!!!!!!!!
 			push @{$infoSubmit{'c:Library export options'}{'k:Labelling file'}},$value if $name=~/LABELLING_FILE/;
 			push @{$infoSubmit{'c:Library export options'}{'l:Fasta file'}},$value if $name=~/FASTA_FILE/;
 			push @{$infoSubmit{'c:Library export options'}{'m:Other'}},$value if $name=~/OTHER/;
-
 		}
+		
 		my $sthDbID=$dbh->prepare("SELECT ID_DATABANK FROM ANALYSIS_DATABANK WHERE ID_ANALYSIS=$anaID");
 		$sthDbID->execute;
 		while (my $dbID=$sthDbID->fetchrow_array) {
@@ -2305,7 +2435,7 @@ my $paramGrIdx=0; # Assumes only 1 parameter group!!!!!!!!!!!!!!!!!!!!!
 			push @{$infoSubmit{'b:Spectral library'}{'d:Proteins'}},$value if $name=~/LIBRARY_PROTEINS/;
 			push @{$infoSubmit{'b:Spectral library'}{'e:Specific proteins'}},$value if $name=~/LIBRARY_SPECIFICS_PROTEINS/;
 
-			###>export options
+			## Export options
 			push @{$infoSubmit{'c:Library export options'}{'a:Ion mass limits'}},$value if $name=~/ION_MASS_LIMITS/;
 			push @{$infoSubmit{'c:Library export options'}{'b:Ion type'}},$value if $name=~/ION_TYPE/;
 			push @{$infoSubmit{'c:Library export options'}{'c:Ion charge'}},$value if $name=~/ION_CHARGE/;
@@ -2319,10 +2449,37 @@ my $paramGrIdx=0; # Assumes only 1 parameter group!!!!!!!!!!!!!!!!!!!!!
 			push @{$infoSubmit{'c:Library export options'}{'k:Labelling file'}},$value if $name=~/LABELLING_FILE/;
 			push @{$infoSubmit{'c:Library export options'}{'l:Fasta file'}},$value if $name=~/FASTA_FILE/;
 			push @{$infoSubmit{'c:Library export options'}{'m:Other'}},$value if $name=~/OTHER/;
+			
+			## Library processing options
+			push @{$infoSubmit{'d:Library processing options'}{'a:Precursor mz threshold'}},$value if $name=~/PRECURSOR_MZ_THRESHOLD/;
+			push @{$infoSubmit{'d:Library processing options'}{'b:Product mz threshold'}},$value if $name=~/PRODUCT_MZ_THRESHOLD/;
+			push @{$infoSubmit{'d:Library processing options'}{'c:Precursor lower mz limit'}},$value if $name=~/PRECURSOR_MIN_MZ/;
+			push @{$infoSubmit{'d:Library processing options'}{'d:Precursor upper mz limit'}},$value if $name=~/PRECURSOR_MAX_MZ/;
+			push @{$infoSubmit{'d:Library processing options'}{'f:Unimod modifications file'}},$value if $name=~/UNIMOD_MOD_FILE/;
+			push @{$infoSubmit{'d:Library processing options'}{'f:Max nb alt localizations'}},$value if $name=~/MAX_NB_ALT_LOCALIZATIONS/;
+			push @{$infoSubmit{'d:Library processing options'}{'e:IPF'}}, $value if $name=~/IPF/;
 
-			push @{$infoSubmit{'d:TRIC option'}{'m:Method'}},$value if $name=~/TRIC_METHOD/;
-
+			## OpenSwath options
+			push @{$infoSubmit{'e:OpenSwath Options'}{'a:IRT file'}}, $value if $name=~/IRT_FILE/;
+			push @{$infoSubmit{'e:OpenSwath Options'}{'b:Swath windows file'}}, $value if $name=~/SWATH_WINDOWS/;
+			push @{$infoSubmit{'e:OpenSwath Options'}{'c:FDR cutoff'}}, $value if $name=~/FDR_CUTOFF/;
+			push @{$infoSubmit{'e:OpenSwath Options'}{'d:RT extraction windows'}}, $value if $name=~/RT_EXTRACTION_WINDOWS/;
+			push @{$infoSubmit{'e:OpenSwath Options'}{'e:m/z extraction windows'}}, $value if $name=~/MZ_EXTRACTION_WINDOWS/;
+			push @{$infoSubmit{'e:OpenSwath Options'}{'f:m/z extraction unit'}}, "ppm" if($name=~/MZ_EXTRACTION_WINDOWS_UNIT/);
+			push @{$infoSubmit{'e:OpenSwath Options'}{'g:m/z correction function'}}, $value if $name=~/MZ_CORRECTION_FUNCTION/;
+			push @{$infoSubmit{'e:OpenSwath Options'}{'h:Minimum peak width'}}, $value if $name=~/MIN_PEAK_WIDTH/;
+			
+			## PyProphet options
+			push @{$infoSubmit{'f:PyProphet Options'}{'h:Method'}}, $value if $name=~/PYPROPHET_METHOD/;
+			
+			## TRIC options
+			push @{$infoSubmit{'g:TRIC option'}{'m:Method'}},$value if $name=~/TRIC_METHOD/;
 		}
+		
+		if(scalar @{$infoSubmit{'e:OpenSwath Options'}{'f:m/z extraction unit'}} == 0) {
+			push @{$infoSubmit{'e:OpenSwath Options'}{'f:m/z extraction unit'}}, "Th";
+		}
+
 		my $sthDbID=$dbh->prepare("SELECT ID_DATABANK FROM ANALYSIS_DATABANK WHERE ID_ANALYSIS=$anaID");
 		$sthDbID->execute;
 		while (my $dbID=$sthDbID->fetchrow_array) {
@@ -3913,8 +4070,11 @@ sub getVariableModifications {
 
 	my %variableModifications=();
 	while (my ($modificationID,$psiMsName,$interimName,$altNames,$dispCode,$dispColor,$isLabel,$specifity) = $sthModInfo->fetchrow_array) {
-		$altNames=~ s/##/,/g if $altNames;
-		my $name=($psiMsName)?$psiMsName:($interimName)?$interimName:($altNames)?$altNames:'';
+		if ($altNames) {
+			$altNames=~ s/^##//;
+			$altNames=(split('##',$altNames))[0]; # keep 1rst
+		}
+		my $name=$psiMsName || $interimName || $altNames || undef;
 		next unless $name;
 
 		@{$variableModifications{$modificationID}}=($name,$dispCode,"mod_$modificationID","color:#$dispColor;",$specifity);
@@ -3941,7 +4101,7 @@ sub convertVarModString {
 			$varModStrg = "$varModStrg ($aaThree2OneLetter{$res[0]})" if $aaThree2OneLetter{$res[0]};
 			($varModText)=($varModStrg=~/^(.+)\s+\([^\(]/);
 		}
-		return ('','','',0) unless $varModText;
+		return ($varModStrg,'','',0) unless $varModText;
 	}
 	# Change on the 15th of January 2018 because 'AzidoBiotinPEG4 Oxyde (K)' was recognized by this test
 	#if ($varModText=~/(\d+) (.+)/) {
@@ -4121,11 +4281,13 @@ sub decodeVarMod {
 		unless ($refModName->{$modID}) {
 			$sthVM->execute($modID);
 			my ($psiMsName,$interimName,$altNames) = $sthVM->fetchrow_array;
-			$altNames=~ s/##/,/g if $altNames;
-			$altNames=~ s/^,//; $altNames=~ s/,\Z//; # remove starting & trailing "," if any
+			if ($altNames) {
+				$altNames=~ s/##/,/g;
+				$altNames=~ s/^,//; $altNames=~ s/,\Z//; # remove starting & trailing "," if any
+			}
 			$refModName->{$modID}=($psiMsName)? $psiMsName : ($interimName)? $interimName : ($altNames)? $altNames : '';
 		}
-		my %aa=();
+		my %aa;
 		my $vmodInString = scalar keys %varMods;
 		my $modNtCt = '';
 		my @newPos = ();
@@ -4149,7 +4311,17 @@ sub decodeVarMod {
 			elsif ($pos=~/\D/) { # possible = - * +
 				$modNtCt=($pos eq '-')? 'Protein N-term' : ($pos eq '=')? 'N-term' : ($pos eq '+')? 'Protein C-term' : 'C-term'; # '*'
 			}
-			else {$aa{$sequence[$pos-1]}=1; push @newPos,$pos+$posShift;}
+			#else {$aa{$sequence[$pos-1]}=1; push @newPos,$pos+$posShift;}
+			else {
+				if ($sequence[$pos-1]) {
+					$aa{$sequence[$pos-1]}=1;
+				}
+				else { # ERROR: pos is outside sequence's length!!!! Should never happen unless bug during data import
+					#print "*$pepSeq*$modCode*$vCode*$posString*$pos*<BR>\n";
+					$aa{'!'}=1;
+				}
+				push @newPos,$pos+$posShift;
+			}
 		}
 		
 		# Add ambigous to match expected modification sites amount
@@ -4202,11 +4374,11 @@ sub getModificationIDfromString { # requires XML::SAX::ParserFactory
 	$vmodStringUC=~s/-ADD//g; # Arg-add in Paragon becomes Arg in Unimod
 
 	###> Look into myProMS database
-	my $sthGetVMOD=$dbh->prepare("SELECT ID_MODIFICATION,SPECIFICITY FROM MODIFICATION WHERE UPPER(PSI_MS_NAME)='$vmodStringUC' OR UPPER(INTERIM_NAME)='$vmodStringUC' OR UPPER(SYNONYMES) LIKE'%##$vmodStringUC##%' LIMIT 0,1");
-	$sthGetVMOD->execute;
-	my ($modificationID,$specificityString)=$sthGetVMOD->fetchrow_array;
+	my ($modificationID,$specificityString)=$dbh->selectrow_array("SELECT ID_MODIFICATION,SPECIFICITY FROM MODIFICATION WHERE UPPER(PSI_MS_NAME)='$vmodStringUC' OR UPPER(INTERIM_NAME)='$vmodStringUC' LIMIT 1");
+	unless ($modificationID) {
+		($modificationID,$specificityString)=$dbh->selectrow_array("SELECT ID_MODIFICATION,SPECIFICITY FROM MODIFICATION WHERE UPPER(SYNONYMES) LIKE '%##$vmodStringUC##%' LIMIT 1");
+	}
 	$specificityString='' unless $specificityString;
-	$sthGetVMOD->finish;
 
 	if ($modificationID) { # Modification was found in myProMS, check now the specificity.
 		###> Has to check specificity
@@ -4235,7 +4407,7 @@ sub getModificationIDfromString { # requires XML::SAX::ParserFactory
 			$xmlparser->parse_uri($xmlFile);
 		}
 
-		my $sthChkVMod=$dbh->prepare("SELECT ID_MODIFICATION FROM MODIFICATION WHERE UNIMOD_ACC=? LIMIT 0,1"); # LIMIT just to be safe (should match only 1 modif)
+		my $sthChkVMod=$dbh->prepare("SELECT ID_MODIFICATION FROM MODIFICATION WHERE UNIMOD_ACC=? LIMIT 1"); # LIMIT just to be safe (should match only 1 modif)
 		my $sthAddVMod=$dbh->prepare("INSERT INTO MODIFICATION (ID_MODIFICATION,UNIMOD_ACC,PSI_MS_NAME,INTERIM_NAME,DES,SYNONYMES,COMPOSITION,MONO_MASS,AVGE_MASS,SPECIFICITY,IS_LABEL,VALID_STATUS) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)");
 		my ($maxModID)=$dbh->selectrow_array("SELECT MAX(ID_MODIFICATION) FROM MODIFICATION");
 		foreach my $unimodID (keys %{$vmods}) {
@@ -4405,12 +4577,14 @@ sub updateMatchGroups {
 }
 sub createMatchGroups { # computes match groups from provided data & parameters (can also be called directly from a script)
 	my ($refmatchList,$refmatchGroup,$refVisibility,$refBestProtVis,$protVisibility,$refsortedIdentifiers,$verbose)=@_;
-	print "<FONT class=\"title3\">&nbsp;-Grouping proteins..." if $verbose;
+	print "<FONT class=\"title3\">&nbsp;-Grouping proteins: 0%..." if $verbose;
 	my $numGroup=0;
     %{$refmatchGroup}=(); # just to be safe
 	%{$refVisibility}=(); # just to be safe
 	my $count=0;
-	foreach my $i (0..@$refsortedIdentifiers-1) {
+	my $numProt=scalar @{$refsortedIdentifiers};
+	my $currPC=0;
+	foreach my $i (0..$#{$refsortedIdentifiers}) {
 		#if ($verbose) {
 		#	$count++;
 		#	if ($count==150 && $verbose) {print '.'; $count=0;}
@@ -4420,7 +4594,7 @@ sub createMatchGroups { # computes match groups from provided data & parameters 
 		$refVisibility->{$refsortedIdentifiers->[$i]}=2; # Reference protein
 		$refBestProtVis->{$refsortedIdentifiers->[$i]}=2; # update bestVis
 #next; # SKIP grouping!!!
-		foreach my $j ($i+1..@$refsortedIdentifiers-1) {
+		foreach my $j ($i+1..$#{$refsortedIdentifiers}) {
 			next if $refmatchGroup->{$refsortedIdentifiers->[$j]}; # already assigned to a match group
 			if ($verbose) {
 				$count++;
@@ -4441,8 +4615,19 @@ sub createMatchGroups { # computes match groups from provided data & parameters 
 				$refBestProtVis->{$refsortedIdentifiers->[$j]}=$refVisibility->{$refsortedIdentifiers->[$j]} if (!defined($refBestProtVis->{$refsortedIdentifiers->[$j]}) || $refVisibility->{$refsortedIdentifiers->[$j]} > $refBestProtVis->{$refsortedIdentifiers->[$j]}); # update bestVis
 			}
 		}
+		if ($verbose) {
+			my $newPC=10*int(10*(scalar keys %{$refmatchGroup})/$numProt);
+			if ($newPC > $currPC) {
+				for (my $pc=$currPC+10; $pc<=$newPC; $pc+=10) {
+					print "$pc%";
+					print "..." if $pc < 100;
+				}
+				$currPC=$newPC;
+			}
+		}
 	}
 	print " Done.</FONT><BR>\n" if $verbose;
+	return $numGroup;
 }
 
 
@@ -4559,7 +4744,7 @@ $self->{'vmods'}->{$unimodID}{'IS_LABEL'}=(!$self->{'vmods'}->{$unimodID}{'IS_LA
 		}elsif ($element->{'Name'} eq "positions") {
 			$self->{'onposition'}=0;
 		}
-elsif ($element->{'Name'} eq "classifications") {
+		elsif ($element->{'Name'} eq "classifications") {
 			$self->{'onclassification'}=0;
 		}
 	}
@@ -4568,6 +4753,11 @@ elsif ($element->{'Name'} eq "classifications") {
 1;
 
 ####>Revision history
+# 4.0.6 [Fix] bug in &getProtInfo when called with multiple analyses (PP 21/06/19)
+# 4.0.5 &decodeVarMod now handles out of range PTM position with a '!' (PP 18/06/19)
+# 4.0.4 Add Metadata handling in &getSearchParam (VS 25/05/19)
+# 4.0.3 Change in SQL query in &getModificationIDfromString & improved verbose mode in &getProtInfo (PP 17/05/19)
+# 4.0.2 &getProtInfo tries to fetch protein info from DB if no match found in databank file & update of &getSearchParam for MaxQuant and &convertVarModString (PP 21/02/19)
 # 4.0.1 Added ambigous modification sites position in decodeVarMod (VS 14/12/18)
 # 4.0.0 Handles multiple ambigous modification sites in decodeVarMod (VS 13/12/18)
 # 3.9.9 Fixed PD search parameters displaying (VS 22/11/18)

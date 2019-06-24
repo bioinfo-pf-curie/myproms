@@ -1,11 +1,11 @@
 #!/usr/local/bin/perl -w
 
-######################################################################################
-# showPepQuantification.cgi                1.9.9	                                 #
-# Authors: P. Poullet, G. Arras, F. Yvon, M. Le Picard, V. Sabatet (Institut Curie)  #
-# Contact: myproms@curie.fr                                                    		 #
-# Displays peptide quantification data                                         		 #
-######################################################################################
+#############################################################################
+# showPepQuantification.cgi        1.9.10                                   #
+# Authors: P. Poullet, G. Arras, M. Le Picard, V. Sabatet (Institut Curie)  #
+# Contact: myproms@curie.fr                                                 #
+# Displays peptide quantification data                                      #
+#############################################################################
 #----------------------------------CeCILL License-------------------------------
 # This file is part of myProMS
 #
@@ -118,6 +118,19 @@ if ($1) {
 	my ($fileFormat)=$dbh->selectrow_array("SELECT FILE_FORMAT FROM ANALYSIS A,ANA_QUANTIFICATION Q WHERE A.ID_ANALYSIS=Q.ID_ANALYSIS AND ID_QUANTIFICATION=$selQuantifID");
 	$xicSoftCode=($fileFormat=~/\.PDM\Z/)? 'PD' : ($fileFormat=~/^MASCOT/)? 'MAS' : ($fileFormat=~/PARAGON/)? 'PAR' : '?';
 }
+my %dataCorrection;
+if ($quantifAnnot=~/::CORRECTION=([^:]+)/) {
+	my ($isLocal,$coefStrg)=split(';',$1);
+	$isLocal=~s/#//;
+	$dataCorrection{COEF}=$coefStrg;
+	if ($isLocal) {
+		$dataCorrection{SRC}=1;
+		($dataCorrection{NAME},$dataCorrection{PRODUCT},$dataCorrection{LOT})=$dbh->selectrow_array("SELECT IC.NAME,PRODUCT_NUMBER,LOT_NUMBER FROM ISOTOPIC_CORRECTION IC,QUANTIFICATION Q WHERE Q.ID_PRODUCT=IC.ID_PRODUCT AND ID_QUANTIFICATION=$selQuantifID");
+		#$dataCorrection{COMPANY}='ThermoFisher';
+	}
+	else {$dataCorrection{SRC}=-1;}
+}
+else {$dataCorrection{SRC}=0;}
 
 ###>Fetching quantification parameters
 my $sthQP2=$dbh->prepare("SELECT ID_QUANTIF_PARAMETER,P.CODE FROM QUANTIFICATION Q,QUANTIFICATION_METHOD M,QUANTIFICATION_PARAMETER P WHERE Q.ID_QUANTIFICATION_METHOD=M.ID_QUANTIFICATION_METHOD AND M.ID_QUANTIFICATION_METHOD=P.ID_QUANTIFICATION_METHOD AND ID_QUANTIFICATION=$selQuantifID");
@@ -532,7 +545,7 @@ if ($call eq 'ana' && !$doExport) {
 print qq
 |<DIV id="waitDIV">
 <BR><BR><BR><BR><BR><FONT class="title3">Fetching data...</FONT><BR><IMG src="$promsPath{images}/scrollbarGreen.gif">
-<BR><BR><FONT class="title3">Status:<SPAN id="waitSPAN"><SPAN>...</FONT>
+<BR><BR><FONT class="title3">Status:&nbsp;<SPAN id="waitSPAN"><SPAN>...</FONT>
 </DIV>
 | unless $doExport;
 
@@ -831,10 +844,11 @@ if ($labelType eq 'FREE') {
 	
 	print "End of list.\n\n";
 
+}
 #########################
 ####>LABELED QUANTIF<####
 #########################
-} else {
+else {
 
 	#######################################
 	####>Analysis-level quantification<####
@@ -915,7 +929,7 @@ if ($labelType eq 'FREE') {
 					$count++;
 					if ($count==5000) {
 						$count=0;
-						printWaitingMsg(".", 1);
+						&printWaitingMsg(".", 1);
 					}
 				}
 				close QUANTI;
@@ -1065,7 +1079,7 @@ if ($labelType eq 'FREE') {
 								print "<TR><TD></TD><TD bgcolor=\"$bgColor\" class=\"rBorder\" align=right>&nbsp;$numPep&nbsp;</TD><TH bgcolor=\"$bgColor\" class=\"font11\" align=left nowrap>$seqVarMod&nbsp;</TH><TD bgcolor=\"$bgColor\" align=center>$startPos</TD><TD bgcolor=\"$bgColor\" align=center>$charge<SUP>+</SUP></TD>";
 								print "<TD bgcolor=\"$bgColor\" align=center>&nbsp;$scoreStrg&nbsp;</TD>";
 								foreach my $chanNum (@channelList) { # 1..$maxChanNum
-									my $value=(defined $quantifValues{$chanNum})? $quantifValues{$chanNum} : '-';
+									my $value=(defined $quantifValues{$chanNum})? sprintf "%.1f",$quantifValues{$chanNum} : '-';
 									print "<TD bgcolor=\"$bgColor\" align=center>&nbsp;$value&nbsp;</TD>";
 								}
 								print "<TD bgcolor=\"$bgColor\" align=center nowrap>&nbsp;$dataSrc&nbsp;</TD>" if $numDataSrc > 1;
@@ -1098,6 +1112,7 @@ if ($labelType eq 'FREE') {
 			my $maxReporterPos=0;
 			foreach my $infoStrg (@labelInfo) {
 				my ($repPos,$reporter,$monoMass)=split(';',$infoStrg);
+				last if $repPos !~ /^\d/;
 				@{$labelingInfo{$repPos}}=($reporter,$monoMass);
 				$sumValues{$repPos}=0;
 				$maxReporterPos=$repPos if $maxReporterPos < $repPos;
@@ -1105,29 +1120,32 @@ if ($labelType eq 'FREE') {
 
 			##>Fetching quantification data
 			my (%quantifValues,%labeledPeptideSets,%peptideMrobs,%peptideScore,%peptideSets);
-			my ($repValue)=($labelType=~/ITRAQ/)?'REP_AREA':'REP_INTENSITY';
-			my ($signalParamID)=$dbh->selectrow_array("SELECT ID_QUANTIF_PARAMETER FROM QUANTIFICATION_PARAMETER P,QUANTIFICATION_METHOD M WHERE P.ID_QUANTIFICATION_METHOD=M.ID_QUANTIFICATION_METHOD AND P.CODE='$repValue' AND M.CODE='$labelType'");
-			#my $sthQP=$dbh->prepare("SELECT ID_PEPTIDE,QUANTIF_VALUE,TARGET_POS FROM PEPTIDE_QUANTIFICATION WHERE ID_QUANTIFICATION=$selQuantifID AND ID_QUANTIF_PARAMETER=$signalParamID"); # only REP_AREA is recorded for iTRAQ and REP_INTENSITY for TMT
-			#$sthQP->execute;
+			my ($repValue,$signalParamID); # can be REP_INTENSITY or REP_AREA
+			my ($intensityParamID)=$dbh->selectrow_array("SELECT ID_QUANTIF_PARAMETER FROM QUANTIFICATION_PARAMETER P,QUANTIFICATION_METHOD M WHERE P.ID_QUANTIFICATION_METHOD=M.ID_QUANTIFICATION_METHOD AND P.CODE='REP_INTENSITY' AND M.CODE='$labelType'");
+			my ($areaParamID)=$dbh->selectrow_array("SELECT ID_QUANTIF_PARAMETER FROM QUANTIFICATION_PARAMETER P,QUANTIFICATION_METHOD M WHERE P.ID_QUANTIFICATION_METHOD=M.ID_QUANTIFICATION_METHOD AND P.CODE='REP_AREA' AND M.CODE='$labelType'");
+			my %paramID2Code=($intensityParamID=>'REP_INTENSITY',$areaParamID=>'REP_AREA');			
 			$count=0;
-			#while (my ($pepID,$paramValue,$repPos)=$sthQP->fetchrow_array) {
 			foreach my $chanNum (keys %labelingInfo) {
 				open (QUANTI,"$promsPath{quantification}/project_$projectID/quanti_$selQuantifID/peptide_quantification_$chanNum.txt");
 				while (<QUANTI>) {
 					next if $.==1;
 					chomp;
 					my ($paramID,$pepID,$paramValue)=split(/\t/,$_);
+					unless ($signalParamID) {
+						next unless $paramID2Code{$paramID};
+						$signalParamID=$paramID;
+						$repValue=$paramID2Code{$paramID};
+					}
 					next unless $paramID == $signalParamID; # For TMT, for each reporter, there are two values for each peptide (REP_INTENSITY AND REP_MASS) 
 					push @{$quantifValues{$pepID}{$repValue}{$chanNum}},($paramValue);
 					$sumValues{$chanNum}+=$paramValue if $paramValue;
 					if ($count==5000) {
 						$count=0;
-						printWaitingMsg(".", 1);
+						&printWaitingMsg(".", 1);
 					}
 				}
 				close QUANTI;
 			}
-			#$sthQP->finish;
 
 			##>Fetching peptide info & matchgroups
 			my (%peptideData, %pepDataSource);
@@ -1220,7 +1238,7 @@ if ($labelType eq 'FREE') {
 |;
 					if ($quantifValues{$pepID}) {
 						foreach my $repPos (1..$maxReporterPos) {
-							my $value=($quantifValues{$pepID}{$repValue}{$repPos}[0])? $quantifValues{$pepID}{$repValue}{$repPos}[0] : '-';
+							my $value=($quantifValues{$pepID}{$repValue}{$repPos}[0])? sprintf "%.1f",$quantifValues{$pepID}{$repValue}{$repPos}[0] : '-';
 							print "<TD bgcolor=\"$bgColor\" align=center>&nbsp;$value&nbsp;</TD>";
 						}
 					}
@@ -1627,7 +1645,7 @@ sub displayQuantificationValues {
 
 sub displayPeptideSummary {
 	my ($labelType,$xicSoftCode,$refInfo,$refSum)=@_;
-	my @posList=sort keys %{$refInfo};
+	my @posList=($refInfo)? sort{$a<=>$b} keys %{$refInfo} : ();
 	my $numExtraCol=scalar @posList;
 	$numExtraCol=2 if $numExtraCol<=1;
 	#my ($lightColor,$darkColor)=&promsConfig::getRowColors;
@@ -1780,8 +1798,14 @@ sub displayPeptideSummary {
 		print qq
 |<TABLE bgcolor="$darkColor">
 <TR bgcolor="$lightColor"><TH align=right bgcolor="$darkColor" class="title3">&nbsp;Label :</TH><TD class="title3" colspan="$colSpan">&nbsp;$dispLabelType&nbsp;&nbsp;&nbsp;<INPUT type="button" name="export" value="Export data" onclick="exportQuanti();"/>&nbsp;</TD></TR>
-<TR><TH align=right bgcolor="$darkColor">Software :</TH><TD bgcolor="$lightColor"colspan="$colSpan">&nbsp;<B>$xicSoftware{$xicSoftCode}$xicSoftVersionStrg</B>&nbsp;</TD></TR>
+<TR><TH align=right bgcolor="$darkColor">Software :</TH><TD bgcolor="$lightColor" colspan="$colSpan">&nbsp;<B>$xicSoftware{$xicSoftCode}$xicSoftVersionStrg</B>&nbsp;</TD></TR>
 |;
+		if ($dataCorrection{SRC}) {
+			print "<TR><TH align=right bgcolor=\"$darkColor\">Correction :</TH><TD bgcolor=\"$lightColor\" colspan=\"$colSpan\">&nbsp;";
+			if ($dataCorrection{SRC}>=1) {print "<B>$dataCorrection{NAME} (Product #$dataCorrection{PRODUCT}, Lot #$dataCorrection{LOT})</B>";}
+			else {print "<B>Unknown product</B>";}
+			print "&nbsp;</TD></TR>\n";
+		}
 		if ($labelType eq 'SILAC') {
 			print "<TR bgcolor=\"$lightColor\"><TH align=right bgcolor=\"$darkColor\">&nbsp;Channel :</TH>";
 			foreach my $pos (@posList) {
@@ -2607,6 +2631,7 @@ sub showLog10Plot {
 		elsif ($labelType=~/ITRAQ|TMT/) {
 			foreach my $infoStrg (@labelInfo) {
 				my ($repPos,$reporter,$monoMass)=split(';',$infoStrg);
+				last if $repPos !~ /^\d/;
 				$pepQuantiFiles{$repPos}="peptide_quantification_$repPos.txt";
 				$channelNames{$repPos}{$quantiID}=$reporter;
 			}
@@ -3219,6 +3244,7 @@ $jsPeptideIdStr
 
 
 ####>Revision history<####
+# 1.9.10 Displays isobaric data correction info if performed by myProMS (PP 24/01/19)
 # 1.9.9 Added RT for DIA & TDA (MS1/MS2) (VS 27/11/18)
 # 1.9.8 Optimized data loading (VS 26/11/18)
 # 1.9.7 Added TDA MS1 Heat Map (VS 21/11/18)

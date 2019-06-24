@@ -3,6 +3,7 @@
 # Authors: P. Poullet, G. Arras, F. Yvon & M. Le Picard (Institut Curie)       #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
+
 #----------------------------------CeCILL License-------------------------------
 # This file is part of myProMS
 #
@@ -97,6 +98,8 @@ sub getServerInfo {
 				'swath_lib_html'	=> "$promsPath{html}/data/swath_lib",
 				'valid'				=> "$promsPath{data}/validation",
 				'logs'				=> "$promsPath{data}/logs",
+                'metadata'          => "$promsPath{data}/metadata",
+                'metadata_html'     => "$promsPath{html}/data/metadata",
 				'peptide'			=> "$promsPath{data}/peptide_data",
 				'spectrum'			=> "$promsPath{data}/spectrum_data",
 				'gel'				=> "$promsPath{html}/data/gels",
@@ -158,11 +161,12 @@ sub checkUser {
 
 ####> MAX PARALLEL JOBS (on web server) <####
 sub getMaxParallelJobs {
-	return 2;
+	return 3;
 }
 
 ####> CLUSTER SERVER <####
 sub getClusterInfo {
+###	my $clusterCommandPrefix='/path/to/myproms/singularity/image'; # TO BE EDITED!
 	my %cluster; # Must be declared here even if only 1 cluster
 	%cluster=(
 ### --Code below must be adapted to your own cluster. All keys of %cluster (pointing to values or subroutines) must be defined
@@ -171,6 +175,7 @@ sub getClusterInfo {
 ###		'maxCPUs'=>24,
 ###		'maxJobs'=>20,
 ###		'maxMemory'=>240, # Gb
+###		'singularityImage'=>$clusterCommandPrefix || '',
 ###		'buildCommand' => sub {
 ###			my ($runDir,$command)=@_; # $command: a command string or a bash file full name
 ###			my $userCommandFile;
@@ -188,8 +193,7 @@ sub getClusterInfo {
 ###			else { # assume simple command => run directly
 ###				$userCommandFile=$command;
 ###			}
-###			my $clusterCommandPrefix=''; # or '/path/to/a/singularity/image/of/myproms.img';
-###			return "$clusterCommandPrefix $userCommandFile";
+###			return "$cluster{singularityImage} $userCommandFile";
 ###		},
 ###		'sendToCluster' => sub {
 ###			my ($bashFile,$jobIdTag,$runDir)=@_;
@@ -289,6 +293,7 @@ sub getClusterInfo {
 ###
 ##### Command(s)
 ###|;
+###			print BASH "export LC_ALL=\"C\"\n" if $cluster{singularityImage}=~/myproms_1\.1\.17\.img/;
 ###			print BASH "$commandBefore\n" if $commandBefore;
 ###			print BASH "$commandStrg\n";
 ###			print BASH "$commandAfter\n" if $commandAfter;
@@ -352,6 +357,13 @@ sub getMascotServers {
 	return %mascotServers;
 }
 
+####> FTP config <####
+sub getFTPconfig {
+	return {
+		mode =>'active' # or passive
+		#firewall => 'xxx'
+	};
+}
 
 ####> VALIDATION PARAMETERS <####
 sub getMaxRank {	# Maximum number of query interpretations to be considered during MS analysis import
@@ -415,7 +427,9 @@ sub getItemIcones { # Navigation tree logos
 		'no_label'=>'protein_unlabeled.gif', # not used
 		'label'=>'protein_labeled.gif', # not used
 		'go_analysis'=>'category.gif',
-		'biosample' => 'cell.gif',
+		'biosample' => 'cell.gif', # obsolete
+		'biosample:not_used' => 'cell.gif',
+		'biosample:used' => 'cell_color.gif',
 		'exploranalysis:cluster' => 'clustering.png',
         'exploranalysis:clusterpep' => 'clustering.png',
 		'exploranalysis:pca' => 'pca.png',
@@ -663,7 +677,13 @@ sub getFragmentClassif {
 1;
 
 ####>Revision history<####
-# 2.9.8D Adapted for distribution & (PP 19/12/18)
+# 2.9.14D Adapted for distribution & (PP 24/06/19)
+# 2.9.14 Uses new mysql production server smorpym.curie.fr (PP 12/06/19)
+# 2.9.13 &getFTPmode function (PP 11/06/19) 
+# 2.9.12 Rename project_data folder into metadata (VS 11/06/19)
+# 2.9.11 Add project data path for file metadata storage (VS 05/06/19)
+# 2.9.10 Different icons for used/not_used BioSamples (PP 11/04/19) 
+# 2.9.9 Added conditional BASH command 'export LC_ALL=\"C\"' in $cluster{runJob} function for image 1.1.17 (PP 07/01/19)
 # 2.9.8 [Fix] bug in max. memory management for cluster & declare $CGI::LIST_CONTEXT_WARN=0 to prevent warning from using CGI param instead of multi_param in list context (PP 19/12/18)
 # 2.9.7 Back to Singularity image myproms_1.1.17.img & filtering of Perl warning in &getClusterInfo{checkError} (PP 02/11/18)
 # 2.9.6 Uses Singularity image myproms_1.1.19-1.img & updates in &getClusterInfo & better detection of git_demo server (PP 03/10/18)

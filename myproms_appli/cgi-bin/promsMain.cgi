@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# promsMain.cgi         1.1.5                                                  #
+# promsMain.cgi         1.1.7                                                  #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Displays myProMS main entry page with links to different sections            #
@@ -115,9 +115,15 @@ my $okAnnotData=($okSeqDBs || $okSeqMod || $okGoSp || $okSpLib)? 1 : 0;
 #>Settings
 my $okValidTpl=($userStatus eq 'bio')? 0 : 1;
 ($hoverAction{'validTpl'},$clickAction{'validTpl'})=($okValidTpl==1)? ('on','manageTemplates.cgi?ACT=list') : ('silent','null');
+my $okRefPeptides=($userStatus eq 'bio')? 0 : 1;
+($hoverAction{'refPeptides'},$clickAction{'refPeptides'})=($okRefPeptides==1)? ('on','manageReferencePeptides.cgi?ACT=list') : ('silent','null');
+
+my $okLabelReagt=($userStatus eq 'bio')? 0 : 1;
+($hoverAction{'labelReagents'},$clickAction{'labelReagents'})=($okLabelReagt==1)? ('on','manageLabelReagents.cgi?ACT=list') : ('silent','null');
+
 my $okInstr=($userStatus eq 'bio')? 0 : 1;
 ($hoverAction{'instr'},$clickAction{'instr'})=($okInstr==1)? ('on','listInstruments.cgi') : ('silent','null');
-my $okSettings=($okValidTpl || $okInstr)? 1 : 0;
+my $okSettings=($okValidTpl || $okRefPeptides || $okLabelReagt || $okInstr)? 1 : 0;
 @{$hoverAction{'settings'}}=($okSettings)? ('on','wait') : ('none','none');
 
 #>Data mining
@@ -228,6 +234,8 @@ window.onload=function() {
 	drawLink(setPeakX,setPeakH,setPeakX+20,170,'Settings','$colors{$okSettings}','$hoverAction{settings}[0]','$hoverAction{settings}[1]',null,
 			 [
 				['Validation templates','$colors{$okValidTpl}','$hoverAction{validTpl}','$clickAction{validTpl}'],
+				['Reference peptides','$colors{$okRefPeptides}','$hoverAction{refPeptides}','$clickAction{refPeptides}'],
+				['Label reagents','$colors{$okLabelReagt}','$hoverAction{labelReagents}','$clickAction{labelReagents}'],
 				['Instruments','$colors{$okInstr}','$hoverAction{instr}','$clickAction{instr}']
 			 ]
 			);
@@ -398,8 +406,8 @@ window.onload=function() {
 	}
 
 	function displayUsersGuide() {
-		//alert('Coming soon...');
-		window.open("http://myproms-demo.curie.fr/myProMSUsersGuide.pdf",'UsersGuideWindow');
+		//window.open("http://myproms-demo.curie.fr/myProMSUsersGuide.pdf",'UsersGuideWindow');
+		window.open("https://myproms-doc.readthedocs.io/en/latest",'UsersGuideWindow');
 	}
 }
 </SCRIPT>
@@ -415,6 +423,8 @@ window.onload=function() {
 |;
 
 ####>Revision history<####
+# 1.1.7 Points to Readthedocs User's guide (PP 18/06/19)
+# 1.1.6 Add 'Reference peptides' & 'Label reagents links' (PP 30/04/19)
 # 1.1.5 Dedicated flag Spectral libraries access (PP 13/11/17)
 # 1.1.4 Changed "SWATH libraries" to Spectral libraries" (PP 17/05/17)
 # 1.1.3 Changed Data mining "Proteins" to "Protein identification" (PP 20/06/16)

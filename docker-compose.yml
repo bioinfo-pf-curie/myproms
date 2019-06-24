@@ -1,7 +1,7 @@
 version: '3'
 services:
  myproms-mysql:
-  image: mysql:5.5
+  image: mysql:5.7
   container_name: myproms-mysql
   env_file: myproms-mysql.env
   ports:
@@ -12,12 +12,13 @@ services:
  myproms-server:
   depends_on:
    - myproms-mysql
-  image: myproms/myproms_base:1.1.17
+  image: myproms/myproms_base:1.2.7
   container_name: myproms-server
   env_file:
    - myproms-server.env
    - Mascot/mascot.env
   environment:
+   - "EMAIL_CONTACT=myproms@curie.fr"
    - "SERVICE_80_NAME=myproms-server"
    - "SERVICE_80_TAGS=apache,cgi"
    - "APPLI_DIR=/myproms"
@@ -26,12 +27,12 @@ services:
    - "JAVA_DIR=/usr/bin"
    - "R_DIR=/usr/bin"
    - "QVALITY_DIR=/usr/bin"
-   - "MASSCHROQ_DIR=/usr/local/bin"
+   - "MASSCHROQ_DIR=/usr/bin"
    - "TPP_DIR=/usr/local/tpp/bin"
    - "PYTHON_DIR=/usr/bin"
    - "PYPROPHET_DIR=/usr/local/bin"
    - "MSPROTEO_DIR=/usr/local/bin"
-   - "OPENMS_DIR=/usr/local/bin"
+   - "OPENMS_DIR=/usr/bin"
    - "HTTP_PROXY="
   ports:
    - "8080:80"
@@ -42,3 +43,5 @@ services:
    - "./start.sh:/start.sh"
   links:
    - myproms-mysql:myproms-mysql
+  entrypoint: ["/dumb-init","/start.sh"]
+  

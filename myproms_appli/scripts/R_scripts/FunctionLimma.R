@@ -1,6 +1,6 @@
 ################################################################################
-# FunctionLimma.R         4.4.0                                               #
-# Authors: Matthieu Lhotellier & Alexandre Sta (Institut Curie)                #
+# FunctionLimma.R         5.0.4                                               #
+# Authors: Matthieu Lhotellier & Alexandre Sta & Isabel Brito(Institut Curie)  #
 # Contact: myproms@curie.fr                                                    #
 # Function of AnalysisDiffLimma.R                                              #
 ################################################################################
@@ -595,6 +595,20 @@ library(readr) # for the function ???
 .analysisDiff <- function(object,params)
 {
   print("Execution of .analysisDiff")
+  
+  if(params$residual.variability == "biological" & length(unique(object$repTech))!=1){ 
+    
+    print("Technical Replicates are being merged ...")
+    objTec = object %>% group_by(proteinId, peptide, experiment, sample,  replicate ) %>% 
+      dplyr::summarise(M = mean(M), A = mean(A), 
+                       quantifSet = paste(quantifSet,collapse="+"),
+                       peptideId = paste(peptideId,collapse="+")) %>% ungroup()
+    
+    objTec = left_join( objTec, object )
+    objTec$repTech <- "RepTech"
+    object <- objTec  
+  }
+  
   if(params$design == "PEP_INTENSITY"){ # Case PEP_INTENSITY
     object = object %>% mutate(sample=as.factor(sample)) %>%  group_by(proteinId)
     .lmRepParam = function( x ){ .lmProteinPEP_INTENSITY( subObject = x , params = params )}
@@ -683,15 +697,19 @@ library(readr) # for the function ???
   object = object %>% group_by(term) %>% nest %>%
     mutate(p.valueAdjusted = map(data,.myAdjust )) %>% unnest %>%
     dplyr::rename(p.valueNonAdjusted=p.value) %>% dplyr::rename(p.value = p.valueAdjusted)   
+ 
+  ind <- which(object$std.error==0) 
+  if (length(ind) ==  0 ) {
   
   # Correction of the CI
   .myCorrectionCI <- function(x){
-    n = dim(x)
+    n = dim(x)[1]
     alpha = 0.05/n
     x = x %>% mutate( ci2.5 = estimate+std.error*qt(1-alpha,df), ci97.5 = estimate+std.error*qt(alpha,df) ) 
     return(x)
   }
-  if(params$pAdj.method!="none"){
+  
+  if(params$pAdj.method!="none" & length( which( table(as.data.frame(object)$term)==1) ) ==0){
     object = object %>% group_by(term) %>% nest %>% 
       mutate(data = map(data,.myCorrectionCI)) %>% unnest
   }
@@ -700,8 +718,8 @@ library(readr) # for the function ???
   numericColumn =c("p.value","estimate","std.error","p.valueNonAdjusted","ci2.5","ci97.5")
   for(i in numericColumn){
     object[is.nan(unlist(object[,i])),i] = NA
-  }
-  
+    }
+  }  
   resu = object 
   print(".analysisDiff done")
   return(resu) 
@@ -745,7 +763,8 @@ library(readr) # for the function ???
 ##           "residualVariability" data.frame
 ## Description :
 #################################################################################
-.lmProteinPEP_INTENSITY<-function(subObject,params){
+.lmProteinPEP_INTENSITY<-function(subObject,params){   
+  subObject = subObject %>% arrange(sample)  
   # Compute the effectiv of each possible terms of the equantion for the linear model
   vect = apply(subObject[,!names(subObject) %in% c(params$residual.variability,"A","M")],MARGIN=2,function(x)length(unique(x))) %>% 
     t %>% as_tibble
@@ -1342,42 +1361,186 @@ library(readr) # for the function ???
 ##               protein (with the same proteinId)  found in objectRef. The 
 ##               parameters of normalization are fount in params.
 #################################################################################
+
 .normEachProt <- function(object,objectRef,params){
-  # Convert the parameter from params to function for buildNormFactors
-  normRef = params$normalization.ref.test %>% str_split(pattern = "\\.") %>% unlist
-  switch(normRef[3],
-         mean = {fctMean = mean},
-         median = {fctMean = median},
-         none = {fctMean = function(x) return(0)}
-  )
-  switch(normRef[4],
-         var = {fctVar = var},
-         scale = {fctVar = mad},
-         none = {fctVar = function(x) return(1)}
-  )
   
-  # Build the function to construct the normalization factors
-  builfNormFactors <- function(x,fctMean,fctVar){
-    output = tibble(meanNormFactor=fctMean(x$M),varNormFactor=fctVar(x$M))
-    return(output)
+  
+  # dispersion estimated by quantile 
+  quant <-function(REF,DAT){
+    bx <-boxplot(REF,plot=FALSE)
+    if (length(bx$out)!=0){
+      max <- bx$stats[5]
+      min <- bx$stats[1]
+      REF <- REF[ REF > min & REF < max ]
+    }
+    
+    sdx <-sd(REF, na.rm = FALSE)
+    sdy <-sd(DAT, na.rm = FALSE)
+    
+    X.to.determine.normalization <- matrix(REF)
+    Y.to.normalize               <- matrix(DAT)
+    
+    if ( is.na(sdx)  | is.na(sdy) ){ 
+      Y.normalized <- Y.to.normalize 
+    } else if ( sdx <= sdy ) {       
+      Y.normalized <- Y.to.normalize               
+    } else if ( sdx > sdy ) {        
+      target <- normalize.quantiles.determine.target(X.to.determine.normalization,
+                                                     dim(X.to.determine.normalization)[1])   
+      Y.normalized <- normalize.quantiles.use.target(Y.to.normalize,target) 
+    } 
+    return(Y.normalized)
   }
   
-  # Build the table of protein of reference and the normalization factors
-  objectRef = objectRef %>% group_by( proteinId , sample ) %>% nest %>% 
-    mutate( normFactor = map(data,function(x) builfNormFactors(x,fctMean,fctVar) ) ) %>% select(-data) %>% unnest %>%
-    rename(proteinIdKey=proteinId) %>% mutate(proteinIdKey=as.character(proteinIdKey))
-  
-  # Join the datable with the table of reference with the normalization factor
-  object = object %>% separate(proteinId,c("proteinIdKey","modif"),sep="-",remove=FALSE) %>% 
-    mutate(proteinIdKey=as.character(proteinIdKey)) %>% left_join(objectRef) %>% select(-proteinIdKey,-modif) %>% 
-    group_by( proteinId , sample ) %>% 
-    mutate( M = (M - meanNormFactor)/varNormFactor ) %>% mutate(M = ifelse(is.infinite(M),NA,M)) %>% ungroup %>% 
-    select(-meanNormFactor,-varNormFactor) %>% filter(!is.na(M))
-  
-  return(object) 
-}
+  objectNorm <-NULL
+  if (parameters$design=="PEP_INTENSITY"){
+    for (i in 1:length(unique(object$proteinId))){ 
+      prot        <- unique(object$proteinId)[i]
+      ind         <- which(object$proteinId == prot)
+      subObject   = object[ind,]
+      
+      subObjectRef = objectRef %>% filter(proteinId == 
+                                            unlist(str_split(unique(subObject$proteinId), "\\-"))[1])
+      
+      if (dim(subObjectRef)[1] ==0 | length(table(subObjectRef$sample))==1) {  
+        subObjectNorm <- subObject
+        subObjectNorm$M <- rep(NA,dim(subObject)[1])
+      } else {                         
+        matrixdat       <- as.data.frame(subObject)      
+        matrixref       <- as.data.frame(subObjectRef)   
+        matrix          <- data.frame( type   = c(rep("data",   nrow(matrixdat)), 
+                                                  rep("dataref",nrow(matrixref))    ),
+                                       sample = c(as.character(      matrixdat$sample),
+                                                  as.character(      matrixref$sample) ),
+                                       peptide= c(as.character(      matrixdat$peptide),
+                                                  as.character(      matrixref$peptide)),
+                                       M      = c(                   matrixdat$M,
+                                                                     matrixref$M)     )
+                                                                                                                                                  
+        sds <- aggregate(M ~ paste0(type,sample) , matrix, sd)
+        if ( sum(is.na(sds))!=0 ) {     
+          subObjectNorm <- matrixdat
+        } else {
+          
+          mean_peptide  = matrix %>%  group_by(type,sample,peptide) %>%  dplyr::summarise(mean.pep = mean(M) ) 
+          mean_state    = matrix %>%  group_by(type,sample)         %>%  dplyr::summarise(mean.all = mean(M) )
+          
+          mean_peptide  = mean_peptide %>% mutate (type_sample_pep = paste(type,sample,peptide)) %>% 
+            mutate (type_sample     = paste(type,sample))
+          mean_state    = mean_state   %>% mutate (type_sample     = paste(type,sample))
+          
+          
+          matrix_mod   = matrix %>%  mutate( type_sample_pep = paste(type,sample,peptide)) %>% 
+            inner_join( mean_peptide, by="type_sample_pep" )     %>% 
+            inner_join( mean_state,   by="type_sample" )
+          
+          matrix_mod  = matrix_mod %>%  mutate(mean.mod = as.numeric(matrix_mod$mean.pep)  - as.numeric(matrix_mod$mean.all) )
+          matrix_mod  = matrix_mod %>%  mutate(Mmod = M - mean.mod) 
+          matrixmod   = matrix_mod %>%  filter(type.x=="dataref")
+          
+          # quantile and translation vers les moyennes originales     
+          matrixint         <-       matrixdat
+          
+          ind1              <- which(matrixdat$sample=="State1")
+          #matrixint$M[ind1] <- quant(matrixref$M[which(matrixref$sample=="State1")],
+          matrixint$M[ind1] <- quant(matrixmod$Mmod[which(matrixmod$sample.x=="State1")],
+                                     matrixdat$M   [which(matrixdat$sample  =="State1")])
+          
+          ind2              <- which(matrixdat$sample=="State2")
+          #matrixint$M[ind2] <- quant(matrixref$M[which(matrixref$sample=="State2")],
+          matrixint$M[ind2] <- quant(matrixmod$Mmod[which(matrixmod$sample.x=="State2")],                           
+                                     matrixdat$M   [which(matrixdat$sample  =="State2")])
+          
+          
+          mean1i            <- mean( matrixint$M[which(matrixint$sample=="State1")]) - 
+            mean( matrixdat$M[which(matrixdat$sample=="State1")])
+          mean2i            <- mean( matrixint$M[which(matrixint$sample=="State2")]) -
+            mean( matrixdat$M[which(matrixdat$sample=="State2")])
+          
+          matrixapr         <- matrixint
+          matrixapr$M = ifelse(matrixint$sample=="State1", 
+                               matrixapr$M - mean1i ,
+                               matrixapr$M - mean2i)
+          
+          #linear model type for protein effect and sample for condition effect
+          model1        = lm(as.formula("M ~ sample*type"),data=matrix)
+          
+          # linear - remove protein effect
+          matrixeff <- matrixapr
+          matrixeff$M = ifelse(matrixapr$sample=="State1", 
+                               matrixapr$M  ,
+                               matrixapr$M + summary(model1)$coefficients[4] )
+          
+          subObjectNorm <- matrixeff
+        } #if ( sum(is.na      
+      } #if (dim(subObject
+      objectNorm    <- rbind(objectNorm,subObjectNorm)
+    } #for (i in )
+    
+  } else if (parameters$design=="PEP_RATIO") {     
+    
+    for (i in 1:length(unique(object$proteinId))){ 
+      prot        <- unique(object$proteinId)[i]
+      ind         <- which(object$proteinId == prot)
+      subObject   = object[ind,]
+      
+      subObjectRef = objectRef %>% filter(proteinId == 
+                                            unlist(str_split(unique(subObject$proteinId), "\\-"))[1])
+      
+      if (dim(subObjectRef)[1] ==0 ) {  
+        subObjectNorm <- subObject
+        subObjectNorm$M <- rep(NA,dim(subObject)[1])
+      } else {                          
+        matrixdat       <- as.data.frame(subObject)      
+        matrixref       <- as.data.frame(subObjectRef)   
+        
+        
+        matrix          <- data.frame( type   = c(rep("data",   nrow(matrixdat)), 
+                                                  rep("dataref",nrow(matrixref))    ),
+                                       sample = c(as.character(      matrixdat$sample),
+                                                  as.character(      matrixref$sample) ),
+                                       M      = c(                   matrixdat$M,
+                                                                     matrixref$M)     )
+        #print(matrix)   
+        sds <- aggregate(M ~ paste0(type,sample) , matrix, sd)
+        if ( sum(is.na(sds))!=0 ) {    
+          subObjectNorm <- matrixdat
+        } else {                    
+          
+          
+          # quantile and translation vers les moyennes originales     
+          matrixint         <-       matrixdat
+          matrixint$M <- quant(matrixref$M, matrixdat$M)
+          
+          mean1i            <- mean( matrixint$M) -  mean( matrixdat$M)
+          mean2i            <- mean( matrixref$M) 
+          
+          matrixapr         <- matrixint
+          matrixapr$M       <- matrixint$M - mean1i 
+          
+          matrixeff         <- matrixapr
+          matrixeff$M       <- matrixapr$M - mean2i
+          
+          subObjectNorm <- matrixeff
+        } #if ( sum(is.na      
+      } #if (dim(subObject
+      objectNorm    <- rbind(objectNorm,subObjectNorm)
+    } #for (i in )
+  }  #if (paramet     
+  objectNorm  = objectNorm  %>% filter(!is.na(M))
+  return(objectNorm) 
+} ##normEachProt  
 
 ####>Revision history<####
+# 5.0.4 in each Prot normalisation  for INTENSITY design, peptide effect removed from ref (IB 14/06/19)
+# 5.0.3 protein effect taken into account in each Prot normalisation  for RATIO design (IB 21/05/19)
+# 5.0.2 each Prot normalisation ok for RATIO design (IB 20/05/19)
+# 5.0.1 modification how to match proteinId in table.txt and tableRef.tx (IB 17/05/19)
+# 5.0.0 normalization eachProt has a new algorithm (quantile without outliers and protein effect) (IB 17/05/19)
+# 4.5.3 estimates of sample in .lmProteinPEP_INTENSITY are no longer inverted (IB 15/04/19)  
+# 4.5.2 in .analysisDiff the merge of technical replicates is nicer (IB 25/03/19) 
+# 4.5.1 if data contains only one protein, function .myCorrectionCI is modified in order to get it into account (IB 15/03/19)
+# 4.5.0 if residual.variability=biological and technical replicates existe, these are summarized (mean) and only one pseudo technical replicate is taken into account for the quantification step (.analysisDiff function)(IB 24/01/19)
 # 4.4.0 normalization.ref.test has now 4 items, 1 and 2 for normalisation of tableRef and 3 and 4 for correction of data with tableRef (IB 29/11/2018)
 # 4.3.1 correct .control if normalization.ref.test doesn't existe (IB 29/11/2018)
 # 4.3.0 change Licence from GPL to CeCILL, add dataRef in .control arguments, add in .control function:  Control the correct number and type of files, Control the correct type of the normalization.ref.test parameter (16/11/18)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# runXICProtQuantification.pl       2.9.0                                      #
+# runXICProtQuantification.pl       2.9.5                                      #
 # Component of site myProMS Web Server                                         #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
@@ -106,6 +106,10 @@ if ($referenceMode) { # Switching to non-modif quantif
 	$skipFromRefModID=$quantifiedModifID;
 	$quantifiedModifID=0;
 }
+my $quantifiedModifRemoved=0; # to handle site for which targeted PTM was removed by protocole
+if ($quantifiedModifID && $quantifParameters{'DB'}{'CREATE_PTM'}) {
+	$quantifiedModifRemoved=1;
+}
 
 ####> R part : statistical analysis of the proteins values
 ####> 1st: Create the directories for R analysis
@@ -121,19 +125,19 @@ unless ($referenceMode) {
 	mkdir $resultDir;
 	mkdir $graphDir;
 }
-#open (DEBUG,">$promsPath{tmp}/quantification/debug.txt") if $referenceMode; # DEBUG!!!!
+#open (DEBUG,">$promsPath{tmp}/quantification/debug.txt"); # if $referenceMode; # DEBUG!!!!
 
 ####>Protein-level normalization for quantif sites (tableRef.txt)
 if (!$referenceMode && $quantifParameters{'DB'}{'INTRA_PROT_REF'}) {
-	if ($quantifParameters{'DB'}{'INTRA_PROT_REF'}[0] eq '-1') {
+	if ($quantifParameters{'DB'}{'INTRA_PROT_REF'}[0] eq '-1') { # current dataset
 		system "./runXICProtQuantification.pl $quantifID $quantifDate 1"; # referenceMode set to 1 to create tableRef.txt
-		$quantifParameters{'R'}{'normalization.ref.test'}[0]=$quantifParameters{'DB'}{'NORMALIZATION_METHOD'}[0];
+		$quantifParameters{'R'}{'normalization.ref.test'}[0]=$quantifParameters{'DB'}{'NORMALIZATION_METHOD'}[0]; # 'ref' part of ref.test
 	}
 	else {
-		$quantifParameters{'R'}{'normalization.ref.test'}[0]=&generateReferenceProtFromQuantif;
+		$quantifParameters{'R'}{'normalization.ref.test'}[0]=&generateReferenceProtFromQuantif; # 'ref' part of ref.test
 	}
-	$quantifParameters{'R'}{'normalization.ref.test'}[0].='.none' if $quantifParameters{'R'}{'normalization.ref.test'}[0] !~ /\./; # quantile
-	$quantifParameters{'R'}{'normalization.ref.test'}[0].='.median.scale'; # hard coded for now
+	$quantifParameters{'R'}{'normalization.ref.test'}[0].='.none' if $quantifParameters{'R'}{'normalization.ref.test'}[0] !~ /\./; # quantile # 'ref' part of ref.test
+	$quantifParameters{'R'}{'normalization.ref.test'}[0].='.median.scale'; # 'test' part of ref.test (hard-coded for now!!) <== ************************
 }
 
 ####>Main data file
@@ -485,29 +489,45 @@ $sthALM->finish;
 #$dbh->disconnect; die "Test is complete!";
 
 ###>Handling Modification Quantif phosphoRS/MaxQuant threshold & PTM position ambiguity settings
-#my $ambiguousModifPos=($quantifiedModifID && $quantifParameters{'DB'}{'AMBIGUOUS_QPTM_POS'})? $quantifParameters{'DB'}{'AMBIGUOUS_QPTM_POS'}[0] : 0;
 my ($ptmProbSoftCode,$ptmProbThreshold,$ambiguousModifPos,$quantifResMatchStrg,$qQuantifResMatchStrg)=('',0,0,'',''); # default ($qQuantifResMatchStrg PP 2017/06/22)
+my (@targetableRes,$matchProtCterm); # for recreated PTMs only
 if ($quantifiedModifID) {
-	if ($quantifParameters{'DB'}{'PTM_POS'}[0]=~/(\w+):(\d+)/) { # PRS Phospho or MQ any PTM
-		$ptmProbSoftCode=$1; # PRS or MQ
-		$ptmProbThreshold=$2; $ptmProbThreshold/=100 if $ptmProbSoftCode eq 'MQ'; # 0-1
-		$ambiguousModifPos=1 if $quantifParameters{'DB'}{'PTM_POS'}[1] eq 'ambiguous';
+	if ($quantifParameters{'DB'}{'CREATE_PTM'}) {
+		#$quantifResMatchStrg=join('',@{$quantifParameters{'DB'}{'CREATE_PTM'}});
+		#$quantifResMatchStrg=~s/,.//g; # remove contexts
+		foreach my $resCode (@{$quantifParameters{'DB'}{'CREATE_PTM'}}) {
+			my ($res,$context)=split(',',$resCode);
+			push @targetableRes,[$res,$context];
+			$quantifResMatchStrg.=$res;
+			$matchProtCterm=1 if ($context && $context eq '+');
+		}
 	}
-	elsif ($quantifParameters{'DB'}{'PTM_POS'}[0] eq 'ambiguous') { # other PTMs
-		$ambiguousModifPos=1;
+	else {
+		if ($quantifParameters{'DB'}{'PTM_POS'}[0]=~/(\w+):(\d+)/) { # PRS Phospho or MQ any PTM
+			$ptmProbSoftCode=$1; # PRS or MQ
+			$ptmProbThreshold=$2; $ptmProbThreshold/=100 if $ptmProbSoftCode eq 'MQ'; # 0-1
+			$ambiguousModifPos=1 if $quantifParameters{'DB'}{'PTM_POS'}[1] eq 'ambiguous';
+		}
+		elsif ($quantifParameters{'DB'}{'PTM_POS'}[0] eq 'ambiguous') { # other PTMs
+			$ambiguousModifPos=1;
+		}
+	
+		#>Find list of targeted residues: needed even if !$ambiguousModifPos
+		my $sthAMR=$dbh->prepare("SELECT SPECIFICITY FROM ANALYSIS_MODIFICATION WHERE ID_MODIFICATION=$quantifiedModifID AND ID_ANALYSIS=? AND MODIF_TYPE='V'");
+		my %resList;
+		foreach my $anaID (keys %ana2Obs) {
+			$sthAMR->execute($anaID);
+			my ($specifStrg)=$sthAMR->fetchrow_array;
+			foreach my $res (split(',',$specifStrg)) {$resList{$res}=1;}
+		}
+		$sthAMR->finish;
+		$quantifResMatchStrg=join('',sort keys %resList); # eg 'STY'
+unless (scalar keys %resList) { # Fallback in case not specified during search(es)
+	($quantifResMatchStrg)=$dbh->selectrow_array("SELECT SPECIFICITY FROM MODIFICATION WHERE ID_MODIFICATION=$quantifiedModifID");
+	$quantifResMatchStrg=~s/,//g;
+}
 	}
-
-	#>Find list of targetted residues: needed even if !$ambiguousModifPos
-	my $sthAMR=$dbh->prepare("SELECT SPECIFICITY FROM ANALYSIS_MODIFICATION WHERE ID_MODIFICATION=$quantifiedModifID AND ID_ANALYSIS=? AND MODIF_TYPE='V'");
-	my %resList;
-	foreach my $anaID (keys %ana2Obs) {
-		$sthAMR->execute($anaID);
-		my ($specifStrg)=$sthAMR->fetchrow_array;
-		foreach my $res (split(',',$specifStrg)) {$resList{$res}=1;}
-	}
-	$quantifResMatchStrg=join('',sort keys %resList); # eg 'STY'
 	$qQuantifResMatchStrg=quotemeta($quantifResMatchStrg); # +* -> \+\* (PP 2017/06/22)
-	$sthAMR->finish;
 }
 
 
@@ -567,12 +587,17 @@ if ($referenceMode && $quantifParameters{'DB'}{'PEPTIDES_REF'}[0] eq 'manual') {
 #	$pepParamCode2ID{$code}=$paramID;
 #}
 #$sthPepQP->finish;
-my %peptideAreaParamID;
-my $sthPepQP=($labeling eq 'TMT')? $dbh->prepare("SELECT ID_QUANTIF_PARAMETER FROM QUANTIFICATION Q,QUANTIFICATION_PARAMETER QP WHERE Q.ID_QUANTIFICATION_METHOD=QP.ID_QUANTIFICATION_METHOD AND Q.ID_QUANTIFICATION=? AND CODE='REP_INTENSITY'")
-								 : $dbh->prepare("SELECT ID_QUANTIF_PARAMETER FROM QUANTIFICATION Q,QUANTIFICATION_PARAMETER QP WHERE Q.ID_QUANTIFICATION_METHOD=QP.ID_QUANTIFICATION_METHOD AND Q.ID_QUANTIFICATION=? AND CODE LIKE '%_AREA'"); # CRITICAL: '%_AREA' !!!!!!!!!!!!!!!!!!!!!!!!!!!
+#my %peptideAreaParamID;
+#my $sthPepQP=($labeling eq 'TMT')? $dbh->prepare("SELECT ID_QUANTIF_PARAMETER FROM QUANTIFICATION Q,QUANTIFICATION_PARAMETER QP WHERE Q.ID_QUANTIFICATION_METHOD=QP.ID_QUANTIFICATION_METHOD AND Q.ID_QUANTIFICATION=? AND CODE='REP_INTENSITY'")
+#								 : $dbh->prepare("SELECT ID_QUANTIF_PARAMETER FROM QUANTIFICATION Q,QUANTIFICATION_PARAMETER QP WHERE Q.ID_QUANTIFICATION_METHOD=QP.ID_QUANTIFICATION_METHOD AND Q.ID_QUANTIFICATION=? AND CODE LIKE '%_AREA'"); # CRITICAL: '%_AREA' !!!!!!!!!!!!!!!!!!!!!!!!!!!
+my %usedParamIDs;
+my $sthPepQP=$dbh->prepare("SELECT ID_QUANTIF_PARAMETER FROM QUANTIFICATION Q,QUANTIFICATION_PARAMETER QP WHERE Q.ID_QUANTIFICATION_METHOD=QP.ID_QUANTIFICATION_METHOD AND Q.ID_QUANTIFICATION=? AND (CODE LIKE '%_INTENSITY' OR CODE LIKE '%_AREA')");
 foreach my $pepQuantifID (keys %xicEngine) {
 	$sthPepQP->execute($pepQuantifID);
-	($peptideAreaParamID{$pepQuantifID})=$sthPepQP->fetchrow_array;
+	#($peptideAreaParamID{$pepQuantifID})=$sthPepQP->fetchrow_array;
+	while (my ($paramID)=$sthPepQP->fetchrow_array) {
+		$usedParamIDs{$pepQuantifID}{$paramID}=1;
+	}
 }
 $sthPepQP->finish;
 
@@ -598,7 +623,7 @@ my $filterQueryStrg=($normalizeWithAll)? ',PPA.IS_SPECIFIC,AP.PEP_SPECIFICITY,MI
 #$quantiQuery.=' GROUP BY PPA.ID_PROTEIN,P.ID_PEPTIDE ORDER BY AP.NUM_PEP DESC,ABS(PEP_BEG) ASC';
 my $ptmProbQueryStrg=($ptmProbSoftCode eq 'MQ')? "GROUP_CONCAT(DISTINCT PM.ID_MODIFICATION,'%',COALESCE(PM.REF_POS_STRING,'') ORDER BY PM.ID_MODIFICATION SEPARATOR '&')" : "'-'";
 my $quantiQuery=qq
-|SELECT GROUP_CONCAT(DISTINCT PPA.ID_PROTEIN),P.ID_PEPTIDE,ABS(PEP_BEG),PEP_SEQ,GROUP_CONCAT(DISTINCT PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),$ptmProbQueryStrg,CHARGE,PPA.IS_SPECIFIC,MISS_CUT,DATA,P.SCORE $filterQueryStrg
+|SELECT GROUP_CONCAT(DISTINCT PPA.ID_PROTEIN),P.ID_PEPTIDE,ABS(PEP_BEG),PEP_SEQ,GROUP_CONCAT(DISTINCT PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),$ptmProbQueryStrg,CHARGE,DATA,P.SCORE $filterQueryStrg
 	FROM PEPTIDE P
 	LEFT JOIN PEPTIDE_MODIFICATION PM ON P.ID_PEPTIDE=PM.ID_PEPTIDE
 	INNER JOIN PEPTIDE_PROTEIN_ATTRIB PPA ON P.ID_PEPTIDE=PPA.ID_PEPTIDE
@@ -661,40 +686,38 @@ my %pepID2QuantifSetSILAC; # PP 25/10/17: used to better compute %usedPeptideSet
 ##my $currentExperiment='A';
 
 
-####>Retrieving peptides XIC from file (not DB anymore)<####
 my (%peptideQuantifs,%pepQuantifValues);
-my $sthPepAna=$dbh->prepare("SELECT MIN(ID_PEPTIDE),MAX(ID_PEPTIDE) FROM PEPTIDE WHERE ID_ANALYSIS=?");
 foreach my $observationSet (@quantiOrder) {
 	foreach my $fraction (split(/\+/,$observationSet)) {
 		my ($obsID,$xicQuantif,$anaID,$targetPos)=split(/:/,$fraction);
 		$targetPos=0 unless $targetPos; # label-free
-		$sthPepAna->execute($anaID);
-		my ($minPepID,$maxPepID)=$sthPepAna->fetchrow_array;
-		@{$peptideQuantifs{$xicQuantif}{$targetPos}{$anaID}}=($minPepID,$maxPepID);
+		$peptideQuantifs{$xicQuantif}{$targetPos}=1;
 	}
 }
-$sthPepAna->finish;
 foreach my $xicQuantif (keys %peptideQuantifs) {
+	my $signalParamID;
 	foreach my $targetPos (keys %{$peptideQuantifs{$xicQuantif}}) {
 		my $pepQuantifFile=($labeling eq 'FREE')? 'peptide_quantification.txt' : "peptide_quantification_$targetPos.txt";
-		open (PEP_QUANTIF,"$promsPath{quantification}/project_$projectID/quanti_$xicQuantif/$pepQuantifFile");
+		open (PEP_QUANTIF,"$promsPath{quantification}/project_$projectID/quanti_$xicQuantif/$pepQuantifFile") || die $!;
 		while(<PEP_QUANTIF>) {
 			next if $.==1;
 			chomp;
 			my ($paramID,$pepID,$quantifValue)=split(/\t/,$_);
-			next if $paramID != $peptideAreaParamID{$xicQuantif};
-			my $okPepID=0;
-			foreach my $anaID (keys %{$peptideQuantifs{$xicQuantif}{$targetPos}}) { # filter for analyses used (multi-ana pep quantifs)
-				if ($pepID >= $peptideQuantifs{$xicQuantif}{$targetPos}{$anaID}[0] && $pepID <= $peptideQuantifs{$xicQuantif}{$targetPos}{$anaID}[1]) {
-					$pepQuantifValues{$pepID}{$targetPos}=$quantifValue;
-					last;
-				}
+			#next if $paramID != $peptideAreaParamID{$xicQuantif};
+			unless ($signalParamID) {
+				next unless $usedParamIDs{$xicQuantif}{$paramID};
+				$signalParamID=$paramID;
 			}
+			next if $paramID != $signalParamID;
+			$pepQuantifValues{$pepID}{$targetPos}=$quantifValue;
 		}
 		close PEP_QUANTIF;
 	}
 }
 
+my %recreatedVarMods; # to prevent re-creating same varMod multiple times
+my %proteinLength; # Only if sites to be recreated at protein C-term
+my $sthProtL=$dbh->prepare('SELECT PROT_LENGTH FROM PROTEIN WHERE ID_PROTEIN=?');
 foreach my $observationSet (@quantiOrder) {
 	#my $labelObs=scalar keys %{$labelModifs{$observationSet}}; # observation belongs (or not) to a label channel
 	my $anaInObsStrg=''; # list of anaIDs in observationSet
@@ -738,7 +761,7 @@ foreach my $observationSet (@quantiOrder) {
 		my $labelModStrg=join('|',keys %{$anaLabelModifs{$anaID}}) if $labeling eq 'SILAC'; # needed for SILAC
 		my %mcqXICs; # SILAC only
 		$sthGetPepData->execute($anaID);
-		while (my ($protID,$pepID,$pepBeg,$pepSeq,$varModStrg,$varProbStrg,$charge,$specif,$misscut,$pepData,$score,$isSpecif,$bestSpecif,$missCut)=$sthGetPepData->fetchrow_array) { # executed multiple time for labeled quantif
+		while (my ($protID,$pepID,$pepBeg,$pepSeq,$varModStrg,$varProbStrg,$charge,$pepData,$score,$specif,$bestSpecif,$misscut)=$sthGetPepData->fetchrow_array) { # executed multiple time for labeled quantif
 			next if ($manualPepSelection && !$manualPeptides{$pepID});
 			next if (!$pepQuantifValues{$pepID} || !$pepQuantifValues{$pepID}{$targetPos} || $pepQuantifValues{$pepID}{$targetPos} <= 0); # no quantif for pepID or Isobaric bug
 			my $quantifValue=$pepQuantifValues{$pepID}{$targetPos};
@@ -749,16 +772,26 @@ foreach my $observationSet (@quantiOrder) {
 				if ($protSelectionType eq 'exclude') {next if $selectExcludeProteins{$protID};}
 				else {next unless $selectExcludeProteins{$protID};} # restrict
 			}
+
 			#>Normalization scope
 			$forNormalization{$protID}=1 if ($normProtUsage eq 'not' && !$notForNormalization{$protID});
+	
+			### NEW (25/01/19): Handle quantif PTM removed from samples => unmodifed res ARE the sites!
+			## PTM recreated in silico
+			$varModStrg='' unless $varModStrg;
+			if ($quantifParameters{'DB'}{'CREATE_PTM'}) {
+				if ($matchProtCterm && !defined $proteinLength{$protID}) {
+					$sthProtL->executed($protID);
+					($proteinLength{$protID})=$sthProtL->fetchrow_array;
+				}
+				$varModStrg=&recreateModifSites($quantifiedModifID,$pepSeq,$varModStrg,$pepBeg,$proteinLength{$protID},\@targetableRes,\%recreatedVarMods);
+			}
 
-			$pepData='' unless $pepData;
-			$score=0 unless $score;
 ########!!!!!! TEST 18/08/15
 #next if $preInfRatios{$protID};
 ###################################
 #next if $excludedProteins{$protID}; # beta
-			if (($quantifiedModifID && (!$varModStrg || $varModStrg !~ /(^|&)$quantifiedModifID:/)) || ($varModStrg && $varModStrg=~/\d:(\D|$)/) ) { # missing mod pos data!
+			if (($quantifiedModifID && (!$varModStrg || $varModStrg !~ /(^|&)$quantifiedModifID:/)) || ($varModStrg && $varModStrg=~/\d:(\.|&|$)/) ) { # missing mod pos data!
 				if ($normalizeWithAll) {$notUsed4Quantif{$pepID}=1;}
 				else {next;} # skip peptides not containing quantified modif
 			}
@@ -775,6 +808,8 @@ $proteinInConds{$protID}{$poolGroup2Cond{$observationSet}}=1; # protein "exists"
 				$notUsed4Quantif{$pepID}=1 if (!$pepMissedCleavage && (!defined $misscut || $misscut > 0)); # misscleavage filter (also skip if no info)
 			}
 
+			$pepData='' unless $pepData;
+			$score=0 unless $score;
 			#if ($ptmAllowed <= 0) {
 			#	my $numPTM=0;
 			#	$sthPTM->execute($pepID);
@@ -795,7 +830,7 @@ $proteinInConds{$protID}{$poolGroup2Cond{$observationSet}}=1; # protein "exists"
 			if ($varModStrg && ($labeling ne 'FREE' || $ptmAllowed != 1 || $skipFromRefModID)) { # There is filtering on PTM
 				my %hasPTMs;
 				my $hasRefMod=0; # for referenceMode only
-				foreach my $vMod (split(/&/,$varModStrg)) {
+				foreach my $vMod (split('&',$varModStrg)) {
 					my ($modID)=($vMod=~/^(\d+)/);
 					next if $labelModifs{$obsID}{$modID}; # skip labeling modifs
 					if ($ptmAllowed != 1 && !$allowedPtmID{$modID}) {
@@ -822,7 +857,7 @@ $proteinInConds{$protID}{$poolGroup2Cond{$observationSet}}=1; # protein "exists"
 			}
 
 			# Non-SILAC phospho quantif
-			if ($ptmProbSoftCode && $labeling ne 'SILAC' && !$notUsed4Quantif{$pepID}) {
+			if ($ptmProbSoftCode && $labeling ne 'SILAC' && !$notUsed4Quantif{$pepID}) { # !$ptmProbSoftCode if 'CREATE_PTM'
 				my $ptmPosProb;
 				if ($ptmProbSoftCode eq 'PRS') { 
 					($ptmPosProb)=($pepData=~/PRS=\d;([^;]+);/);
@@ -865,7 +900,7 @@ $proteinInConds{$protID}{$poolGroup2Cond{$observationSet}}=1; # protein "exists"
 					$qSet=($ratioType eq 'Ratio')? 'A0_Q0' : "A$anaID"."_Q0"; # "P$pepID"."_Q0" in algo v2!
 					#$intensity{"$pepSeq:$varModCode:$charge"}{$dataSrc}{$qSet}{$observationSet}[0]=$quantifValue;
 				}
-				$intensity{"$pepSeq:$varModCode:$charge"}{$dataSrc}{$qSet}{$observationSet}[0]=+$quantifValue; # pool just in case multiple occurences
+				$intensity{"$pepSeq:$varModCode:$charge"}{$dataSrc}{$qSet}{$observationSet}[0]+=$quantifValue; # pool just in case multiple occurences [Fix += instead of =+]
 			}
 			else { # Labeling
 
@@ -933,7 +968,7 @@ if ($xicEngine{$xicQuantif} eq 'MCQ' && $labeling eq 'SILAC') { # $labeling !~ /
 			##>Record best varMod of qSet in case incoherence (assumes same pepSeq!)
 			#if ($labeling ne 'FREE') { #} qSET has no meaning in label-free ***Also for FREE because of possible duplicate scan for same pepID with MassChroQ***
 			if ($labeling eq 'SILAC') {
-				if ($ptmProbSoftCode) { # Position confidence filtered earlier for non-SILAC
+				if ($ptmProbSoftCode) { # Position confidence filtered earlier for non-SILAC. !$ptmProbSoftCode if 'CREATE_PTM'
 					my $ptmPosProb;
 					if ($ptmProbSoftCode eq 'PRS') {
 						($ptmPosProb)=($pepData=~/PRS=\d;([^;]+);/);
@@ -943,7 +978,7 @@ if ($xicEngine{$xicQuantif} eq 'MCQ' && $labeling eq 'SILAC') { # $labeling !~ /
 					}
 					$ptmPosProb=0 unless $ptmPosProb;
 					@{$qSetBestVarMod{$qSet}}=($ptmPosProb,$varModCode) if (!$qSetBestVarMod{$qSet} || $qSetBestVarMod{$qSet}[0] < $ptmPosProb); # record best phosphoRS/MaxQuant prob & vmod (both peptides in qSet will be filtered based on best prob)
-				}
+				} 
 				else {
 					@{$qSetBestVarMod{$qSet}}=($score,$varModCode) if (!$qSetBestVarMod{$qSet} || $qSetBestVarMod{$qSet}[0] < $score); # record best
 				}
@@ -984,7 +1019,7 @@ if ($labeling eq 'SILAC') {
 }
 $sthGetPepData->finish;
 #$sthPTM->finish;
-%pepQuantifValues=(); # hoping to free memory
+#%pepQuantifValues=(); # hoping to free memory
 
 if ($labeling eq 'SILAC') {
 
@@ -1105,6 +1140,9 @@ foreach my $protID (keys %proteins) {
 }
 $sthgetProtInfo->finish;
 
+#print DEBUG scalar keys %proteins," proteins\n";
+#close DEBUG;
+#die "END OF TEST";
 
 ######################################
 ####> Printing normalization file<####
@@ -1624,7 +1662,7 @@ my $expCode=($labeling eq 'FREE')? 'A' : $ana2Experiment{$anaID}; #$techRep2Expe
 									#$pepIsComplete{$obs2Cond{$observationSet}}{$observationSet} = 1;
 									my $pepIdStrg=join('=',@{$proteins{$protID}{$pepSeq}{$vmod}{$charge}{$dataSrc}{$qSet}{$observationSet}}); # used to be ';'
 									#print DATA "\n$protID\t$pepSeq${vmod}_${charge}_$dataSrc\t$observationInfo{$observationSet}[0]\tNA\t$observationInfo{$observationSet}[1]\tA$observationInfo{$observationSet}[3]_Q$qSet\t$pepIdStrg\t$proteinAlias{$protID}\t1\t",$intensity{"$pepSeq:$vmod:$charge"}{$dataSrc}{$qSet}{$observationSet}[0];
-									print DATA "\n$modProtID\t$pepSeq${usedVmod}_${charge}_$dataSrc\t$observationInfo{$observationSet}[0]\tNA\t$observationInfo{$observationSet}[1]\t$observationInfo{$observationSet}[2]\t$expCode\t$qSet$itraqStrg\t$pepIdStrg\t$proteinAlias{$protID}\t1\t",$intensity{"$pepSeq:$vmod:$charge"}{$dataSrc}{$qSet}{$observationSet}[0]; #,"\t$usablePeptide";
+									print DATA "\n$modProtID\t$pepSeq$usedVmod\_$charge\_$dataSrc\t$observationInfo{$observationSet}[0]\tNA\t$observationInfo{$observationSet}[1]\t$observationInfo{$observationSet}[2]\t$expCode\t$qSet$itraqStrg\t$pepIdStrg\t$proteinAlias{$protID}\t1\t",$intensity{"$pepSeq:$vmod:$charge"}{$dataSrc}{$qSet}{$observationSet}[0]; #,"\t$usablePeptide";
 									#if ($usablePeptide) {
 									#$numPepInCond{$observationInfo{$observationSet}[3]}{$obs2Cond{$observationSet}}++; # numPepInCond{Exp}{condID} Exp needed because of SuperSILAC
 									#$numPepInCond4ModProt{$modProtID}{$observationInfo{$observationSet}[3]}{$obs2Cond{$observationSet}}++ if $quantifiedModifID;
@@ -1762,6 +1800,42 @@ if ($quantifParameters{'R'}{'pAdj'} && $quantifParameters{'R'}{'pAdj'}[0] eq 'TR
 
 $dbh->disconnect;
 #die "Data files are ready!!!"; # DEBUG
+
+####>Attempt to free-up memory
+undef %observationInfo;
+undef %poolGroup2Cond;
+undef %ana2Obs;
+undef %cond2Obs;
+undef %obs2Cond;
+undef %labelModifs;
+undef %anaLabelModifs;
+undef %xicEngine;
+undef %ana2Experiment;
+undef %anaConds;
+undef @conditionList;
+undef %forNormalization;
+undef %notForNormalization;
+undef %manualPeptides;
+undef %usedParamIDs;
+undef @selectedPTMs;
+undef %allowedPtmID;
+undef %proteins;
+undef %intensity;
+undef %excludedSeq;
+undef %proteinInConds;
+undef %peptideBeg;
+undef %qSetSequence;
+undef %qSetBestVarMod;
+undef %qSetIsBad;
+undef %tempIntensity;
+undef %dataSource2ObsSet;
+undef %qSet2Protein;
+undef %notUsed4Quantif;
+undef %peptideQuantifs;
+undef %pepQuantifValues;
+undef %recreatedVarMods;
+undef %noSuperRatioProteins; # used in sub
+
 
 
 								############################################
@@ -2789,6 +2863,66 @@ my $context=($Rdesign eq 'PEP_RATIO')? $ratio : 'NA'; # Experiment != context (r
 #	push @{$refCodedModResList},$modRes[-2].$modRes[-1];
 #}
 
+
+sub recreateModifSites { ## NEW (25/01/19)
+	my ($quantifiedModifID,$pepSeq,$varModStrg,$pepBeg,$protLength,$refQuantifiedModifRes,$refRecreatedVarMods)=@_;
+	#$varModStrg='' unless $varModStrg;
+	$protLength=0 unless $protLength;
+	unless ($refRecreatedVarMods->{"$pepSeq:$varModStrg"}) { # never seen before => compute new var mod
+		#<Look for already modified res (cannot be used as target)
+		my %modifiedResPos;
+		if ($varModStrg) {
+			foreach my $modStrg (split('&',$varModStrg)) {
+				$modStrg=~s/^\d+://;
+				foreach my $pos (split(/\./,$modStrg)) {
+					$modifiedResPos{$pos}=1;
+				}
+			}
+		}
+		#<Look for targetable res in pepSeq
+		my (@numResPos,@termResPos);
+		foreach my $refRes (@{$refQuantifiedModifRes}) {
+			my ($res,$context)=@{$refRes};
+			if ($res=~/\w/) { # QUESTION: Should we also restrict to non-modified termini (res='=-*+')???????
+				if ($context) {
+					if ($context eq '=') { # Any N-term
+						push @termResPos,1 if ($pepSeq=~/^$res/ && !$modifiedResPos{1});
+					}
+					elsif ($context eq '-') { # Protein N-term
+						push @termResPos,$pepBeg if ($pepSeq=~/^$res/ && ($pepBeg==1 || $pepBeg==2) && !$modifiedResPos{1}); # 1 or 2: N-term Methione 
+					}
+					elsif ($context eq '*') { # Any C-term
+						my $lastPos=length($pepSeq);
+						push @termResPos,$lastPos if ($pepSeq=~/$res$/ && !$modifiedResPos{$lastPos});
+					}
+					else { # '+' Protein C-term
+						my $lastPos=length($pepSeq);
+						push @termResPos,$lastPos if ($pepBeg+$lastPos-1==$protLength && !$modifiedResPos{$lastPos} && $pepSeq=~/$res$/);
+					}
+				}
+				else { # Anywhere
+					while ($pepSeq=~/$res/g) {
+						push @numResPos,$+[0] unless $modifiedResPos{$+[0]};
+					}
+				}
+			}
+			else { # N/Cterm
+				push @termResPos,$res unless $modifiedResPos{$res};
+			}
+		}
+		if ($termResPos[0] || $numResPos[0]) {
+			$varModStrg.='&' if $varModStrg;
+			$varModStrg.=$quantifiedModifID.':'.join('.',@termResPos);
+			if ($numResPos[0]) {
+				$varModStrg.='.' if $termResPos[0];
+				$varModStrg.=join('.',sort{$a<=>$b} @numResPos);
+			}
+		}
+		$refRecreatedVarMods->{"$pepSeq:$varModStrg"}=$varModStrg;
+	}
+	return $refRecreatedVarMods->{"$pepSeq:$varModStrg"};
+}
+
 sub extractPtmPosProbability {
 	my ($quantifiedModifID,$varModCode,$varProbStrg)=@_;
 	my ($a,$posStrg)=($varModCode =~ /(^|&)$quantifiedModifID:([^&]+)/);
@@ -2867,7 +3001,12 @@ sub generateReferenceProtFromQuantif { # globals: %promsPath,%quantifParameters,
 # TODO: Make clear choice for labeled quantif done with PEP_INTENSITY algo: treat as 100% Label-Free or mixed LF/Label ?????
 # TODO: Move label-free peptide matching check further downstream for compatibility with PTM quantif
 ####>Revision history<####
-# 2.9.0 Also handles MaxQuant any PTM probability (PP 24/04/01/19)
+# 2.9.5 [Fix] bug where '=+' was used instead of '+=' for label-free peptides intensities (PP 18/06/19)
+# 2.9.4 Works whether XXX_AREA or XXX_INTENSITY is used as quantification parameter (PP 22/03/19)
+# 2.9.3 Uses MODIFICATION.SPECIFITY in case ANALYSIS_MODIFICATION.SPECIFICITY is empty (PP 25/02/19) 
+# 2.9.2 Removed problematic filtering on peptide_quantificationX.txt extraction (PP 23/02/19)
+# 2.9.1 Handles dynamic creation of PTM-sites (PP 19/02/19)
+# 2.9.0 Also handles MaxQuant any PTM probability (PP 24/01/19)
 # 2.8.0 Added protein-level normalization for site quantification (PP 19/12/18)
 # 2.7.0 Now runs on cluster itself: R is launcher by system command (PP 17/09/18)
 # 2.6.2 [Fix] bug in splitting peptide id string during results parsing (PP 13/09/18)

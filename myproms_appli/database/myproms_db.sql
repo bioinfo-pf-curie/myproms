@@ -1,12 +1,13 @@
 /*========================================================================*/
-/*                  myProMS database v3.5.16                              */
+/*                  myProMS database v3.5.20                              */
 /* MySQL script for myproms v3.6 database                                 */
 /* Requires MySQL 5+                                                      */
-/* Patrick Poullet    25/06/2018                                          */
+/* Patrick Poullet    21/06/2019                                          */
 /* Command:                                                               */
 /* >mysql -u <DB_USER> -p -D <DB_NAME> -h <DB_HOST> < myproms_db.sql      */
 /*========================================================================*/
 
+drop table if exists DOCUMENT;
 
 /*==============================================================*/
 /* Table : ANALYSIS                                             */
@@ -151,6 +152,21 @@ create table ANNOTATIONSET
    ANNOT_TYPE           varchar(50),
    ANNOT_LIST           text,
    primary key (ID_ANNOTATIONSET)
+)
+engine = InnoDB;
+
+/*==============================================================*/
+/* Table : ANNOTATION_ITEM                                      */
+/*==============================================================*/
+create table ANNOTATION_ITEM
+(
+   ID_ANNOTATION_ITEM   int not null auto_increment,
+   ID_META_ANNOTATION   int not null,
+   DES                  varchar(100),
+   DISPLAY_POS          smallint,
+   ANNOT_TYPE           varchar(15),
+   ANNOT_VALUE          text,
+   primary key (ID_ANNOTATION_ITEM)
 )
 engine = InnoDB;
 
@@ -546,6 +562,25 @@ create table INSTRUMENT
 engine = InnoDB;
 
 /*==============================================================*/
+/* Table : ISOTOPIC_CORRECTION                                  */
+/*==============================================================*/
+create table ISOTOPIC_CORRECTION
+(
+   ID_PRODUCT           int not null auto_increment,
+   LABEL_TYPE           varchar(15),
+   NAME                 varchar(50),
+   COMPANY              varchar(50),
+   PRODUCT_NUMBER       varchar(25),
+   LOT_NUMBER           varchar(25),
+   ISOTOPIC_DISTRIBUTION text,
+   USE_STATUS           varchar(3),
+   RECORD_DATE          datetime,
+   RECORD_USER          varchar(20),
+   primary key (ID_PRODUCT)
+)
+engine = InnoDB;
+
+/*==============================================================*/
 /* Table : MASTERPROT_IDENTIFIER                                */
 /*==============================================================*/
 create table MASTERPROT_IDENTIFIER
@@ -571,6 +606,26 @@ create table MASTER_PROTEIN
    PROT_SEQ             text,
    UPDATE_DATE          datetime,
    primary key (ID_MASTER_PROTEIN)
+)
+engine = InnoDB;
+
+/*==============================================================*/
+/* Table : META_ANNOTATION                                      */
+/*==============================================================*/
+create table META_ANNOTATION
+(
+   ID_META_ANNOTATION   int not null auto_increment,
+   ID_PARENT_ANNOTATION int,
+   ID_PROJECT           int not null,
+   ID_EXPERIMENT        int,
+   ID_SAMPLE            int,
+   NAME                 varchar(50),
+   DES                  varchar(100),
+   DISPLAY_POS          smallint,
+   ACCESSIBILITY        varchar(10),
+   RECORD_DATE          datetime,
+   RECORD_USER          varchar(20),
+   primary key (ID_META_ANNOTATION)
 )
 engine = InnoDB;
 
@@ -608,6 +663,7 @@ create table MODIFIED_RESIDUE
    ID_QUANTIFICATION    int not null,
    RESIDUE              char(1),
    POSITION             int,
+   MODIF_RANK           smallint,
    primary key (ID_MODIF_RES)
 )
 engine = InnoDB;
@@ -624,6 +680,18 @@ create table MODIFICATION_SITE
    RESIDUE              char(1),
    POSITION             int,
    primary key (ID_MODIFICATION_SITE)
+)
+engine = InnoDB;
+
+/*==============================================================*/
+/* Table : MULTIMODIF_QUANTIFICATION                            */
+/*==============================================================*/
+create table MULTIMODIF_QUANTIFICATION
+(
+   ID_MODIFICATION      int not null,
+   ID_QUANTIFICATION    int not null,
+   MODIF_RANK           smallint,
+   primary key (ID_MODIFICATION, ID_QUANTIFICATION)
 )
 engine = InnoDB;
 
@@ -984,6 +1052,7 @@ create table QUANTIFICATION
 (
    ID_QUANTIFICATION    int not null auto_increment,
    ID_MODIFICATION      int,
+   ID_PRODUCT           int,
    ID_QUANTIFICATION_METHOD int not null,
    ID_DESIGN            int,
    NAME                 varchar(50),
@@ -1379,6 +1448,9 @@ alter table ANA_QUANTIFICATION add constraint FK_ANA_QUANTIFICATION2 foreign key
 alter table ANNOTATIONSET add constraint FK_EXPLORANA_ANNOT foreign key (ID_EXPLORANALYSIS)
       references EXPLORANALYSIS (ID_EXPLORANALYSIS);
 
+alter table ANNOTATION_ITEM add constraint FK_ANNOT_ITEM foreign key (ID_META_ANNOTATION)
+      references META_ANNOTATION (ID_META_ANNOTATION);
+
 alter table BIOSAMPLE add constraint FK_BIOSAMPLESPECIES foreign key (ID_SPECIES)
       references SPECIES (ID_SPECIES);
 
@@ -1508,6 +1580,18 @@ alter table MASTERPROT_IDENTIFIER add constraint FK_MASTERPROT_IDENTIFIER2 forei
 alter table MASTER_PROTEIN add constraint FK_MASTERPROT_SPECIES foreign key (ID_SPECIES)
       references SPECIES (ID_SPECIES);
 
+alter table META_ANNOTATION add constraint FK_ANNOT_ANNOT foreign key (ID_PARENT_ANNOTATION)
+      references META_ANNOTATION (ID_META_ANNOTATION);
+
+alter table META_ANNOTATION add constraint FK_EXPERIMENT_ANNOT foreign key (ID_EXPERIMENT)
+      references EXPERIMENT (ID_EXPERIMENT);
+
+alter table META_ANNOTATION add constraint FK_PROJECT_ANNOT foreign key (ID_PROJECT)
+      references PROJECT (ID_PROJECT);
+
+alter table META_ANNOTATION add constraint FK_SAMPLE_ANNOT foreign key (ID_SAMPLE)
+      references SAMPLE (ID_SAMPLE);
+
 alter table MODIFIED_RESIDUE add constraint FK_QUANTIF_MODRES foreign key (ID_QUANTIFICATION)
       references QUANTIFICATION (ID_QUANTIFICATION);
 
@@ -1519,6 +1603,12 @@ alter table MODIFICATION_SITE add constraint FK_CAT_MODIFSITE foreign key (ID_CA
 
 alter table MODIFICATION_SITE add constraint FK_MODIF_MODIFSITE foreign key (ID_MODIFICATION)
       references MODIFICATION (ID_MODIFICATION);
+	  
+alter table MULTIMODIF_QUANTIFICATION add constraint FK_MULTIMODIF_QUANTIFICATION foreign key (ID_MODIFICATION)
+      references MODIFICATION (ID_MODIFICATION);
+
+alter table MULTIMODIF_QUANTIFICATION add constraint FK_MULTIMODIF_QUANTIFICATION2 foreign key (ID_QUANTIFICATION)
+      references QUANTIFICATION (ID_QUANTIFICATION);
 
 alter table OBSERVATION add constraint FK_ANA_OBS foreign key (ID_ANALYSIS)
       references ANALYSIS (ID_ANALYSIS);
@@ -1658,6 +1748,9 @@ alter table QUANTIFICATION add constraint FK_DESIGNQUANTIF foreign key (ID_DESIG
 alter table QUANTIFICATION add constraint FK_MODIF_QUANTIFICATION foreign key (ID_MODIFICATION)
       references MODIFICATION (ID_MODIFICATION);
 
+alter table QUANTIFICATION add constraint FK_QUANTIF_CORRECTION foreign key (ID_PRODUCT)
+      references ISOTOPIC_CORRECTION (ID_PRODUCT);
+	  
 alter table QUANTIFICATION_PARAMETER add constraint FK_QUANTIFMETHPARAM foreign key (ID_QUANTIFICATION_METHOD)
       references QUANTIFICATION_METHOD (ID_QUANTIFICATION_METHOD);
 

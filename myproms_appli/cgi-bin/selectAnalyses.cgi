@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# selectAnalyses.cgi      2.6.7                                                #
+# selectAnalyses.cgi      2.6.9                                                #
 # Authors: P. Poullet, G. arras, F. Yvon, S. Liva (Institut Curie)             #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -149,7 +149,7 @@ elsif ($ITEM eq 'GO_ANALYSIS'){
 	$sthItem[1]=$dbh->prepare("SELECT ANALYSIS.$baseFieldString,'SAMPLE',SAMPLE.NAME,ANALYSIS.NAME FROM ANALYSIS,SAMPLE,GOANA_ANALYSIS WHERE ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE AND ANALYSIS.ID_ANALYSIS=GOANA_ANALYSIS.ID_ANALYSIS AND ID_GOANALYSIS=$itemID AND SAMPLE.ID_SPOT IS NULL ORDER BY SAMPLE.DISPLAY_POS ASC, ANALYSIS.DISPLAY_POS ASC");
 }
 elsif ($ITEM eq 'PATHWAY_ANALYSIS') {
-	$sthItem[0]=$dbh->prepare("SELECT A.$baseFieldString,'GEL2D',GEL2D.NAME,'SPOT',SPOT.NAME,A.NAME FROM ANALYSIS A,SAMPLE,SPOT,GEL2D,PATHWAYANA_ANALYSIS PA WHERE A.ID_SAMPLE=SAMPLE.ID_SAMPLE AND SAMPLE.ID_SPOT=SPOT.ID_SPOT AND SPOT.ID_GEL2D=GEL2D.ID_GEL2D AND A.ID_ANALYSIS=PA.ID_ANALYSIS AND PA.ID_GOANALYSIS=$itemID ORDER BY GEL2D.DISPLAY_POS ASC,SPOT.NAME ASC,A.DISPLAY_POS ASC");
+	$sthItem[0]=$dbh->prepare("SELECT A.$baseFieldString,'GEL2D',GEL2D.NAME,'SPOT',SPOT.NAME,A.NAME FROM ANALYSIS A,SAMPLE,SPOT,GEL2D,PATHWAYANA_ANALYSIS PA WHERE A.ID_SAMPLE=SAMPLE.ID_SAMPLE AND SAMPLE.ID_SPOT=SPOT.ID_SPOT AND SPOT.ID_GEL2D=GEL2D.ID_GEL2D AND A.ID_ANALYSIS=PA.ID_ANALYSIS AND PA.ID_PATHWAY_ANALYSIS=$itemID ORDER BY GEL2D.DISPLAY_POS ASC,SPOT.NAME ASC,A.DISPLAY_POS ASC");
 	$sthItem[1]=$dbh->prepare("SELECT A.$baseFieldString,A.NAME FROM ANALYSIS A, PATHWAYANA_ANALYSIS PA WHERE PA.ID_ANALYSIS=A.ID_ANALYSIS AND PA.ID_PATHWAY_ANALYSIS=$itemID");
 }
 my $sthVVP=$dbh->prepare("SELECT COUNT(*) FROM ANALYSIS_PROTEIN WHERE VISIBILITY>0 AND ID_ANALYSIS=?");
@@ -791,6 +791,7 @@ my $formAction=($callType eq 'impElution')? 'importElution.cgi' :
 	($callType eq 'phosphoRS')? 'analysePhospho.cgi' :
 	($callType eq 'goQuantiAnalysis')? 'startGOQuantiAnalysis.cgi' :
 	($callType eq 'peptidePTM')? 'showPepModifDistribution.cgi' :
+	($callType eq 'export') ? 'exportProteinList.cgi' : 
 	'selectAnalysis.cgi';
 my $hrColspan;
 if ($callType eq 'list') {
@@ -913,6 +914,12 @@ else {
 <TR><TH align="right" valign="top">&nbsp;Protein distribution :</TH><TH bgcolor="$lightColor" align="left">&nbsp;<INPUT type="checkbox" name="protMulti" value="1"> A protein can be "with" and "without" selected modification(s) at the same time&nbsp;</TH></TR>
 </TABLE><BR>
 |;
+	} elsif ($callType eq 'export') {
+		print qq
+|<INPUT type="hidden" name="ACT" value="$callType">
+<INPUT type="hidden" name="id_project" value="$projectID">
+<INPUT type="hidden" name="item" value="$ITEM">
+|;
 	}
 	print qq
 |<TABLE border=0 cellspacing=0 cellpadding=0>
@@ -1012,7 +1019,7 @@ if ($srcType eq 'ana') {
 			my $boxStr = (($callType eq 'delete' && !$okDelete{$anaID}) ||
 							($callType eq 'peptidePTM' && $valStat <= 0) ||
 							($callType ne 'delete' && $callType ne 'peptidePTM' &&
-								($valStat>1 || ($callType eq 'remFilter' && !$okRemFilter{$anaID})
+								(($valStat>1 && $callType ne 'export') || ($callType eq 'remFilter' && !$okRemFilter{$anaID})
 									#|| ($callType eq 'lowScores' && !$okActLowScores{$anaID})
 									|| ($callType eq 'lowScores' && $lowerScores && $lowerScores==2)
 									|| ($callType eq 'report' && $valStat==-1)
@@ -1234,6 +1241,7 @@ else {
 			($callType eq 'phosphoRS')? 'Start PhosphoRS' :
 			($callType eq 'goQuantiAnalysis')? 'Load Protein Set' :
 			($callType eq 'peptidePTM')? 'Show Distribution' :
+			($callType eq 'export')? 'Export Analyses' :
 			'';
 		print "<INPUT type=\"submit\" name=\"Submit\" value=\"$submitName\" class=\"title3\"$disabSubmit>&nbsp;&nbsp;";
 	}
@@ -1244,6 +1252,8 @@ print "</FORM>\n" if $callType ne 'list';
 print "</BODY>\n</HTML>\n";
 
 ####>Revision history<####
+# 2.6.9 Fix Pathway analysis query (VS 29/03/19)
+# 2.6.8 Add export analyses possibility (VS 26/02/19)
 # 2.6.7 Add check for on-going phosphoRS analysis (PP 08/11/18)
 # 2.6.6 Add branchID to allow phosphoRS parallelization (GA 02/11/18)
 # 2.6.5 Add checkbox to overwrite query manually modified (GA 31/01/18)

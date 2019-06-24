@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# startExploratoryAnalysis.cgi       2.1.8D                                    #
+# startExploratoryAnalysis.cgi       2.1.10                                    #
 # Authors: P. Poullet, S.Liva (Institut Curie)                                 #
 # Contact: myproms@curie.fr                                                    #
 # run PCA or Clustering exploratory analysis                                   #
@@ -67,7 +67,7 @@ my $projectID=&promsMod::getProjectID($dbh,$experimentID,'EXPERIMENT');
 my $ajax=param('AJAX') || "";
 
 if ($ajax eq 'displaySelect') {
-	my $fromMotif= (param('CALL'))? param('CALL') : "";
+	my $fromMotif= param('CALL') || "";
 	&ajaxDisplayData(param('MODIF'),param('QUANTIF_FAM'),$fromMotif);
 	exit;
 }
@@ -83,14 +83,18 @@ if (param('submitted')) {
 
     print header(-charset=>'utf-8', -'content-encoding' => 'no');
     warningsToBrowser(1);
+	my $title=($action eq 'export')? 'Exporting Quantifications' : 'Starting Exploratory Analyses';
     print qq
 |<HTML>
 <HEAD>
+<TITLE>Preparing Exploratory Analysis</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
 </HEAD>
 <BODY background="$promsPath{images}/bgProMS.gif">
 <CENTER>
-<BR><BR><BR><BR><BR><IMG src="$promsPath{images}/scrollbarGreen.gif">
+<BR>
+<FONT class="title">$title</FONT>
+<BR><BR><BR><BR><BR><SPAN id="waitSPAN"><IMG src="$promsPath{images}/scrollbarGreen.gif"></SPAN>
 <BR><FONT class="title3">Fetching data. Please wait...|;
 
     ### Get Parameter for insert
@@ -112,10 +116,11 @@ if (param('submitted')) {
 		   LOG10=>sub {return log($_[0])/log(10);}
 			       );
     my @selQuantifs=param('test_quantif');
+	my $numQuantifs=scalar @selQuantifs;
 	my @groupQuantifs=param('group_quantif');
 
 	my $isNormalized=0;
-    if ($valMod < 0) {
+    if ($valMod < 0) {##NORMALIZED PHOSPHO
 		my @normQuantifs=param('ref_quantif');
 		foreach my $i (0..$#selQuantifs) {
 			$selQuantifs[$i].='%'.$normQuantifs[$i];
@@ -138,7 +143,7 @@ if (param('submitted')) {
     my $catExclusion = ($condRestrict eq 'exclude')? 1 : 0;
     my $numPepType=param('pepType') || 'NUM_PEP_USED';
     my $minNumPeptides=param('numPep') || 1;
-#>RATIO-specific parameters
+	#>RATIO-specific parameters
     my $maxFoldChange = param('foldChange') || 1;
     my $minNumOkRatios = param('foldChangeOcc') || 1;
     my $maxPValue = param('pValue') || 1;
@@ -146,8 +151,8 @@ if (param('submitted')) {
     my $infRatios=param('infRatios') || 0;
     my $minFoldChange = 1/$maxFoldChange;
 
-####create parameter file for Analysis pipeline R scirpt
-#>FILTERING
+	####>Get parameters for data post-processing by R
+	#>FILTERING
     my $delocalize = param('delocalize')? "TRUE" : "FALSE";
     my $geneNameR="FALSE";
 	my $useGeneName=param('geneName') || 0;
@@ -156,9 +161,10 @@ if (param('submitted')) {
     my $pValueAnova=($pValueAnovaChk eq "TRUE")? param('pValueAnova') : "FALSE";
     my $nbProtChk=param('topNvarChk')? "TRUE" : "FALSE";
     my $nbProt=($nbProtChk eq "TRUE")? param('topNvar') : "FALSE";
-#>STAT-specific parameters
+	#>STAT-specific parameters
 	my $exportRprocessMatrices=($nbProtChk eq 'TRUE' || $aggregate eq 'TRUE')? 1 : 0; # default
     my $anova = (param('anovaSel'))? param('anovaSel') : (param('topNvarChk'))? "sample" : "none";
+	my ($imputeData,$imputeDataR)=($action eq 'explorAna' || param('imputeNA'))? (1,"TRUE") : (0,"FALSE"); # imputation is mandatory for explor analysis
 	
 	if ($aggregate eq "TRUE" && $nbProtChk eq "FALSE") {
 		$anova="sample";
@@ -226,36 +232,33 @@ if (param('submitted')) {
 		$strgFilterList.="//nbProt=$nbProtFilter";
 		($refSelectedProteins,$refExcludedProteins)=($condRestrict eq 'restrict')? (\%listProteins,undef) : (undef,\%listProteins);
     }
-
-#####################################>TEST GO TERM 20/08/15
-#if (1==2) {
-#	my @goAnalyses=(89,90,91); # gr/SILAC-slim
-#	#my @goAnalyses=(83,87,88); # gr/gr-slim
-#	my $goID=undef;
-#	my $aspect='P';
-#	my %goProtList;
-#	foreach my $goAnaID (@goAnalyses) {
-#		my $resultDirUnix="$promsPath{go_unix}/project_$projectID/$goAnaID";
-#		open(RES,"$resultDirUnix/results_$aspect.txt") || die "Could not open result file";
-#		while(<RES>){
-#			next if $_ =~ /^#/;
-#			chomp;
-#			my @info = split(/\t/, $_);
-#			next if $info[0] =~ /unannotated|discarded/;
-#			next if $info[5] eq '.';
-#			if(!$goID || $info[0] eq $goID){
-#				foreach my $protID (split ';',$info[5]){
-#					$goProtList{$protID}=1;
-#				}
-#				last if $goID;
-#			}
-#		}
-#		close RES;
-#	}
-#	$refSelectedProteins=\%goProtList;
-#}
-#####################################<<<<<<<<<<<<<<<<<<<<<
-
+	
+	####>Fetching quantification data (moved up to get software info. PP 27/03/19)<####
+	my (%quantifValues,%quantifInfo,%proteinInfo,%groupQuantifNames);
+	my ($view,$refProtInfo)=($action eq 'explorAna')? ('explorAna',undef) : ('export',\%proteinInfo);
+	my $absValMod = ($isNormalized)? abs($valMod)  : $valMod;
+    my %parameters=(QUANTIF_FAMILY=>$quantifFam,VIEW=>$view,NUM_PEP_CODE=>$numPepType,QUANTIF_LIST=>\@selectedQuantifications,SEL_MODIF_ID=>$absValMod,VERBOSE=>1);
+	$parameters{MEASURE}=$quantifMeasCode if $quantifMeasCode; # only for non-RATIO quantifs
+	&promsQuantif::fetchQuantificationData($dbh,\%parameters,\%quantifInfo,\%quantifValues,$refProtInfo,$refSelectedProteins,$refExcludedProteins);
+	my %quantifSoftwares;
+	my ($okPvalue,$okSdGeo)=(0,0);
+	if ($quantifFam eq 'RATIO') {
+		foreach my $quantif (@selectedQuantifications) {
+			my ($quantifID,$targetPos)=split('_',$quantif);
+			@{$quantifSoftwares{$quantif}}=('myProMS',1);
+			if ($quantifInfo{$quantifID}[1]->{SOFTWARE}) {
+				$quantifSoftwares{$quantif}[0]=$quantifInfo{$quantifID}[1]->{SOFTWARE}[0];
+				$quantifSoftwares{$quantif}[0]='MaxQuant' if $quantifSoftwares{$quantif} eq 'MQ';
+				$quantifSoftwares{$quantif}[1]=$quantifInfo{$quantifID}[1]->{SOFTWARE}[1] if $quantifInfo{$quantifID}[1]->{SOFTWARE}[1];
+			}
+			if (!$isNormalized) {
+				$okPvalue=1 if $quantifSoftwares{$quantif}[0] ne 'MaxQuant';
+				$okSdGeo=1 if ($view eq 'export' && $quantifSoftwares{$quantif}[0] eq 'myProMS' && $quantifSoftwares{$quantif}[1] >= 2);
+			}
+		}
+	}
+	
+	
 	my ($pcaID, $clusteringID,$sthUpdateFilterList);
 	my ($exportDir,$exportPath,$quantifFile,$pepFile,$pepFileRef);
 	my @file2Tar;
@@ -264,10 +267,6 @@ if (param('submitted')) {
 		####INSERT database
 		my $sthInsertExplorAna = $dbh -> prepare("INSERT INTO EXPLORANALYSIS(ID_EXPLORANALYSIS,ID_CATEGORY,ID_EXPERIMENT,NAME,ANA_TYPE,PARAM_LIST,FILTER_LIST,CAT_EXCLUSION,STATUS,UPDATE_DATE,UPDATE_USER) VALUES (?,?,?,?,?,?,?,?,-1,NOW(),?)");
 		#$pcaID = $clusteringID = 1; ## tocomment
-
-		####Update Filter_list with nbProt
-		#$sthUpdateFilterList=$dbh->prepare("UPDATE EXPLORANALYSIS SET FILTER_LIST=CONCAT(FILTER_LIST,?) WHERE ID_EXPLORANALYSIS=?");
-
 		$strgParamList.="//$strgNorm" if $strgNorm;
 
 		##PCA
@@ -275,16 +274,14 @@ if (param('submitted')) {
 			($pcaID) = $dbh->selectrow_array("SELECT MAX(ID_EXPLORANALYSIS) FROM EXPLORANALYSIS");
 			$pcaID++;
 			$sthInsertExplorAna -> execute($pcaID,$restrictListID,$experimentID,$PCAName,'PCA',$strgParamList,$strgFilterList,$catExclusion,$userID);
-			#$dbh -> commit;
 		}
-
+		
 		##Clustering
 		if (defined $clusterName) {
 			$strgParamList .= "//method=$method//metric=$metric";
 			($clusteringID) =  $dbh->selectrow_array("SELECT MAX(ID_EXPLORANALYSIS) FROM EXPLORANALYSIS");
 			$clusteringID++;
 			$sthInsertExplorAna -> execute($clusteringID,$restrictListID,$experimentID,$clusterName,'cluster',$strgParamList,$strgFilterList,$catExclusion,$userID);
-			#$dbh -> commit;
 		}
 		$sthInsertExplorAna -> finish;
 
@@ -315,11 +312,10 @@ if (param('submitted')) {
 			mkdir "$promsPath{tmp}/exploratory_analysis/$pcaID" unless -e "$promsPath{tmp}/exploratory_analysis/$pcaID";
 			open(MAT_PCA,">$promsPath{tmp}/exploratory_analysis/$pcaID/matrix.txt");
 			open(NA_PCA,">$promsPath{tmp}/exploratory_analysis/$pcaID/missingValues.txt");
-
-
+			
 			open(R_PARAMS,">$promsPath{tmp}/exploratory_analysis/$pcaID/R_parameters.txt");
-			print R_PARAMS "EXCLUDE_AMB\tGENE_NAME\tPROTEIN_SELECTION\tAGGREGATE\tKEEP_PROT\tKEEP_PROT_NB\tP_VALUE_CHK\tP_VALUE\tMISSING_VALUE\tINF_RATIO\n";
-			print R_PARAMS "$delocalize\t$geneNameR\t$anova\t$aggregate\t$nbProtChk\t$nbProt\t$pValueAnovaChk\t$pValueAnova\t$numMissValue\t$infRatios\n";
+			print R_PARAMS "EXCLUDE_AMB\tGENE_NAME\tPROTEIN_SELECTION\tAGGREGATE\tKEEP_PROT\tKEEP_PROT_NB\tP_VALUE_CHK\tP_VALUE\tMISSING_VALUE\tINF_RATIO\tIMPUTE\n";
+			print R_PARAMS "$delocalize\t$geneNameR\t$anova\t$aggregate\t$nbProtChk\t$nbProt\t$pValueAnovaChk\t$pValueAnova\t$numMissValue\t$infRatios\t$imputeDataR\n";
 			close(R_PARAMS);
 		}
 
@@ -328,16 +324,15 @@ if (param('submitted')) {
 			mkdir "$promsPath{tmp}/exploratory_analysis/$clusteringID" unless -e "$promsPath{tmp}/exploratory_analysis/$clusteringID";
 			open(MAT_CLUSTER,">$promsPath{tmp}/exploratory_analysis/$clusteringID/matrix.txt");
 			open(NA_CLUSTER,">$promsPath{tmp}/exploratory_analysis/$clusteringID/missingValues.txt");
-
+			
 			open(R_PARAMS,">$promsPath{tmp}/exploratory_analysis/$clusteringID/R_parameters.txt");
-			print R_PARAMS "EXCLUDE_AMB\tGENE_NAME\tPROTEIN_SELECTION\tAGGREGATE\tKEEP_PROT\tKEEP_PROT_NB\tP_VALUE_CHK\tP_VALUE\tMISSING_VALUE\tINF_RATIO\n";
-			print R_PARAMS "$delocalize\t$geneNameR\t$anova\t$aggregate\t$nbProtChk\t$nbProt\t$pValueAnovaChk\t$pValueAnova\t$numMissValue\t$infRatios\n";
+			print R_PARAMS "EXCLUDE_AMB\tGENE_NAME\tPROTEIN_SELECTION\tAGGREGATE\tKEEP_PROT\tKEEP_PROT_NB\tP_VALUE_CHK\tP_VALUE\tMISSING_VALUE\tINF_RATIO\tIMPUTE\n";
+			print R_PARAMS "$delocalize\t$geneNameR\t$anova\t$aggregate\t$nbProtChk\t$nbProt\t$pValueAnovaChk\t$pValueAnova\t$numMissValue\t$infRatios\t$imputeDataR\n";
 			close(R_PARAMS);
 		}
 	}
 	else { # export
 		###>Config<####
-		#mkdir "$promsPath{tmp}" unless -e "$promsPath{tmp}";
 		mkdir "$promsPath{tmp}/scratch" unless -d "$promsPath{tmp}/scratch";
 		&promsMod::cleanDirectory("$promsPath{tmp}/scratch/export",'15m');
 		my $jobID=strftime("%Y%m%d%H%M%S",localtime);
@@ -345,31 +340,43 @@ if (param('submitted')) {
 		mkdir "$promsPath{tmp}/scratch/export/$exportDir";
 		$exportPath="$promsPath{tmp}/scratch/export/$exportDir";
 		$quantifFile=($quantifFam eq 'RATIO')? 'ratio.txt' : "$quantifMeasCode.txt"; # exported intensities are NOT logged
-		push @file2Tar, ($exportRprocessMatrices)? "processed_$quantifFile" : $quantifFile;
+		my $processedPrefix=($exportRprocessMatrices)? 'processed_' : '';
+		
+		push @file2Tar, ($exportRprocessMatrices || $imputeData)? "processed_$quantifFile" : $quantifFile;
 		open(MAT_EXPORT_QUANTIF,">$exportPath/$quantifFile");
-		if ($quantifFam eq 'RATIO' && !$isNormalized) {
-			$pepFile=($numPepType eq 'NUM_PEP_USED')? 'peptide.txt' : 'dist_peptide.txt';
+		open(MAT_INFO_EXPORT,">$exportPath/value_info.txt") if ($exportRprocessMatrices || $imputeData);
+		if (!$isNormalized) {
+			$pepFile=($numPepType=~/NUM_PEP_USED|IDENT_PEP/)? 'peptide.txt' : 'dist_peptide.txt';
 			open(MAT_EXPORT_PEP,">$exportPath/$pepFile");
-			open(MAT_EXPORT_PVAL,">$exportPath/pvalue.txt");
-			#my $pepFile2Tar = ($numPepType eq 'NUM_PEP_USED')? "matrix_processed.txt" : "matrix_processed_$pepFile";
-			my $pepFile2Tar = "processed_$pepFile";
-			push @file2Tar, ($exportRprocessMatrices)? ("processed_$pepFile","processed_pvalue.txt") : ($pepFile,'pvalue.txt');
+			push @file2Tar,$processedPrefix.$pepFile;
+			if ($quantifFam eq 'RATIO') {
+				open(MAT_EXPORT_PVAL,">$exportPath/pvalue.txt") if $okPvalue;
+				open(MAT_EXPORT_SDGEO,">$exportPath/sd_geo.txt") if $okSdGeo;
+				push @file2Tar,$processedPrefix.'pvalue.txt' if $okPvalue;
+				push @file2Tar,$processedPrefix.'sd_geo.txt' if $okSdGeo;
+				push @file2Tar,$processedPrefix."annotation.txt";
+			}
 		}
-		push @file2Tar, ($exportRprocessMatrices)? "processed_annotation.txt" : "annotation.txt";
+
 		push @file2Tar, "parameters.txt";
+		if ($exportRprocessMatrices || $imputeData) {
+			push @file2Tar, "processed_value_info.txt";
+			push @file2Tar, "processed_value_info.png";
+		}
 		open(ANNOT,">$exportPath/annotation.txt");
 		open(PARAMS,">$exportPath/parameters.txt");
+		
 		my $focusStrg='Proteins';
 		if ($valMod) {
-		    my ($modifName)=$dbh->selectrow_array("SELECT PSi_MS_NAME FROM MODIFICATION WHERE ID_MODIFICATION=ABS($valMod)");
+		    my ($modifName)=$dbh->selectrow_array("SELECT PSI_MS_NAME FROM MODIFICATION WHERE ID_MODIFICATION=$absValMod");
 		    $focusStrg=$modifName.'-Proteins';
 		}
-		if ($exportRprocessMatrices) {
+		if ($exportRprocessMatrices || $imputeData) {
 			push @file2Tar, "R_parameters.txt";
 			my $numMissValue=scalar(@testQuantifications)*$missingValues/100;
 			open(R_PARAMS,">$exportPath/R_parameters.txt");
-			print R_PARAMS "MODIF\tQUANTIF_FAM\tPROTEIN_SELECTION\tAGGREGATE\tKEEP_PROT\tKEEP_PROT_NB\tP_VALUE_CHK\tP_VALUE\tMISSING_VALUE\n";
-			print R_PARAMS "$valMod\t$quantifFam\t$anova\t$aggregate\t$nbProtChk\t$nbProt\t$pValueAnovaChk\t$pValueAnova\t$numMissValue\n";
+			print R_PARAMS "MODIF\tQUANTIF_FAM\tPROTEIN_SELECTION\tAGGREGATE\tKEEP_PROT\tKEEP_PROT_NB\tP_VALUE_CHK\tP_VALUE\tMISSING_VALUE\tIMPUTE\n";
+			print R_PARAMS "$valMod\t$quantifFam\t$anova\t$aggregate\t$nbProtChk\t$nbProt\t$pValueAnovaChk\t$pValueAnova\t$numMissValue\t$imputeDataR\n";
 			close(R_PARAMS);
 		}
 
@@ -378,17 +385,18 @@ if (param('submitted')) {
 			my ($listName)=$dbh->selectrow_array("SELECT CONCAT(CL.NAME,' > ',CA.NAME) FROM CATEGORY CA,CLASSIFICATION CL WHERE CA.ID_CLASSIFICATION=CL.ID_CLASSIFICATION AND CA.ID_CATEGORY=$restrictListID");
 			$listFilterStrg="$condRestrict: $listName ($nbProtFilter proteins)";
 		}
-		my $infRatioStrg=($infRatios < 0)? '=NA' : $infRatios;
+		my $infRatioStrg=($infRatios < 0)? '100=MISSING_VALUE' : $infRatios;
 
 		print PARAMS qq
 |FOCUS\t$focusStrg
 QUANTIF_METHOD\t$quantifFam
-DATA_TRANSFORM=$dataTransform
+DATA_TRANSFORM\t$dataTransform
 %_MISSING_VALUES_ALLOWED\t$missingValues
 LIST_FILTERING\t$listFilterStrg
 MIN_NUM_PEPTIDES\t$minNumPeptides
 PEPTIDE_TYPE\t$pepTypeDesc{$numPepType}
 DATA_SELECTION\t$anova
+IMPUTE_MISSING_VALUES\t$imputeDataR
 |;
 		if ($anova eq "group") {
 			print PARAMS "GROUP\t$groupName\n";
@@ -399,17 +407,9 @@ DATA_SELECTION\t$anova
 		if ($pValueAnovaChk eq "TRUE") {
 			print PARAMS "PVALUE_SIGN\t$pValueAnova\n";
 		}
-		if ($valMod) {
-			print PARAMS qq
-|AGGREGATE\t$aggregate
-EXCLUDE_AMB\t$delocalize
-|;
-		}
 		if ($quantifFam eq 'RATIO') {
-			my $normStrg=($isNormalized)? 'Yes' : 'No';
 			print PARAMS qq
-|NORMALIZED_RATIOS\t$normStrg
-MAX_ABS_RATIO\t$maxFoldChange
+|MAX_ABS_RATIO\t$maxFoldChange
 MIN_RATIO_OCCURENCE\t$minNumOkRatios
 MINUS_INFINITE_RATIO\t-1000
 PLUS_INFINITE_RATIO\t1000
@@ -417,6 +417,14 @@ MAX_P_VALUE\t$maxPValue
 MIN_P_VALUE_OCCURENCE\t$minNumOkPValues
 %_INFINITE_RATIOS_ALLOWED\t$infRatioStrg
 |;
+			if ($valMod) {
+				my $normStrg=($isNormalized)? 'Yes' : 'No';
+				print PARAMS qq
+|AGGREGATE_SITES\t$aggregate
+EXCLUDE_AMBIGOUS_SITES\t$delocalize
+NORMALIZED_RATIOS\t$normStrg
+|;
+			}
 		}
 		elsif ($quantifMeasCode) {
 			my $quantifMeasName;
@@ -428,39 +436,23 @@ MIN_P_VALUE_OCCURENCE\t$minNumOkPValues
 			}
 			print PARAMS "QUANTIF_CODE\t$quantifMeasName\n";
 		}
-		#elsif ($quantifFam eq 'EMPAI') {
-		#	print PARAMS "QUANTIF_CODE=$empaiQuantifCode\n";
-		#}
 		close PARAMS;
-	}
-
-	my (%quantifValues,%quantifInfo,%proteinInfo, %groupQuantifNames);
-	my ($view,$refProtInfo)=($action eq 'explorAna')? ('explorAna',undef) : ('export',\%proteinInfo);
-	my $absValMod = ($isNormalized)? abs($valMod)  : $valMod;
-    my %parameters=(QUANTIF_FAMILY=>$quantifFam,VIEW=>$view,NUM_PEP_CODE=>$numPepType,QUANTIF_LIST=>\@selectedQuantifications,SEL_MODIF_ID=>$absValMod,VERBOSE=>1);
-	$parameters{MEASURE}=$quantifMeasCode if $quantifMeasCode;
-	&promsQuantif::fetchQuantificationData($dbh,\%parameters,\%quantifInfo,\%quantifValues,$refProtInfo,$refSelectedProteins,$refExcludedProteins);
-	my %quantifSoftwares;
-	if ($quantifFam eq 'RATIO') {
-		foreach my $quantif (@selectedQuantifications) {
-			my ($quantifID,$targetPos)=split('_',$quantif);
-			$quantifSoftwares{$quantif}=($quantifInfo{$quantifID}[1]->{SOFTWARE})? $quantifInfo{$quantifID}[1]->{SOFTWARE}[0] : 'myProMS';
-			$quantifSoftwares{$quantif}='MaxQuant' if $quantifSoftwares{$quantif} eq 'MQ';
-		}
 	}
 
 	my @header;
 	if ($action eq 'explorAna') {
 		foreach my $testQuant (@testQuantifications) {
-			if ($test2refQuantif{$testQuant}) {push @header,$testQuant.'%'.$test2refQuantif{$testQuant};}
-			else {push @header,$testQuant;}
+			if ($test2refQuantif{$testQuant}) {
+				push @header,$testQuant.'%'.$test2refQuantif{$testQuant};
+			}
+			else {
+				push @header,$testQuant;
+			}
 		}
 	}
 	else { # export
-
 		my %testQuantifNames=&promsQuantif::getDistinctQuantifNames($dbh,join(':',param('test_quantif')));
 		my %refQuantifNames=($isNormalized)? &promsQuantif::getDistinctQuantifNames($dbh,join(':',param('ref_quantif'))) : ();
-
 		foreach my $quantif (@testQuantifications) {
 			(my $headerStrg=$testQuantifNames{'EXTENDED'}{$quantif})=~s/\W+/\./g;
 			$headerStrg=~s/^\.+//; $headerStrg=~s/\.+\Z//;
@@ -470,7 +462,6 @@ MIN_P_VALUE_OCCURENCE\t$minNumOkPValues
 				(my $refStrg=$refQuantifNames{'EXTENDED'}{$test2refQuantif{$quantif}})=~s/\W+/\./g;
 				$refStrg=~s/^\.+//; $refStrg=~s/\.+\Z//;
 				$headerStrg.='.VS.'.$refStrg;
-
 			}
 			$groupQuantifNames{$strgHeader}=$headerStrg;
 			push @header,$headerStrg;
@@ -487,7 +478,7 @@ MIN_P_VALUE_OCCURENCE\t$minNumOkPValues
 				print GROUP "$groupQuantifNames{$quantif}\t$group\n";
 			}
 		}
-		close(GROUP);
+		close GROUP;
 	}
 
 	if ($anova eq "sample") {
@@ -498,14 +489,18 @@ MIN_P_VALUE_OCCURENCE\t$minNumOkPValues
 	my $numTestQuantifs=scalar @testQuantifications;
 	my $numAllowedInf=($infRatios < 0)? $numTestQuantifs : $numTestQuantifs*$infRatios/100;
 	my $numAllowedMissing=$numTestQuantifs*$missingValues/100;
-
 	print MAT_PCA "\t$strgCond\n" if $pcaID;
 	print MAT_CLUSTER "\t$strgCond\n" if $clusteringID;
+	
 	if ($action eq 'export') {
 		print MAT_EXPORT_QUANTIF "\t$strgCond\n";
-		if ($quantifFam eq 'RATIO' && !$isNormalized) {
+		print MAT_INFO_EXPORT "\t$strgCond\n" if ($exportRprocessMatrices || $imputeData);
+		if (!$isNormalized) {
 			print MAT_EXPORT_PEP "\t$strgCond\n";
-			print MAT_EXPORT_PVAL "\t$strgCond\n";
+			if ($quantifFam eq 'RATIO') {
+				print MAT_EXPORT_PVAL "\t$strgCond\n";
+				print MAT_EXPORT_SDGEO "\t$strgCond\n" if $okSdGeo;
+			}
 		}
 		print ANNOT "PROTEIN\tIDENTIFIER\tGENE\tSYNONYMS\tDESCRIPTION\n";
 	}
@@ -514,12 +509,13 @@ MIN_P_VALUE_OCCURENCE\t$minNumOkPValues
 
 	my $nbAllProt=0;
 	my $count=0;
+	my ($countMinusInf,$countPlusInf,$countMissingvalues,$countTrueValues)=0;
 	my (%usedProteinInfo,%missingValuesProt);
 	foreach my $modProtID (keys %quantifValues) { # skip sort because of modif quantif -> sort{lc($proteinInfo{$a}[0]) cmp lc($proteinInfo{$b}[0])} # sort by ALIAS
 		my ($proteinID,$modStrg)=($modProtID=~/^(\d+)(.*)/);
 		$modStrg='' unless $modStrg;
 		#>Scan for +/- inf & missing values & peptide filter
-		my (%infiniteRatios,%missingValueQuantif,%usedProtRatio); #,@trueValues
+		my (%infiniteRatios,%missingValueQuantif,%usedProtRatio,%isInfiniteRatios); #,@trueValues
 		my $numTrueValues=0;
 		foreach my $quantif (@testQuantifications) {
 			my $strgQuantif= ($isNormalized)? $quantif."%".$test2refQuantif{$quantif} : $quantif;
@@ -535,14 +531,17 @@ MIN_P_VALUE_OCCURENCE\t$minNumOkPValues
 				}
 			}
 			if ($quantifValues{$modProtID}{$quantif}) {
-				if (!$quantifValues{$modProtID}{$quantif}{$numPepType} || $quantifValues{$modProtID}{$quantif}{$numPepType} < $minNumPeptides) { # peptide filters
-					$missingValueQuantif{$strgQuantif}=1;
-					next;
+				if (!$isNormalized) {
+					if (!$quantifValues{$modProtID}{$quantif}{$numPepType} || $quantifValues{$modProtID}{$quantif}{$numPepType} < $minNumPeptides) { # peptide filters
+						$missingValueQuantif{$strgQuantif}=1;
+						next;
+					}
 				}
 				if ($quantifFam eq 'RATIO') {
 					if ($quantifValues{$modProtID}{$quantif}{'RATIO'} == 0.001) {
 						if ($infRatios < 0) { # use as missing value
 							$missingValueQuantif{$strgQuantif}=1;
+							$isInfiniteRatios{$strgQuantif}="-Inf";
 						}
 						else {
 							$infiniteRatios{$quantif}=-1;
@@ -552,6 +551,7 @@ MIN_P_VALUE_OCCURENCE\t$minNumOkPValues
 					elsif ($quantifValues{$modProtID}{$quantif}{'RATIO'} == 1000) {
 						if ($infRatios < 0) { # use as missing value
 							$missingValueQuantif{$strgQuantif}=1;
+							$isInfiniteRatios{$strgQuantif}="+Inf";
 						}
 						else {
 							$infiniteRatios{$quantif}=1;
@@ -560,6 +560,7 @@ MIN_P_VALUE_OCCURENCE\t$minNumOkPValues
 					}
 					else { # usable value in test (and ref)
 						$usedProtRatio{$quantif}=($test2refQuantif{$quantif})? $quantifValues{$modProtID}{$quantif}{'RATIO'}/$quantifValues{$proteinID}{$test2refQuantif{$quantif}}{'RATIO'} : $quantifValues{$modProtID}{$quantif}{'RATIO'};
+
 						$numTrueValues++;
 # TEMP!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 #$usedProtRatio{$quantif}=$quantifValues{$modProtID}{$quantif}{'NUM_PEP_USED'};
@@ -577,8 +578,8 @@ MIN_P_VALUE_OCCURENCE\t$minNumOkPValues
 		}
 
 		#my $numTrueValues=scalar @trueValues;
-		my $numProtMissValues=scalar keys %missingValueQuantif;
-		next if ($numProtMissValues > $numAllowedMissing || ($quantifFam eq 'RATIO' && scalar (keys %infiniteRatios) > $numAllowedInf) || ($action eq 'explorAna' && $numTrueValues < 2));
+		my $numProtMissValues=scalar keys %missingValueQuantif; # $numProtMissValues can equal $numQuantifs due to peptide filtering
+		next if ($numProtMissValues==$numQuantifs || $numProtMissValues > $numAllowedMissing || ($quantifFam eq 'RATIO' && scalar (keys %infiniteRatios) > $numAllowedInf) || ($action eq 'explorAna' && $numTrueValues < 2));
 		%{$missingValuesProt{$modProtID}}=%missingValueQuantif if $numProtMissValues;
 
 		#$maxTrueRatio*=2; # !!!!!!!!!!!!!!!!!!! +/-inf ratios converted into 2x max ratio for protein accross all quantifs !!!!!!!!!!!!!!!!!
@@ -589,7 +590,7 @@ MIN_P_VALUE_OCCURENCE\t$minNumOkPValues
 			foreach my $quantif (@testQuantifications) {
 				next if $missingValueQuantif{$quantif};
 				$okRatio++ if ($maxFoldChange==1 || $usedProtRatio{$quantif} <= $minFoldChange || $usedProtRatio{$quantif} >= $maxFoldChange);
-				$okPvalue++ if ($maxPValue==1 || $quantifSoftwares{$quantif} eq 'MaxQuant' || ($quantifValues{$modProtID}{$quantif}{'P_VALUE'} && $quantifValues{$modProtID}{$quantif}{'P_VALUE'} <= $maxPValue)); # !!!Does not rely on +/-inf to validate p-value filter!!! (+/-inf accepted only if another quantif has validated filter)
+				$okPvalue++ if ($maxPValue==1 || $quantifSoftwares{$quantif}[0] eq 'MaxQuant' || ($quantifValues{$modProtID}{$quantif}{'P_VALUE'} && $quantifValues{$modProtID}{$quantif}{'P_VALUE'} <= $maxPValue)); # !!!Does not rely on +/-inf to validate p-value filter!!! (+/-inf accepted only if another quantif has validated filter)
 			}
 			next if ($okRatio < $minNumOkRatios || $okPvalue < $minNumOkPValues);
 		}
@@ -598,25 +599,39 @@ MIN_P_VALUE_OCCURENCE\t$minNumOkPValues
 		next if ($delocalize eq "TRUE" && $modStrg=~/:/);
 		print MAT_PCA "$modProtID" if $pcaID;
 		print MAT_CLUSTER "$modProtID" if $clusteringID;
+		
 		if ($action eq 'export') {
 			my $entryName;
 			if ($useGeneName) {$entryName=$proteinInfo{$proteinID}[5][0] || 'NO_GENE';} # gene
 			else {$entryName=$proteinInfo{$proteinID}[0];} # ALIAS
 			print MAT_EXPORT_QUANTIF "$entryName(uid$proteinID)$modStrg";
-			if ($quantifFam eq 'RATIO' && !$isNormalized) {
+			print MAT_INFO_EXPORT "$entryName(uid$proteinID)$modStrg" if ($exportRprocessMatrices || $imputeData);
+			if (!$isNormalized) {
 				print MAT_EXPORT_PEP "$entryName(uid$proteinID)$modStrg";
-				print MAT_EXPORT_PVAL "$entryName(uid$proteinID)$modStrg";
+				if ($quantifFam eq 'RATIO') {
+					print MAT_EXPORT_PVAL "$entryName(uid$proteinID)$modStrg";
+					print MAT_EXPORT_SDGEO "$entryName(uid$proteinID)$modStrg" if $okSdGeo;
+				}
 			}
 		}
 		foreach my $quantif (@testQuantifications) {
 			if ($usedProtRatio{$quantif}) { # usable value
 				if ($quantifFam eq 'RATIO') {
 					if ($infiniteRatios{$quantif}) { # flag +/-inf ratios
-						print MAT_PCA "\t$usedProtRatio{$quantif}" if $pcaID; # 1000 or -1000;
-						print MAT_CLUSTER "\t$usedProtRatio{$quantif}" if $clusteringID;
+						$countMinusInf++ if ($usedProtRatio{$quantif} == -1000);
+						$countPlusInf++ if ($usedProtRatio{$quantif} == 1000);
+						my $infValue=($usedProtRatio{$quantif} == "-1000")? "-Inf" : "+Inf";
+						if ($pcaID){
+							print MAT_PCA "\t$usedProtRatio{$quantif}";
+						}
+						if ($clusteringID){
+							print MAT_CLUSTER "\t$usedProtRatio{$quantif}";
+						}
 						if ($action eq 'export') {
 							print MAT_EXPORT_QUANTIF "\t$usedProtRatio{$quantif}";
+							print MAT_INFO_EXPORT "\t$infValue" if ($exportRprocessMatrices || $imputeData);
 							print MAT_EXPORT_PVAL "\tNA" unless $isNormalized;
+							print MAT_EXPORT_SDGEO "\tNA" if $okSdGeo;
 						}
 					}
 					else {
@@ -625,20 +640,31 @@ MIN_P_VALUE_OCCURENCE\t$minNumOkPValues
 						print MAT_CLUSTER "\t$transValue" if $clusteringID;
 						if ($action eq 'export') {
 							print MAT_EXPORT_QUANTIF "\t$transValue";
+							print MAT_INFO_EXPORT "\tVal" if ($exportRprocessMatrices || $imputeData);
+							$countTrueValues++;
 							unless ($isNormalized) {
-								if ($quantifValues{$modProtID}{$quantif}{'P_VALUE'}) {print MAT_EXPORT_PVAL "\t$quantifValues{$modProtID}{$quantif}{P_VALUE}";}
-								else {print MAT_EXPORT_PVAL "\tNA";}
+								if ($okPvalue) {
+									if ($quantifValues{$modProtID}{$quantif}{'P_VALUE'}) {print MAT_EXPORT_PVAL "\t$quantifValues{$modProtID}{$quantif}{P_VALUE}";}
+									else {print MAT_EXPORT_PVAL "\tNA";}
+								}
+								if ($okSdGeo) {
+									if ($quantifValues{$modProtID}{$quantif}{'SD_GEO'}) {print MAT_EXPORT_SDGEO "\t".$quantifValues{$modProtID}{$quantif}{SD_GEO}*100/abs($transform{LOG2}->($usedProtRatio{$quantif}));}
+									else {print MAT_EXPORT_SDGEO "\tNA";}
+								}
 							}
 						}
 					}
-					print MAT_EXPORT_PEP "\t$quantifValues{$modProtID}{$quantif}{$numPepType}" if ($action eq 'export' && !$isNormalized);
 				}
 				else { # Non-ratio quantifs MQ,SIN,EMPAI
 					my $transValue=$transform{$dataTransform}->($usedProtRatio{$quantif});
 					print MAT_PCA "\t$transValue" if $pcaID;
 					print MAT_CLUSTER "\t$transValue" if $clusteringID;
-					if ($action eq 'export') {print MAT_EXPORT_QUANTIF "\t$transValue";}
+					if ($action eq 'export') {
+						print MAT_EXPORT_QUANTIF "\t$transValue";
+						print MAT_INFO_EXPORT "\tVal" if $imputeData;
+					}
 				}
+				print MAT_EXPORT_PEP "\t$quantifValues{$modProtID}{$quantif}{$numPepType}" if ($action eq 'export' && !$isNormalized);
 			}
 			else { # missing value
 				if ($action eq 'explorAna') {
@@ -646,12 +672,22 @@ MIN_P_VALUE_OCCURENCE\t$minNumOkPValues
 					print MAT_CLUSTER "\tNA" if $clusteringID;
 				}
 				else {
+					$countMissingvalues++;
 					print MAT_EXPORT_QUANTIF "\tNA";
+					if ($exportRprocessMatrices || $imputeData) {
+						if ($isInfiniteRatios{$quantif}) {
+							print MAT_INFO_EXPORT "\t$isInfiniteRatios{$quantif}";
+						}
+						else {
+							print MAT_INFO_EXPORT "\tMV"; #MV Missing Value
+						}
+					}
 					if ($quantifFam eq 'RATIO' && !$isNormalized) {
-						print MAT_EXPORT_PEP "\tNA";
-						print MAT_EXPORT_PVAL "\tNA";
+						print MAT_EXPORT_PVAL "\tNA" if $okPvalue;
+						print MAT_EXPORT_SDGEO "\tNA" if $okSdGeo;
 					}
 				}
+				print MAT_EXPORT_PEP "\tNA" if ($action eq 'export' && !$isNormalized);
 			}
 		}
 		if ($action eq 'explorAna') {
@@ -664,9 +700,13 @@ MIN_P_VALUE_OCCURENCE\t$minNumOkPValues
 		}
 		else { # export
 			print MAT_EXPORT_QUANTIF "\n";
-			if ($quantifFam eq 'RATIO' && !$isNormalized) {
+			print MAT_INFO_EXPORT "\n" if ($exportRprocessMatrices || $imputeData);
+			if (!$isNormalized) {
 				print MAT_EXPORT_PEP "\n";
-				print MAT_EXPORT_PVAL "\n";
+				if ($quantifFam eq 'RATIO') {
+					print MAT_EXPORT_PVAL "\n" if $okPvalue;
+					print MAT_EXPORT_SDGEO "\n" if $okSdGeo;
+				}
 			}
 			unless ($usedProteinInfo{$proteinID}) {
 				my ($gene,$synStrg)=('','');
@@ -684,20 +724,23 @@ MIN_P_VALUE_OCCURENCE\t$minNumOkPValues
 			}
 		}
 	}
-	
-	#exit;
 	if ($action eq 'explorAna') {
 		close MAT_CLUSTER if ($clusteringID);
 		close MAT_PCA if ($pcaID);
 	}
 	else { # export
 		close MAT_EXPORT_QUANTIF;
+		close MAT_INFO_EXPORT if ($exportRprocessMatrices || $imputeData);
 		close ANNOT;
-		if ($quantifFam eq 'RATIO' && !$isNormalized) {
+		if (!$isNormalized) {
 			close MAT_EXPORT_PEP;
-			close MAT_EXPORT_PVAL;
+			if ($quantifFam eq 'RATIO') {
+				close MAT_EXPORT_PVAL if $okPvalue;
+				close MAT_EXPORT_SDGEO if $okSdGeo;
+			}
 		}
 	}
+
 
 	###>No proteins in matrix<###
 #$nbAllProt=0; # TEST
@@ -758,12 +801,13 @@ MIN_P_VALUE_OCCURENCE\t$minNumOkPValues
 		my $count1 = 0;
 		my $count2 = 0;
 		while ($wait == 1) {
-			sleep 2;
+			sleep 15;
 			print '.';
 			if (!-e "$explorDIR/prepareExplorAna.Rout") {
-				if ($count1 > 300) { # <=> 10 min
+				if ($count1 > 40) { # <=> 10 min
 					$errorTxt='No R output file found';
 					$wait=0;
+					last;
 				}
 				$count1++;
 				next;
@@ -772,6 +816,7 @@ MIN_P_VALUE_OCCURENCE\t$minNumOkPValues
 			chomp $Rprocess;
 			if ($Rprocess) { # finished normally
 				$wait = 0;
+				last;
 			}
 			else {
 				$Rprocess = `grep -c '^Execution halted' $explorDIR/prepareExplorAna.Rout`;
@@ -779,12 +824,14 @@ MIN_P_VALUE_OCCURENCE\t$minNumOkPValues
 				if ($Rprocess) {
 					$errorTxt='Execution halted from R';
 					$wait = 0;
+					last;
 				}
 			}
 			$count2++;
-			if ($count2 > 900) { # <=> 30 min
-				$errorTxt='Process duration has exceeded 30 min.';
+			if ($count2 > 240) { # * sleep 15sec <=> 60 min
+				$errorTxt='Process duration has exceeded 60 min.';
 				$wait=0;
+				last;
 			}
 		}
 		if ($errorTxt) {
@@ -864,8 +911,17 @@ MIN_P_VALUE_OCCURENCE\t$minNumOkPValues
 				open STDOUT, '>/dev/null' or die "Can't open /dev/null: $!";
 				open STDIN, '</dev/null' or die "Can't open /dev/null: $!";
 				open STDERR, '>/dev/null' or die "Can't open /dev/null: $!";
-				system "./launchExploratoryAnalyses.pl $pcaID PCA $projectID 2> $promsPath{tmp}/exploratory_analysis/$pcaID/error.txt";
-				#system "./launchExploratoryAnalyses.pl $clusteringID Cluster 2> $promsPath{tmp}/exploratory_analysis/$clusteringID/error.txt";
+				my $errorFile="$promsPath{tmp}/exploratory_analysis/error_$pcaID.txt";
+				system "./launchExploratoryAnalyses.pl $pcaID PCA $projectID 2> $errorFile";
+				if (-z $errorFile) {
+					unlink $errorFile;
+				}
+				else {
+					my $dbh=&promsConfig::dbConnect;
+					$dbh->do("UPDATE EXPLORANALYSIS SET STATUS=-2 WHERE ID_EXPLORANALYSIS = $pcaID");
+					$dbh -> commit;
+					$dbh -> disconnect;
+				}
 				exit;
 			}
 		}
@@ -876,8 +932,17 @@ MIN_P_VALUE_OCCURENCE\t$minNumOkPValues
 				open STDOUT, '>/dev/null' or die "Can't open /dev/null: $!";
 				open STDIN, '</dev/null' or die "Can't open /dev/null: $!";
 				open STDERR, '>/dev/null' or die "Can't open /dev/null: $!";
-				#system "./launchExploratoryAnalyses.pl $pcaID PCA 2> $promsPath{tmp}/exploratory_analysis/$pcaID/error.txt";
-				system "./launchExploratoryAnalyses.pl $clusteringID cluster $projectID $metric $method $itemMetric 2> $promsPath{tmp}/exploratory_analysis/$clusteringID/error.txt";
+				my $errorFile="$promsPath{tmp}/exploratory_analysis/error_$clusteringID.txt";
+				system "./launchExploratoryAnalyses.pl $clusteringID cluster $projectID $metric $method $itemMetric 2> $errorFile";
+				if (-z $errorFile) { # empty
+					unlink $errorFile;
+				}
+				else {
+					my $dbh=&promsConfig::dbConnect;
+					$dbh->do("UPDATE EXPLORANALYSIS SET STATUS=-2 WHERE ID_EXPLORANALYSIS = $clusteringID");
+					$dbh -> commit;
+					$dbh -> disconnect;
+				}
 				exit;
 			}
 		}
@@ -897,55 +962,57 @@ parent.itemFrame.location="$promsPath{cgi}/openProject.cgi?ACT=experiment&EXPERI
 		my $errorTxt = '';
 		my $exportDIR = "$promsPath{tmp}/export";
 
-if ($exportRprocessMatrices) {
+		if ($exportRprocessMatrices || $imputeData) {
+			my $childExport = fork;
+			unless ($childExport) { # child here
+				#>Disconnecting from server
+				open STDOUT, '>/dev/null' or die "Can't open /dev/null: $!";
+				open STDIN, '</dev/null' or die "Can't open /dev/null: $!";
+				open STDERR, '>/dev/null' or die "Can't open /dev/null: $!";
+				system "cd $exportPath; $promsPath{R}/R CMD BATCH --no-save --no-restore '--args $quantifFile $pepFile' $promsPath{R_scripts}/analysisModifQuantif.R";
+				exit;
+			}
 
-		my $childExport = fork;
-		unless ($childExport) { # child here
-		    #>Disconnecting from server
-		    open STDOUT, '>/dev/null' or die "Can't open /dev/null: $!";
-		    open STDIN, '</dev/null' or die "Can't open /dev/null: $!";
-		    open STDERR, '>/dev/null' or die "Can't open /dev/null: $!";
-		    system "cd $exportPath; $promsPath{R}/R CMD BATCH --no-save --no-restore '--args $quantifFile $pepFile' $promsPath{R_scripts}/analysisModifQuantif.R";
-		    exit;
-		}
-
-		##>Waiting for R to finish<##
-		my $wait = 1;
-		my $count1 = 0;
-		my $count2 = 0;
-		while ($wait == 1) {
-			sleep 2;
-			print '.';
-			if (!-e "$exportPath/analysisModifQuantif.Rout") {
-				if ($count1 > 300) { # <=> 5 min
-					$errorTxt='No R output file found';
-					$wait=0;
+			##>Waiting for R to finish<##
+			my $wait = 1;
+			my $count1 = 0;
+			my $count2 = 0;
+			while ($wait == 1) {
+				sleep 15;
+				print '.';
+				if (!-e "$exportPath/analysisModifQuantif.Rout") {
+					if ($count1 > 40) { # <=> 10 min
+						$errorTxt='No R output file found';
+						$wait=0;
+					}
+					$count1++;
+					next;
 				}
-				$count1++;
-				next;
-			}
-			my $Rprocess = `grep -c '> proc.time()' $exportPath/analysisModifQuantif.Rout`;
-			chomp $Rprocess;
-			if ($Rprocess) { # finished normally
-				$wait = 0;
-			}
-			else {
-				$Rprocess = `grep -c '^Execution halted' $exportPath/analysisModifQuantif.Rout`;
+				my $Rprocess = `grep -c '> proc.time()' $exportPath/analysisModifQuantif.Rout`;
 				chomp $Rprocess;
-				if ($Rprocess) {
-					$errorTxt='Execution halted from R';
+				if ($Rprocess) { # finished normally
 					$wait = 0;
+					last;
+				}
+				else {
+					$Rprocess = `grep -c '^Execution halted' $exportPath/analysisModifQuantif.Rout`;
+					chomp $Rprocess;
+					if ($Rprocess) {
+						$errorTxt='Execution halted from R';
+						$wait = 0;
+						last;
+					}
+				}
+				$count2++;
+				if ($count2 > 240) { # *sleep 15sec <=> 60 min
+					$errorTxt='Process duration has exceeded 60 min.';
+					$wait=0;
+					last;
 				}
 			}
-			$count2++;
-			if ($count2 > 900) { # <=> 30 min
-				$errorTxt='Process duration has exceeded 30 min.';
-				$wait=0;
-			}
-		}
 
-		if ($errorTxt) {
-			print qq
+			if ($errorTxt) {
+				print qq
 |</FONT>
 <BR><BR><BR><BR><BR>
 <FONT class="title2" color="#DD0000">***ERROR: Data preprocessing failed ($errorTxt)!***</FONT>
@@ -953,13 +1020,13 @@ if ($exportRprocessMatrices) {
 </BODY>
 </HTML>
 |;
-			exit;
-		}
-		else {
-			unlink "$exportPath/analysisModifQuantif.Rout";
-		}
+				exit;
+			}
+			else {
+				unlink "$exportPath/analysisModifQuantif.Rout";
+			}
 
-}
+		}
 
 		# compress dir and link to donwload
 		my $tar=Archive::Tar->new();
@@ -969,6 +1036,7 @@ if ($exportRprocessMatrices) {
 		$tar->write("$promsPath{tmp}/scratch/export/$archiveName",COMPRESS_GZIP) or die "<B>**Error**: Archiving failed:</B> $!<BR>\n";
 		sleep 2;
 		unlink glob '*.txt';
+		unlink glob '*.png';
 		chdir $promsPath{cgi};
 		rmdir $exportPath;
 		
@@ -979,6 +1047,7 @@ if ($exportRprocessMatrices) {
 | Done.<BR><BR><BR>
 <INPUT type="button" class="title2" value="Download Dataset" onclick="window.location='$promsPath{tmp_html}/scratch/export/$archiveName'"/>
 <SCRIPT LANGUAGE="JavaScript">
+document.getElementById('waitSPAN').style.display='none';
 top.promsFrame.selectedAction = 'summary';
 </SCRIPT>
 </BODY>
@@ -1076,7 +1145,7 @@ function updateQuantifStatus(chkStatus,datasetIdx,refID,fromUser) {
 	if ($action eq "export"){
 		print qq|
 	if (document.getElementById('anovaSel').value == "group"){
-//console.log('group_quantif_'+refID);
+		//console.log('group_quantif_'+refID);
 		document.getElementById('group_quantif_'+refID).disabled=(chkStatus)? false : true;
 		if (chkStatus == false){  // && document.expAnaForm.modif.value > 0 )
 			document.getElementById('span_quantif_'+datasetIdx).innerHTML= "<input type = text name=group_quantif id=group_quantif_"+refID+" placeholder = " + "'group for Anova'" + " disabled>";
@@ -1220,7 +1289,7 @@ else {
 		alert('Select at least 1 quantification to be exported');
 		return false;
 	}
-	if (myForm.anovaSel.value == "sample" && numTestChecked == 1) {
+	if (!myForm.anovaSel.disabled && myForm.anovaSel.value == "sample" && numTestChecked == 1) {
 		alert('Select at least 2 quantification to be exported');
 		return false;
 	}
@@ -1306,8 +1375,10 @@ function getXMLHTTP() {
 var selQuantifFam='', selModID=0;
 var listDivData='';
 function ajaxDisplayData(srcType,srcValue) {
-
 	if (srcType=='focus') { // focus was changed
+		if (srcValue=='peptide') {
+			window.location="$promsPath{cgi}/startExploratoryAnalysisPeptide.cgi?ID=$experimentID";
+		}
 		var visibRatio;
 		selModID=srcValue;
 		var QFval=document.expAnaForm.QF.value;
@@ -1615,6 +1686,18 @@ else {
 }
 print qq|
 
+function checkImpute(type,chkStatus) {
+	if (chkStatus) {
+		 document.getElementById('infRatios').value=-1;
+	}
+	
+}
+
+function updateImpute(valStatus) {
+	var disab=(valStatus==0)? true : false;
+	if (document.getElementById('imputeNA')) {document.getElementById('imputeNA').disabled=disab;} // undef for explorAna
+}
+/*
 function changeFeature (val) {
 	if (val == "protQuant") {
 		top.promsFrame.resultFrame.location="$promsPath{cgi}/startExploratoryAnalysis.cgi?ID=$experimentID";
@@ -1623,7 +1706,7 @@ function changeFeature (val) {
 		top.promsFrame.resultFrame.location="$promsPath{cgi}/startExploratoryAnalysisPeptide.cgi?ID=$experimentID";
 	}
 }
-
+*/
 </SCRIPT>
 </HEAD>
 <BODY background="$promsPath{images}/bgProMS.gif">
@@ -1633,15 +1716,16 @@ function changeFeature (val) {
 <DIV id="expAnaParams">
 <FORM name="expAnaForm" method="POST" onsubmit="return(checkForm(this));">
 <INPUT type="hidden" name="ID" value="$experimentID">
-<INPUT type="hidden" name="ACT" value="$action">|;
+<INPUT type="hidden" name="ACT" value="$action">
+|;
 if ($action eq "export") {
-print qq|
-<INPUT type="hidden" name="GROUP_LIST" value="">
-<INPUT type="hidden" name="GROUP_ANNOT" value="">|;
+	print qq
+|<INPUT type="hidden" name="GROUP_LIST" value="">
+<INPUT type="hidden" name="GROUP_ANNOT" value="">
+|;
 }
-print qq|
-
-<TABLE border="0" bgcolor="$darkColor" width="1000px">
+print qq
+|<TABLE border="0" bgcolor="$darkColor">
 |;
 if ($action eq 'explorAna') {
 	print qq
@@ -1656,36 +1740,27 @@ if ($action eq 'explorAna') {
     </TR>
 |;
 }
+my $disabPepFocus=(1 || $action eq "export")? " disabled" : ""; # Disabled for now (PP 14/05/19)	
 print qq
-|	<TR><TH colspan="2" align="right" nowrap>Focus :</TH><TD bgcolor="$lightColor"><SELECT name="modif" id="modif" onchange="ajaxDisplayData('focus',this.value)">
-	<OPTION value="0">Proteins</OPTION>
-	<OPTGROUP label="Modifications:">
+|	<TR><TH colspan="2" align="right" nowrap>Focus :</TH><TD bgcolor="$lightColor" style="min-width:600px" nowrap><SELECT name="modif" id="modif" onchange="ajaxDisplayData('focus',this.value)">
+	<OPTION value="peptide"$disabPepFocus>Peptides</OPTION>
+	<OPTION value="0" selected>Proteins</OPTION>
+	<OPTGROUP label="Modification sites:">
 |;
-my $disabFeature=($action eq "export")? " disabled" : "";
 if (scalar keys %modification) {
 	foreach my $modID (sort{lc($modification{$a}) cmp lc($modification{$b})} keys %modification) {
 		print "<OPTION value=\"$modID\">$modification{$modID}-proteome</OPTION>\n";
 	}
-	print "\t</OPTGROUP>\n<OPTGROUP label=\"Normalized modifications:\">\n";
+	print "\t</OPTGROUP>\n<OPTGROUP label=\"Normalized modification sites:\">\n";
 	foreach my $modID (sort{lc($modification{$a}) cmp lc($modification{$b})} keys %modification) {
 		print "<OPTION value=\"-$modID\">Normalized $modification{$modID}-proteins</OPTION>\n";
 	}
 }
 else {print "<OPTION value=\"\" disabled>*None found*</OPTION>\n";}
 print qq
-|	</OPTGROUP>
-	</SELECT></TD>
-	</TR>
-    <TR>
-		<TH colspan="2" align=right nowrap>Features :</TH>
-		<TD nowrap bgcolor=$lightColor>
-			<SELECT name="feature" onchange="javascript:changeFeature(this.value)">
-			<OPTION value="">-= Select =-</OPTION>
-			<OPTION value="protQuant" selected>Protein quantifications</OPTION>
-			<!--<OPTION value="pepCount"$disabFeature> Peptide counts</OPTION>-->
-			</SELECT>
-			<SPAN>&nbsp;&nbsp;<B>Quantification type:<SELECT name="quantifFam" id="QF" onchange="ajaxDisplayData('quantifFam',this.value)">
-			<OPTION value="">-= Select =-</OPTION>
+|	</OPTGROUP></SELECT>
+	<SPAN>&nbsp;&nbsp;<B>Feature type:</B><SELECT name="quantifFam" id="QF" onchange="ajaxDisplayData('quantifFam',this.value)">
+		<OPTION value="">-= Select =-</OPTION>
 |;
 foreach my $qFamily (sort{lc($proteinQuantifFamilies{'NAME'}{$a}) cmp lc($proteinQuantifFamilies{'NAME'}{$b})} keys %{$proteinQuantifFamilies{'NAME'}}) {
 	my $isParent=0;
@@ -1695,14 +1770,14 @@ foreach my $qFamily (sort{lc($proteinQuantifFamilies{'NAME'}{$a}) cmp lc($protei
 			last;
 		}
 	}
+	print "<OPTGROUP label=\"$proteinQuantifFamilies{NAME}{$qFamily}:\">";
 	if ($isParent) {
-		print "<OPTGROUP label=\"$proteinQuantifFamilies{NAME}{$qFamily}:\">";
 		foreach my $subFamily (@{$proteinQuantifFamilies{'MEMBERS'}{$qFamily}}) {
 			foreach my $refMeas (@{$proteinQuantifFamilies{'MEASURES'}{$subFamily}}) {print "<OPTION value=\"$subFamily:$refMeas->[0]\">$refMeas->[1]</OPTION>";}
 		}
-		print "</OPTGROUP>\n";
 	}
 	else {print "<OPTION value=\"$qFamily\">$proteinQuantifFamilies{NAME}{$qFamily}</OPTION>\n";}
+	print "</OPTGROUP>\n";
 	#if ($qFamily eq 'EMPAI') {
 	#	print "<OPTION value=\"${qFamily}_MOL\">$proteinQuantifFamilies{NAME}{$qFamily} (Molar fraction)</OPTION>\n<OPTION value=\"${qFamily}_MR\">$proteinQuantifFamilies{NAME}{$qFamily} (Weight fraction)</OPTION>\n";
 	#}
@@ -1714,6 +1789,7 @@ my $sel34MissVal=' selected';
 my $selAllMissVal='';
 my $selGroupAnova='';
 my $strgKeep='';
+my $selImputeData='';
 if ($action eq 'export') {
 	$selAllInf=' selected';
 	$numSelPep=1;
@@ -1724,6 +1800,7 @@ if ($action eq 'export') {
 }
 else {
 	$selGroupAnova= ' disabled';
+	#$selImputeData= ' disabled'; # commented because should be activated by default (PP)
 }
 print qq
 |			</SELECT></SPAN>
@@ -1743,7 +1820,7 @@ print qq
 	    <TABLE cellspacing=0>
 		<TR id="RATIO_FC" style="display:none">
 		    <TH align="right" nowrap>&nbsp;Abs. fold change &ge;</TH>
-		    <TD><INPUT type="text" name="foldChange" value="1" size="2">&nbsp;<B>in at least&nbsp;</B><INPUT type="number" name="foldChangeOcc" value="1"  style="width:50px">&nbsp;<B>quantification</B>&nbsp;</TD>
+		    <TD><INPUT type="text" name="foldChange" value="1" size="2">&nbsp;<B>in at least&nbsp;</B><INPUT type="number" name="foldChangeOcc" value="1" style="width:50px">&nbsp;<B>quantification</B>&nbsp;</TD>
 		</TR>
 		<TR id="RATIO_INF" style="display:none">
 		    <TH align="right">Infinite ratios:</TH>
@@ -1753,7 +1830,7 @@ print qq
 		</TR>
 		<TR id="RATIO_PV" style="display:none">
 		    <TH align="right">p-value &le;</TH>
-		    <TD nowrap><INPUT type="text" name="pValue" value="1" size="5">&nbsp;<B>in at least&nbsp;</B><INPUT type="number" name="pValueOcc" value="1"  style="width:50px">&nbsp;<B>quantification</B>&nbsp;<SMALL>(Does not apply to normalized ratios)</SMALL></TD>
+		    <TD nowrap><INPUT type="text" name="pValue" value="1" size="5">&nbsp;<B>in at least&nbsp;</B><INPUT type="number" name="pValueOcc" value="1" style="width:50px">&nbsp;<B>quantification</B>&nbsp;<SMALL>(Does not apply to normalized ratios)</SMALL></TD>
 		</TR>
 		<TR><!-- id="RATIO_PEP" style="display:none" -->
 		    <TH align="right">Peptides:</TH>
@@ -1761,7 +1838,10 @@ print qq
 		</TR>
 		<TR>
 		    <TH align="right">Missing values:</TH>
-			<TD><SELECT name="missingValues"><OPTION value="0">None allowed</OPTION><OPTION value="5">Allow 5%</OPTION><OPTION value="10">Allow 10%</OPTION><OPTION value="25">Allow 25%</OPTION><OPTION value="34"$sel34MissVal>Allow 34%</OPTION><OPTION value="50">Allow 50%</OPTION><OPTION value="100"$selAllMissVal>Allow all</OPTION></SELECT>&nbsp;per protein</TD>
+			<TD><SELECT name="missingValues" onchange="updateImpute(this.value)"><OPTION value="0">None allowed</OPTION><OPTION value="5">Allow 5%</OPTION><OPTION value="10">Allow 10%</OPTION><OPTION value="25">Allow 25%</OPTION><OPTION value="34"$sel34MissVal>Allow 34%</OPTION><OPTION value="50">Allow 50%</OPTION><OPTION value="100"$selAllMissVal>Allow all</OPTION></SELECT>&nbsp;per protein
+|;
+print qq |&nbsp;&nbsp;<INPUT type="checkbox" id="imputeNA" name="imputeNA" onchange="checkImpute('NA',this.checked)"$selImputeData><B>Impute missing values</B>| if ($action eq "export");
+print qq |</TD>
 		</TR>
 		<TR id="AMB" style="display:none">
 		 <TH align="left" colspan=2><INPUT type="checkbox" id="delocalize" name="delocalize" >Exclude ambiguous sites</TH>
@@ -1804,7 +1884,7 @@ print qq
 						<INPUT type="checkbox" name="topNvarChk" id="topNvarChk" value="1" onchange="updateTopNParams(this.checked)">Keep only the:
 					</TH>
 					<TD nowrap>
-						<INPUT type="number" name="topNvar" id="topNvar" value="200"  style="width:80px" disabled> <B>most changing proteins</B>|;
+						<INPUT type="number" name="topNvar" id="topNvar" value="200" style="width:80px" disabled> <B>most changing proteins</B>|;
 						if ($action eq "export") {
 							print qq
 							|&nbsp;<B>between:</B>
@@ -1882,13 +1962,14 @@ sub ajaxDisplayData {
 	my (%testQuantifications,%normQuantifications,%designName,%quantifName,%fetchedCond,%experimentInfo,%noDesignQuantifications,%sampleInfo,%analysisInfo);
 
 	####<RATIO or MaxQuant Intensities>####
-	if ($quantifFam =~ /RATIO|MQ/) {
+	if ($quantifFam eq 'RATIO' || $quantifFam=~/^MQ:/) {
 		my $quantifFam0=$quantifFam;
 		($quantifFam,my $quantifCode)=split(':',$quantifFam); # MQ:MQ_INT -> MQ
 		my @quantifMethIDs;
 		foreach my $subFamily (@{$proteinQuantifFamilies{'MEMBERS'}{$quantifFam}}) {
 #print "Sub:$subFamily<br>";
 			my ($quantifMethID)=$dbh->selectrow_array("SELECT ID_QUANTIFICATION_METHOD FROM QUANTIFICATION_METHOD WHERE CODE='$subFamily'");
+#print "$subFamily => $quantifMethID<BR>\n";
 			push @quantifMethIDs,$quantifMethID;
 		}
 		my $modStrg=($modificationID)? "AND ID_MODIFICATION=$modificationID" : 'AND ID_MODIFICATION IS NULL';
@@ -2010,7 +2091,7 @@ sub ajaxDisplayData {
     warningsToBrowser(1);
 
 	if (!scalar keys %testQuantifications && !scalar keys %noDesignQuantifications){
-		print "<FONT class=\"title3\">No quantifications found.</FONT>\n";
+		print "<FONT class=\"title3\" color=\"#DD0000\">No quantifications found.</FONT>\n";
 		exit;
 	}
 
@@ -2071,7 +2152,7 @@ sub ajaxDisplayData {
 	my $bgColor=$lightColor;
 	my $datasetIdx=0;
 	#my $refQuantif=($modificationID)? \%testQuantifications : \%normQuantifications;
-	my $ratioNameSep=($quantifFam=~/RATIO|MQ/)? ' : ' : '';
+	my $ratioNameSep=($quantifFam=~/^(RATIO|MQ)$/)? ' : ' : '';
 
 	###<Design quantifs>###
 	if (scalar keys %testQuantifications) {
@@ -2082,7 +2163,7 @@ sub ajaxDisplayData {
 			|;
 		}
 		else {
-			print qq|<SELECT name="quantif" id="quantif"><OPTION value="">--=Select=--</OPTION>|;
+			print qq|<SELECT name="quantif" id="quantif"><OPTION value="">-= Select =-</OPTION>|;
 		}
 
 		my $prevDesignID=0;
@@ -2325,7 +2406,8 @@ sub ajaxPropAnnotate {
 }
 
 ####>Revision history<####
-# 2.1.8D Option for peptide PCA disabled (PP 19/12/18)
+# 2.1.10 Multiple bug fixes & simplified protein/peptide switch [peptide option disabled for now] & wait loop improvement (PP 15/05/19)
+# 2.1.9 Add impute data for export (15/01/19)
 # 2.1.8 Adds proteinID in exported matrices to prevent row duplicates due to different proteins having same ALIAS (PP 26/09/18)
 # 2.1.7 minor changes (SL ??/??/18)
 # 2.1.6 minor changes, change protein selection (SL 07/03/18)

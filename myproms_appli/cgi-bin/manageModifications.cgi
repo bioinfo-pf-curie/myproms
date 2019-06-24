@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# manageModifications.cgi    1.1.1                                             #
+# manageModifications.cgi    1.2.1                                             #
 # Authors: P. Poullet, G. Arras & F. Yvon (Institut Curie)                     #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -57,15 +57,21 @@ my %promsPath=&promsConfig::getServerInfo;
 my $action = (param('ACT'))? param('ACT'): 'list';
 my $startLetter=(param('LET'))? param('LET') : 'A';
 
+if ($action eq 'unimod') {
+	&getModificationFromUnimod(param('unimodID'),param('ID'));
+	exit;
+}
+
 ##########################
 ####>Connecting to DB<####
 ##########################
 my $dbh=&promsConfig::dbConnect;
 
-if (param('submit')) { # after edit
+if (param('submit')) { # after edit/add
     &processForm;
     exit;
 }
+
 #######################
 ####>Starting HTML<####
 #######################
@@ -75,16 +81,31 @@ print header(-'content-encoding'=>'no',-charset=>'utf-8');
 warningsToBrowser(1);
 if ($action eq 'list') {
     my $sthGetModifications =($startLetter eq '*')?
-    $dbh->prepare("SELECT ID_MODIFICATION,PSI_MS_NAME,INTERIM_NAME,SYNONYMES,DES,COMPOSITION,MONO_MASS,AVGE_MASS,UNIMOD_ACC,SPECIFICITY,DISPLAY_CODE,DISPLAY_COLOR,IS_SUBST,IS_LABEL,VALID_STATUS FROM MODIFICATION WHERE PSI_MS_NAME NOT REGEXP '^[[:alnum:]]' OR INTERIM_NAME NOT REGEXP '^[[:alnum:]]' ORDER BY PSI_MS_NAME ASC, INTERIM_NAME ASC , SYNONYMES ASC")
+    $dbh->prepare("SELECT ID_MODIFICATION,PSI_MS_NAME,INTERIM_NAME,SYNONYMES,DES,COMPOSITION,MONO_MASS,AVGE_MASS,UNIMOD_ACC,SPECIFICITY,DISPLAY_CODE,DISPLAY_COLOR,IS_SUBST,IS_LABEL,VALID_STATUS FROM MODIFICATION WHERE PSI_MS_NAME IS NULL OR PSI_MS_NAME NOT REGEXP '^[[:alnum:]]' OR INTERIM_NAME IS NULL OR INTERIM_NAME NOT REGEXP '^[[:alnum:]]' ORDER BY PSI_MS_NAME ASC, INTERIM_NAME ASC, SYNONYMES ASC")
 	: ($startLetter eq '?')?
-	$dbh->prepare("SELECT ID_MODIFICATION,PSI_MS_NAME,INTERIM_NAME,SYNONYMES,DES,COMPOSITION,MONO_MASS,AVGE_MASS,UNIMOD_ACC,SPECIFICITY,DISPLAY_CODE,DISPLAY_COLOR,IS_SUBST,IS_LABEL,VALID_STATUS FROM MODIFICATION WHERE VALID_STATUS != 1 ORDER BY PSI_MS_NAME ASC, INTERIM_NAME ASC , SYNONYMES ASC")
+	$dbh->prepare("SELECT ID_MODIFICATION,PSI_MS_NAME,INTERIM_NAME,SYNONYMES,DES,COMPOSITION,MONO_MASS,AVGE_MASS,UNIMOD_ACC,SPECIFICITY,DISPLAY_CODE,DISPLAY_COLOR,IS_SUBST,IS_LABEL,VALID_STATUS FROM MODIFICATION WHERE VALID_STATUS != 1 ORDER BY PSI_MS_NAME ASC, INTERIM_NAME ASC, SYNONYMES ASC")
 	: ($startLetter eq '#')?
-	$dbh->prepare("SELECT ID_MODIFICATION,PSI_MS_NAME,INTERIM_NAME,SYNONYMES,DES,COMPOSITION,MONO_MASS,AVGE_MASS,UNIMOD_ACC,SPECIFICITY,DISPLAY_CODE,DISPLAY_COLOR,IS_SUBST,IS_LABEL,VALID_STATUS FROM MODIFICATION WHERE PSI_MS_NAME REGEXP '^[[:digit:]]' OR INTERIM_NAME REGEXP '^[[:digit:]]' OR SYNONYMES REGEXP '##[[:digit:]]' ORDER BY PSI_MS_NAME ASC, INTERIM_NAME ASC , SYNONYMES ASC")
+	$dbh->prepare("SELECT ID_MODIFICATION,PSI_MS_NAME,INTERIM_NAME,SYNONYMES,DES,COMPOSITION,MONO_MASS,AVGE_MASS,UNIMOD_ACC,SPECIFICITY,DISPLAY_CODE,DISPLAY_COLOR,IS_SUBST,IS_LABEL,VALID_STATUS FROM MODIFICATION WHERE PSI_MS_NAME REGEXP '^[[:digit:]]' OR INTERIM_NAME REGEXP '^[[:digit:]]' OR SYNONYMES REGEXP '##[[:digit:]]' ORDER BY PSI_MS_NAME ASC, INTERIM_NAME ASC, SYNONYMES ASC")
 	:
-	$dbh->prepare("SELECT ID_MODIFICATION,PSI_MS_NAME,INTERIM_NAME,SYNONYMES,DES,COMPOSITION,MONO_MASS,AVGE_MASS,UNIMOD_ACC,SPECIFICITY,DISPLAY_CODE,DISPLAY_COLOR,IS_SUBST,IS_LABEL,VALID_STATUS FROM MODIFICATION WHERE PSI_MS_NAME LIKE '$startLetter%' OR INTERIM_NAME LIKE '$startLetter%' OR SYNONYMES LIKE '##$startLetter%##' ORDER BY PSI_MS_NAME ASC, INTERIM_NAME ASC , SYNONYMES ASC");
-    $sthGetModifications->execute;
-    my $modifRef = $sthGetModifications->fetchall_arrayref();
+	$dbh->prepare("SELECT ID_MODIFICATION,PSI_MS_NAME,INTERIM_NAME,SYNONYMES,DES,COMPOSITION,MONO_MASS,AVGE_MASS,UNIMOD_ACC,SPECIFICITY,DISPLAY_CODE,DISPLAY_COLOR,IS_SUBST,IS_LABEL,VALID_STATUS FROM MODIFICATION WHERE PSI_MS_NAME LIKE '$startLetter%' OR INTERIM_NAME LIKE '$startLetter%' OR SYNONYMES LIKE '##$startLetter%##' ORDER BY PSI_MS_NAME ASC, INTERIM_NAME ASC, SYNONYMES ASC");
+    my $sthUsedAna=$dbh->prepare("SELECT 1 FROM ANALYSIS_MODIFICATION WHERE ID_MODIFICATION=? LIMIT 1");
+    my $sthUsedProj=$dbh->prepare("SELECT 1 FROM PROJECT_MODIFICATION WHERE ID_MODIFICATION=? LIMIT 1");
+	my @modificationList;
+	$sthGetModifications->execute;
+    #my $modifRef = $sthGetModifications->fetchall_arrayref();
+    while (my ($modID,@modData) = $sthGetModifications->fetchrow_array) {
+		my $used=0;
+		$sthUsedAna->execute($modID);
+		if ($sthUsedAna->fetchrow_array) {$used=1;}
+		else {
+			$sthUsedProj->execute($modID);
+			$used=$sthUsedProj->fetchrow_array;
+		}
+		push @modificationList,[$modID,@modData,$used];
+	}
     $sthGetModifications->finish;
+	$sthUsedAna->finish;
+	$sthUsedProj->finish;
     $dbh->disconnect;
 
     print qq
@@ -93,7 +114,10 @@ if ($action eq 'list') {
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
 <TITLE>Modifications List</TITLE>
 <SCRIPT language="Javascript">
-function manageModifications(action,modID,letter) {
+|;
+    &promsMod::popupInfo();
+    print qq
+|function manageModifications(action,modID,letter) {
 	document.modifForm.ACT.value=action;
 	document.modifForm.ID.value=modID;
 	document.modifForm.LET.value=letter;
@@ -113,7 +137,7 @@ function manageModifications(action,modID,letter) {
 </TH></TR></TABLE>
 </DIV>
 <CENTER>
-<FONT class="title">List of Modifications</FONT><!--&nbsp;&nbsp;<INPUT type="button" class="title2" value="Add modifications" onclick="window.location='$promsPath{cgi}/manageModifications.cgi?ACT=add';" disabled>-->
+<FONT class="title">List of Modifications</FONT>&nbsp;&nbsp;<INPUT type="button" class="title2" value="Add modification" onclick="window.location='$promsPath{cgi}/manageModifications.cgi?ACT=add';">
 <BR><BR>
 <FORM name="modifForm" method="POST">
 <INPUT type="hidden" name="ACT" value="">
@@ -122,10 +146,16 @@ function manageModifications(action,modID,letter) {
 </FORM>
 <TABLE bgcolor=$dark>
 |;
-    print "<TR><TH align=right class=\"title3\">&nbsp;Name starts with:</TH><TH bgcolor=$light>";
+    print "<TR><TH align=right class=\"title3\">&nbsp;Names starting with:</TH><TH bgcolor=$light>";
     foreach my $letter ('#','A'..'Z','*','?') {
 		my $letterClass=($letter eq $startLetter)? 'selected' : 'selectable';
-		print "<A class=\"$letterClass\" href=\"javascript:manageModifications('list',0,'$letter')\">&nbsp;$letter&nbsp;</A>";
+		my $mouseoverPopupStrg='';
+		if ($letter !~ /\w/) {
+			$mouseoverPopupStrg=' onmouseover="popup(\'<B>';
+			$mouseoverPopupStrg.=($letter eq '#')? 'Names start with a digit' : ($letter eq '*')? 'Missing PSI-MS or Interim name' : 'Non-validated modifications';
+			$mouseoverPopupStrg.='</B>\')" onmouseout="popout()"';
+		}
+		print "<A class=\"$letterClass\" href=\"javascript:manageModifications('list',0,'$letter')\"$mouseoverPopupStrg>&nbsp;$letter&nbsp;</A>";
 		print "|" if $letter ne '?';
     }
     print "</TH></TR>\n";
@@ -138,13 +168,12 @@ function manageModifications(action,modID,letter) {
 	elsif ($startLetter eq '?') {print "<FONT class=\"title2\">Non-validated modifications</FONT><BR>";}
 	else {print "<FONT class=\"title2\">Names starting with ",lc($startLetter)," or $startLetter</FONT><BR>";}
 
-    if (scalar(@{$modifRef})) {
+    if (scalar @modificationList) {
         print "<TABLE border=0 cellspacing=0>\n";
-        foreach my $entry (@{$modifRef}) {
-            my ($modificationID,$psiName,$interName,$altNames,$des,$compo,$mono,$avg,$unimodID,$spec,$dispCode,$dispColor,$isSubst,$isLabel,$validStatus)=@{$entry};
-            #my $disabStrg=()? 'disabled' : '';
-			my $disabStrg='disabled';
-			###> Intentiate values for incomplete modifications
+        foreach my $entry (@modificationList) {
+            my ($modificationID,$psiName,$interName,$altNames,$des,$compo,$mono,$avg,$unimodID,$spec,$dispCode,$dispColor,$isSubst,$isLabel,$validStatus,$isUsed)=@{$entry};
+            my $disabStrg=($isUsed)? 'disabled' : '';
+			###> Instentiate values for incomplete modifications
 			$psiName='' unless $psiName;
 			$interName='' unless $interName;
 			$des='' unless $des;
@@ -157,10 +186,9 @@ function manageModifications(action,modID,letter) {
 			# Format synonyms of the modification
 			if ($altNames) {
 				$altNameString=$altNames;
-				$altNameString=~ s/##/,/g;
-				$altNameString=substr $altNameString,1;
-				chop($altNameString);
-				$altNameString=~ s/,/,&nbsp;/g;
+				$altNameString=~ s/^##//;
+				$altNameString=~ s/##$//;
+				$altNameString=~ s/##/, /g;
 			}
 			# Format specificity of the modification
 			if ($spec) {
@@ -173,7 +201,7 @@ function manageModifications(action,modID,letter) {
 					$specString.="$aaOneLetter$context,";
 				}
 				chop($specString);
-				$specString=~ s/,/,&nbsp;/g;
+				$specString=~ s/,/, /g;
 				$specString="<BR><B>&nbsp;&nbsp;&nbsp;Specificity:</B> $specString";
 			}
 			else{
@@ -200,7 +228,7 @@ $altNameString
 |$specString
 </TD>
 <TH width=100><INPUT type="button" value="Edit" style="width:75px" onclick="manageModifications('edit',$modificationID,'$startLetter')"><BR>
-<INPUT type="button" value="Delete" style="width:75px" onclick="deleteModification($modificationID)" $disabStrg>
+<INPUT type="button" value="Delete" style="width:75px" onclick="manageModifications('delete',$modificationID,'$startLetter')" $disabStrg>
 </TH>
 </TR>
 |;
@@ -212,81 +240,327 @@ $altNameString
     print qq
 |<BR><BR>
 </CENTER>
+<DIV id="divDescription" class="clDescriptionCont">
+<!--Empty div-->
+</DIV>
+<SCRIPT type="text/javascript">
+setPopup();
+</SCRIPT>
 </BODY>
 </HTML>
 |;
 }
 elsif ($action eq 'add' || $action eq 'edit') {
-    my $modificationID = param('ID');
-    my ($psiName,$interName,$altNames,$des,$compo,$mono,$avg,$unimodID,$spec,$dispCode,$dispColor,$isSubst,$isLabel,$validStatus,$sthDetNames);
-	my $nbmodInPM=0;
+    my $modificationID = &promsMod::cleanNumericalParameters(param('ID')) || 0;
+    my ($psiName,$interName,$altNames,$des,$compo,$mono,$avg,$unimodID,$spec,$dispCode,$dispColor,$isSubst,$isLabel,$validStatus);
+	my $isProjectMod=0;
 	if ($action eq 'edit') {
 		($psiName,$interName,$altNames,$des,$compo,$mono,$avg,$unimodID,$spec,$dispCode,$dispColor,$isSubst,$isLabel,$validStatus)=$dbh->selectrow_array("SELECT PSI_MS_NAME,INTERIM_NAME,SYNONYMES,DES,COMPOSITION,MONO_MASS,AVGE_MASS,UNIMOD_ACC,SPECIFICITY,DISPLAY_CODE,DISPLAY_COLOR,IS_SUBST,IS_LABEL,VALID_STATUS FROM MODIFICATION WHERE ID_MODIFICATION=$modificationID");
-		$sthDetNames=$dbh->prepare("SELECT ID_MODIFICATION,PSI_MS_NAME,INTERIM_NAME,SYNONYMES FROM MODIFICATION WHERE ID_MODIFICATION!=$modificationID AND PSI_MS_NAME IS NOT NULL ORDER BY PSI_MS_NAME ASC");
-		($nbmodInPM)=$dbh->selectrow_array("SELECT COUNT(*) FROM PROJECT_MODIFICATION WHERE ID_MODIFICATION=$modificationID");
+		($isProjectMod)=$dbh->selectrow_array("SELECT 1 FROM PROJECT_MODIFICATION WHERE ID_MODIFICATION=$modificationID LIMIT 1");
+		$isProjectMod=0 unless $isProjectMod;
 	}
-    ###> Intentiate values for incomplete modifications
+    ###> Instentiate values for incomplete modifications
     # Format synonyms of the modification
     my $altNameString='';
     if ($altNames) {
 		$altNameString=$altNames;
-		$altNameString=~ s/##/,/g;
-		$altNameString=~ s/^,//;
-		$altNameString=~ s/,$//;
-		$altNameString=~ s/,/,&nbsp;/g;
+		$altNameString=~ s/^##//;
+		$altNameString=~ s/##$//;
+		$altNameString=~ s/##/, /g;
     }
 	my $modifName=$psiName || $interName || $altNameString;
-	$psiName='*None*' unless $psiName;
-	$interName='*None*' unless $interName;
+	$psiName='' unless $psiName;
+	$interName='' unless $interName;
     $des='' unless $des;
     $compo='' unless $compo;
     $mono='' unless $mono;
     $avg='' unless $avg;
-    $unimodID='*None*' unless $unimodID;
+	$spec='' unless $spec;
+    $unimodID='' unless $unimodID;
     $dispCode='' unless $dispCode;
     $dispColor=($dispColor)?$dispColor:'FFFFFF';
-    my ($isSubstYes,$isSubstNo)=($isSubst)? ('checked','') : ('','checked') ;
-    my $isSubstStr="<INPUT type=\"radio\" name=\"isSubst\" value=\"1\" $isSubstYes>Yes<INPUT type=\"radio\" name=\"isSubst\" value=\"0\" $isSubstNo>No";
-    my ($isLabelYes,$isLabelNo)=($isLabel)? ('checked','') : ('','checked') ;
-    my $isLabelStr="<INPUT type=\"radio\" name=\"isLabel\" value=\"1\" $isLabelYes>Yes<INPUT type=\"radio\" name=\"isLabel\" value=\"0\" $isLabelNo>No";
-    # Format specificity of the modification
-    my $specString='';
-	if ($spec) {
-		foreach my $aaOneLetter (sort{ $a cmp $b } (split(/,+/, $spec))) {
-			($aaOneLetter,my $context)=split(/;/,$aaOneLetter);
-			$context='' unless $context;
-			$aaOneLetter=($aaOneLetter eq '*') ? 'Any C-term' : ($aaOneLetter eq '+')? 'Protein C-term' : ($aaOneLetter eq '=')? 'Any N-term' : ($aaOneLetter eq '-')? 'Protein N-term' : $aaOneLetter;
-			$context=($context eq '*') ? ' (Any C-term)' : ($context eq '+')? ' (Protein C-term)' : ($context eq '=')? ' (Any N-term)' : ($context eq '-')? ' (Protein N-term)' : $context;
-			$specString.="$aaOneLetter$context,";
+    my ($isSubstYes,$isSubstNo)=($isSubst)? ('checked','') : ('','checked');
+    my ($isLabelYes,$isLabelNo)=($isLabel)? ('checked','') : ('','checked');
+    my ($isValidYes,$isValidNo)=($validStatus || $action eq 'add')? ('checked','') : ('','checked');
+
+	my (%specDef,%usedSpec);
+	my @AA=('=','-','*','+','A','C'..'I','K'..'N','P'..'T','V'..'Y');
+	foreach my $aa (@AA) {
+		next if $aa !~ /\w/;
+		$specDef{$aa}=$aa;
+    }
+	$specDef{'-'}='Protein N-term';
+	$specDef{'='}='Any N-term';
+	$specDef{'+'}='Protein C-term';
+	$specDef{'*'}='Any C-term';
+	if ($modificationID) { # action=edit
+		###<Specificity in projects (no modifications allowed)
+		my $sthspecInAna=$dbh->prepare("SELECT DISTINCT(SPECIFICITY) FROM ANALYSIS_MODIFICATION WHERE ID_MODIFICATION=?");
+		$sthspecInAna->execute($modificationID);
+		while (my ($specString) = $sthspecInAna->fetchrow_array) {
+			if ($specString) {
+				foreach my $aa (split(',',$specString)) {
+					next if $aa eq '?'; # ambiguity
+					$usedSpec{$aa}=1; # set as used by Analyses
+				}
+			}
 		}
-		chop($specString);
-		$specString=~ s/,/,&nbsp;/g;
-    }
-	else {
-		($specString,$spec)=("No residue",'');
-    }
-    my ($editSpecString,$hiddenSpecString,%specDef)=&createEditSpecificityString($dbh,$modificationID);
-    print qq
+		$sthspecInAna->finish;
+	}
+	
+	my @destMods;
+	if ($action eq 'edit') {
+		#my $sthDestNames=$dbh->prepare("SELECT ID_MODIFICATION,PSI_MS_NAME,INTERIM_NAME,SYNONYMES,MONO_MASS FROM MODIFICATION WHERE ID_MODIFICATION != $modificationID AND (PSI_MS_NAME REGEXP '[[:alnum:]]' OR INTERIM_NAME REGEXP '[[:alnum:]]')");
+		
+		my $sthDestNames=($mono)? $dbh->prepare("SELECT ID_MODIFICATION,PSI_MS_NAME,INTERIM_NAME,SYNONYMES,MONO_MASS FROM MODIFICATION WHERE ID_MODIFICATION != ? AND MONO_MASS >= ".($mono-10)." AND MONO_MASS <= ".($mono+10))
+								: $dbh->prepare("SELECT ID_MODIFICATION,PSI_MS_NAME,INTERIM_NAME,SYNONYMES,MONO_MASS FROM MODIFICATION WHERE ID_MODIFICATION != ? AND (COALESCE(PSI_MS_NAME,'') != '' OR COALESCE(INTERIM_NAME,'') != '') ORDER BY PSI_MS_NAME,INTERIM_NAME");
+		$sthDestNames->execute($modificationID);
+		while (my ($modID,$psiMsName,$interimName,$altNames,$monoMass) = $sthDestNames->fetchrow_array) {
+			if ($psiMsName) {$psiMsName=~s/^\s+//; $psiMsName=~s/\s+$//;}
+			unless ($psiMsName) {
+				if ($interimName) {$interimName=~s/^\s+//; $interimName=~s/\s+$//;}
+				unless ($psiMsName) {
+					$altNames=~s/^##//;
+					$altNames=(split('##',$altNames))[0];
+				}
+			}
+			my $name=$psiMsName || $interimName || $altNames || '*No name*';
+			$monoMass=0 unless $monoMass;
+			push @destMods,[$modID,$name,$monoMass];
+		}
+		$sthDestNames->finish;
+	}
+	$dbh->disconnect;
+
+ 	my $actionTitle=($action eq 'add')? 'Adding New Modification' : "Editing Modification <FONT color='#DD0000'>$modifName</FONT>";
+   print qq
 |<HTML>
 <HEAD>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
-<TITLE>Modification edition</TITLE>
-<style type="text/css">
-.pushedButton {font-size:11px;font-weight:bold;color:red;}
-.releasedButton {font-size:11px;font-weight:normal;color:black;}
-</style>
+<TITLE>Add/Edit Modification</TITLE>
 <SCRIPT src="$promsPath{html}/js/local/jscolor.js"></SCRIPT>
 <SCRIPT LANGUAGE="JavaScript">
 |;
-    &promsMod::popupInfo();
+    #&promsMod::popupInfo();
     print qq
-|var nbmodInPM=$nbmodInPM;
-function checkForm(myForm){
-    if(myForm.mergeMod.value != ''){
-	var selText=myForm.mergeMod.options[myForm.mergeMod.selectedIndex].text;
-        return confirm('Are you sure you want to merge this modification with '+selText+' ? ');
+|function importFromUnimod() {
+	var unimodID=document.getElementById('unimodID').value;
+	if (!unimodID \|\| unimodID.match('\\D')) {
+		alert('ERROR: Missing or invalid Unimod accession number');
+		return false;
+	}
+	var waitDiv=document.getElementById('waitDIV');
+	waitDiv.style.display='';
+	//Creation of the XMLHTTPRequest object
+	var XHR = getXMLHTTP();
+	if (!XHR) {
+		return false;
+	}
+	XHR.open("GET","$promsPath{cgi}/manageModifications.cgi?ACT=unimod&ID=$modificationID&unimodID="+unimodID,true);
+	XHR.onreadystatechange=function() {
+		if (XHR.readyState==4 && XHR.responseText) {
+			waitDiv.style.display='none';
+//console.log(XHR.responseText);
+			processUnimodData(unimodID,XHR.responseText);
+		}
+	}
+	XHR.send(null);	
+}
+function processUnimodData(unimodID,resultStrg) {
+	if (resultStrg.match('^DUPLICATE')) {
+		var [dupStrg,dupVarMod]=resultStrg.split('::');
+		alert('ERROR: This modification is already recorded ('+dupVarMod+').');
+		return false;
+	}
+	else if (resultStrg.match('^NO_MATCH')) {
+		alert('ERROR: Accession #'+unimodID+' is not found is Unimod file.');
+		return false;
+	}
+	var resObject={};
+	var resultLines=resultStrg.split('\\n');
+	for (let i=0; i<resultLines.length; i++) {
+		var [tag,valueStrg]=resultLines[i].split('::');
+		resObject[tag]=valueStrg;
+	}
+//console.log(resObject);
+	var myForm=document.editModForm;
+	myForm.psiName.value=resObject.PSI_MS_NAME \|\| '';
+	myForm.interName.value=resObject.INTERIM_NAME \|\| '';
+	myForm.altName.value=resObject.SYNONYMES \|\| '';
+	myForm.des.value=resObject.DES \|\| '';
+	myForm.composition.value=resObject.COMPOSITION \|\| '';
+	myForm.mono.value=resObject.MONO_MASS \|\| '';
+	myForm.avg.value=resObject.AVGE_MASS \|\| '';
+	if (resObject.IS_LABEL==1) {myForm.isLabel[0].checked=true;} else {myForm.isLabel[1].checked=true;}
+	//myForm.isLabel[Math.abs(resObject.IS_LABEL*1-1)].checked=true; // 0 -> 1, 1 -> 0
+	/*Specificity*/
+	recordSpecificity(resObject.SPECIFICITY);
+}
+function recordSpecificity(specifString) {
+	var myForm=document.editModForm;
+	
+	/*Check unmodifiable specificity (used in analyses)*/
+	var unmodifSpecif={};
+	if (myForm.aaspec1) {
+		if (myForm.aaspec1.length) {
+			for (let i=0; i<myForm.aaspec1.length; i++) {
+				var [res,context]=myForm.aaspec1[i].value.split(';');
+				unmodifSpecif[res]=1;
+			}
+		}
+		else { // only 1 entry
+			var [res,context]=myForm.aaspec1.value.split(';');
+			unmodifSpecif[res]=1;
+		}
+	}
+	/*Clear preselected specificity*/
+	for (let i=0; i<myForm.aaspec2.length; i++) {
+		myForm.aaspec2[i].selectedIndex=0;
+		myForm.aaspec2[i].dataset.prevselidx=0;
+		myForm.context[i].selectedIndex=0;
+		for (let j=1; j<myForm.aaspec2[i].options.length; j++) {
+			myForm.aaspec2[i].options[j].disabled=(unmodifSpecif[myForm.aaspec2[i].options[j].value])? true : false;
+		}
+		if (i>=1) {
+			myForm.aaspec2[i].disabled=true;
+			myForm.context[i].disabled=true;
+			document.getElementById('specDIV_'+(i+1)).style.display='none';
+		}
+	}
+	/*Inject editable specificity*/
+	var specRes=specifString.split(',');
+	var i=-1;
+	for (let s=0; s<specRes.length; s++) {
+		var [res,context]=specRes[s].split(';');
+		if (unmodifSpecif[res]) continue;
+		//if (res.match('[-=+*]')) context=res; // <- done by updateSpecificityDisplay()
+		i++;
+		myForm.aaspec2[i].disabled=false;
+		var pos=i+1;
+		//document.getElementById('specDIV_'+pos).style.display=''; // <- done by updateSpecificityDisplay()
+		for (let j=1; j<myForm.aaspec2[i].options.length; j++) { // [0] <=> '-= Select =-'
+			if (myForm.aaspec2[i].options[j].value==res) {
+				//myForm.aaspec2[i].options[j].disabled=false;
+				myForm.aaspec2[i].selectedIndex=j;
+				if (context) {
+					for (let k=1; k<myForm.context[i].options.length; k++) {
+						if (myForm.context[i].options[k].value==context) {
+							myForm.context[i].selectedIndex=k;
+							break;
+						}
+					}
+				}
+				updateSpecificityDisplay(myForm.aaspec2[i],pos);
+				break;
+			}
+		}
+	}
+}
+// AJAX ------>
+function getXMLHTTP() {
+	var xhr=null;
+	if(window.XMLHttpRequest) {// Firefox & others
+		xhr = new XMLHttpRequest();
+	}
+	else if(window.ActiveXObject){ // Internet Explorer
+		try {
+		  xhr = new ActiveXObject("Msxml2.XMLHTTP");
+		} catch (e) {
+			try {
+				xhr = new ActiveXObject("Microsoft.XMLHTTP");
+			} catch (e1) {
+				xhr = null;
+			}
+		}
+	}
+	else { // XMLHttpRequest not supported by browser
+		alert("Your browser does not support XMLHTTPRequest objects...");
+	}
+	return xhr;
+}
+// <--- AJAX
+function updateSpecificityDisplay(selObject,pos) {
+	//Re-enable previously selected AA in all SELECTs
+	var allSelects=document.getElementsByName('aaspec2');
+	for (let i=0; i<allSelects.length; i++) {
+		allSelects[i].options[selObject.dataset.prevselidx].disabled=false;
+	}
+	
+	var nextSpecDiv=document.getElementById('specDIV_'+(pos+1));
+	if (selObject.value) {		
+		//Disable selected AA in all other SELECTs
+		var allSelects=document.getElementsByName('aaspec2');
+		for (let i=0; i<allSelects.length; i++) {
+			if (i==pos-1) continue;
+			allSelects[i].options[selObject.selectedIndex].disabled=true;
+		}
+		//Update data-prevselidx
+		selObject.dataset.prevselidx=selObject.selectedIndex;
+		//Handle special case of N/C-terms
+		if (selObject.value.match('[-=+*]')) {
+			var contextSel=document.getElementById('context_'+pos);
+			for (let i=1; i<contextSel.length; i++) {
+				if (contextSel.options[i].value==selObject.value) {
+					contextSel.selectedIndex=i;
+					break;
+				}
+			}
+		}
+		//Show next SELECT
+		if (nextSpecDiv) {
+			nextSpecDiv.style.display='';
+			document.getElementById('aaspec2_'+(pos+1)).disabled=false;
+			document.getElementById('context_'+(pos+1)).disabled=false;
+		}
+	}
+	else {
+		//Update data-prevselidx
+		selObject.dataset.prevselidx=0;
+		//Hide next SELECT if nothing selected
+		if (nextSpecDiv && !document.getElementById('aaspec2_'+(pos+1)).value) {
+			nextSpecDiv.style.display='none';
+			document.getElementById('aaspec2_'+(pos+1)).disabled=true;
+			document.getElementById('context_'+(pos+1)).disabled=true;
+		}
+	}
+}
+function resetColor(defaultColor) {
+    var colorDisplay = new jscolor.color( document.getElementById( 'dispColor' ));
+    colorDisplay.fromString( defaultColor );
+}
+function checkForm(myForm) {
+    if (myForm.mergeMod && myForm.mergeMod.value != '') {
+		var selText=myForm.mergeMod.options[myForm.mergeMod.selectedIndex].text;
+		return confirm('Are you sure you want to merge this modification with '+selText+' ? ');
     }
-    if (nbmodInPM > 0) {
+	var unimod=myForm.unimodID.value;
+	if (!unimod) {
+		return confirm('No Unimod accession number recorded. Proceed anyway ?');
+	}
+	else if (unimod.match('\\D')) {
+		alert('ERROR: Invalid Unimod accession number');
+		return false;
+	}
+	if (!myForm.psiName && !myForm.interName && !myForm.altName) {
+		alert('ERROR: Please provide a PSI-MS, Interim or Alternative name for Modification');
+		return false;
+	}
+	var okSpecif=false;
+	if (myForm.aaspec1) {okSpecif=true;}
+	else {
+		var allSelects=document.getElementsByName('aaspec2');
+		for (let i=0; i<allSelects.length; i++) {
+			if (allSelects[i].value && !allSelects[i].disabled) {
+				okSpecif=true;
+				break;
+			}
+		}
+	}
+	if (!okSpecif) {
+		alert('ERROR: No site specificity defined');
+		return false;
+	}
+    if ($isProjectMod > 0) {
 		if (myForm.code.value == '') {
 			alert('Modification already assigned as relevant in a Project! Project display code should not be empty!');
 			return false;
@@ -300,137 +574,180 @@ function checkForm(myForm){
     }
     return true;
 }
-function showHideSpecificity(act) {
-    if (act=='show') {
-		document.getElementById('showSpec').style.display='none';
-		document.getElementById('hideSpec').style.display='block';
-		document.getElementById('specDIV').style.display='block';
-    }
-	else{
-		document.getElementById('showSpec').style.display='block';
-		document.getElementById('hideSpec').style.display='none';
-		document.getElementById('specDIV').style.display='none';
-    }
-
-}
-function changeAASpec(myB) {
-    var myBState = document.getElementById('isClicked'+myB.id);
-    if (myB.classList.contains('pushedButton')) {
-		myB.classList.add('releasedButton');
-		myB.classList.remove('pushedButton');
-		myBState.value=0;
-    }
-	else{
-		myB.classList.add('pushedButton');
-		myB.classList.remove('releasedButton');
-		myBState.value=1;
-    }
-}
-var specAA=new Array();
-|;
-    my $pos=0;
-    foreach my $specAA (sort{$a cmp $b} keys %specDef) {
-		print "specAA[$pos]=['$specAA','$specDef{$specAA}{DEFINITION}'];\n";
-		$pos++;
-    }
-    print qq
-|
-function resetColor(defaultColor) {
-    var colorDisplay = new jscolor.color( document.getElementById( 'dispColor' ));
-    colorDisplay.fromString( defaultColor );
-}
-function resetSpec() {
-    for (var i=0 ; i < specAA.length ; i++) {
-		var myB=document.getElementById('aaspec'+specAA[i][0]);
-		if (!(myB.classList.contains(specAA[i][1]))) {
-			if (myB.classList.contains('pushedButton')) {
-				myB.classList.add('releasedButton');
-				myB.classList.remove('pushedButton');
-			}
-			else{
-				myB.classList.add('pushedButton');
-				myB.classList.remove('releasedButton');
-			}
-		}
-    }
+window.onload=function() {
+	recordSpecificity('$spec');
 }
 </SCRIPT>
 </HEAD>
 <BODY background="$promsPath{images}/bgProMS.gif">
 <CENTER>
 <BR>
-<FONT class="title">Editing modification <FONT color='#DD0000'>$modifName</FONT></FONT>
+<FONT class="title">$actionTitle</FONT><BR>
+
 <FORM name="modifForm" method="POST">
 <INPUT type="hidden" name="ACT" value="list">
 <INPUT type="hidden" name="LET" value="$startLetter">
 </FORM>
 <FORM name="editModForm" method=POST onsubmit="return(checkForm(this));">
 <INPUT type="hidden" name="idModification" value="$modificationID">
-<INPUT type="hidden" name="specificity" value="$spec">
 <INPUT type="hidden" name="LET" value="$startLetter">
 
-$hiddenSpecString<BR>
 <TABLE border=0 cellpadding=2 bgcolor=$dark>
-<TR><TH align=right nowrap>PSI-MS name :</TH><TD nowrap bgcolor=$light>&nbsp;$psiName</TD></TR>
-<TR><TH align=right nowrap>Interim name :</TH><TD nowrap bgcolor=$light>&nbsp;$interName</TD></TR>
-<TR><TH align=right valign=top nowrap>&nbsp;Alternative name(s) :</TH><TD nowrap bgcolor=$light>&nbsp;$altNameString</TD></TR>
-<TR><TH align=right valign=top>Description :</TH><TD nowrap bgcolor=$light><TEXTAREA name='des' rows='2' cols='65'>$des</TEXTAREA></TD></TR>
-<TR><TH align=right>Monoisotopic :</TH><TD nowrap bgcolor=$light><INPUT type="text" name="mono" value="$mono" size=10></TD></TD></TR>
-<TR><TH align=right>Average :</TH><TD nowrap bgcolor=$light><INPUT type="text" name="avg" value="$avg" size=10></TD></TR>
-<TR><TH align=right>&nbsp;Unimod accession :</TH><TD nowrap bgcolor=$light>&nbsp;$unimodID</TD></TR>
-<TR><TH align=right valign=top nowrap>Specificity :<INPUT type="button" id="showSpec" class="font11" value="Edit specificity" onclick="showHideSpecificity('show')"/><INPUT type="button" id="hideSpec" class="font11" value="Hide Specificity Editing" style="display:none" onclick="showHideSpecificity('hide')"/></TH><TD valign=top nowrap bgcolor=$light>&nbsp;$specString <BR>
-<DIV id="specDIV" style="display:none">$editSpecString</DIV></TD></TR>
+<TR><TH align=right class="title3">&nbsp;Unimod accession :</TH><TD nowrap bgcolor=$light>
+	<INPUT type="text" name="unimodID" id="unimodID" value="$unimodID" placeholder="*None*" size=10>&nbsp;<INPUT type="button" value="Import from Unimod" onclick="importFromUnimod()"/>&nbsp;[<A href="http://www.unimod.org" target="_blank">Link to Unimod</A>]
+	<DIV id="waitDIV" style="display:none"><IMG src="$promsPath{images}/scrollbarGreen.gif"></DIV>
+</TD></TR>
+<TR><TH align=right nowrap>PSI-MS name :</TH><TD nowrap bgcolor=$light><INPUT type="text" name="psiName" value="$psiName" placeholder="*None*" size=60></TD></TR>
+<TR><TH align=right nowrap>Interim name :</TH><TD nowrap bgcolor=$light><INPUT type="text" name="interName" value="$interName" placeholder="*None*" size=60></TD></TR>
+<TR><TH align=right valign=top nowrap>&nbsp;Alternative name(s) :</TH><TD nowrap bgcolor=$light><TEXTAREA name="altName" rows="1" cols="60">$altNameString</TEXTAREA></TD></TR>
+<TR><TH align=right valign=top>Description :</TH><TD nowrap bgcolor=$light><TEXTAREA name="des" rows="2" cols="60">$des</TEXTAREA></TD></TR>
+<TR><TH align=right>Composition :</TH><TD nowrap bgcolor=$light><INPUT type="text" name="composition" value="$compo" size=60></TD></TR>
+<TR><TH align=right>Monoisotopic mass :</TH><TD nowrap bgcolor=$light><INPUT type="text" name="mono" value="$mono" size=10></TD></TD></TR>
+<TR><TH align=right>Average mass :</TH><TD nowrap bgcolor=$light><INPUT type="text" name="avg" value="$avg" size=10></TD></TR>
+<TR><TH align=right valign=top nowrap>Specificity :</TH><TD valign=top nowrap bgcolor=$light>
+|;
+	my %displayedContext=('-'=>'Protein N-term','='=>'Any N-term','+'=>'Protein C-term','*'=>'Any C-term',''=>'Anywhere');
+	my %prevSelected;
+	if (scalar keys %usedSpec) {
+		print "<B>Not editable (used in Analyses):</B><BR>\n";
+		foreach my $aa (@AA) {
+			if ($usedSpec{$aa}) { # used in Ana => cannot be edited
+				#my $contextStrg=($spec=~/$aa,(.)/)? ";$specDef{$aa}[1]" : '';
+				my $context=($spec=~/$aa;(.)/)? $1 : '';
+				print "&bull;$specDef{$aa}";
+				#print " ($displayedContext{$specDef{$aa}[1]})" if $aa=~/\w/;
+				my $contextStrg='';
+				if ($context) {
+					print " ($displayedContext{$context})";
+					$contextStrg=";$context";
+				}
+				elsif ($aa=~/\w/) {
+					print " (Anywhere)";
+				}
+				print "<INPUT type=\"hidden\" name=\"aaspec1\" value=\"$aa$contextStrg\"><BR>\n";
+				$prevSelected{$aa}=1;
+			}
+		}
+		print "<B>Editable specificity:</B><BR>\n";
+	}
+	
+	#my $lastSelPos=0;
+	#foreach my $i (1..15) {
+	#	my $selAA=''; my $selAAIdx=0;
+	#	my $specifStrg='';
+	#	my $idx=0;
+	#	foreach my $aa (@AA) {
+	#		$idx++; # 0 => '-= Select =-'
+	#		$specifStrg.="<OPTION value=\"$aa\"";
+	#		if ($specDef{$aa}[2]==1 && !$selAA && !$prevSelected{$aa}) {
+	#			$specifStrg.=' selected';
+	#			$prevSelected{$aa}=1;
+	#			$selAA=$aa;
+	#			$selAAIdx=$idx;
+	#			$lastSelPos=$i;
+	#		}
+	#		elsif ($prevSelected{$aa}) {
+	#			$specifStrg.=' disabled';
+	#		}
+	#		$specifStrg.=">$specDef{$aa}[0]</OPTION>\n";
+	#	}
+	#	my $disabSelect=($lastSelPos+1 < $i)? ' disabled' : '';
+	#	$specifStrg.="</SELECT>&nbsp;Position:<SELECT name=\"context\" id=\"context_$i\"$disabSelect><OPTION value=\"\">Anywhere</OPTION>\n";
+	#	foreach my $context ('=','-','*','+') {
+	#		$specifStrg.="<OPTION value=\"$context\"";
+	#		$specifStrg.=' selected' if ($selAA && $context eq $specDef{$selAA}[1]);
+	#		$specifStrg.=">$displayedContext{$context}</OPTION>\n";
+	#	}
+	#	$specifStrg.="</SELECT>\n";
+	#	print "<DIV id=\"specDIV_$i\"";
+	#	print ' style="display:none"' if $lastSelPos+1 < $i;
+	#	print ">&bull;Site:<SELECT name=\"aaspec2\" id=\"aaspec2_$i\" onchange=\"updateSpecificityDisplay(this,$i)\" data-prevselidx=\"$selAAIdx\"$disabSelect><OPTION value=\"\">-= Select =-</OPTION>\n$specifStrg</DIV>\n"
+	#}
+	
+	foreach my $i (1..15) { # selection is done by JS at window.onload()
+		print qq
+|<DIV id="specDIV_$i">&bull;Site:<SELECT name="aaspec2" id="aaspec2_$i" onchange="updateSpecificityDisplay(this,$i)" data-prevselidx="">
+<OPTION value="">-= Select =-</OPTION>
+|;
+		foreach my $aa (@AA) {
+			print "<OPTION value=\"$aa\">$specDef{$aa}</OPTION>\n";
+		}
+		print "</SELECT>&nbsp;Position:<SELECT name=\"context\" id=\"context_$i\"><OPTION value=\"\">Anywhere</OPTION>\n";
+		foreach my $context ('=','-','*','+') {
+			print "<OPTION value=\"$context\">$displayedContext{$context}</OPTION>\n";
+		}
+		print "</SELECT>\n</DIV>\n";
+	}
+	
+	print qq
+|</TD></TR>
+<TR><TH align=right>Is label :</TH><TD nowrap bgcolor=$light>&nbsp;<INPUT type="radio" name="isLabel" value="1" $isLabelYes>Yes<INPUT type="radio" name="isLabel" value="0" $isLabelNo>No</TD></TR>
+<TR><TH align=right>Is substitution :</TH><TD nowrap bgcolor=$light>&nbsp;<INPUT type="radio" name="isSubst" value="1" $isSubstYes>Yes<INPUT type="radio" name="isSubst" value="0" $isSubstNo>No</TD></TR>
+<TR><TH align=right>Is valid :</TH><TD nowrap bgcolor=$light>&nbsp;<INPUT type="radio" name="isValid" value="1" $isValidYes>Yes<INPUT type="radio" name="isValid" value="0" $isValidNo>No</TD></TR>
 <TR><TH align=right>Project display :</TH><TD valign=top nowrap bgcolor=$light>&nbsp;<B>-Set code:</B><INPUT type="text" name="code" value="$dispCode" size=3>&nbsp;<B>-Choose color:</B><INPUT id="dispColor" name="dispColor" class="color" value="$dispColor" autocomplete="on" style="background-image: none; background-color: rgb(41, 255, 191); color: rgb(0, 0, 0);"><INPUT type="button" value="Reset color" onclick="resetColor('$dispColor')"></TD></TR>
-<TR><TH align=right>Is label :</TH><TD nowrap bgcolor=$light>&nbsp;$isLabelStr</TD></TR>
-<TR><TH align=right>Is substitution :</TH><TD nowrap bgcolor=$light>&nbsp;$isSubstStr</TD></TR>
 |;
 	if ($action eq 'edit') {
 		print qq
 |<TR><TH align=right>Merge with :</TH><TD nowrap bgcolor=$light>
 <SELECT name='mergeMod'>
-<OPTION value=''> -= Select =- </OPTION>
 |;
-		$sthDetNames->execute;
-		while (my ($modID,$psiMsName,$interimName,$altNames) = $sthDetNames->fetchrow_array) {
-			if ($altNames) {
-				$altNames=~ s/##/,/g;
-				$altNames=substr $altNames,1;
+		if (scalar @destMods) {
+			print "<OPTION value=\"\">-= Select =-</OPTION>\n";
+			foreach my $refDest (sort{if ($mono) {abs($a->[2]-$mono) <=> abs($b->[2]-$mono) || $a->[2] <=> $b->[2]} else {lc($a->[1]) cmp lc($b->[1])}} @destMods) {
+				my ($modID,$name,$monoMass)=@{$refDest};
+				$monoMass='?' unless $monoMass;
+				print "<OPTION value=\"$modID\">$name [Mono. mass: $monoMass]</OPTION>\n";
 			}
-			my $stringName=($psiMsName)? $psiMsName :($interimName)? $interimName : $altNames;
-			print "<OPTION value='$modID'>$stringName</OPTION>\n";
 		}
-		$sthDetNames->finish;
+		else {
+			my $infoStrg=($mono)? " [$mono &plusmn; 10 daltons]" : '';
+			print "<OPTION value=\"\">** No match$infoStrg **</OPTION>\n";
+		}
 		print "</SELECT></TD></TR>\n";
 	}
     print qq
 |<TR><TD colspan=2 align=center>
 <INPUT type="submit" name="submit" value=" Save ">
-&nbsp;&nbsp;&nbsp;<INPUT type="reset" value="  Cancel changes  " onclick="resetSpec()">
 &nbsp;&nbsp;&nbsp;<INPUT type="button" value="Cancel" onclick="document.modifForm.submit();">
 </TD></TR>
 </TABLE>
 </FORM>
 </CENTER>
-<DIV id="divDescription" class="clDescriptionCont">
-<!--Empty div-->
-</DIV>
-<SCRIPT type="text/javascript">
-setPopup();
-</SCRIPT>
 </BODY>
 </HTML>
 |;
 
-    $dbh->disconnect;
 }
 elsif ($action eq 'delete') {
-
+	my $modificationID = &promsMod::cleanNumericalParameters(param('ID'));
+	print qq
+|<HTML>
+<HEAD>
+<LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
+<TITLE>Deleting Modification</TITLE>
+</HEAD>
+<BODY background="$promsPath{images}/bgProMS.gif">
+<BR><BR>
+<FONT class="title2">Deleting modification...</FONT>
+|;
+	$dbh->do("DELETE FROM MODIFICATION WHERE ID_MODIFICATION=$modificationID");
+	$dbh->commit;
+	$dbh->disconnect;
+	print "<FONT class=\"title2\"> Done.</FONT>\n";
+	sleep 2;
+	print qq
+|<SCRIPT type="text/javascript">
+window.location="./manageModifications.cgi?ACT=list&LET=$startLetter";
+</SCRIPT>
+</BODY>
+</HTML>
+|;
 }
 
 sub processForm {
 	print header(-'content-encoding'=>'no',-charset=>'utf-8');
 	warningsToBrowser(1);
-	my $modificationID=param('idModification');
+	my $modificationID=&promsMod::cleanNumericalParameters(param('idModification'));
 	print qq
 |<HTML>
 <HEAD>
@@ -445,17 +762,17 @@ sub processForm {
 
 		print "<BR><FONT class='title3'>Merging two modifications...";
 		my $newModID=param('mergeMod');
-		my ($alNamesOld,$specOld)=$dbh->selectrow_array("SELECT SYNONYMES,SPECIFICITY FROM MODIFICATION WHERE ID_MODIFICATION=$modificationID");
-		my ($psiMsName,$interiName,$alNamesNew,$specNew)=$dbh->selectrow_array("SELECT PSI_MS_NAME,INTERIM_NAME,SYNONYMES,SPECIFICITY FROM MODIFICATION WHERE ID_MODIFICATION=$newModID");
-		my @psiLetters=($psiMsName)? split(//,$psiMsName) : ($interiName)? split(//,$interiName) : 'A' ;
-		$startLetter=$psiLetters[0];
-		if ($alNamesNew) {
-			foreach my $syn (split(/##/,$alNamesOld)) {
-				next unless $syn;
-				$alNamesNew.="$syn##" unless $alNamesNew=~/##$syn##/;
+		my ($altNameOld,$specOld)=$dbh->selectrow_array("SELECT SYNONYMES,SPECIFICITY FROM MODIFICATION WHERE ID_MODIFICATION=$modificationID");
+		my ($psiMsName,$interimName,$altName,$specNew,$validStatus)=$dbh->selectrow_array("SELECT PSI_MS_NAME,INTERIM_NAME,SYNONYMES,SPECIFICITY,VALID_STATUS FROM MODIFICATION WHERE ID_MODIFICATION=$newModID");
+		if ($altNameOld) {
+			if ($altName) {
+				foreach my $syn (split(/##/,$altNameOld)) {
+					next unless $syn;
+					$altName.="$syn##" unless $altName=~/##$syn##/;
+				}
 			}
+			else {$altName=$altNameOld;}
 		}
-		else {$alNamesNew=$alNamesOld;}
 
 		###<Merge specificity
 		my %spec=();
@@ -469,7 +786,9 @@ sub processForm {
 		my $newSpec=(scalar keys %spec)? join(',', sort{$a cmp $b} keys %spec) : '';
 
 		###<Add the alt. name to the synonyms of the merge modification and update the new specificity
-		$dbh->do("UPDATE MODIFICATION SET SYNONYMES='$alNamesNew',SPECIFICITY='$newSpec' WHERE ID_MODIFICATION=$newModID");
+		my $sthUpMod=$dbh->prepare("UPDATE MODIFICATION SET SYNONYMES=?,SPECIFICITY=? WHERE ID_MODIFICATION=?");
+		$sthUpMod->execute($altName,$newSpec,$newModID);
+		$sthUpMod->finish;
 
 		print " Done.</FONT><BR>\n";
 
@@ -479,12 +798,12 @@ sub processForm {
 		print "<BR><FONT class='title3'>Updating modification data for Project items...";
 		my $count=0;
 		foreach my $item ('PROJECT','ANALYSIS','SPECTRUM') {
-			my $getItemID=$dbh->prepare("SELECT COUNT(ID_$item),ID_$item,ID_MODIFICATION FROM ${item}_MODIFICATION WHERE ID_MODIFICATION=$modificationID OR ID_MODIFICATION=$newModID GROUP BY ID_$item");
-			my $sthUpItemmod=$dbh->prepare("UPDATE ${item}_MODIFICATION SET ID_MODIFICATION=$newModID WHERE ID_$item=? AND ID_MODIFICATION=$modificationID");
-			$getItemID->execute;
+			my $getItemID=$dbh->prepare("SELECT COUNT(ID_$item),ID_$item,ID_MODIFICATION FROM $item\_MODIFICATION WHERE ID_MODIFICATION=? OR ID_MODIFICATION=? GROUP BY ID_$item");
+			my $sthUpItemmod=$dbh->prepare("UPDATE $item\_MODIFICATION SET ID_MODIFICATION=? WHERE ID_MODIFICATION=? AND ID_$item=?");
+			$getItemID->execute($modificationID,$newModID);
 			while (my ($numMod,$itemID,$modID)=$getItemID->fetchrow_array) {
 				if ($numMod==1 && $modID == $modificationID) {
-					$sthUpItemmod->execute($itemID);
+					$sthUpItemmod->execute($newModID,$modificationID,$itemID);
 				}
 				$count++;
 				if ($count==100) {
@@ -494,17 +813,17 @@ sub processForm {
 			}
 			$getItemID->finish;
 			$sthUpItemmod->finish;
-			$dbh->do("DELETE FROM ${item}_MODIFICATION WHERE ID_MODIFICATION=$modificationID");
+			$dbh->do("DELETE FROM $item\_MODIFICATION WHERE ID_MODIFICATION=$modificationID");
 		}
 		print " Done.</FONT><BR>\n";
 
-		###<QUERY_MODIFICATION and PEPTIDE_MODIFICACTION -> same way
+		###<QUERY_MODIFICATION and PEPTIDE_MODIFICATION -> same way
 		print "<BR><FONT class='title3'>Updating modification data for Peptides...";
 		$count=0;
 		foreach my $item ('QUERY','PEPTIDE') {
 			my $extString=($item eq 'QUERY')? ',PEP_RANK' : '';
-			my $sthItemInfo=$dbh->prepare("SELECT ID_MODIFICATION,ID_$item,POS_STRING,REF_POS_STRING$extString FROM ${item}_MODIFICATION WHERE ID_MODIFICATION=$modificationID OR ID_MODIFICATION=$newModID"); # ??? WHY $newModID ??? (PP 08/02/17)
-			$sthItemInfo->execute;
+			my $sthItemInfo=$dbh->prepare("SELECT ID_MODIFICATION,ID_$item,POS_STRING,REF_POS_STRING$extString FROM $item\_MODIFICATION WHERE ID_MODIFICATION=? OR ID_MODIFICATION=?"); # ??? WHY $newModID ??? (PP 08/02/17)
+			$sthItemInfo->execute($modificationID,$newModID);
 			my %itemMods=();
 			while (my ($modID,$itemID,$posStr,$refPosStr,$extInfo)=$sthItemInfo->fetchrow_array) {
 				$extInfo='' unless $extInfo;
@@ -554,60 +873,73 @@ sub processForm {
 				}
 				$sthUpItemPosMod->finish;
 			}
-			$dbh->do("DELETE FROM ${item}_MODIFICATION WHERE ID_MODIFICATION=$modificationID");
+			$dbh->do("DELETE FROM $item\_MODIFICATION WHERE ID_MODIFICATION=$modificationID");
 		}
 		print " Done.</FONT><BR>\n";
 
 		$dbh->do("DELETE FROM MODIFICATION WHERE ID_MODIFICATION=$modificationID");
 
-		sleep 2;
+		$startLetter=($psiMsName)? (split(//,$psiMsName))[0] : ($interimName)? (split(//,$interimName))[0] : ($altName && $altName=~/^##(.)/)? $1 : ($validStatus)? '*' : '?';
 	}
 
 	####<Edit or Add a modification>####
 	else {
-		my $mono=param('mono');
-		my $avg=param('avg');
-		#my $otherParams=(param('des'))? ",DES='".param('des')."'" : '';
-		#$otherParams.=(defined(param('code')) && param('code') ne '')? ",DISPLAY_CODE='".param('code')."'" : '';
-		#$otherParams.=(defined(param('dispColor')))? ",DISPLAY_COLOR='".param('dispColor')."'" : '';
-		my ($code,$color)=(param('code') && param('dispColor'))? (param('code'),param('dispColor')) : (undef,undef);
-		#$otherParams.=(param('isSubst') eq 'y')? ",IS_SUBST=1": ",IS_SUBST=0";
-		#$otherParams.=(param('isLabel') eq 'y')? ",IS_LABEL=1": ",IS_LABEL=0";
-		#$otherParams.=',IS_SUBST='.param('isSubst').',IS_LABEL='.param('isLabel');
+		my $unimodID=param('unimodID') || undef;
+		my $psiMsName=param('psiName') || undef;
+		my $interimName=param('interName') || undef;
+		my $altName=param('altName') || undef;
+		if ($altName) {
+			$altName=~s/,\s*/##/g;
+			$altName='##'.$altName.'##';
+		}
+		my $des=param('des') || undef;
+		my $composition=param('composition') || undef;
+		my $mono=param('mono') || undef;
+		my $avg=param('avg') || undef;
+		my ($code,$color)=(param('code') && param('dispColor') && param('dispColor') !~ /^F+$/)? (param('code'),param('dispColor')) : (undef,undef);
+		my $isSubst=param('isSubst');
+		my $isLabel=param('isLabel');
+		my $validStatus=param('isValid');
+
 		###> Check specificity;
-		my @oldSpec=split(/,+/,param('specificity')) ; # To keep the context (ex: Trimethyl -> A (Protein N-term) only!!! <-> A;-)
-		my @AA=('A','C'..'I','K'..'N','P'..'T','V'..'Y','nterm','cterm','pnterm','pcterm'); # added X
-		my $newSpec='';
-		foreach my $aa (@AA) {
-			if(param("isClickedaaspec$aa")) {
-				my $tag=1;
-				foreach my $aaOld (@oldSpec) {
-					next unless $aaOld;
-					my $aa2=($aa eq 'nterm')?'=':($aa eq 'pnterm')?'-':($aa eq 'cterm')?'\*':($aa eq 'pcterm')?'\+':$aa;
-					if ($aaOld =~ /^$aa2/) {
-						$tag=0;
-						$newSpec.="$aaOld,";
-						last;
-					}
-				}
-				$aa=($aa eq 'nterm')?'=':($aa eq 'pnterm')?'-':($aa eq 'cterm')?'*':($aa eq 'pcterm')?'+':$aa;
-				if ($tag) {
-					$newSpec.=',' if $newSpec;
-					$newSpec.=$aa;
-				}
+		my %specif;
+		if (param('aaspec1')) {
+			foreach my $spec (param('aaspec1')) {
+				$specif{$spec}=1;
 			}
 		}
+		if (param('aaspec2')) {
+			my $specIdx=-1;
+			foreach my $spec (param('aaspec2')) {
+				$specIdx++;
+				next unless $spec; # '-= Select =-'
+				if ($spec=~/\w/) { # check context for normal residues only
+					my $context=(param('context'))[$specIdx];
+					$spec.=";$context" if $context; # Anywhere <=> empty context
+				}
+				$specif{$spec}=1;
+			}
+		}
+		my $newSpec=join(',',sort{$a cmp $b} keys %specif);
 		$newSpec=undef unless $newSpec;
-		#$dbh->do("UPDATE MODIFICATION SET MONO_MASS=$mono, AVGE_MASS=$avg $otherParams WHERE ID_MODIFICATION=$modificationID");
-		my $sthUpMod=$dbh->prepare("UPDATE MODIFICATION SET DES=?,MONO_MASS=?,AVGE_MASS=?,DISPLAY_CODE=?,DISPLAY_COLOR=?,IS_SUBST=?,IS_LABEL=?,SPECIFICITY=?,VALID_STATUS=? WHERE ID_MODIFICATION=$modificationID");
-		my $validStatus=($mono && $avg && $newSpec)? 1 : 0;
-		$sthUpMod->execute(param('des'),$mono,$avg,$code,$color,param('isSubst'),param('isLabel'),$newSpec,$validStatus);
-		$sthUpMod->finish;
+		#my $validStatus=($mono && $avg && $newSpec)? 1 : 0;
+		
+		if ($modificationID) {
+			my $sthUpMod=$dbh->prepare("UPDATE MODIFICATION SET UNIMOD_ACC=?,PSI_MS_NAME=?,INTERIM_NAME=?,DES=?,SYNONYMES=?,COMPOSITION=?,MONO_MASS=?,AVGE_MASS=?,SPECIFICITY=?,DISPLAY_CODE=?,DISPLAY_COLOR=?,IS_SUBST=?,IS_LABEL=?,VALID_STATUS=? WHERE ID_MODIFICATION=?");
+			$sthUpMod->execute($unimodID,$psiMsName,$interimName,$des,$altName,$composition,$mono,$avg,$newSpec,$code,$color,$isSubst,$isLabel,$validStatus,$modificationID);
+			$sthUpMod->finish;
+		}
+		else { # auto-increment
+			my $sthInsMod=$dbh->prepare("INSERT INTO MODIFICATION (UNIMOD_ACC,PSI_MS_NAME,INTERIM_NAME,DES,SYNONYMES,COMPOSITION,MONO_MASS,AVGE_MASS,SPECIFICITY,DISPLAY_CODE,DISPLAY_COLOR,IS_SUBST,IS_LABEL,VALID_STATUS) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+			$sthInsMod->execute($unimodID,$psiMsName,$interimName,$des,$altName,$composition,$mono,$avg,$newSpec,$code,$color,$isSubst,$isLabel,$validStatus);
+		}
+		$startLetter=($psiMsName)? (split(//,$psiMsName))[0] : ($interimName)? (split(//,$interimName))[0] : ($altName && $altName=~/^##(.)/)? $1 : ($validStatus)? '*' : '?';
 	}
 
 	$dbh->commit;
 	$dbh->disconnect;
 
+	$startLetter=($startLetter=~/^\d/)? '#' : uc($startLetter);
 	print qq
 |<SCRIPT type="text/javascript">
 window.location="./manageModifications.cgi?ACT=list&LET=$startLetter";
@@ -617,93 +949,87 @@ window.location="./manageModifications.cgi?ACT=list&LET=$startLetter";
 |;
 }
 
-sub createEditSpecificityString {
-    my ($dbh,$modificationID)=@_;
-    my @AA=('A','C'..'I','K'..'N','P'..'T','V'..'Y'); # added X
-    my %specDef;
-    foreach my $aa (@AA) {
-		#next unless $aa =~ /[A-Z]/;
-		$specDef{$aa}{'DEFINITION'}='releasedButton';
-		$specDef{$aa}{'IS_CLICKED'}=0;
-    }
-    $specDef{'nterm'}{'DEFINITION'}=$specDef{'pnterm'}{'DEFINITION'}=$specDef{'cterm'}{'DEFINITION'}=$specDef{'pcterm'}{'DEFINITION'}=0;
-    $specDef{'nterm'}{'IS_CLICKED'}=$specDef{'pnterm'}{'IS_CLICKED'}=$specDef{'cterm'}{'IS_CLICKED'}=$specDef{'pcterm'}{'IS_CLICKED'}=0;
-    ###> Specificity in Unimod/myProMS definition (could be modified)
-    my ($specStr)=$dbh->selectrow_array("SELECT SPECIFICITY FROM MODIFICATION WHERE ID_MODIFICATION=$modificationID");
-    if ($specStr) {
-		foreach my $aa (split(/,+/,$specStr)) {
-			$aa=($aa eq '=')?'nterm':($aa eq '-')?'pnterm':($aa eq '*')?'cterm':($aa eq '+')?'pcterm':$aa;
-			if ($aa =~/;/) {
-				my ($aaOnly,my $context)=split(/;/,$aa);
-				my $contextString=($context eq '=')?'N-term':($context eq '-')?'Protein N-term':($context eq '*')?'C-term':'Protein C-term';
-				$specDef{$aaOnly}{'POPUPINFO'}=" onmouseover=\"popup('<B>$contextString</B>')\" onmouseout=\"popout()\" ";
-				#$specDef{$aaOnly}{'ANALYSIS'}=-1;
-				$specDef{$aaOnly}{'DEFINITION'}='pushedButton';
-				$specDef{$aaOnly}{'IS_CLICKED'}=1;
-			}
-			else {
-				$specDef{$aa}{'DEFINITION'}='pushedButton';
-				$specDef{$aa}{'IS_CLICKED'}=1;
-			}
-		}
-    }
-    ###> Specificity in projects (no modifications allowed)
-    my $sthspecInAna=$dbh->prepare("SELECT DISTINCT(SPECIFICITY) FROM ANALYSIS_MODIFICATION WHERE ID_MODIFICATION=$modificationID");
-    $sthspecInAna->execute;
-    while (my ($specString) = $sthspecInAna->fetchrow_array) {
-		if ($specString) {
-			foreach my $aa (split(/,/,$specString)) {
-				next if $aa eq '?'; # ambiguity
-				$aa=($aa eq '=')?'nterm':($aa eq '-')?'pnterm':($aa eq '*')?'cterm':($aa eq '+')?'pcterm':$aa;
-				$specDef{$aa}{'ANALYSIS'}=-1; # set as used by Analyses
-			}
-		}
-    }
-    $sthspecInAna->finish;
-    my $numRes=0;
-    my $editSpecString="<TABLE>\n";
-    my $hiddenSpecString="";
+#sub createEditSpecificityString {
+#    my ($dbh,$modificationID,$specStr,$refAA,$refSpecDef,$refUsUsedSpec)=@_;
+#    my %specDef;
+#    foreach my $aa (@{$refAA}) {
+#		next if $aa !~ /\w/;
+#		$specDef{$aa}=$aa;
+#    }
+#	$specDef{'-'}='Protein N-term';
+#	$specDef{'='}='Any N-term';
+#	$specDef{'+'}='Protein C-term';
+#	$specDef{'*'}='Any C-term';
+#	if ($modificationID) { # ! add
+#		###<Specificity in projects (no modifications allowed)
+#		my $sthspecInAna=$dbh->prepare("SELECT DISTINCT(SPECIFICITY) FROM ANALYSIS_MODIFICATION WHERE ID_MODIFICATION=?");
+#		$sthspecInAna->execute($modificationID);
+#		while (my ($specString) = $sthspecInAna->fetchrow_array) {
+#			if ($specString) {
+#				foreach my $aa (split(',',$specString)) {
+#					next if $aa eq '?'; # ambiguity
+#					$usedSpec{$aa}=1; # set as used by Analyses
+#				}
+#			}
+#		}
+#	}
+#
+#}
 
-    ###> N-TER SIDE
-    my $disNterm=($specDef{"nterm"}{'ANALYSIS'} && $specDef{"nterm"}{'ANALYSIS'}==-1)?'disabled':'';
-    my $disPNterm=($specDef{"pnterm"}{'ANALYSIS'} && $specDef{"pnterm"}{'ANALYSIS'}==-1)?'disabled':'';
-    $editSpecString.="<INPUT name=\"aaspec\" id=\"aaspecnterm\" style=\"width: 90px\" type=\"button\" class=\"$specDef{nterm}{DEFINITION}\" value=\"Any N-term\" $disNterm onclick=\"changeAASpec(this)\">";
-    $editSpecString.="<INPUT name=\"aaspec\" id=\"aaspecpnterm\" style=\"width: 110px\" type=\"button\" class=\"$specDef{pnterm}{DEFINITION}\" value=\"Protein N-term\" $disPNterm onclick=\"changeAASpec(this)\">";
 
-    foreach my $aa (sort{$a cmp $b} @AA) {
-		$specDef{$aa}{'POPUPINFO'}="onClick=\"changeAASpec(this)\"" unless $specDef{$aa}{'POPUPINFO'};
-		$numRes++;
-		my $disabled=($specDef{$aa}{'ANALYSIS'} && $specDef{$aa}{'ANALYSIS'}==-1) ? 'disabled':'';
-		$editSpecString.="<INPUT name=\"aaspec\" id=\"aaspec$aa\" style=\"width: 30px\" type=\"button\" class=\"$specDef{$aa}{DEFINITION}\" value=\"$aa\" $disabled $specDef{$aa}{POPUPINFO}>";
-		if ($numRes==11){
-			$editSpecString.="<BR>";
-			$numRes=-1;
-		}
-		$hiddenSpecString.="<INPUT type=\"hidden\" name=\"isClickedaaspec$aa\" id=\"isClickedaaspec$aa\" value=\"$specDef{$aa}{IS_CLICKED}\">\n";
-    }
+sub getModificationFromUnimod {
+	print header(-type=>'text/plain',-'content-encoding'=>'no',-charset=>'utf-8');
+	my ($unimodID,$modificationID)=&promsMod::cleanNumericalParameters(@_);
+	
+	my $dbh=&promsConfig::dbConnect;
+	my ($matchedModID,$mPsiName,$mInterimName)=$dbh->selectrow_array("SELECT ID_MODIFICATION,PSI_MS_NAME,INTERIM_NAME FROM MODIFICATION WHERE UNIMOD_ACC=$unimodID");
+	if ($matchedModID && $matchedModID !=$modificationID) {
+		my $name=$mPsiName || $mInterimName;
+		print "DUPLICATE::$name";
+		$dbh->disconnect;
+		exit;
+	}
+	$dbh->disconnect;
+	
+	my $xmlFile="$promsPath{data}/unimod_tables.xml";
+	my %vmodsInUnimod;
+	my $handler = UnimodXMLHandler->new($xmlFile,\%vmodsInUnimod);
+require XML::SAX::ParserFactory;
+	my $xmlparser = XML::SAX::ParserFactory->parser(Handler => $handler );
+	$xmlparser->parse_uri($xmlFile);
 
-    ###> C-TER SIDE
-    my $disCterm=($specDef{"cterm"}{'ANALYSIS'} && $specDef{"cterm"}{'ANALYSIS'}==-1)?'disabled':'';
-    my $disPCterm=($specDef{"pcterm"}{'ANALYSIS'} && $specDef{"pcterm"}{'ANALYSIS'}==-1)?'disabled':'';
-    $editSpecString.=qq
-|<INPUT name="aaspec" id="aaspecpcterm" style="width:110px" type="button" class="$specDef{pcterm}{DEFINITION}" value="Protein C-term" $disPCterm onclick="changeAASpec(this)">
-<INPUT name="aaspec" id="aaspeccterm" style="width:90px" type="button" class="$specDef{cterm}{DEFINITION}" value="Any C-term" $disCterm onclick="changeAASpec(this)">
-</TR>
-</TABLE>
+	if ($vmodsInUnimod{$unimodID}) {
+		my $psiName=$vmodsInUnimod{$unimodID}{'PSI_MS_NAME'} || '';
+		my $interimName=$vmodsInUnimod{$unimodID}{'INTERIM_NAME'} || '';
+		my $synonymes=$vmodsInUnimod{$unimodID}{'SYNONYMES'} || ''; $synonymes=~s/^##//; $synonymes=~s/##$//; $synonymes=~s/##/, /g;
+		my $des=$vmodsInUnimod{$unimodID}{'DES'} || '';
+		my $composition=$vmodsInUnimod{$unimodID}{'COMPOSITION'} || '';
+		my $monoMass=$vmodsInUnimod{$unimodID}{'MONO_MASS'} || '';
+		my $avgeMass=$vmodsInUnimod{$unimodID}{'AVGE_MASS'} || '';
+		my $isLabel=$vmodsInUnimod{$unimodID}{'IS_LABEL'} // 0;
+		my $specificityString=($vmodsInUnimod{$unimodID}{'SPECIFICITY'})? join(',',keys %{$vmodsInUnimod{$unimodID}{'SPECIFICITY'}}) : '';
+		print qq
+|PSI_MS_NAME::$psiName
+INTERIM_NAME::$interimName
+SYNONYMES::$synonymes
+DES::$des
+COMPOSITION::$composition
+MONO_MASS::$monoMass
+AVGE_MASS::$avgeMass
+IS_LABEL::$isLabel
+SPECIFICITY::$specificityString
 |;
-
-    ###> Hidden values
-    $hiddenSpecString.=qq
-|<INPUT type="hidden" name="isClickedaaspecnterm" id="isClickedaaspecnterm" value="$specDef{nterm}{IS_CLICKED}">
-<INPUT type="hidden" name="isClickedaaspecterm" id="isClickedaaspecterm" value="$specDef{cterm}{IS_CLICKED}">
-<INPUT type="hidden" name="isClickedaaspecpnterm" id="isClickedaaspecpnterm" value="$specDef{pnterm}{IS_CLICKED}">
-<INPUT type="hidden" name="isClickedaaspecpcterm" id="isClickedaaspecpcterm" value="$specDef{pcterm}{IS_CLICKED}">
-|;
-
-    return($editSpecString,$hiddenSpecString,%specDef);
+	}
+	else {
+		print "NO_MATCH";
+	}
+	
+	exit;
 }
 
 ####>Revision history<####
+# 1.2.1 [Fix] minor JavaScript bugs in form submission (PP 21/03/19)
+# 1.2.0 New specificity form to handle site context & 'Add modification' option (PP 11/02/19)
 # 1.1.1 Minor modification to avoid error when PSI_MS_NAME is not defined for merge option (GA 07/06/18)
 # 1.1.0 Compatible with MaxQuant probality data in PEPTIDE_MODIFICATION.REF_POS_STRING & minro bug fixes (PP 10/02/17)
 # 1.0.9 Improved listing options & code update & added X residue (PP 17/08/16)

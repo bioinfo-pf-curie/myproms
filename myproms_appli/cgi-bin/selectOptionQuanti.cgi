@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# selectOptionQuanti.cgi    1.2.7                                              #
+# selectOptionQuanti.cgi    1.2.8                                              #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Generates list of options available to user                                  #
@@ -221,7 +221,7 @@ function selectOption(selectedButton) {
 		top.promsFrame.resultFrame.location="$promsPath{cgi}/manageDesignCondition.cgi?ACT=add&ITEM=DESIGN&ID=$itemID&PARENT=$item&PROJECT_ID=$projectID";
 	}
 	else if (action=='addQuantification') {
-		top.promsFrame.resultFrame.location="$promsPath{cgi}/selAna4Quantification.cgi?ID=$branchID&quantifType=DESIGN";
+		top.promsFrame.resultFrame.location="$promsPath{cgi}/startDesignQuantification.cgi?ID=$itemID";
 	}
 	else {alert('Unrecognized option');}
 }
@@ -384,6 +384,7 @@ sub goAnalysisButton{
 
 
 ####>Revision history<####
+# 1.2.8 Points to startDesignQuantification.cgi for design-based quantifications (PP 01/02/19)
 # 1.2.7 Added Export Quantifications options (PP 07/11/17)
 # 1.2.6 Calls showSSProtQuantification.cgi for SSPA quantification summary (PP 17/08/16)
 # 1.2.5 Calls showProtQuantification.cgi for design-based protein quantification summary (PP 25/07/16)

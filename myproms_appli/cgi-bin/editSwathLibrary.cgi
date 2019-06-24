@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# editSwathLibrary.cgi         1.8.5	                                       #
+# editSwathLibrary.cgi         1.8.6	                                       #
 # Authors: M. Le Picard, V. Sabatet (Institut Curie)                           #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -52,7 +52,6 @@ use File::Basename;
 use XML::Simple;
 use POSIX qw(strftime); # to get the time
 use File::Path qw(rmtree); # remove_tree
-#use Data::Dumper;
 use XML::SAX::ParserFactory;
 use List::Util "first";
 use File::Spec::Functions qw(splitpath); # Core module
@@ -1007,7 +1006,7 @@ if ($submit eq "") {
         <TR><TH align="right" valign="top">RT file : </TH>
             <TD bgcolor="$lightColor">
             |;
-            my $sthRTList=$dbh->prepare("SELECT NAME,ID_REFERENCE_RT FROM REFERENCE_RT WHERE NAME != 'iRT-C18 v2'") or die "Couldn't prepare statement: " . $dbh->errstr;
+            my $sthRTList=$dbh->prepare("SELECT NAME,ID_REFERENCE_RT FROM REFERENCE_RT") or die "Couldn't prepare statement: " . $dbh->errstr;
             $sthRTList->execute;
 			my %rtHash;
             if ($sthRTList->rows==0) {print "No experiment in that project. Choose an other project.";}
@@ -1623,7 +1622,7 @@ else{
 			if (!$matchIdent) {
 				if ($libCons eq 'new') {
 					print "<BR><BR><BR><B>***ERROR*** Identifiers from input files ($fileIdentType) and Databank ($identType) are different! <BR>Select an other Databank.</B><BR><BR><BR>";
-					my $sthNewDBList=$dbh->prepare("SELECT D.NAME, D.ID_DATABANK,D.FASTA_FILE,D.DECOY_TAG,DT.NAME FROM DATABANK D,DATABANK_TYPE DT WHERE D.DECOY_TAG='yes' OR D.DECOY_TAG LIKE '%rev%' AND D.USE_STATUS='yes' AND DT.DEF_IDENT_TYPE=\"$fileIdentType\" AND D.ID_DBTYPE=DT.ID_DBTYPE  ") or die "Couldn't prepare statement: " . $dbh->errstr;
+					my $sthNewDBList=$dbh->prepare("SELECT D.NAME, D.ID_DATABANK,D.FASTA_FILE,D.DECOY_TAG,DT.NAME FROM DATABANK D,DATABANK_TYPE DT WHERE D.DECOY_TAG IS NOT NULL AND D.USE_STATUS='yes' AND DT.DEF_IDENT_TYPE=\"$fileIdentType\" AND D.ID_DBTYPE=DT.ID_DBTYPE  ") or die "Couldn't prepare statement: " . $dbh->errstr;
 					$sthNewDBList->execute;
 					if ($sthNewDBList->rows==0) {
 						print "<INPUT type=\"button\" class=\"buttonadd\" value=\"Return to form.\" onclick=\"window.location='./editSwathLibrary.cgi?ACT=add'\">";
@@ -3266,6 +3265,7 @@ $dbh->disconnect;
 
 
 ####>Revision history<#####
+# 1.8.6 Generalize SQL Queries to avoid specific iRT and Decoy filtering (VS 10/05/19)
 # 1.8.5 Add acetylation recovering on importation (VS 22/10/2018) 
 # 1.8.4 Add option to create .mrm library final file (MLP 19/17/18)
 # 1.8.3 Minor modif : editting a library's name and PBSerror is now handled by &clusterInfo{checkError} (MLP 16/04/18)

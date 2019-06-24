@@ -1,6 +1,6 @@
 #!/usr/local/bin/perl -w
 ################################################################################
-# manageMotifAnalysis.cgi       1.0.1                                          #
+# manageMotifAnalysis.cgi       1.0.2                                          #
 # Authors: P. Poullet, S.Liva (Institut Curie)                                 #
 # Contact: myproms@curie.fr                                                    #
 # summary, edit, delete a motif enrichment analysis                            #
@@ -133,7 +133,7 @@ if ($anaType eq 'MOTIF') {
 #### START HTML
 print header(-charset=>'utf-8');
 warningsToBrowser(1);
-my $strgMotif = ($anaType eq "MOTIF")? "Motif Enrichment Analysis : <FONT color=\"red\">$name</FONT>" : "Heatmap Motif Enrichment Analysis : <FONT color=\"red\">$name</FONT>";
+my $strgMotif = ($anaType eq "MOTIF")? "Motif Enrichment Analysis : <FONT color=\"#DD0000\">$name</FONT>" : "Heatmap Motif Enrichment Analysis : <FONT color=\"#DD0000\">$name</FONT>";
 my $title = ($action eq 'summary')? $strgMotif :  "Editing $strgMotif" ;
 print qq
 |<HTML>
@@ -153,13 +153,18 @@ if ($action eq 'edit') {
 }
 |;
 }
-else { # summary
-  if ($anaType eq "MOTIF" && $status == -1) {
-	print qq
-|//setTimeout(function(){window.location.reload(true);},5000);// Reload page every 5 seconds
-setTimeout(function(){parent.optionFrame.location.reload(1);},5000);// Reload page every 5 seconds
+elsif ($anaType eq "MOTIF") {
+	if ($status == -1) {
+		print qq
+|setTimeout(function(){parent.optionFrame.location.reload(1);},5000);// Reload page every 5 seconds
 |;
-  }
+	}
+	else { # status=1 => make sure "Display Motif Analysis" button id enabled
+		print qq
+|var dispButton=parent.optionFrame.document.getElementById('displayMotifAnalysis');
+if (dispButton && dispButton.disabled) {dispButton.disabled=false;}
+|;
+	}
 }
 print qq
 |</SCRIPT>
@@ -187,99 +192,99 @@ if ($action eq 'edit') {
 }
 else {#summary
   if ($anaType eq "MOTIF") {
-	#$desc=&promsMod::HTMLcompatible($desc);
-	my ($strgDataSource,$strgCentralRes, $strgOccurence, $strgWidth, $strgBackground, $strgSignificance) = split("//",$paramList);
-	my ($itemCentRes, $centralRes)=split("=",$strgCentralRes);
-	my ($itemOcc, $occurence)=split("=",$strgOccurence);
-	my ($itemWidth, $width)=split("=",$strgWidth);
-	my ($itemBack, $backgroundInfo)=split("=",$strgBackground);
-	my ($backgroundStrgValue,$backgroundValue)=split(":",$backgroundInfo);
-	my ($itemSign,$significance)=split("=",$strgSignificance);
-	my $strgTable = ($catID)? "List" : "Quantification";
-	my ($foregroundName,$backgroundName);
-	if ($catID) {
-	  my ($catName, $className)=$dbh->selectrow_array("SELECT CA.NAME, CL.NAME FROM CATEGORY CA, CLASSIFICATION CL WHERE CA.ID_CATEGORY=$catID and CA.ID_CLASSIFICATION=CL.ID_CLASSIFICATION");
-	  $foregroundName="&nbsp;$className > $catName";
-	  if ($backgroundStrgValue eq "quanti") {
-		my %groupQuantifNames=&promsQuantif::getDistinctQuantifNames($dbh,$backgroundValue);
-		$backgroundName="&nbsp;Quantification&nbsp;:&nbsp;<b>$groupQuantifNames{'FULL'}{$backgroundValue}</b><br>";
-	  }
-	  else {
-		$backgroundName="&bull;&nbsp;Type&nbsp;:&nbsp;<b>$backgroundStrgValue</b><br>&bull;&nbsp;Nb. seqs&nbsp;:&nbsp;<b>$backgroundValue</b>";
-	  }
-	}
-	else {
-	  my $quantifID=$dbh->selectrow_array("SELECT CONCAT(ID_QUANTIFICATION,\"_\",TARGET_POS) FROM EXPLORANA_QUANTIF WHERE ID_EXPLORANALYSIS=$motifID");
-	  my %groupQuantifNames=&promsQuantif::getDistinctQuantifNames($dbh,$quantifID);
-	  $foregroundName=$groupQuantifNames{'FULL'}{$quantifID};
-	  if ($backgroundStrgValue eq "quanti") {
-		$backgroundName="&nbsp;Type&nbsp;:&nbsp;<b>selected quantification</b><br>";
-	  }
-	  else {
-		$backgroundName="&bull;&nbsp;Type&nbsp;:&nbsp;<b>$backgroundStrgValue</b><br>&bull;&nbsp;Nb. seqs&nbsp;:&nbsp;<b>$backgroundValue</b>";
-	  }
-	}
-
-	my @logoMotif;
-	my $strgMotifFound="";
-	if ( -d $pathToFile ) {
-	  opendir(my $dh, $pathToFile) || die "Can't opendir $pathToFile: $!";
-	  @logoMotif = grep { /^logoMotif/  } readdir($dh);
-	  closedir $dh;
-	  $strgMotifFound= (scalar(@logoMotif) > 0)? "&nbsp;<b>".scalar(@logoMotif)." motif(s) found" : "<b>No motif found</b>";
-	}
-
-print qq
+		#$desc=&promsMod::HTMLcompatible($desc);
+		my ($strgDataSource,$strgCentralRes, $strgOccurence, $strgWidth, $strgBackground, $strgSignificance) = split("//",$paramList);
+		my ($itemCentRes, $centralRes)=split("=",$strgCentralRes);
+		my ($itemOcc, $occurence)=split("=",$strgOccurence);
+		my ($itemWidth, $width)=split("=",$strgWidth);
+		my ($itemBack, $backgroundInfo)=split("=",$strgBackground);
+		my ($backgroundStrgValue,$backgroundValue)=split(":",$backgroundInfo);
+		my ($itemSign,$significance)=split("=",$strgSignificance);
+		my $strgTable = ($catID)? "List" : "Quantification";
+		my ($foregroundName,$backgroundName);
+		if ($catID) {
+			my ($catName, $className)=$dbh->selectrow_array("SELECT CA.NAME, CL.NAME FROM CATEGORY CA, CLASSIFICATION CL WHERE CA.ID_CATEGORY=$catID and CA.ID_CLASSIFICATION=CL.ID_CLASSIFICATION");
+			$foregroundName="&nbsp;$className > $catName";
+			if ($backgroundStrgValue eq "quanti") {
+				my %groupQuantifNames=&promsQuantif::getDistinctQuantifNames($dbh,$backgroundValue);
+				$backgroundName="&nbsp;<B>Quantification&nbsp;:</B>&nbsp;$groupQuantifNames{'FULL'}{$backgroundValue}<br>";
+			}
+			else {
+				$backgroundName="&bull;&nbsp;<B>Type&nbsp;:</B>&nbsp;$backgroundStrgValue<br>&bull;&nbsp;<B>Nb. seqs&nbsp;:</B>&nbsp;$backgroundValue";
+			}
+		}
+		else {
+			my $quantifID=$dbh->selectrow_array("SELECT CONCAT(ID_QUANTIFICATION,'_',TARGET_POS) FROM EXPLORANA_QUANTIF WHERE ID_EXPLORANALYSIS=$motifID");
+			my %groupQuantifNames=&promsQuantif::getDistinctQuantifNames($dbh,$quantifID);
+			$foregroundName=$groupQuantifNames{'FULL'}{$quantifID};
+			if ($backgroundStrgValue eq "quanti") {
+				$backgroundName="&nbsp;<B>Type&nbsp;:</B>&nbsp;selected quantification<br>";
+			}
+			else {
+				$backgroundName="&bull;&nbsp;<B>Type&nbsp;:<B>&nbsp;$backgroundStrgValue<br>&bull;&nbsp;<B>Nb. seqs&nbsp;:</B>&nbsp;$backgroundValue";
+			}
+		}
+	
+		my @logoMotif;
+		my $strgMotifFound="";
+		if ( -d $pathToFile ) {
+			opendir(my $dh, $pathToFile) || die "Can't opendir $pathToFile: $!";
+			@logoMotif = grep { /^logoMotif/  } readdir($dh);
+			closedir $dh;
+			$strgMotifFound= (scalar(@logoMotif) > 0)? "<B>".scalar(@logoMotif)." motif(s) found</B>" : "<FONT style=\"color:#DD0000; font-weight:bold\">No motif found!</FONT>";
+		}
+	
+		print qq
 |<TR><TH align="right" width="150" nowrap>Analysis name :</TH><TD bgcolor="$light" nowrap>&nbsp;<b>$name</b></TD></TR>
-<TR><TH align="right" width="150" nowrap>$strgTable :</TH><TD bgcolor="$light" nowrap><b>$foregroundName</b></TD></TR>
 <TR><TH align="right" valign="top" nowrap>&nbsp;Description :</TH><TD bgcolor="$light">&nbsp;$desc</TD></TR>
-<TR><TH align="right" valign="top" nowrap>&nbsp;Foreground selection :</TH>
-  <TD nowrap bgcolor=$light>
-	&bull;&nbsp;Central Residue&nbsp;:&nbsp;<b>$residues{$centralRes}</b><br>
-	&bull;&nbsp;Min.seqs&nbsp;:&nbsp;<b>$occurence</b><br>
-	&bull;&nbsp;Width&nbsp;:&nbsp;<b>$width</b><br>
-	&bull;&nbsp;Significance&nbsp;:&nbsp;<b>$significance</b><br>
-  </TD></TR>
-  <TR><TH align="right" valign="top" nowrap>&nbsp;Background selection :</TH>
-  <TD nowrap bgcolor=$light>$backgroundName</TD></TR>
+<TR><TH align="right" width="150" nowrap>$strgTable :</TH><TD bgcolor="$light" nowrap><b>$foregroundName</b></TD></TR>
+<TR><TH align="right" valign="top" nowrap>&nbsp;Motif properties :</TH>
+	<TD nowrap bgcolor=$light>
+	&bull;&nbsp;<B>Central Residue&nbsp;:</B>&nbsp;<B>$residues{$centralRes}</B><br>
+	&bull;&nbsp;<B>Min.seqs&nbsp;:</B>&nbsp;$occurence<br>
+	&bull;&nbsp;<B>Width&nbsp;:</B>&nbsp;$width<br>
+	&bull;&nbsp;<B>Significance&nbsp;:</B>&nbsp;$significance<br>
+	</TD></TR>
+	<TR><TH align="right" valign="top" nowrap>&nbsp;Background selection :</TH>
+	<TD nowrap bgcolor=$light>$backgroundName</TD></TR>
 <TR><TH align="right" valign="top" nowrap>&nbsp;Feature selection :</TH><TD nowrap bgcolor=$light>
 |;
-	if (!$catID) {
-	  my ($strgPVAL, $strgFC, $strgTypeFC, $strgInfRatio) = split("//", $filterList);
-	  my $FCthreshold = (split("=",$strgFC))[1];
-	  my $PVALthreshold = (split("=",$strgPVAL))[1];
-	  my $FCtype = (split("=",$strgTypeFC))[1];
-	  my $infRatio=(split("=",$strgInfRatio))[1];
-	  my $strgFoldChangeType = ($FCtype eq "abs")? "Up &ge;&nbsp;$FCthreshold or Down &le; 1/$FCthreshold" : ($FCtype eq "up")? "Up &ge; $FCthreshold" : "Down &le; 1/$FCthreshold";
-	  my $strgRatio = ($infRatio eq "Y")? "infinite ratios excluded" : "infinite ratios not excluded";
-		print qq|&bull;&nbsp;<b>$strgRatio</b><br>
-				&bull;&nbsp;FC&nbsp;:&nbsp;<b>$strgFoldChangeType</b><br>
-				&bull;&nbsp;p-value&nbsp;:&nbsp;<b>$PVALthreshold</b>
-	  |;
+		if (!$catID) {
+			my ($strgPVAL, $strgFC, $strgTypeFC, $strgInfRatio) = split("//", $filterList);
+			my $FCthreshold = (split("=",$strgFC))[1];
+			my $PVALthreshold = (split("=",$strgPVAL))[1];
+			my $FCtype = (split("=",$strgTypeFC))[1];
+			my $infRatio=(split("=",$strgInfRatio))[1];
+			my $strgFoldChangeType = ($FCtype eq "abs")? "Up &ge;&nbsp;$FCthreshold or Down &le; 1/$FCthreshold" : ($FCtype eq "up")? "Up &ge; $FCthreshold" : "Down &le; 1/$FCthreshold";
+			my $strgRatio = ($infRatio eq "Y")? "infinite ratios excluded" : "infinite ratios not excluded";
+			print qq|&bull;&nbsp;<b>$strgRatio</b><br>
+					&bull;&nbsp;<B>Fold-change&nbsp;:</B>&nbsp;$strgFoldChangeType<br>
+					&bull;&nbsp;<B>p-value&nbsp;:</B>&nbsp;$PVALthreshold
+			|;
+		}
+		else {
+			print qq|&nbsp;No feature available, list of proteins is involved|;
+		}
+		print qq|</TD></TR>
+		<TR><TH align="right" bgcolor="$dark" nowrap>Motifs :</TH><TD nowrap bgcolor="$light">&nbsp;$strgMotifFound</TD></TR>
+		<TR><TH align="right" bgcolor="$dark" nowrap>Status :</TH><TD nowrap bgcolor="$light">&nbsp;$statusStrg</TD></TR>
+		|;
 	}
-	else {
-	  print qq|&nbsp;No feature available, list of proteins is involved|;
-	}
-	print qq|</TD></TR>
-	<TR><TH align="right" bgcolor="$dark" nowrap>Motif :</TH><TD nowrap bgcolor="$light">$strgMotifFound</TD></TR>
-	<TR><TH align="right" bgcolor="$dark" nowrap>Status :</TH><TD nowrap bgcolor="$light">&nbsp;&nbsp;$statusStrg</TD></TR>
-	|;
-  }
   else {
-	my $sthSelParentExplo=$dbh->prepare("SELECT ID_PARENT_EXPLORANALYSIS, DISPLAY_POS FROM PARENT_EXPLORANALYSIS where ID_EXPLORANALYSIS=? ORDER BY DISPLAY_POS");
-	$sthSelParentExplo->execute($motifID);
-	my @fullName;
-	while (my ($parentExplo, $displayPos)=$sthSelParentExplo->fetchrow_array) {
-		my ($idCat, $explorName)=$dbh->selectrow_array("SELECT ID_CATEGORY, NAME FROM EXPLORANALYSIS WHERE ID_EXPLORANALYSIS=$parentExplo");
-		push @fullName, "&bull;&nbsp;$explorName";
-	}
-	print qq|
-	<TR><TH align="right" width="150" nowrap>Analysis name :</TH><TD bgcolor="$light" nowrap>$name</TD></TR>
-	<TR><TH align="right" width="150" nowrap valign="top">Selection :</TH><TD bgcolor="$light" nowrap>|;
-	print join("<br>",@fullName);
-	print qq|</TD></TR>
-	<TR><TH align="right" valign="top" nowrap>&nbsp;Description :</TH><TD bgcolor="$light">&nbsp;$desc</TD></TR>
-	|;
+		my $sthSelParentExplo=$dbh->prepare("SELECT ID_PARENT_EXPLORANALYSIS, DISPLAY_POS FROM PARENT_EXPLORANALYSIS where ID_EXPLORANALYSIS=? ORDER BY DISPLAY_POS");
+		$sthSelParentExplo->execute($motifID);
+		my @fullName;
+		while (my ($parentExplo, $displayPos)=$sthSelParentExplo->fetchrow_array) {
+			my ($idCat, $explorName)=$dbh->selectrow_array("SELECT ID_CATEGORY, NAME FROM EXPLORANALYSIS WHERE ID_EXPLORANALYSIS=$parentExplo");
+			push @fullName, "&bull;&nbsp;$explorName";
+		}
+		print qq|
+		<TR><TH align="right" width="150" nowrap>Analysis name :</TH><TD bgcolor="$light" nowrap>$name</TD></TR>
+		<TR><TH align="right" width="150" nowrap valign="top">Selection :</TH><TD bgcolor="$light" nowrap>|;
+		print join("<br>",@fullName);
+		print qq|</TD></TR>
+		<TR><TH align="right" valign="top" nowrap>&nbsp;Description :</TH><TD bgcolor="$light">&nbsp;$desc</TD></TR>
+		|;
   }
 }
 
@@ -288,13 +293,14 @@ if ($action eq 'edit'){
     print "</FORM>\n";
 }
 
-print qq|<DIV id="listProt" style="float:left;display:none"></DIV>
-</CENTER>
+print qq
+|</CENTER>
 </BODY>
 </HTML>
 |;
 $dbh -> disconnect;
 
 ####>Revision history<####
-# 1.0.1 add list option
+# 1.0.2 Minor display improvement (PP 04/04/19)
+# 1.0.1 add list option (SL ../../..)
 # 1.0.0 new script to manage, edit, delete motif enrichment analysis (SL 21/10/14)

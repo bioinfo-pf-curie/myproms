@@ -1,9 +1,9 @@
 #!/usr/local/bin/perl -w
 ################################################################################
-# displayMotifAnalysis.cgi       1.0.1                                         #
-# Authors: P. Poullet, S.Liva (Institut Curie)      	                       #
+# displayMotifAnalysis.cgi       1.0.2                                         #
+# Authors: P. Poullet, S.Liva (Institut Curie)                                 #
 # Contact: myproms@curie.fr                                                    #
-# display the results of Motif analysis        	                       		   #
+# display the results of Motif analysis                                        #
 ################################################################################
 #----------------------------------CeCILL License-------------------------------
 # This file is part of myProMS
@@ -64,9 +64,9 @@ my $imgMotif = "$promsPath{html}/data/exploratory_data/project_$projectID/$motif
 my ($name)=$dbh->selectrow_array("SELECT NAME FROM EXPLORANALYSIS WHERE ID_EXPLORANALYSIS=$motifID");
 
 if ($ajax eq 'ajaxListProt') {
-  &ajaxGetProteins;
-  $dbh->disconnect;
-  exit;
+		&ajaxGetProteins;
+    $dbh->disconnect;
+    exit;
 }
 
 my (%resultMotif, %order);
@@ -83,14 +83,15 @@ close(MOTIF);
 #### START HTML
 print header(-'content-encoding'=>'no',-charset=>'utf-8');
 warningsToBrowser(1);
-print qq|
-<HTML>
+print qq
+|<HTML>
 <HEAD>
+<TITLE>Display Motif Enrichment Analysis</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
 <SCRIPT LANGUAGE="JavaScript">|;
 &promsMod::popupInfo();
-print qq|
-function sequenceView(listAnaID, protID, idType, ms) {
+print qq
+|function sequenceView(listAnaID, protID, idType, ms) {
   var winLocation="$promsPath{cgi}/sequenceView.cgi?id_ana="+listAnaID+"&id_prot="+protID+"&msdata="+ms+"&id_type="+idType;
   top.openProtWindow(winLocation);
 }
@@ -98,83 +99,85 @@ function sequenceView(listAnaID, protID, idType, ms) {
 // AJAX --->
 var XHR=null;
 function ajaxGetProteins (motif){
-  var protTable=document.getElementById("protTable");
-  protTable.style.display='block';
-  protTable.innerHTML='<IMG src="$promsPath{images}/scrollbarGreen.gif">';
-
-  //If XHR object already exists, the request is canceled & the object is deleted
-  if(XHR && XHR.readyState != 0){
-	XHR.abort();
-	delete XHR;
-  }
-  var paramStrg="AJAX=ajaxListProt&ID=$motifID&PROJECT_ID=$projectID&MOTIF="+motif;
-  //Creation of the XMLHTTPRequest object
-  XHR = getXMLHTTP();
-  if (!XHR) {
-	return false;
-  }
-  XHR.open("POST","$promsPath{cgi}/displayMotifAnalysis.cgi",true);
-  //Send the proper header information along with the request
-  XHR.setRequestHeader("Content-type", "application/x-www-form-urlencoded; charset=UTF-8");
-  XHR.setRequestHeader("Content-length", paramStrg.length);
-  XHR.setRequestHeader("Connection", "close");
-  XHR.onreadystatechange=function() {
-	if (XHR.readyState==4 && XHR.responseText) {
-	  protTable.innerHTML=XHR.responseText;
-	  protTable.scrollIntoView();
-	}
-  }
-  XHR.send(paramStrg);
+    var protTable=document.getElementById("protTable");
+    protTable.style.display='';
+    protTable.innerHTML='<B>Fetching data...</B><BR><IMG src="$promsPath{images}/scrollbarGreen.gif"><BR><BR><BR><BR>';
+    protTable.scrollIntoView();
+    //If XHR object already exists, the request is canceled & the object is deleted
+    if(XHR && XHR.readyState != 0){
+    XHR.abort();
+    delete XHR;
+    }
+    var paramStrg="AJAX=ajaxListProt&ID=$motifID&PROJECT_ID=$projectID&MOTIF="+motif;
+    //Creation of the XMLHTTPRequest object
+    XHR = getXMLHTTP();
+    if (!XHR) {
+    return false;
+    }
+    XHR.open("POST","$promsPath{cgi}/displayMotifAnalysis.cgi",true);
+    //Send the proper header information along with the request
+    XHR.setRequestHeader("Content-type", "application/x-www-form-urlencoded; charset=UTF-8");
+    XHR.setRequestHeader("Content-length", paramStrg.length);
+    XHR.setRequestHeader("Connection", "close");
+    XHR.onreadystatechange=function() {
+    if (XHR.readyState==4 && XHR.responseText) {
+        protTable.innerHTML=XHR.responseText;
+				protTable.scrollIntoView();
+    }
+}
+XHR.send(paramStrg);
 }
 
 function getXMLHTTP(){
   var xhr=null;
   if(window.XMLHttpRequest) {// Firefox & others
-	xhr = new XMLHttpRequest();
+    xhr = new XMLHttpRequest();
   }
   else if(window.ActiveXObject){ // Internet Explorer
-	try {
-	  xhr = new ActiveXObject("Msxml2.XMLHTTP");
-	} catch (e) {
-	  try {
-		xhr = new ActiveXObject("Microsoft.XMLHTTP");
-	  } catch (e1) {
-		  xhr = null;
-		}
-	}
+    try {
+      xhr = new ActiveXObject("Msxml2.XMLHTTP");
+    } catch (e) {
+      try {
+        xhr = new ActiveXObject("Microsoft.XMLHTTP");
+      } catch (e1) {
+          xhr = null;
+        }
+    }
   }
   else { // XMLHttpRequest not supported by browser
-	alert("Your browser does not support XMLHTTPRequest objects...");
+    alert("Your browser does not support XMLHTTPRequest objects...");
   }
   return xhr;
 }
 // <--- AJAX
 </SCRIPT>
 </HEAD>
-<BODY>
+<BODY background="$promsPath{images}/bgProMS.gif">
 <CENTER>
+<FONT class="title">Motif Enrichment for <FONT color="#DD0000">$name</FONT></FONT><BR><BR>
 |;
-if (!keys %resultMotif) {
-  print qq|<br><br><b><font color="red">NO MOTIF FOUND</font></b>|;
+if (!scalar keys %resultMotif) {
+  print qq|<BR><BR><FONT class="title2" color="#DD0000">No motif found!</FONT>|;
 }
 else {
-  print qq|
-<FONT class="title">Display Motif Enrichment Analysis for <FONT color="red">$name</FONT></FONT><BR><BR>
-<TABLE cellspacing=0 cellpadding=0 border=0>
-<TR class="header" bgcolor=$darkColor><TH>&nbsp;Motif&nbsp;</TH><TH>&nbsp;Fold Change&nbsp;</TH><TH>&nbsp;Score&nbsp;</TH><TH>&nbsp;Fg. Matches&nbsp;</TH><TH>&nbsp;Fg. Size&nbsp;</TH><TH>&nbsp;Bg. Matches&nbsp;</TH><TH>&nbsp;Bg.Size&nbsp;</TH></TR>
+  print qq
+|<TABLE cellspacing=0 cellpadding=0 border=0>
+<TR bgcolor=$darkColor><TH class="title3 rbBorder">&nbsp;Motif&nbsp;</TH><TH class="title3 rbBorder">&nbsp;Fold Change&nbsp;</TH><TH class="title3 rbBorder">&nbsp;Score&nbsp;</TH><TH class="title3 rbBorder">&nbsp;Fg. Matches&nbsp;</TH><TH class="title3 rbBorder">&nbsp;Fg. Size&nbsp;</TH><TH class="title3 rbBorder">&nbsp;Bg. Matches&nbsp;</TH><TH class="title3 bBorder">&nbsp;Bg.Size&nbsp;</TH></TR>
 |;
   my $bgColor=$lightColor;
   foreach my $motif (sort {$order{$b} <=> $order{$a}} keys %resultMotif) {
-	print "<TR bgcolor=$bgColor nowrap><TD align=\"left\" ><A href=\"javascript:ajaxGetProteins('$motif')\"><IMG SRC=\"$imgMotif/logoMotif_".$motif."_.png\" width=120 heigth=auto border=\"1\"></A></TD>";
-	foreach my $motifElem (split(/-/,$resultMotif{$motif})) {
-	  print qq|<TD align="center" nowrap >$motifElem</TD>|;
-	}
-	print "</TR>";
-	$bgColor= ($bgColor eq $lightColor)? $darkColor : $lightColor;
+    print "<TR bgcolor=$bgColor nowrap><TD align=\"left\" ><A href=\"javascript:ajaxGetProteins('$motif')\"><IMG SRC=\"$imgMotif/logoMotif_".$motif."_.png\" width=120 heigth=auto border=\"1\"></A></TD>";
+    foreach my $motifElem (split(/-/,$resultMotif{$motif})) {
+      print qq|<TD align="center" nowrap >$motifElem</TD>|;
+    }
+    print "</TR>";
+    $bgColor= ($bgColor eq $lightColor)? $darkColor : $lightColor;
   }
   print "</TABLE><br><br>";
 }
-print qq|<DIV id="protTable" style="float:left;display:none"></DIV>
+print qq
+|</CENTER>
+<DIV id="protTable" style="display:none"></DIV>
 <DIV id="divDescription" class="clDescriptionCont">
 <!--Empty div-->
 </DIV>
@@ -192,8 +195,8 @@ sub ajaxGetProteins {
   my %colorMotif;
   push my @seqMotif, split(//,$motif);
   for (my $i=0; $i<=$#seqMotif; $i++) {
-	next if $seqMotif[$i] eq ".";
-	$colorMotif{$motif}{$seqMotif[$i]}{$i}=$i;
+    next if $seqMotif[$i] eq ".";
+    $colorMotif{$motif}{$seqMotif[$i]}{$i}=$i;
   }
 
   my $sthGetSequence=$dbh->prepare("SELECT ID_MASTER_PROTEIN, ALIAS, PROT_DES, MW, ORGANISM FROM PROTEIN WHERE ID_PROTEIN=? and ID_PROJECT=$projectID");
@@ -204,43 +207,43 @@ sub ajaxGetProteins {
   %gene=();
   open(PROT,"$pathToFile/foreground_protein.txt");
 	while(my $line=<PROT>) {
-	  chomp($line);
-	  my ($protID)=(split(/\t/,$line))[0];
-	  $sthGetSequence->execute($protID);
-	  my ($masterProtID, $alias,$protDes, $mw, $organism)=$sthGetSequence->fetchrow_array;
-	  $protDes="-" if (!$protDes);
-	  $organism="-" if (!$organism);
-	  $mw="-" if (!$mw);
+		chomp($line);
+		my ($protID)=(split(/\t/,$line))[0];
+		$sthGetSequence->execute($protID);
+		my ($masterProtID, $alias,$protDes, $mw, $organism)=$sthGetSequence->fetchrow_array;
+		$protDes="-" if (!$protDes);
+		$organism="-" if (!$organism);
+		$mw="-" if (!$mw);
 
-	  $sthMP->execute($masterProtID);
-	  while (my ($gene)=$sthMP->fetchrow_array) {
-		next if $tmpGene{$protID}{$gene};
-		push @{$gene{$protID}},$gene;
-		$tmpGene{$protID}{$gene}=1;
-	  }
+		$sthMP->execute($masterProtID);
+		while (my ($gene)=$sthMP->fetchrow_array) {
+			next if $tmpGene{$protID}{$gene};
+			push @{$gene{$protID}},$gene;
+			$tmpGene{$protID}{$gene}=1;
+		}
 
-	  my $strgGene = ($gene{$protID} && scalar @{$gene{$protID}} >= 1)? join(',',@{$gene{$protID}}) : "-";
-	  if ($line=~/~/) {
-		my ($idProt, $ambSite, $site, $sequence)=split(/\t/,$line);
-		$protInfo{$sequence}=$protID."::".$alias."-".$ambSite."::".$site."::".$strgGene."::".$mw."::".$protDes."::".$organism;
-		$orderProt{$sequence}=$alias."-".$ambSite;
-		$anaProt{$idProt}=1;
-	  }
-	  else {
-		my ($idProt, $site, $sequence)=split(/\t/,$line);
-		$protInfo{$sequence}=$idProt."::".$alias."-".$site."::NA::".$strgGene."::".$mw."::".$protDes."::".$organism;
-		$orderProt{$sequence}=$alias."-".$site;
-		$anaProt{$idProt}=1;
-	  }
+		my $strgGene = ($gene{$protID} && scalar @{$gene{$protID}} >= 1)? join(',',@{$gene{$protID}}) : "-";
+		if ($line=~/~/) {
+			my ($idProt, $ambSite, $site, $sequence)=split(/\t/,$line);
+			$protInfo{$sequence}=$protID."::".$alias."-".$ambSite."::".$site."::".$strgGene."::".$mw."::".$protDes."::".$organism;
+			$orderProt{$sequence}=$alias."-".$ambSite;
+			$anaProt{$idProt}=1;
+		}
+		else {
+			my ($idProt, $site, $sequence)=split(/\t/,$line);
+			$protInfo{$sequence}=$idProt."::".$alias."-".$site."::NA::".$strgGene."::".$mw."::".$protDes."::".$organism;
+			$orderProt{$sequence}=$alias."-".$site;
+			$anaProt{$idProt}=1;
+		}
 	}
   close(PROT);
 
   my %sequenceMotif;
   open(MOTIF,"$pathToFile/sequenceMotif_".$motif."_.txt");
   while (my $line=<MOTIF>) {
-	chomp($line);
-	$line=~s/"//g;
-	$sequenceMotif{$line}=1;
+    chomp($line);
+    $line=~s/"//g;
+    $sequenceMotif{$line}=1;
   }
   close(MOTIF);
 
@@ -248,82 +251,81 @@ sub ajaxGetProteins {
   open(ANA,"$pathToFile/analysisList.txt");
   my $strgLine;
   while(my $line=<ANA>) {
-	chomp($line);
-	$strgLine=$line;
+    chomp($line);
+    $strgLine=$line;
   }
   close(ANA);
 
-  my $sthSelAnaProt=$dbh->prepare("SELECT ID_ANALYSIS FROM ANALYSIS_PROTEIN WHERE ID_PROTEIN=? and ID_ANALYSIS in ($strgLine) LIMIT 0,1");
-  foreach my $protID (keys %anaProt) {
-	next if $proteinAnalysis{$protID};
-	$sthSelAnaProt->execute($protID);
-	my ($anaID)=$sthSelAnaProt->fetchrow_array;
-	if ($anaID) {
-	  $proteinAnalysis{$protID}=$anaID;
-	  next;
-	}
+  #my $sthSelAnaProt=$dbh->prepare("SELECT ID_ANALYSIS FROM ANALYSIS_PROTEIN WHERE ID_PROTEIN=? and ID_ANALYSIS in ($strgLine) LIMIT 1");
+  my $sthSelAnaProt=$dbh->prepare("SELECT GROUP_CONCAT(ID_ANALYSIS SEPARATOR ',') FROM ANALYSIS_PROTEIN WHERE ID_PROTEIN=? AND ID_ANALYSIS IN ($strgLine) GROUP BY ID_PROTEIN");
+ foreach my $protID (keys %anaProt) {
+    next if $proteinAnalysis{$protID};
+    $sthSelAnaProt->execute($protID);
+    ($proteinAnalysis{$protID})=$sthSelAnaProt->fetchrow_array;
   }
   my $massValue='MW<FONT style="font-size:9px;"> kDa</FONT>';
 
   print qq|<TABLE cellspacing=0 cellpadding=0 border=0 width=50%>|;
-  print "<TR ><TH colspan=7><IMG SRC=\"$imgMotif/logoMotif_".$motif."_.png\" border=\"1\" width=600 heigth=auto></TH></TR>";
+  print "<TR ><TH colspan=7><IMG SRC=\"$imgMotif/logoMotif_".$motif."_.png\" border=\"1\" width=900 heigth=auto></TH></TR>";
   print qq|<!--<TR ><TH >MOTIF $motif</TH></TR>-->
-	  <TR class="header" bgcolor="$darkColor" ><TH nowrap>&nbsp;Isoforms&nbsp;</TH><TH nowrap>&nbsp;Sequence&nbsp;</TH><TH nowrap>&nbsp;Gene&nbsp;</TH><TH nowrap>&nbsp;$massValue&nbsp;</TH><TH nowrap>&nbsp;Description - Species&nbsp;</TH></TR>|;
+      <TR bgcolor="$darkColor"><TH class="rbBorder">&nbsp;Proteoform&nbsp;</TH><TH class="rbBorder">&nbsp;Gene&nbsp;</TH><TH class="rbBorder">&nbsp;Sequence&nbsp;</TH><TH class="rbBorder">&nbsp;$massValue&nbsp;</TH><TH class="bBorder">&nbsp;Description - Species&nbsp;</TH></TR>|;
   my $bgColor=$lightColor;
   foreach my $sequence (sort {$orderProt{$a} cmp $orderProt{$b} } keys %protInfo) {
-	if ($sequenceMotif{$sequence}) {
-	  print qq|<TR class="list" bgcolor="$bgColor"> |;
-	  my ($idProt, $protein, $site, $gene, $mw, $desc,$organism)=split(/::/,$protInfo{$sequence});
-	  my $shortenDesc = $desc;
-	  my $shortenGene = $gene;
-	  $mw=sprintf "%.1f",$mw/1000;
+    if ($sequenceMotif{$sequence}) {
+      my ($idProt, $protein, $site, $gene, $mw, $desc,$organism)=split(/::/,$protInfo{$sequence});
+      my $shortenDesc = $desc;
+      my $shortenGene = $gene;
+      $mw=sprintf "%.1f",$mw/1000;
 
-	  my @tmpGene = split(/,/,$gene);
-	  my $geneName1=$tmpGene[0];
-	  my $strgGene="";
-	  if (scalar(@tmpGene)==1){
-		$strgGene="<b>$geneName1</b>";
-	  }
-	  else {
-		shift(@tmpGene);
-		my $geneList=join('<br>',@tmpGene);
-		$strgGene="<A href=\"javascript:void(null)\" onmouseover=\"popup('$geneList')\" onmouseout=\"popout()\"><u><b>$geneName1</b></u></A>";
-	  }
+      my @tmpGene = split(/,/,$gene);
+      my $geneName1=$tmpGene[0];
+      my $strgGene="";
+      if (scalar(@tmpGene)==1){
+        $strgGene=$geneName1;
+      }
+      else {
+        shift(@tmpGene);
+        my $geneList=join('<BR>',@tmpGene);
+        $strgGene="<A href=\"javascript:void(null)\" onmouseover=\"popup('<B>Synonymes:</B><BR>$geneList')\" onmouseout=\"popout()\"><u>$geneName1</u></A>";
+      }
 
-	  my @seq=split(//,$sequence);
-	  my $length=length($sequence);
-	  my $index=($length-1)/2;
-	  my $strgSequence="";
-	  for (my $i=0; $i<=$#seq;$i++) {
-		if ($i == $index) {
-		  $strgSequence.="<font color=red>$seq[$i]</font>";
-		}
-		else {
-		  if ($colorMotif{$motif}{$seq[$i]}{$i}) {
-			$strgSequence.="<font color=orange>$seq[$i]</font>";
-		  }
-		  else {
-			$strgSequence.=$seq[$i];
-		  }
-		}
-	  }
+      my @seq=split(//,$sequence);
+      my $length=length($sequence);
+      my $index=($length-1)/2;
+      my $strgSequence="";
+      for (my $i=0; $i<=$#seq;$i++) {
+        if ($i == $index) {
+          $strgSequence.="<font color=red>$seq[$i]</font>";
+        }
+        else {
+          if ($colorMotif{$motif}{$seq[$i]}{$i}) {
+            $strgSequence.="<font color=orange>$seq[$i]</font>";
+          }
+          else {
+            $strgSequence.=$seq[$i];
+          }
+        }
+      }
 
-	  my ($prot, $siteProt)=split(/-/,$protein);
+      my ($prot, $siteProt)=split(/-/,$protein);
 
-	  my ($popupIso,$displayIso) = ($site eq "NA")? ($prot, $protein) : ($prot, "$protein ($site)");
-	  print qq|<TD nowrap><A href="javascript:sequenceView('$proteinAnalysis{$idProt}','$idProt','valid',0)" onmouseover="popup('$popupIso')" onmouseout="popout()"><b>$displayIso</b></A>&nbsp;&nbsp;</TD>
-		  <TD nowrap class="seq" align="center">&nbsp;$strgSequence&nbsp;</TD>
-		  <TD nowrap align="left">&nbsp;&nbsp;$strgGene&nbsp;&nbsp;</TD>
-		  <TD nowrap>&nbsp;&nbsp;$mw&nbsp;&nbsp;</TD>
-		  <TD nowrap>&nbsp;&nbsp;<!--<A href="javascript:void(null)" onmouseover="popup('$desc')" onmouseout="popout()">-->$desc <!--</A>-->&nbsp;&nbsp;<i>$organism</i></TD>
-		  <TR>
-		  |;
-	  $bgColor= ($bgColor eq $lightColor)? $darkColor : $lightColor;
-	}
+      my ($popupIso,$displayIso) = ($site eq "NA")? ($prot, $protein) : ($prot, "$protein ($site)");
+      print qq
+|<TR class="list" bgcolor="$bgColor">
+<TH align="left" nowrap>&nbsp;<A href="javascript:sequenceView('$proteinAnalysis{$idProt}','$idProt','valid',0)" onmouseover="popup('$popupIso')" onmouseout="popout()">$displayIso</A>&nbsp;</TH>
+<TH align="left">&nbsp;$strgGene&nbsp;</TH>
+<TD nowrap class="seq" align="center">&nbsp;$strgSequence&nbsp;</TD>
+<TD nowrap>&nbsp;$mw&nbsp;</TD>
+<TD nowrap>nbsp;$desc&nbsp;-&nbsp;<I>$organism</I></TD>
+<TR>
+|;
+      $bgColor= ($bgColor eq $lightColor)? $darkColor : $lightColor;
+    }
   }
-	print qq|<TABLE>|;
+  print "<TABLE>\n";
 }
 
 ####>Revision history<####
+# 1.0.2 Minor display improvements (PP 04/04/19)
 # 1.0.1 available for list (SL 26/07/17)
 # 1.0.0 New script for displaying motif enrichment analysis (SL 27/06/17)

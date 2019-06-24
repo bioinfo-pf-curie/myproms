@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# exportSwathLibrary.cgi         1.1.7                                         #
+# exportSwathLibrary.cgi         1.1.8                                         #
 # Authors: M. Le Picard (Institut Curie)                                       #
 # Contact: myproms@curie.fr                                                    #
 #Export a librarie available in myProMS  for peakview or openswath             #
@@ -75,8 +75,8 @@ my $dbh=&promsConfig::dbConnect;
 #######################
 print header(-'content-encoding'=>'no',-charset=>'UTF-8'); warningsToBrowser(1);
 
-my $libID=param('ID');
-my ($libraryName,$identType)=$dbh->selectrow_array("SELECT NAME, IDENTIFIER_TYPE FROM SWATH_LIB WHERE ID_SWATH_LIB='$libID' ") or die "Couldn't prepare statement: " . $dbh->errstr;
+my $libID = param('ID');
+my ($libraryName, $libVersion, $identType) = $dbh->selectrow_array("SELECT NAME, VERSION_NAME, IDENTIFIER_TYPE FROM SWATH_LIB WHERE ID_SWATH_LIB='$libID' ") or die "Couldn't prepare statement: " . $dbh->errstr;
 my $action=(param('submit'))? param('submit') : "";
 
 
@@ -312,9 +312,22 @@ if($action){
     my $startTime=strftime("%s",localtime);
     my $processText="<B>Conversion for OpenSwath ...</B>";
     
-    my ($finalFile,$paramFile,$numValidProt)=&promsDIA::exportLibrarySCRIPT($dbh,$libraryID,$libraryName,$workDir,\%promsPath,$startTime,$loadingDivID,$loadingSPAN,$w,$k,$p,$g,$f,$t,$y,$m,$labelling,$other,$lMax,$lMin,$s,$x,$n,$o,$pepMod,$processText,$protList);
+    my %libraryParams = (
+        "ID"      => $libID,
+        "name"    => $libraryName,
+        "dir"     => $workDir,
+        "version" => $libVersion,
+    );
     
+    DIAWorkflow::new($workDir, \%promsPath, \%libraryParams);
     
+    my %exportParams = (
+        "lmin" => $lMin, "lmax" => $lMax, "s" => $s, "x" => $x, "o" => $o, "n" => $n,
+        "p" => $p, "g" => $g, "f" => $f, "t" => $t, "y" => $y, "i" => $labelling, "m" => $m, "other" => $other,
+        "w" => $w, "format" => $k,
+    );
+    
+    my ($finalFile, $paramFile) = DIAWorkflow::exportLibrary(\%exportParams, $dbh, $pepMod, 0, $protList, $processText, $loadingDivID, $loadingSPAN);
     
     ###> deleting temporary files
     system "rm $workDir/$w ;";
@@ -326,7 +339,6 @@ if($action){
     
     ###> Link to upload the final file : 
     print "<B>Done.</B><BR></DIV><BR>";
-    print "$numValidProt of the desired proteins have been found into the library.<BR><BR><BR>" if $numValidProt != 0;
     print qq
     |   
         <SCRIPT LANGAGE="JavaScript">$loadingDivID.innerHTML="";$loadingSPAN.innerHTML="";</SCRIPT>
@@ -351,6 +363,7 @@ $dbh->disconnect;
 
 
 ####>Revision history<####
+# 1.1.8 Update exportLibrary function to match the DIAWorkflow module (VS 07/01/19)
 # 1.1.7 Minor modification on the exportLibrarySCRIPT call (VS 22/11/18)
 # 1.1.6 Minor modif (MLP 13/12/17)
 # 1.1.5 Create a function in promsDIA.pm to export library (MLP 06/12/17)

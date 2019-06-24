@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# listProteins.cgi           2.4.2                                             #
+# listProteins.cgi           2.4.3                                             #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Lists the validated proteins in a project's item                             #
@@ -133,8 +133,10 @@ my ($itemName)=$dbh->selectrow_array("SELECT NAME FROM $ITEM WHERE ID_$ITEM=$ite
 my @userInfo=&promsMod::getUserInfo($dbh,$userID,$projectID);
 my $projectAccess=${$userInfo[2]}{$projectID};
 
-my (%classificationList,%categoryList);
+my (%classificationList, %categoryList, %dbList);
+&getProjectItemDBList($dbh, $projectID, \%dbList);
 &getCustomList($dbh,$projectID,\%classificationList,\%categoryList);
+
 $listMode='child' if ($classificationID && !$classificationList{$classificationID}); # in unlikely case of deletion of selected classification
 
 print qq
@@ -528,7 +530,18 @@ if (scalar %classificationList) {
 	}
 	print "</OPTGROUP>\n";
 }
-my ($divVisibility,$usedValue)=(!$listFilter || $listFilterType eq 'ptm' || $listFilterType eq 'category')? ('hidden','') : ('visible',$listFilterValue);
+
+if (scalar %dbList) {
+	print "<OPTGROUP id=\"restDBOPTGR\" label=\"+Databanks:\">\n";
+	foreach my $dbID (keys %dbList){
+		print "<OPTION value='db:$dbID'";
+		print ' selected' if ($listFilterType eq 'db' && $listFilter eq "db:$dbID");
+		print ">&nbsp;&nbsp;&nbsp;$dbList{$dbID}</OPTION>\n";
+	}
+	print "</OPTGROUP>\n";
+}
+
+my ($divVisibility,$usedValue)=(!$listFilter || $listFilterType =~ /ptm|category|db/)? ('hidden','') : ('visible',$listFilterValue);
 my ($spanStrg,$textWidth)=($listFilterType eq 'species')? ('&#126;','100px') : ($listFilterType eq 'top')? (':','40px') : ('&#8805;','40px');
 print qq
 |</SELECT>
@@ -572,6 +585,7 @@ my (%listGroups,%timesFound,%listProteins,%bestAnalysis); # global because of su
 my (%allPeptides,%nonRedundPeptides,%nonRedundPepBestAna,%anaPepVmods);
 my %classProteins; # proteins in user-defined selected classification
 my %catFilterProteins; # proteins in category (only if filter is a category)
+my %dbFilterProteins; # proteins in a databank (only if filter is a databank)
 my $itemPTMtext;
 my $totNumChkboxes=0;
 
@@ -598,6 +612,18 @@ if ($listFilterType eq 'category') {
 	$sthCP->execute;
 	while (my ($protID)=$sthCP->fetchrow_array) {
 		$catFilterProteins{$protID}=1;
+	}
+	$sthCP->finish;
+}
+
+if ($listFilterType eq 'db') {
+	my @idAnalysis = ();
+	getProjectItemAnaIDs(\@idAnalysis);
+	
+	my $sthCP=$dbh->prepare("SELECT DISTINCT(AP.ID_PROTEIN) FROM ANALYSIS_PROTEIN AP INNER JOIN ANALYSIS_DATABANK AD ON AD.ID_ANALYSIS = AP.ID_ANALYSIS AND AD.DB_RANK = AP.DB_RANK WHERE AD.ID_DATABANK=$listFilterValue AND AP.ID_ANALYSIS IN (".join(',', @idAnalysis).")");
+	$sthCP->execute;
+	while (my ($protID)=$sthCP->fetchrow_array) {
+		$dbFilterProteins{$protID}=1;
 	}
 	$sthCP->finish;
 }
@@ -805,7 +831,7 @@ my $sthGOA=$dbh->prepare("SELECT COUNT(*) FROM GOANA_ANALYSIS WHERE ID_ANALYSIS=
 				$anaPepVmods{$anaID}{$pepID}{$modID}=$posString;
 			}
 		}
-		next if ($listFilterType eq 'category' && !$catFilterProteins{$protID}); # category filter
+		next if (($listFilterType eq 'category' && !$catFilterProteins{$protID}) || ($listFilterType eq 'db' && !$dbFilterProteins{$protID})); # category filter
 		$timesFound{$protID}++;
 		next if ($listFilterType eq 'pep_ba' && $numPep<$listFilterValue); # type #1 (pep_ba)
 		$cov=0 unless $cov;
@@ -884,7 +910,7 @@ my $sthGOA=$dbh->prepare("SELECT COUNT(*) FROM GOANA_ANALYSIS WHERE ID_ANALYSIS=
 	}
 
 	####<Applying filter (type #2)>####
-	if ($listFilter && $listFilterType ne 'pep_ba' && $listFilterType ne 'species' && $listFilterType ne 'top'&& $listFilterType ne 'category') {
+	if ($listFilter && $listFilterType ne 'pep_ba' && $listFilterType !~ /species|top|category|db/) {
 		foreach my $protID (keys %listGroups) {
 			next if ($listFilterType eq 'pep_all' && $allPeptides{$protID}>=$listFilterValue);
 			next if ($listFilterType eq 'pep_anr' && $nonRedundPeptides{$protID}>=$listFilterValue);
@@ -942,6 +968,7 @@ my $sthGOA=$dbh->prepare("SELECT COUNT(*) FROM GOANA_ANALYSIS WHERE ID_ANALYSIS=
 				$nonRedundPepBestAna{$pID}=scalar keys %protPeptidesMG if $selPepType eq 'banr'; # Non-redondant peptides for all proteins in MG
 				#}
 			}
+			
 		}
 		$sthGroup->finish;
 	}
@@ -1214,7 +1241,7 @@ sub listClassProteins {
 		}
 		$sthCP->finish;
 	}
-
+	
 	####<List of visible proteins in selected Project item>####
 	my (%bestNumPep,%bestScore,%protPeptides,%anaProtPeptides,%protVarMods); #,%anaProtVarMods
 	$sthVis->execute;
@@ -1426,7 +1453,7 @@ sub listClassProteins {
 	$sthMP->finish;
 
 	####<Applying filter (type 2 & 3)>####
-	if ($listFilter && $listFilterType ne 'pep_ba' && $listFilterType ne 'category') {
+	if ($listFilter && $listFilterType !~ /pep_ba|category|db/) {
 		my $count=0;
 		foreach my $protID (sort{&classSort($view)} keys %listProteins) {
 			$count++;
@@ -1779,7 +1806,47 @@ sub getCustomList {
 	foreach my $sth (@sthNoMod) {$sth->finish;}
 }
 
+sub getProjectItemDBList {
+	my ($dbh, $projectID, $refDBList) = @_;
+	my @idAnalysis = ();
+	getProjectItemAnaIDs(\@idAnalysis);
+	
+	my $sthDB = $dbh->prepare("SELECT D.ID_DATABANK, D.NAME FROM ANALYSIS A INNER JOIN ANALYSIS_DATABANK AD ON AD.ID_ANALYSIS = A.ID_ANALYSIS INNER JOIN DATABANK D ON D.ID_DATABANK = AD.ID_DATABANK WHERE A.ID_ANALYSIS IN (".join(',', @idAnalysis).")");
+	$sthDB->execute();
+	while (my ($dbID, $dbName)=$sthDB->fetchrow_array) {
+		$refDBList->{$dbID}=$dbName;
+	}
+}
+
+sub getProjectItemAnaIDs {
+	my ($refIDAnalysis) = @_;
+	my $queryIDAnalysis = "SELECT ID_ANALYSIS FROM ANALYSIS A";
+	my $projectItem = uc($item);
+	
+	if($projectItem eq 'ANALYSIS') {
+		push @$refIDAnalysis, $itemID;
+	} else {
+		$queryIDAnalysis .= " INNER JOIN SAMPLE S ON S.ID_SAMPLE = A.ID_SAMPLE ";
+		if($projectItem ne 'SAMPLE') {
+			$queryIDAnalysis .= " INNER JOIN EXPERIMENT E ON E.ID_EXPERIMENT = S.ID_EXPERIMENT ";
+		}
+		
+		if($projectItem eq 'PROJECT') {
+			$queryIDAnalysis .= " WHERE E.ID_PROJECT = $projectID ";
+		} else {
+			$queryIDAnalysis .= " WHERE ".substr($projectItem, 0, 1).".ID_$projectItem = $itemID";
+		}
+		
+		my $sthIdAna = $dbh->prepare($queryIDAnalysis);
+		$sthIdAna->execute();
+		while (my ($idAna)=$sthIdAna->fetchrow_array) {
+			push(@$refIDAnalysis, $idAna); 
+		}
+	}
+}
+
 ####>Revision history<####
+# 2.4.3 Add Databank selection to List filtering (VS 19/06/19)
 # 2.4.2 Handles project status=-1 [no auto-end validation] (PP 07/06/18)
 # 2.4.1 Fix minor bug in gene display of hidden proteins (PP 08/02/16)
 # 2.4.0 Custom lists management function moved to promsMod.pm + ajax (PP 26/04/14)

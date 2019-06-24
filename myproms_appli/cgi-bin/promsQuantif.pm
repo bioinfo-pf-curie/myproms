@@ -1,5 +1,5 @@
 ################################################################################
-# promsQuantif.pm           1.3.5                                              #
+# promsQuantif.pm           1.3.8                                              #
 # Authors: P. Poullet, G. Arras, S. Liva (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -65,7 +65,7 @@ sub getProteinQuantifFamilies {
 										'SIN'=>['SIN'],
 										'MQ'=>['MQ'],
 									   },
-								'NAME'=>{'RATIO'=>'Protein ratio',
+								'NAME'=>{'RATIO'=>'Protein or site fold-change',
 										 'EMPAI'=>'emPAI',
 										 'SIN'=>'Normalized Spectral Index',
 										 'MQ'=>'MaxQuant intensities',
@@ -343,7 +343,7 @@ sub getDistinctQuantifNames { # TODO: test on mixed ratio & non-ratio quantifs!!
 				if ($customKey) {
 					@info=($quantifNames{$quantifID}); # no_parent,quantif
 				}
-				$quantifRatioNames{'FULL'}{$quantif}=$quantifRatioNames{'QUANTIF'}{$quantif}=$quantifRatioNames{'RATIO'}{$quantif}=$quantifRatioNames{'TEST'}{$quantif}=$quantifNames{$quantifID};
+				$quantifRatioNames{'FULL'}{$quantif}=$quantifRatioNames{'EXTENDED'}{$quantif}=$quantifRatioNames{'QUANTIF'}{$quantif}=$quantifRatioNames{'RATIO'}{$quantif}=$quantifRatioNames{'TEST'}{$quantif}=$quantifNames{$quantifID};
 				#$quantifs{$quantifID}=1; # counts distinct quantifs
 			}
 			if ($customKey) {
@@ -479,32 +479,41 @@ sub fetchQuantificationData {
 	my ($protSelection,$isoSelection)=(0,0); # default
 	my ($refSelectedProteins,$refSelectedIsoforms)=({},{});
 	if ($refSelectedElements && keys %{$refSelectedElements}) {
-		my $key=(keys %{$refSelectedElements})[0];
-		if ($key && $key=~/\D/) { # isoform
-			#<Check if a Protein quantif is used
-			my %quantifs;
-			foreach my $quantif (@selectedQuantifications) {
-				my ($quantifID,$ratioPos)=split('_',$quantif);
-				$quantifs{$quantifID}=1;
-			}
-			my ($existProtQuantif)=$dbh->selectrow_array("SELECT COUNT(*) FROM QUANTIFICATION WHERE ID_MODIFICATION IS NULL AND ID_QUANTIFICATION IN (".join(',',keys %quantifs).")");
-			if ($existProtQuantif) {
-				$protSelection=1;
-				foreach my $modProtID (keys %{$refSelectedElements}) {
-					my ($protID)=$modProtID=~/^(\d+)/;
-					$refSelectedProteins->{$protID}=1;
-				}
-				#<Return info
-				$refParams->{RETURN}='WARNING: Site restriction list was downgraded to standard protein list';
-			}
-			else {
-				$isoSelection=1;
-				$refSelectedIsoforms=$refSelectedElements;
-			}
-		}
-		else {
+		#my $key=(keys %{$refSelectedElements})[0];
+		#if ($key && $key=~/\D/) { # isoform
+		#	#<Check if a Protein quantif is used
+		#	my %quantifs;
+		#	foreach my $quantif (@selectedQuantifications) {
+		#		my ($quantifID,$ratioPos)=split('_',$quantif);
+		#		$quantifs{$quantifID}=1;
+		#	}
+		#	my ($existProtQuantif)=$dbh->selectrow_array("SELECT 1 FROM QUANTIFICATION WHERE ID_MODIFICATION IS NULL AND ID_QUANTIFICATION IN (".join(',',keys %quantifs).") LIMIT 1");
+		#	if ($existProtQuantif) {
+		#		$protSelection=1;
+		#		foreach my $modProtID (keys %{$refSelectedElements}) {
+		#			my ($protID)=$modProtID=~/^(\d+)/;
+		#			$refSelectedProteins->{$protID}=1;
+		#		}
+		#		#<Return info
+		#		$refParams->{RETURN}='WARNING: Site restriction list was downgraded to standard protein list';
+		#	}
+		#	else {
+		#		$isoSelection=1;
+		#		$refSelectedIsoforms=$refSelectedElements;
+		#	}
+		#}
+		#else {
+		#	$protSelection=1;
+		#	$refSelectedProteins=$refSelectedElements;
+		#}
+		foreach my $modProtID (keys %{$refSelectedElements}) {
+			my ($protID,$modCode)=split('-',$modProtID);
 			$protSelection=1;
-			$refSelectedProteins=$refSelectedElements;
+			$refSelectedProteins->{$protID}=1;
+			if ($modCode) {
+				$isoSelection=1;
+				$refSelectedIsoforms->{$modProtID}=1;
+			}
 		}
 	}
 	my $restrictStrg=($protSelection && scalar keys %{$refSelectedProteins} <= 25)? 'AND PQ.ID_PROTEIN IN ('.join(',',keys %{$refSelectedProteins}).')' : '';
@@ -555,8 +564,12 @@ sub fetchQuantificationData {
 					@{$quantifParamInfo{$quantifID}{$paramCode}}=($paramID,$paramName);
 				}
 			}
-			my $quantifSoftware=($refQuantifInfo->{$quantifID}[1]->{'SOFTWARE'})? $refQuantifInfo->{$quantifID}[1]->{'SOFTWARE'}[0] : 'myProMS';
-			$quantifSoftware='MaxQuant' if $quantifSoftware eq 'MQ';
+			my ($quantifSoftware,$softwareVersion)=('myProMS',1);
+			if ($refQuantifInfo->{$quantifID}[1]->{'SOFTWARE'}) {
+				$quantifSoftware=$refQuantifInfo->{$quantifID}[1]->{'SOFTWARE'}[0];
+				$quantifSoftware='MaxQuant' if $quantifSoftware eq 'MQ';
+				$softwareVersion=$refQuantifInfo->{$quantifID}[1]->{'SOFTWARE'}[1] if $refQuantifInfo->{$quantifID}[1]->{'SOFTWARE'}[1];
+			}
 			my $ratioType=($refQuantifInfo->{$quantifID}[1]->{'RATIO_TYPE'})? $refQuantifInfo->{$quantifID}[1]->{'RATIO_TYPE'}[0] : 'Ratio';
 			my @quantifParams;
 			if ($ratioType eq 'None') {
@@ -566,6 +579,7 @@ sub fetchQuantificationData {
 				@quantifParams=('RATIO'); # Must start with RATIO!
 				my $pvalueCode=($ratioType=~/S\w+Ratio/ || $refQuantifInfo->{$quantifID}[1]->{'FDR_CONTROL'}[0] eq 'TRUE')? 'PVAL_ADJ' : 'PVAL';
 				push @quantifParams,$pvalueCode if $quantifSoftware ne 'MaxQuant';
+				push @quantifParams,'SD_GEO' if ($view eq 'export' && $quantifSoftware eq 'myProMS' && $softwareVersion >= 2);
 			}
 			#push @quantifParams,'DIST_PEP_USED' if ($numPepCode eq 'DIST_PEP_USED' && $ratioType=~/S\w+Ratio/ && $view ne 'heatmap');
 			my (%filteredProtIDs,%allowedProtIDs);
@@ -793,6 +807,7 @@ sub fetchQuantificationData {
 
 	####<SIN or EMPAI>####
 	elsif ($selQuantifFamily=~/SIN|EMPAI/) {
+		my $peptideCode=$refParams->{NUM_PEP_CODE} || 'PEPTIDES';
 		my %paramCodes;
 		my $sthQMP=$dbh->prepare("SELECT ID_QUANTIF_PARAMETER,QP.CODE FROM QUANTIFICATION_PARAMETER QP,QUANTIFICATION_METHOD QM WHERE QP.ID_QUANTIFICATION_METHOD=.QM.ID_QUANTIFICATION_METHOD AND QM.CODE='$selQuantifFamily'");
 		$sthQMP->execute;
@@ -828,13 +843,13 @@ sub fetchQuantificationData {
 			if ($view =~ /log2/) { # {quantif}{protID} !!!
 				while (my ($protID,$numPep)=$sthGetPepNum->fetchrow_array) {
 					next if (!$refQuantifValues->{$quantif} || !$refQuantifValues->{$quantif}{$protID});
-					$refQuantifValues->{$quantif}{$protID}{PEPTIDES}=$numPep;
+					$refQuantifValues->{$quantif}{$protID}{$peptideCode}=$numPep;
 				}
 			}
 			else { # heatmap,list,explorAna: {protID}{quantif} !!!
 				while (my ($protID,$numPep)=$sthGetPepNum->fetchrow_array) {
 					next if (!$refQuantifValues->{$protID} || !$refQuantifValues->{$protID}{$quantif});
-					$refQuantifValues->{$protID}{$quantif}{PEPTIDES}=$numPep;
+					$refQuantifValues->{$protID}{$quantif}{$peptideCode}=$numPep;
 				}
 			}
 		}
@@ -1230,6 +1245,9 @@ sub decodeModificationSite { # modCode[,any text prefix eg; name of modification
 1;
 
 ####>Revision history
+# 1.3.8 [Fix] minor bug in &etchQuantificationData when using mixed protein/site selection list (PP 22/05/19)
+# 1.3.7 Multiple improvements (SD_GEO,...) and bug fixes (emPAI PEPTIDE,...) in &fetchQuantificationData (PP 27/03/19)
+# 1.3.6 Add SD_GEO in &etchQuantificationData (SL 15/01/19)
 # 1.3.5 Added normalization.ref.test in &writeQuantifParameterFiles & minor fix in &fetchQuantificationData for EMPAI/SIN (PP 19/12/18)
 # 1.3.4 view=export handled in &fetchQuantificationData (PP 26/09/18)
 # 1.3.3 Added subs for insertion of quantified modification sites by run(XIC/SWATH)ProtQuantification.pl (PP 19/07/18)

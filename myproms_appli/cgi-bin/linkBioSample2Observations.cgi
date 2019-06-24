@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# linkBioSample2Observations.cgi     1.0.6                                     #
+# linkBioSample2Observations.cgi     1.1.0                                     #
 # Authors: P. Poullet, G. Arras, S.Liva (Institut Curie)              	       #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -60,8 +60,9 @@ my $userID=$ENV{'REMOTE_USER'};
 #################################
 my $action=param ('ACT') || 'edit';
 my $projectID = param('projectID');
-my $biosampleID = param('biosampleID'); # can be 0
 my $experimentID=param('expID') || 0;
+my $biosampleID = param('biosampleID') || 0; # can be 0
+($projectID,$experimentID,$biosampleID)=&promsMod::cleanNumericalParameters($projectID,$experimentID,$biosampleID);
 
 ##########################
 ####>Connecting to DB<####
@@ -77,6 +78,15 @@ my $projectAccess=${$userInfo[2]}{$projectID};
 ####>Processing Form<####
 #########################
 if ($action eq 'store') {
+	print header(-charset=>'utf-8'); warningsToBrowser(1);
+	print qq
+|<HTML>
+<HEAD>
+<TITLE>Biological Sample Observation Link Management</TITLE>
+<LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
+</HEAD>
+<BODY background="$promsPath{images}/bgProMS.gif">
+|;
 
 	my $sthUpSamp=$dbh->prepare("UPDATE OBSERVATION SET ID_BIOSAMPLE=? WHERE ID_OBSERVATION=?");
 	my $sthAddObs=$dbh->prepare("INSERT INTO OBSERVATION (ID_ANALYSIS,ID_BIOSAMPLE,TARGET_POS) VALUES (?,?,?)");
@@ -176,14 +186,9 @@ if ($action eq 'store') {
 	$dbh->commit;
 	$dbh->disconnect;
 
-	print header(-charset=>'utf-8'); warningsToBrowser(1);
-
 	if ($biosampleID) {
 		print qq
-|<HTML>
-<HEAD>
-<TITLE>Update All Frames</TITLE>
-<SCRIPT LANGUAGE="JavaScript">
+|<SCRIPT LANGUAGE="JavaScript">
 top.promsFrame.selectedAction = 'summary';
 parent.optionFrame.selectOption();
 </SCRIPT>
@@ -193,13 +198,7 @@ parent.optionFrame.selectOption();
 	}
 	else {
 		print qq
-|<HTML>
-<HEAD>
-<TITLE>Biological Sample Observation Link Management</TITLE>
-<LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
-</HEAD>
-<BODY background="$promsPath{images}/bgProMS.gif">
-<CENTER>
+|<CENTER>
 <BR><BR>
 <FONT class="title2">Links to Observations successfully updated!</FONT>&nbsp;&nbsp;<INPUT type="button" class="title3" value=" Continue " onclick="parent.optionFrame.selectOption();"/>
 </BR></BR>
@@ -209,7 +208,257 @@ parent.optionFrame.selectOption();
 	}
     exit;
 }
+if ($action eq 'propagate') {
+	
+	my $targetExpID=&promsMod::cleanNumericalParameters(param('targetExp'));
+	my $matchType=param('matchType') || 'analysis';
+	
+	print header(-charset=>'utf-8'); warningsToBrowser(1);
+	print qq
+|<HTML>
+<HEAD>
+<TITLE>Biological Sample Observation Link Management</TITLE>
+<LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
+</HEAD>
+<BODY background="$promsPath{images}/bgProMS.gif">
+|;
+	my ($expName)=$dbh->selectrow_array("SELECT NAME FROM EXPERIMENT WHERE ID_EXPERIMENT=$targetExpID");
+	
+	my $numNewLinks=0;
+	my %linkedBioSamples;
+	my $sthUpSamp=$dbh->prepare("UPDATE OBSERVATION SET ID_BIOSAMPLE=? WHERE ID_OBSERVATION=?");
+	
+	###>Match based on Ana name or WIFF file<###
+	if ($matchType=~/analysis|datafile/) {
+		
+		my $keyField=($matchType eq 'analysis')? 'A.NAME' : 'A.WIFF_FILE';
+		
+		###>Source Experiment
+		my $sthStartObs=$dbh->prepare("SELECT $keyField,O.ID_OBSERVATION,O.ID_BIOSAMPLE,TARGET_POS,GROUP_CONCAT(ID_MODIFICATION ORDER BY ID_MODIFICATION SEPARATOR ',')
+										FROM OBSERVATION O
+										LEFT JOIN OBS_MODIFICATION M ON O.ID_OBSERVATION=M.ID_OBSERVATION
+										INNER JOIN ANALYSIS A ON O.ID_ANALYSIS=A.ID_ANALYSIS
+										INNER JOIN SAMPLE S ON A.ID_SAMPLE=S.ID_SAMPLE
+										WHERE S.ID_EXPERIMENT=? AND O.ID_BIOSAMPLE IS NOT NULL GROUP BY O.ID_OBSERVATION");
+		my %obs2BioSample;
+		$sthStartObs->execute($experimentID);
+		while (my ($keyFieldValue,$obsID,$bioSampID,$targetPos,$modCode)=$sthStartObs->fetchrow_array) {
+			my $obsCode="$keyFieldValue,$targetPos";
+			$obsCode.=",$modCode" if $modCode;
+			@{$obs2BioSample{$obsCode}}=($bioSampID,$targetPos);
+			$obs2BioSample{$obsCode}[2]=$modCode if $modCode;
+		}
+		$sthStartObs->finish;
+	
+		###>Target Experiment
+		my $sthGAI=$dbh->prepare("SELECT ID_ANALYSIS,$keyField FROM ANALYSIS A,SAMPLE S WHERE S.ID_SAMPLE=A.ID_SAMPLE AND VALID_STATUS > 0 AND S.ID_EXPERIMENT=?");
+		my $sthLQ=$dbh->prepare("SELECT QUANTIF_ANNOT FROM QUANTIFICATION Q,ANA_QUANTIFICATION AQ WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND FOCUS='peptide' AND ID_ANALYSIS=? LIMIT 1");
+		my $sthLA=$dbh->prepare("SELECT DISTINCT M.ID_MODIFICATION,PSI_MS_NAME,INTERIM_NAME,SYNONYMES FROM MODIFICATION M,ANALYSIS_MODIFICATION AM WHERE AM.ID_MODIFICATION=M.ID_MODIFICATION AND IS_LABEL=1 AND ID_ANALYSIS=? ORDER BY M.ID_MODIFICATION");
+		my $sthObs=$dbh->prepare("SELECT O.ID_OBSERVATION,O.ID_BIOSAMPLE,O.TARGET_POS,GROUP_CONCAT(ID_MODIFICATION ORDER BY ID_MODIFICATION SEPARATOR ',')
+									FROM OBSERVATION O
+									LEFT JOIN OBS_MODIFICATION M ON O.ID_OBSERVATION=M.ID_OBSERVATION
+									WHERE O.ID_ANALYSIS=? GROUP BY O.ID_OBSERVATION");
+		my $sthAddObs=$dbh->prepare("INSERT INTO OBSERVATION (ID_ANALYSIS,ID_BIOSAMPLE,TARGET_POS) VALUES (?,?,?)");
+		my $sthAddOMod=$dbh->prepare("INSERT INTO OBS_MODIFICATION (ID_OBSERVATION,ID_MODIFICATION) VALUES (?,?)");
+		
+		my %labelMods;
+		$sthGAI->execute($targetExpID);
+		while (my ($anaID,$keyFieldValue) = $sthGAI->fetchrow_array) {
+			##>Fetch all possible quantif channels
+			my %possibleObs;
+			$sthLQ->execute($anaID);
+			my ($quantifAnnot)=$sthLQ->fetchrow_array;
+			if ($quantifAnnot) {
+				$quantifAnnot=~s/::SOFTWARE=[^:]+::/::/; # remove software info for back compatibility
+				my ($labelTypeStrg,@labelInfo)=split('::',$quantifAnnot);
+				my ($labelType)=($labelTypeStrg =~ /^LABEL=(.+)/);
+				if ($labelType =~ /FREE|NONE/) { # no labeling in analysis
+					$possibleObs{"$keyFieldValue,0"}=1;
+				}
+				else {
+					my $labelModID;
+					foreach my $infoStrg (@labelInfo) {
+						my ($targetPos,$chanName,$labelStrg)=split(';',$infoStrg);
+						my $obsCode; #="$anaID,$targetPos";
+						my $targetName;
+						if ($labelType=~/SILAC/i) {
+							$obsCode="$keyFieldValue,-1";
+							#my @mods;
+							my %mods; # hash because same mod can be used on different aa (mod is repeated)
+							foreach my $modStrg (split ('@',$labelStrg)) { # multiple mods for same label channel
+								my @labelData=split('#',$modStrg);
+								next if $labelData[1] =~ /No label/i;
+								my $modID=($labelData[4])? $labelData[4] : ($labelMods{$labelData[1]})? $labelMods{$labelData[1]} : &promsMod::getModificationIDfromString($dbh,$labelData[1]); # $labelData[4] if MassChroQ XIC
+								$modID=0 unless $modID;
+								$labelMods{$labelData[1]}=$modID;;
+								$mods{$modID}=1;
+							}
+							if (scalar keys %mods) { # label channel
+								$obsCode.=','.join(',',sort{$a<=>$b} keys %mods); # order is needed for later compare with %expCondition
+							}
+						}
+						elsif ($labelType=~/itraq|TMT/i) {
+							$obsCode="$keyFieldValue,$targetPos";
+							unless ($labelModID) { # only once
+								$sthLA->execute($anaID);
+								($labelModID)=$sthLA->fetchrow_array;
+							}
+							$obsCode.=",$labelModID" if $labelModID;
+						}
+						$possibleObs{$obsCode}=1;
+					}
+				}
+			}
+			##>No peptide quantification associated with Analysis => guess from ANALYSIS_MODIFICATION table ****WARNING: NOT reliable
+			else {
+				$sthLA->execute($anaID);
+				my $isLabeled=0;
+				my $obsCode;
+				my $channelPos=0;
+				while (my ($modID,$psiName,$intName,$synName)=$sthLA->fetchrow_array) {
+					$psiName='' unless $psiName;
+					$intName='' unless $intName;
+					$synName='' unless $synName;
+					my $labelName=$psiName.'##'.$intName.'##'.$synName;
+					if ($labelName=~/(itraq|tmt).+plex/i) { # Cannot work for SILAC
+						$isLabeled=1;
+						my %targetInfo;
+						my $targetPos=0;
+						my %infoSubmit=&promsMod::getSearchParam($dbh,$anaID);
+						if ($infoSubmit{'q:Quantification'}) {
+							my $first=1;
+							foreach my $targetName (split(':',$infoSubmit{'q:Quantification'})) {
+								if ($first) { # skip quantif Name
+									$first=0;
+									next;
+								}
+								$targetInfo{++$targetPos}=$targetName;
+							}
+						}
+						else { # backup solution
+							my ($plexNum)=($labelName=~/(\d+)\s*plex/i);
+							foreach my $targetPos (1..$plexNum) {
+								$targetInfo{$targetPos}='XXX';
+							}
+						}
+						foreach my $targetPos (sort{$a<=>$b} keys %targetInfo) {
+							$possibleObs{"$keyFieldValue,$targetPos,$modID"}=1;
+						}
+						next;
+					}
+					unless ($isLabeled) { # 1st loop: create a non-labeled channel
+						#$channelPos++;
+						$possibleObs{"$keyFieldValue,$channelPos"}=1;
+						$isLabeled=1;
+					}
+					# !!!!!!!!!! TODO: Not compatible with single state defined by multiple modifications !!!!!!!
+					$channelPos++;
+					$possibleObs{"$keyFieldValue,$channelPos,$modID"}=1;
+				}
+				unless ($isLabeled) { # no labeling in analysis
+					$possibleObs{"$keyFieldValue,0"}=1;
+				}
+			}
+				
+			##>Check if Ana already linked to obs
+			$sthObs->execute($anaID);
+			while (my ($obsID,$bioSampID,$targetPos,$modCode)=$sthObs->fetchrow_array) {
+				#$targetPos=-1 if ($quantifAnnot && $quantifAnnot=~/SILAC/); # back compatibility for Design before 31/01/14
+				my $obsCode="$keyFieldValue,$targetPos";
+				$obsCode.=",$modCode" if $modCode;
+				delete $possibleObs{$obsCode}; # remove from list to be created
+				next if $bioSampID;
+				if ($obs2BioSample{$obsCode}) {
+					$sthUpSamp->execute($obs2BioSample{$obsCode}[0],$obsID); # bioSampID
+					$numNewLinks++;
+					$linkedBioSamples{$obs2BioSample{$obsCode}[0]}=1;
+				}
+			}
+			##>Process remaining possible obs
+			foreach my $obsCode (keys %possibleObs) {
+				if ($obs2BioSample{$obsCode}) {
+					$sthAddObs->execute($anaID,@{$obs2BioSample{$obsCode}}[0,1]); # bioSampID,targetPos
+					if ($obs2BioSample{$obsCode}[2]) { # modID strg
+						my $newObsID=$dbh->last_insert_id(undef,undef,'OBSERVATION','ID_OBSERVATION');
+						foreach my $modID (split(',',$obs2BioSample{$obsCode}[2])) {
+							$sthAddOMod->execute($newObsID,$modID);
+						}
+					}
+					$numNewLinks++;
+					$linkedBioSamples{$obs2BioSample{$obsCode}[0]}=1;
+				}
+			}
+		}
+		$sthLQ->finish;
+		$sthLA->finish;
+		$sthObs->finish;
+		$sthAddObs->finish;
+		$sthAddOMod->finish;
+	}
+	
+	###>Match based on Design states name<###
+	else {
+		
+		my $sthStateObs=$dbh->prepare("SELECT D.NAME,EC.NAME,O.ID_BIOSAMPLE,FRACTION_GROUP,TECH_REP_GROUP,O.ID_OBSERVATION
+										FROM DESIGN D
+										INNER JOIN EXPCONDITION EC ON D.ID_DESIGN=EC.ID_DESIGN
+										INNER JOIN OBS_EXPCONDITION OEC ON EC.ID_EXPCONDITION=OEC.ID_EXPCONDITION
+										INNER JOIN OBSERVATION O ON OEC.ID_OBSERVATION=O.ID_OBSERVATION
+										WHERE D.ID_EXPERIMENT=?");
+		###>Source Experiment
+		my %sourceBioSamples;
+		$sthStateObs->execute($experimentID);
+		while (my ($desName,$condName,$bioSampID,$fractGroup,$techRepGroup,$obsID)=$sthStateObs->fetchrow_array) {
+			next unless $bioSampID;
+			$fractGroup=1 unless $fractGroup;
+			$techRepGroup=1 unless $techRepGroup;
+			$sourceBioSamples{"$condName,$fractGroup,$techRepGroup"}{$bioSampID}=$desName; # in case same state name linked to different biosamp depending on design (unlikely?)
+		}
+		
+		###>Target Experiment
+		$sthStateObs->execute($targetExpID);
+		while (my ($desName,$condName,$tgtBioSampID,$fractGroup,$techRepGroup,$obsID)=$sthStateObs->fetchrow_array) {
+			next if $tgtBioSampID; # keep only obs w/o bioSamp
+			$fractGroup=1 unless $fractGroup;
+			$techRepGroup=1 unless $techRepGroup;
+			my $nameCode="$condName,$fractGroup,$techRepGroup";
+			next unless $sourceBioSamples{$nameCode}; # not found in source Exp
+			my $bioSampID;
+			if (scalar keys %{$sourceBioSamples{$nameCode}} > 1) { # multiple bioSamples linked same state name+fracGr+techGr ==> check design name
+				foreach my $bsID (keys %{$sourceBioSamples{$nameCode}}) {
+					if ($sourceBioSamples{$nameCode}{$bsID} eq $desName) {
+						$bioSampID=$bsID;
+						last;
+					}
+				}
+			}
+			else { # only 1 bioSample 
+				$bioSampID=(keys %{$sourceBioSamples{$nameCode}})[0];
+			}
+			next unless $bioSampID;
+			$sthUpSamp->execute($bioSampID,$obsID);
+			$numNewLinks++;
+			$linkedBioSamples{$bioSampID}=1;
+		}
+		$sthStateObs->finish;
+	}
+	$sthUpSamp->finish;
 
+#$dbh->rollback;	
+	$dbh->commit;
+	$dbh->disconnect;
+	
+	my $numBioSamp=scalar keys %linkedBioSamples;
+	print qq
+|<CENTER>
+<BR><BR>
+<FONT class="title2">$numNewLinks links to Observations ($numBioSamp BioSamples) successfully propagated to Experiment <FONT color="#DD0000">$expName</FONT>!</FONT><BR><BR><INPUT type="button" class="title3" value=" Continue " onclick="parent.optionFrame.selectOption();"/>
+</BR></BR>
+</BODY>
+</HTML>
+|;
+	exit;
+}
 
 my (@experiments,%bioSampleNames,@sortedBioSamples,$title);
 my $sthExp=$dbh->prepare("SELECT ID_EXPERIMENT,NAME FROM EXPERIMENT WHERE ID_PROJECT=$projectID ORDER BY DISPLAY_POS");
@@ -282,12 +531,32 @@ function extendSelection(obsIndex,chkStatus) {
 		}
 	}
 }
+function checkForm(myForm) {
+	if (!myForm.targetExp.value) {
+		alert('ERROR: Select a target Experiment.');
+		return false;
+	}
+	return true;
+}
 </SCRIPT>
 </HEAD>
 <BODY background="$promsPath{images}/bgProMS.gif">
 <CENTER>
-<FONT class="title">$title</FONT><BR><BR>
-<FONT class="title2">Experiment:</FONT><SELECT class="title2" onchange="window.location='$promsPath{cgi}/linkBioSample2Observations.cgi?biosampleID=$biosampleID&projectID=$projectID&expID='+this.value"><OPTION value="">-= Select =-</OPTION>
+<FONT class="title">$title</FONT><BR><BR><BR><BR>
+|;
+my $selectStrg='';
+if ($experimentID && scalar @experiments > 1 && !$biosampleID) {
+	print qq
+|<FORM name="expForm" method="POST" onsubmit="return(checkForm(this));">
+<INPUT type="hidden" name="ACT" value="propagate">
+<INPUT type="hidden" name="projectID" value="$projectID">
+|;
+}
+elsif (!$experimentID) {
+	$selectStrg='Select an';
+}
+print qq
+|<FONT class="title2">$selectStrg Experiment:</FONT><SELECT name="expID" class="title2" onchange="window.location='$promsPath{cgi}/linkBioSample2Observations.cgi?biosampleID=$biosampleID&projectID=$projectID&expID='+this.value"><OPTION value="">-= Select =-</OPTION>
 |;
 foreach my $expData (@experiments) {
 	print "<OPTION value=\"$expData->[0]\"";
@@ -302,28 +571,46 @@ unless ($experimentID) {
 	exit;
 }
 
+if (scalar @experiments > 1 && !$biosampleID) {
+	print qq
+|<TABLE cellspacing=0>
+<TR bgcolor="$darkColor"><TD colspan=3></TD></TR>
+<TR bgcolor="$darkColor"><TD align=right nowrap>&nbsp;<FONT class="title2">Propagate links from Experiment above to this one<SUP>*</SUP>:</FONT></TD><TD><SELECT name="targetExp" class="title2"><OPTION value="">-= Select =-</OPTION>
+|;
+	foreach my $expData (@experiments) {
+		print "<OPTION value=\"$expData->[0]\"";
+		print ' disabled' if $expData->[0]==$experimentID;
+		print ">$expData->[1]</OPTION>\n";
+	}
+	print qq
+|</SELECT>&nbsp;</TD><TH rowspan=2 valign="middle">&nbsp;&nbsp;<INPUT class="title3" type="submit" value=" Proceed ">&nbsp;&nbsp;</TH></TR>
+<TR bgcolor="$darkColor"><TD align=right nowrap><FONT class="title2">based on matching:</FONT></TD><TD nowrap><SELECT name="matchType" class="title2"><OPTION value="analysis">Analyses name</OPTION><OPTION value="datafile">Analyses MS data file</OPTION><OPTION value="design">Design states</OPTION></SELECT></TD></TR>
+<TR bgcolor="$darkColor"><TD colspan=3></TD></TR>
+<TR><TD colspan=3>&nbsp;&nbsp;&nbsp;<SUP>*</SUP><I>Pre-existing links are not overwritten</I></TD></TR>
+</TABLE>
+</FORM>
+<FONT class="title2">Or</FONT><BR><BR><FONT class="title2">Generate links manually:</FONT><BR>
+|;
+}
 
 my @sthGetAnaInfo=( # 2d-gel or sample
-	$dbh->prepare("SELECT ID_ANALYSIS,'gel2d',G.NAME,'spot',SP.NAME,'analysis',A.NAME FROM ANALYSIS A,SAMPLE S,SPOT SP,GEL2D G WHERE G.ID_GEL2D=SP.ID_GEL2D AND SP.ID_SPOT=S.ID_SPOT AND S.ID_SAMPLE=A.ID_SAMPLE AND VALID_STATUS > 0 AND G.ID_EXPERIMENT=$experimentID ORDER BY G.DISPLAY_POS,SP.NAME,S.DISPLAY_POS,A.DISPLAY_POS"),
-	$dbh->prepare("SELECT ID_ANALYSIS,'sample',S.NAME,'analysis',A.NAME FROM ANALYSIS A,SAMPLE S WHERE S.ID_SAMPLE=A.ID_SAMPLE AND ID_SPOT IS NULL AND VALID_STATUS > 0 AND S.ID_EXPERIMENT=$experimentID ORDER BY S.DISPLAY_POS,A.DISPLAY_POS")
+	$dbh->prepare("SELECT ID_ANALYSIS,'gel2d',G.NAME,'spot',SP.NAME,'analysis',A.NAME FROM ANALYSIS A,SAMPLE S,SPOT SP,GEL2D G WHERE G.ID_GEL2D=SP.ID_GEL2D AND SP.ID_SPOT=S.ID_SPOT AND S.ID_SAMPLE=A.ID_SAMPLE AND VALID_STATUS > 0 AND G.ID_EXPERIMENT=? ORDER BY G.DISPLAY_POS,SP.NAME,S.DISPLAY_POS,A.DISPLAY_POS"),
+	$dbh->prepare("SELECT ID_ANALYSIS,'sample',S.NAME,'analysis',A.NAME FROM ANALYSIS A,SAMPLE S WHERE S.ID_SAMPLE=A.ID_SAMPLE AND ID_SPOT IS NULL AND VALID_STATUS > 0 AND S.ID_EXPERIMENT=? ORDER BY S.DISPLAY_POS,A.DISPLAY_POS")
 );
+my $sthLQ=$dbh->prepare("SELECT QUANTIF_ANNOT FROM QUANTIFICATION Q,ANA_QUANTIFICATION AQ WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND FOCUS='peptide' AND ID_ANALYSIS=? LIMIT 1");
 my $sthLA=$dbh->prepare("SELECT DISTINCT M.ID_MODIFICATION,PSI_MS_NAME,INTERIM_NAME,SYNONYMES FROM MODIFICATION M,ANALYSIS_MODIFICATION AM WHERE AM.ID_MODIFICATION=M.ID_MODIFICATION AND IS_LABEL=1 AND ID_ANALYSIS=? ORDER BY M.ID_MODIFICATION");
-my $sthLQ=$dbh->prepare("SELECT QUANTIF_ANNOT FROM QUANTIFICATION Q,ANA_QUANTIFICATION AQ WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND FOCUS='peptide' AND ID_ANALYSIS=? LIMIT 0,1");
-
-
 my $sthObs=$dbh->prepare("SELECT O.ID_OBSERVATION,O.ID_BIOSAMPLE,O.TARGET_POS,GROUP_CONCAT(ID_MODIFICATION ORDER BY ID_MODIFICATION SEPARATOR ',')
 							FROM OBSERVATION O
 							LEFT JOIN OBS_MODIFICATION M ON O.ID_OBSERVATION=M.ID_OBSERVATION
-							WHERE O.ID_ANALYSIS=? GROUP BY O.ID_OBSERVATION"
-						);
-
+							WHERE O.ID_ANALYSIS=? GROUP BY O.ID_OBSERVATION");
 
 ###> Get Analysis information in order to fill OBSERVATION, OBS_EXPCONDITION & OBS_MODIFICATION tables
-my (%hierarchy,%position,%observation);
+my (%hierarchy,%position,%observation,%labelMods);
 my $obsRank=0;
 foreach my $sthGAI (@sthGetAnaInfo) {
-	$sthGAI->execute;
+	$sthGAI->execute($experimentID);
 	while (my ($anaID,@hierarchy) = $sthGAI->fetchrow_array) {
+		##>Fetch all possible quantif channels
 		$sthLQ->execute($anaID);
 		my ($quantifAnnot)=$sthLQ->fetchrow_array;
 
@@ -360,8 +647,9 @@ foreach my $sthGAI (@sthGetAnaInfo) {
 							}
 							else {
 								$targetName.="[$labelData[1]&raquo;$labelData[2]]"; #&raquo; &middot; &rarr;
-								my $modID=($labelData[4])? $labelData[4] : &promsMod::getModificationIDfromString($dbh,$labelData[1]); # $labelData[4] if MassChroQ XIC
+								my $modID=($labelData[4])? $labelData[4] : ($labelMods{$labelData[1]})? $labelMods{$labelData[1]} : &promsMod::getModificationIDfromString($dbh,$labelData[1]); # $labelData[4] if MassChroQ XIC
 								$modID=0 unless $modID;
+								$labelMods{$labelData[1]}=$modID;
 								#$obsCode.=",$modID";
 								#push @mods,$modID;
 								$mods{$modID}=1;
@@ -385,15 +673,18 @@ foreach my $sthGAI (@sthGetAnaInfo) {
 				}
 			}
 		}
-		##>No peptide quantification associated with Analysis => guess from ANALYSIS_MODIFICATION table
+		##>No peptide quantification associated with Analysis => guess from ANALYSIS_MODIFICATION table ****WARNING: NOT reliable
 		else {
 			$sthLA->execute($anaID);
 			my $isLabeled=0;
 			my $obsCode;
 			my $channelPos=0;
 			while (my ($modID,$psiName,$intName,$synName)=$sthLA->fetchrow_array) {
-				my $labelName=($psiName)? $psiName : ($intName)? $intName : (split(/##/,$synName))[1];
-				if ($labelName=~/itraq/i) {
+				$psiName='' unless $psiName;
+				$intName='' unless $intName;
+				$synName='' unless $synName;
+				my $labelName=$psiName.'##'.$intName.'##'.$synName;
+				if ($labelName=~/itraq.+plex/i) {
 					$isLabeled=1;
 					my %targetInfo;
 					my $targetPos=0;
@@ -422,9 +713,9 @@ foreach my $sthGAI (@sthGetAnaInfo) {
 					next;
 				}
 				unless ($isLabeled) { # 1st loop: create a non-labeled channel
-					$channelPos++;
-					@{$hierarchy{"$anaID,$channelPos"}}=(@hierarchy,'label','No label');
-					$position{"$anaID,$channelPos"}=++$obsRank;
+					#$channelPos++;
+					@{$hierarchy{"$anaID,0"}}=(@hierarchy,'label','No label');
+					$position{"$anaID,0"}=++$obsRank;
 					$isLabeled=1;
 				}
 				# !!!!!!!!!! TODO: Not compatible with single state defined by multiple modifications !!!!!!!
@@ -466,9 +757,14 @@ print qq
 <INPUT type="hidden" name="biosampleID" value="$biosampleID">
 <INPUT type="hidden" name="expID" value="$experimentID">
 <INPUT type="hidden" name="projectID" value="$projectID">
-
-<INPUT type="checkbox" name="autoExtend" value="1" checked><FONT class="title3">Auto-extend selection</FONT>
-<TABLE bgcolor="$darkColor" cellspacing=0>
+|;
+if ($biosampleID) {
+	print qq
+|<INPUT type="checkbox" name="autoExtend" value="1" checked><FONT class="title3">Auto-extend selection</FONT>
+|;
+}
+print qq
+|<TABLE bgcolor="$darkColor" cellspacing=0>
 <TR><TD class="title2 rbBorder" colspan="$obsColSpan" style="padding:2px">&nbsp;Available Observations</TD><TD class="title2 bBorder" style="padding:2px">&nbsp;$headerText&nbsp;</TD></TR>
 |;
 my @prevHierarchy=();
@@ -520,7 +816,9 @@ foreach my $obsCode (sort{$position{$a}<=>$position{$b}} keys %position){
 	print "</TR>\n<TR bgcolor=\"$darkColor\"><TD colspan=$totColSpan></TD></TR>\n";
 }
 print qq
-|<TR bgcolor="$darkColor"><TH colspan=$totColSpan><INPUT type="submit" value=" Save "></TH></TR>
+|<TR bgcolor="$darkColor"><TD colspan=$totColSpan></TD></TR>
+<TR bgcolor="$darkColor"><TH colspan=$totColSpan><INPUT type="submit" class="title3" value=" Save "></TH></TR>
+<TR bgcolor="$darkColor"><TD colspan=$totColSpan></TD></TR>
 </TABLE>
 <FORM>
 <BR><BR>
@@ -529,6 +827,7 @@ print qq
 |;
 
 ####>Revision history<####
+# 1.1.0 Added option to propagate links from one Exp to another based on analysis name/MS file or design states name (PP 25/04/19)
 # 1.0.6 Also removes software version from QUANTIF_ANNOT (PP 09/12/18)
 # 1.0.5 Minor modification for TMT (GA 03/04/17)
 # 1.0.4 Compatible with SILAC cases where same labeling mod is used on different aa (PP 21/07/15)

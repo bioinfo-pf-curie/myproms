@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# exportProteinList.cgi        2.4.1                                           #
+# exportProteinList.cgi        2.4.3	                                       #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Exports a list of proteins in MS Excel or HTML format                        #
@@ -34,7 +34,7 @@
 # professionals having in-depth computer knowledge. Users are therefore
 # encouraged to load and test the software's suitability as regards their
 # requirements in conditions enabling the security of their systems and/or
-# data to be ensured and, more generally, to use and operate it in the
+# data to be ensured and, more generally, to use and operate it ina the
 # same conditions as regards security.
 #
 # The fact that you are presently reading this means that you have had
@@ -45,6 +45,7 @@ use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI ':standard';
 use Encode 'decode_utf8';
 #use utf8; # needed only if utf8 char from script itself must be printed to Excel
+use Archive::Zip;
 use Spreadsheet::WriteExcel;
 use promsConfig;
 use promsMod;
@@ -52,6 +53,7 @@ use phosphoRS;
 use XML::Simple;
 use Storable 'dclone';
 use strict;
+use Data::Dumper;
 
 #print header; warningsToBrowser(1); # DEBUG
 #######################
@@ -59,6 +61,15 @@ use strict;
 #######################
 my %promsPath=&promsConfig::getServerInfo;
 my ($color1,$color2)=&promsConfig::getRowColors;
+
+#################################
+####>Connect to the database<####
+#################################
+my $dbh=&promsConfig::dbConnect;
+
+if(param('ACT') && param('ACT') eq 'export') {
+	exportAnalysis(); exit;
+}
 
 ####################
 ####>Parameters<####
@@ -84,11 +95,6 @@ my ($exportFormat,$colSpan,$rowSpan,$colSpanNumPep,$colSpanPep,$badConfidence,$g
 my ($workbook,$worksheet,$worksheet2,%format,%itemFormat,@columnSizes,$xlsRow,$rowColor1,$rowColor2);
 my ($prsOutputFile);
 my %relevantPTMs;
-
-#################################
-####>Connect to the database<####
-#################################
-my $dbh=&promsConfig::dbConnect;
 
 ##################
 ####>>>Main<<<####
@@ -859,63 +865,152 @@ sub exportList {
 	exit;
 }
 
+
+################################################################################
+####   		Recover and export MSF files from selected analyses   			####
+################################################################################
+sub exportAnalysis {
+	my $projectID = param('id_project');
+	my @anaIDs = param('anaList');
+	my $item = (param('item')) ? lc param('item') : '';
+	
+	# Creating archive that contain all msf files
+	if($projectID and @anaIDs) {
+		my (@msfFiles, $currentAnaFile, $currentSampName);
+		my $designFilePath = "$promsPath{data}/tmp/export_project$projectID\_analyses_from_$item.xls"; # $promsPath{'data'}."/
+		my ($expName, $sampName, $projName) = $dbh->selectrow_array("SELECT E.NAME, S.NAME, P.NAME FROM SAMPLE S INNER JOIN ANALYSIS A ON A.ID_SAMPLE=S.ID_SAMPLE INNER JOIN EXPERIMENT E ON E.ID_EXPERIMENT=S.ID_EXPERIMENT JOIN PROJECT P ON P.ID_PROJECT=E.ID_PROJECT WHERE P.ID_PROJECT=$projectID AND A.ID_ANALYSIS=$anaIDs[0]");
+		my $zip = Archive::Zip->new();
+		
+		# Initialize design file parameters
+		my $workbook=Spreadsheet::WriteExcel->new($designFilePath);
+		eval { # Perl 5.8 compatibility
+		$workbook->set_properties(title=>'Design of ',
+								  author=>'myProMS server',
+								  comments=>"Describes analyses carried out for project $projName"
+								  );
+		};
+		
+		# Set design formats
+		my $headerFormat = $workbook->add_format(size=>10, bold=>1, underline=>1, font=>'Arial', align=>'center');
+		my $bodyFormat = $workbook->add_format(size=>11, align=>'center', font=>'Calibri');
+		$worksheet = $workbook->add_worksheet('Design');
+		
+		# Write design header
+		$worksheet->write(0, 0, "Experiment Name", $headerFormat);
+		$worksheet->write(0, 1, "Sample Name", $headerFormat);
+		$worksheet->write(0, 2, "Identification", $headerFormat);
+		$worksheet->write(0, 3, "Raw file", $headerFormat);
+		
+		# Parse relevant analyses
+		my $iAna = 1;
+		my $sthAna=$dbh->prepare("SELECT A.ID_ANALYSIS, DATA_FILE, S.NAME, WIFF_FILE, VALID_STATUS FROM SAMPLE S INNER JOIN ANALYSIS A ON A.ID_SAMPLE=S.ID_SAMPLE INNER JOIN EXPERIMENT E ON E.ID_EXPERIMENT=S.ID_EXPERIMENT JOIN PROJECT P ON P.ID_PROJECT=E.ID_PROJECT WHERE P.ID_PROJECT=$projectID AND A.ID_ANALYSIS IN (".join(', ', @anaIDs).")");
+		$sthAna->execute;
+		while ((my $anaID, my $dataFile, my $currentSampName, my $wiffFile, my $validStatus) = $sthAna->fetchrow_array) {
+			my ($fileExt, $fileName, $dataPath);
+			$fileExt = ($wiffFile =~ /raw/) ? 'msf' : 'dat';
+			($fileName = $wiffFile ) =~ s/\..*$//;
+			$currentAnaFile = ($fileExt eq 'msf') ? "$fileName.$fileExt" : $dataFile;
+			
+			if($validStatus != 2) {
+				$dataPath = $promsPath{'data'}."/validation/";
+				$dataPath .= ($fileExt eq 'msf') ? "multi_ana/proj_$projectID/$currentAnaFile" : "ana_$anaID/$currentAnaFile";
+			} else {
+				$dataPath = $promsPath{'data'}."/peptide_data/proj_$projectID/ana_$anaID/$currentAnaFile";
+			}
+			
+			if(-e $dataPath) {
+				$currentSampName =~ s/\//-/;
+				my $zipOutFolder = ($item eq 'experiment') ? "$currentSampName/" : "";
+				$zip->addFile($dataPath, $zipOutFolder.$currentAnaFile);
+				
+				$worksheet->write($iAna, 0, $expName, $bodyFormat);
+				$worksheet->write($iAna, 1, $currentSampName, $bodyFormat);
+				$worksheet->write($iAna, 2, $currentAnaFile, $bodyFormat);
+				$worksheet->write($iAna, 3, $wiffFile, $bodyFormat);
+				$iAna++;
+			}
+		}
+		
+		$worksheet->set_column(0, 0, 26);
+		$worksheet->set_column(1, 1, 26);
+		$worksheet->set_column(2, 2, 13);
+		$worksheet->set_column(3, 3, 13);
+		
+		$workbook->close();
+		
+		$zip->addFile($designFilePath, "design.xls");
+		
+		my $outFile = $projName;
+		$outFile .= ($item eq 'experiment') ? " - $expName.zip" : ($item eq 'sample') ? " - $sampName.zip" : " - Analyses.zip";
+		
+		# Export built archive
+		print header(-type=>"application/zip", -attachment=>$outFile);
+		binmode(STDOUT);
+		$zip->writeToFileHandle(*STDOUT);
+		
+		unlink($designFilePath);
+	}
+}
+
 ################################################################################
 ####   Generate modifications summary text based on a given varMod string   ####
 ################################################################################
 sub generateVarModSummary {
 	my ($varMod, $pepSeq, $shift) = @_;
-	my @matches = ( $varMod =~ /([A-Za-z]+)\s\([A-Za-z-]+:([0-9.?]+)?\[?([0-9,]+)?\]?|([A-Za-z]+)\s\((Protein N-term|N-term|C-term|Protein C-term)\)/g );
+	my %varMods; # All parsed modifications
 	my $comments = "";
-	my %varMods;
+	my @allMods = split(/\s\+\s/, $varMod);
 	
-	if(@matches) {
-		my (@varModPos, $aa, $modType, $posInPeptide);
-		my $nbMatches = scalar @matches;
-		
-		for(my $i=0; $i < $nbMatches; $i += 5) {
-			# Mod in numeric position 
-			if($matches[$i]) {
-				$modType = $matches[$i];
-				@varModPos = split('\.', $matches[$i+1]);
-				
+	if(@allMods) {
+		foreach my $mod (@allMods) {
+			# Phospho (ST:995.?.?[974,979,989]) => $modType ($modAA:$modPos[$modAmbigousPos])
+			my ($modType, $modAA, $modPos, $modAmbigousPos) = ( $mod =~ /(.+)\s\(([A-Za-z-\s]+):?([0-9.?]+)?\[?([0-9,]*)\]?\)$/ );
+			my $posInPeptide;
+			
+			next unless($modType);
+			
+			# Has positions
+			if($modPos) {
+				my @varModPos = split('\.', $modPos);
 				foreach my $pos (@varModPos) {
 					# Add nb of sites to total for the modType
 					$varMods{$modType}{"amount"}++;
 					
 					next if ($pos eq '?');
 					
-					$posInPeptide = ($shift) ? $pos-$shift : $pos;
-					$aa = substr($pepSeq, $posInPeptide-1, 1);
-					push(@{$varMods{$modType}{"regular"}}, "$aa$pos");
+					my $posInPeptide = ($shift) ? $pos-$shift : $pos;
+					$modAA = substr($pepSeq, $posInPeptide-1, 1);
+					push(@{$varMods{$modType}{"regular"}}, "$modAA$pos");
 				}
 				
-				# Has ambigous
-				if($matches[$i+2]) {
-					@varModPos = split(',', $matches[$i+2]);
+				# Has ambigous positions
+				if($modAmbigousPos) {
+					@varModPos = split(',', $modAmbigousPos);
 					foreach my $pos (@varModPos) {
-						$posInPeptide = ($shift) ? $pos-$shift : $pos;
-						$aa = substr($pepSeq, $posInPeptide-1, 1);
-						push(@{$varMods{$modType}{"ambigous"}}, "$aa$pos");
+						my $posInPeptide = ($shift) ? $pos-$shift : $pos;
+						$modAA = substr($pepSeq, $posInPeptide-1, 1);
+						push(@{$varMods{$modType}{"ambigous"}}, "$modAA$pos");
 					}
 				}
-			}
-			
-			# Mod in special position (Protein N-term / N-term / C-term / Protein C-term)
-			if($matches[$i+3]) {
-				$modType = $matches[$i+3];
-				my $pos = $matches[$i+4];
-				
-				push(@{$varMods{$modType}{"regular"}}, "$pos");
-				
+			# Modification is located on Protein N-term / N-term / C-term / Protein C-term
+			} else {
+				push(@{$varMods{$modType}{"regular"}}, "$modAA");
 				$varMods{$modType}{"amount"}++;
 			}
 		}
 		
-		foreach $modType (keys %varMods) {
+		foreach my $modType (keys %varMods) {
 			my $nbModType = $varMods{$modType}{"amount"};
-			$comments .= " <br/> " if ($comments);
-			$comments .= "$nbModType $modType : ".join(', ', @{$varMods{$modType}{"regular"}});
-			$comments .= "; ambigous : ".join(' and/or ', @{$varMods{$modType}{"ambigous"}}) if ($varMods{$modType}{"ambigous"});
+			my $nbModAmbigous = ($varMods{$modType}{"regular"}) ? $nbModType - scalar @{$varMods{$modType}{"regular"}} : 0;
+			my $ambigousTxt = ($nbModAmbigous > 1) ? "and/or" : "or";
+			
+			if ($comments) {
+				$comments .= ($exportFormat eq 'XLS') ? "\n" : "<br/>";
+			}
+			$comments .= "$nbModType $modType";
+			$comments .= " : ".join(', ', @{$varMods{$modType}{"regular"}}) if($varMods{$modType}{"regular"});
+			$comments .= " and $nbModAmbigous" if($varMods{$modType}{"regular"} && $varMods{$modType}{"ambigous"});
+			$comments .= " ambigous : ".join(" $ambigousTxt ", @{$varMods{$modType}{"ambigous"}}) if ($varMods{$modType}{"ambigous"});
 		}
 	}
 	
@@ -1500,8 +1595,8 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 						}
 						
 						if(param('sel_etPep')) {
-							my @elutionTimeParsed = split(';et', $elutionTime);
-							$elutionTime = (scalar @elutionTimeParsed > 1) ? $elutionTimeParsed[1] : '-';
+							my @elutionTimeParsed = ( $elutionTime =~ /et([0-9.]+);?/);
+							$elutionTime = (scalar @elutionTimeParsed == 1) ? $elutionTimeParsed[0] : '-';
 							$pepElutionTime{$protID}{$pepID} = $elutionTime;
 						}
 						
@@ -2065,6 +2160,8 @@ sub getPhosphoRsProbString{
 
 
 ####>Revision history<####
+# 2.4.3 Fix issue with search files export having a different name than sample/analysis, depending on context (VS 13/03/2019)
+# 2.4.2 Added possibility to export whole analyses files: .msf (VS 26/02/19)
 # 2.4.1 Added new export options: variable modifications based on protein sequence + retention time (VS 14/12/18)
 # 2.4.0 Faster form display by moving mapped identifiers detection to user-dependent ajax call (PP 11/04/18)
 # 2.3.8 Export PhosphoRS probabilities (GA 31/01/18)

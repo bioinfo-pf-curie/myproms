@@ -1,6 +1,6 @@
 #!/usr/local/bin/perl -w
 ################################################################################
-# startMotifAnalysis.cgi       1.0.2                                           #
+# startMotifAnalysis.cgi       1.1.0                                           #
 # Authors: P. Poullet, S.Liva  (Institut Curie)         					   #
 # Contact: myproms@curie.fr                                                    #
 # Fetch and provide proteins and parameters for Motif enrichment analysis      #
@@ -47,7 +47,7 @@ use promsConfig;
 use promsMod;
 use promsQuantif;
 use POSIX qw(strftime); # to get the time
-use File::Path qw(make_path remove_tree);
+use File::Path qw(remove_tree);
 
 #######################
 ####>Configuration<####
@@ -57,10 +57,10 @@ my %promsPath=&promsConfig::getServerInfo;
 my $userID=$ENV{'REMOTE_USER'};
 my ($lightColor,$darkColor)=&promsConfig::getRowColors;
 my $dbh=&promsConfig::dbConnect;
-my $expID = param('id_exp');
+my $expID = &promsMod::cleanNumericalParameters(param('id_exp'));
 my $projectID=&promsMod::getProjectID($dbh,$expID,'EXPERIMENT');
 my $ajax = param('AJAX') || "";
-my $idModification=param('modif') || "";
+my $idModification=&promsMod::cleanNumericalParameters(param('modif')) || 0; # 'MODIF' used only when called startExploratoryAnalysis.cgi through AJAX
 
 if ($ajax eq 'displayListModif') {
 	&ajaxDisplayListModif($idModification);
@@ -74,12 +74,13 @@ if (param('submitted')) {
 	print qq
 |<HTML>
 <HEAD>
+<TITLE>Launching Motif Enrichment Analysis</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
 </HEAD>
 <BODY background="$promsPath{images}/bgProMS.gif">
 <CENTER>
 <BR><BR><BR><BR><BR><IMG src="$promsPath{images}/scrollbarGreen.gif">
-<BR><FONT class="title3">Fetching data. Please wait...<BR>|;
+<BR><FONT class="title3">Preparing data. Please wait...|;
 
 	my $centralRes=param('centralRes');#central residu name
 	my $width=param('width');#length of sequence
@@ -122,17 +123,28 @@ if (param('submitted')) {
 
 	my (@selectedQuantifications, %quantifValues, %quantifInfo, %proteinInfo, %proteinForeground, %proteinBackground, %proteinSequence, $minRatio, $maxRatio, $nbTotAA);
 	my %compAA=("G"=>1,"A"=>1,"S"=>1,"P"=>1,"V"=>1,"T"=>1,"C"=>1,"L"=>1,"I"=>1,"N"=>1,"D"=>1,"Q"=>1,"K"=>1,"E"=>1,"M"=>1,"H"=>1,"F"=>1,"R"=>1,"Y"=>1,"W"=>1);#for random sequence
-	my %isoforms=();
+
+	my $sthGetSequence=$dbh->prepare("SELECT ID_MASTER_PROTEIN, PROT_SEQ FROM PROTEIN WHERE ID_PROTEIN=? and ID_PROJECT=$projectID");
+	my $sthGetMasterSeq=$dbh->prepare("SELECT PROT_SEQ FROM MASTER_PROTEIN WHERE ID_MASTER_PROTEIN=?");
 
 	if ($catID) {#list here
-		&fetchProtMod($catID,$idModification,\%isoforms);##fetch and reconstruct isoforms from modification_site
-		foreach my $protID (keys %isoforms) {
-			my ($seq)=&fetchSequence($protID);## sequence
-			$proteinSequence{$protID}=$seq;
-			$proteinForeground{$protID}{$isoforms{$protID}}="";
+		my $sthSelMod=$dbh->prepare("SELECT ID_PROTEIN, GROUP_CONCAT('[',ID_MODIFICATION,']',RESIDUE,POSITION ORDER BY ID_MODIFICATION,POSITION SEPARATOR '.') FROM CATEGORY_PROTEIN CP,MODIFICATION_SITE MS
+										WHERE CP.ID_CATEGORY_PROTEIN=MS.ID_CATEGORY_PROTEIN AND CP.ID_CATEGORY=? GROUP BY CP.ID_CATEGORY_PROTEIN");
+		
+		my %isoforms;
+		&fetchProtMod($catID,$idModification,$sthSelMod,\%isoforms);##fetch and reconstruct isoforms from modification_site
+		foreach my $protModID (keys %isoforms) {
+			my ($protID,$mod)=split(/-/,$protModID);
+			my $protSeq=$proteinSequence{$protID};
+			unless ($protSeq) {
+				$protSeq=&fetchSequence($protID,$sthGetSequence,$sthGetMasterSeq);## sequence
+				$proteinSequence{$protID}=$protSeq;
+			}
+			next unless $protSeq;
+			$proteinForeground{$protID}{$isoforms{$protModID}}=1;
 			if ($bgValue eq "random") {##for future calculation of probability in proteome AA composition
-				my @seqLength=split(//,$seq);
-				for (my $i=0;$i<$#seqLength;$i++) {
+				my @seqLength=split(//,$protSeq);
+				for (my $i=0;$i<=$#seqLength;$i++) {
 					if ($compAA{$seqLength[$i]}) {
 						$compAA{$seqLength[$i]}++;
 						$nbTotAA++;
@@ -140,25 +152,30 @@ if (param('submitted')) {
 				}
 			}
 		}
+		$sthSelMod->finish;
 	}
 
 	if ($bgValue eq "quanti" || ($quantification && $bgValue eq "random")) {##for foreground or background quantification
 		push @selectedQuantifications, $quantification;
-		my %parameters=(QUANTIF_FAMILY=>'RATIO',VIEW=>'list',NUM_PEP_CODE=>'NUM_PEP_USED',QUANTIF_LIST=>\@selectedQuantifications, VERBOSE=>'Y');
+		my %parameters=(QUANTIF_FAMILY=>'RATIO',SEL_MODIF_ID=>$idModification,VIEW=>'list',NUM_PEP_CODE=>'NUM_PEP_USED',QUANTIF_LIST=>\@selectedQuantifications,VERBOSE=>1);
 		&promsQuantif::fetchQuantificationData($dbh,\%parameters,\%quantifInfo,\%quantifValues,\%proteinInfo);
 		$minRatio=$parameters{MIN_RATIO};
 		$maxRatio=$parameters{MAX_RATIO};
 
-		foreach my $protModID (sort{$a cmp $b} keys %quantifValues) {
+		foreach my $protModID (keys %quantifValues) {
 			my ($protID,$mod)=split(/-/,$protModID);
-			my ($protSeq)=&fetchSequence($protID);
-			$proteinSequence{$protID}=$protSeq;
+			my $protSeq=$proteinSequence{$protID};
+			unless ($protSeq) {
+				$protSeq=&fetchSequence($protID,$sthGetSequence,$sthGetMasterSeq);
+				$proteinSequence{$protID}=$protSeq;
+			}
+			next unless $protSeq;
 			if ($bgValue eq "quanti") {##Background quantification
-				$proteinBackground{$protID}{$mod}="";
+				$proteinBackground{$protID}{$mod}=1;
 			}
 			else {##RANDOM calculate AA frequency to build a random sequence
 				my @seqLength=split(//,$protSeq);
-				for (my $i=0;$i<$#seqLength;$i++) {
+				for (my $i=0;$i<=$#seqLength;$i++) {
 					if ($compAA{$seqLength[$i]}) {
 						$compAA{$seqLength[$i]}++;
 						$nbTotAA++;
@@ -173,16 +190,20 @@ if (param('submitted')) {
 				if ($foldChangeType eq "abs") {next if ($quantifValues{$protModID}{$quantification}{'RATIO'} < $foldChange && $quantifValues{$protModID}{$quantification}{'RATIO'} > 1/$foldChange);}
 				elsif ($foldChangeType eq "up") {next if ($quantifValues{$protModID}{$quantification}{'RATIO'} < $foldChange);}
 				else {next if ($quantifValues{$protModID}{$quantification}{'RATIO'} > 1/$foldChange);}
-				$proteinForeground{$protID}{$mod}=""; ##Foreground
+				$proteinForeground{$protID}{$mod}=1; ##Foreground
 			}
 		}
 	}
+	$sthGetMasterSeq->finish;
+	$sthGetSequence->finish;
 
 	###>Config<####
 	mkdir "$promsPath{tmp}" unless -e "$promsPath{tmp}";
 	mkdir "$promsPath{explorAna}/project_$projectID" unless -e "$promsPath{explorAna}/project_$projectID";
-	mkdir "$promsPath{tmp}/motifX" unless -e "$promsPath{tmp}/motifX";
-	mkdir "$promsPath{tmp}/motifX/$motifID" unless -e "$promsPath{tmp}/motifX/$motifID";
+	#mkdir "$promsPath{tmp}/motifX" unless -e "$promsPath{tmp}/motifX";
+	&promsMod::cleanDirectory("$promsPath{tmp}/motifX",'1d'); # creates directory if not exists
+	remove_tree("$promsPath{tmp}/motifX/$motifID") if -e "$promsPath{tmp}/motifX/$motifID";
+	mkdir "$promsPath{tmp}/motifX/$motifID";
 
 	if ($bgValue eq "random") {##calculate the probability of AA in our data to generate proteome random sequence.
 		my $tmpMotifPath="$promsPath{tmp}/motifX/$motifID";
@@ -193,8 +214,8 @@ if (param('submitted')) {
 		close(COMP);
 	}
 
-	##launch createMotifFile function, create files with sequence for foreground and background
-	my $return=&createMotifFile(\%proteinBackground, \%proteinForeground, \%quantifInfo, \%proteinSequence, $width, $indexPos, $centralRes, $motifID, $bgValue,$catID);
+	##launch createMotifFiles function, create files with sequence for foreground and background
+	my $return=&createMotifFiles(\%proteinBackground, \%proteinForeground, \%quantifInfo, \%proteinSequence, $width, $indexPos, $centralRes, $motifID, $bgValue,$catID);
 	$dbh->disconnect;
 #print qq|launchMotifEnrichmentAnalyses.pl $motifID $projectID $centralRes $occurence $pvalCutoff $bgValue $width $randomNbSeq|;
 #	exit;
@@ -208,7 +229,7 @@ if (param('submitted')) {
 			system "./launchMotifEnrichmentAnalyses.pl $motifID $projectID $centralRes $occurence $pvalCutoff $bgValue $width $randomNbSeq 2> $promsPath{tmp}/motifX/$motifID/error.txt";
 			exit;
 		}
-	print qq
+		print qq
 |<SCRIPT LANGUAGE="JavaScript">
 top.promsFrame.selectedAction = 'summary';
 parent.itemFrame.location="$promsPath{cgi}/openProject.cgi?ACT=experiment&EXPERIMENT=experiment:$expID&branchID=motifanalysis:$motifID&VIEW=functAna";
@@ -223,22 +244,35 @@ parent.itemFrame.location="$promsPath{cgi}/openProject.cgi?ACT=experiment&EXPERI
 
 ##To create select menu for modification and fetch all residues who belongs to modification
 my (%allModif,%modifInfo);
-my $sthSelModif=$dbh->prepare("SELECT M.ID_MODIFICATION,M.PSI_MS_NAME, M.INTERIM_NAME, M.SYNONYMES, M.SPECIFICITY FROM PROJECT_MODIFICATION PM, MODIFICATION M
-								WHERE PM.ID_MODIFICATION=M.ID_MODIFICATION and ID_PROJECT=? ");
-my $sthSpecificity=$dbh->prepare("select DISTINCT(SPECIFICITY) from SAMPLE S, ANALYSIS A , ANALYSIS_MODIFICATION AM
-								 where S.ID_EXPERIMENT=? and S.ID_SAMPLE=A.ID_SAMPLE and A.ID_ANALYSIS = AM.ID_ANALYSIS and ID_MODIFICATION=?");
+my $sthSelModif=$dbh->prepare("SELECT M.ID_MODIFICATION,M.PSI_MS_NAME, M.INTERIM_NAME, M.SYNONYMES FROM PROJECT_MODIFICATION PM, MODIFICATION M
+								WHERE PM.ID_MODIFICATION=M.ID_MODIFICATION AND ID_PROJECT=?");
+my $sthSpecificity=$dbh->prepare("SELECT DISTINCT(SPECIFICITY) FROM SAMPLE S, ANALYSIS A, ANALYSIS_MODIFICATION AM
+								 WHERE S.ID_EXPERIMENT=? AND S.ID_SAMPLE=A.ID_SAMPLE AND A.ID_ANALYSIS = AM.ID_ANALYSIS AND ID_MODIFICATION=?");
+my $sthSiteQuantif=$dbh->prepare("SELECT DISTINCT QUANTIF_ANNOT FROM QUANTIFICATION Q,DESIGN D WHERE Q.ID_DESIGN=D.ID_DESIGN AND D.ID_EXPERIMENT=$expID AND ID_MODIFICATION=?");
+
 $sthSelModif->execute($projectID);
-while(my ($modifID, $psiName, $interName, $synonymes, $specificity)=$sthSelModif->fetchrow_array) {
-	my $strgName= ($psiName)? $psiName : ($interName)? $interName : (split(/##/,$synonymes))[0];
+while(my ($modifID, $psiName, $interName, $synonymes)=$sthSelModif->fetchrow_array) {
+	my $strgName= ($psiName)? $psiName : ($interName)? $interName : (split(/##/,$synonymes))[1]; # '##xxx##yyyy##
 	my @modifRes;
 	$sthSpecificity->execute($expID,$modifID);
 
 	while (my ($spec)=$sthSpecificity->fetchrow_array) {
 		foreach my $res (split/[,;]/,$spec) {
-			next if ($res eq "=" || $res eq "-" || $res eq "\*");
+			next if $res !~/\w/; # skip terminal modifs
 			push @modifRes, $res;
 		}
 	}
+	unless (scalar @modifRes) {
+		$sthSiteQuantif->execute($modifID); # Check for dynamic site creation
+		my %siteRes;
+		while (my ($quantifAnnot)=$sthSiteQuantif->fetchrow_array) {
+			if ($quantifAnnot=~/CREATE_PTM=(\w)/) {
+				$siteRes{$1}=1;
+			}
+		}
+		@modifRes=keys %siteRes;
+	}
+	next unless scalar @modifRes;
 	my $strgModifRes = join("",@modifRes);
 	$modifInfo{$modifID}=[$strgName,$strgModifRes];
 	$allModif{$modifID}=$strgName;
@@ -254,17 +288,18 @@ warningsToBrowser(1);
 print qq
 |<HTML>
 <HEAD>
+<TITLE>Starting Motif Enrichment Analysis</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
 <STYLE type="text/css">
-	TD {font-size:13px;font-weight:bold;}
+	TD {font-size:12px;font-weight:bold;}
+	UL {margin:0;padding:2px 15px 2px 15px;}
 </STYLE>
 <SCRIPT LANGUAGE="JavaScript">
-var modifInfo = {};|;
-	foreach my $modID (sort{$a <=> $b} keys %modifInfo) {
-		print "modifInfo[$modID]='$modifInfo{$modID}[1]';\n";
-	}
-
-
+var modifInfo = {};
+|;
+foreach my $modID (sort{$a <=> $b} keys %modifInfo) {
+	print "modifInfo[$modID]='$modifInfo{$modID}[1]';\n";
+}
 print qq|
 //AJAX
 var XHR = null;
@@ -290,35 +325,32 @@ function getXMLHTTP() {
     return xhr;
 }
 
-function displayForegroundMenu (modID) {
+function displayForegroundMenu(modID) {
 	var quantifDiv=document.getElementById('displayQuantif');
-	if (!modID) {
-		document.getElementById('listOption').style.display= 'none';
-		document.getElementById('listQuantif').style.display= 'none';
-		document.getElementById('FG_FILTER').style.display= '';
-		document.getElementById('optionMenu').selectedIndex = "";
-		quantifDiv.innerHTML='<input type="radio" name="background" id="quant" value="quanti">&nbsp;quantification selected&nbsp;<br>'
-		return;
-	}
-	document.getElementById('listOption').style.display ='block';
-
-}
-
-
-function ajaxDisplayData(item) {
-
-	var quantifDiv=document.getElementById('displayQuantif');
-
-	if (!item) {
-		document.getElementById('listQuantif').style.display= 'none';
-		document.getElementById('FG_FILTER').style.display= '';
-		quantifDiv.innerHTML='<input type="radio" name="background" id="quant" value="quanti">&nbsp;quantification selected&nbsp;<br>'
-		return;
+	var optMenu=document.getElementById('optionMenu');
+	
+	if (modID) {
+		optMenu.disabled = false;
 	}
 	else {
-		document.getElementById('listQuantif').style.display= '';
+		optMenu.disabled = true;
+		optMenu.selectedIndex = 0;
+		
 	}
+	ajaxDisplayData(optMenu.value);
+}
 
+function ajaxDisplayData(item) {
+	var quantifDiv=document.getElementById('displayQuantif');
+	if (item) {
+		document.getElementById('listQuantif').style.display='';
+	}
+	else {
+		document.getElementById('listQuantif').style.display= 'none';
+		document.getElementById('FG_FILTER').style.display= 'none';
+		quantifDiv.innerHTML='<INPUT type="radio" name="background" id="quant" value="quanti">&nbsp;quantification selected&nbsp;<BR>'
+		return;
+	}
 	var modID=document.getElementById('modif').value;
 	createOptionResidues(modID);
 
@@ -334,34 +366,32 @@ function ajaxDisplayData(item) {
 	if ( !XHR ) {
 		return false;
 	}
-	var listDiv=document.getElementById('listQuantif');
-	listDiv.innerHTML = '';
+	var listSpan=document.getElementById('listQuantif');
+	listSpan.innerHTML = '&nbsp;Fetching data...';
 
 	if (item == "quantification") {
 		if (document.getElementById('FG_FILTER').style.display == 'none') {document.getElementById('FG_FILTER').style.display='';}
 		XHR.open("GET","./startExploratoryAnalysis.cgi?AJAX=displaySelect&MODIF="+modID+"&QUANTIF_FAM=RATIO&ID=$expID&CALL=motif",true);
 		XHR.onreadystatechange=function() {
 			if (XHR.readyState == 4 && XHR.responseText) {
-					listDiv.innerHTML=XHR.responseText;
+				listSpan.innerHTML='&nbsp;'+XHR.responseText;
 			}
 		}
 		XHR.send(null);
-		quantifDiv.innerHTML='<input type="radio" name="background" id="quant" value="quanti">&nbsp;quantification selected&nbsp;<br>'
+		quantifDiv.innerHTML='<INPUT type="radio" name="background" id="quant" value="quanti">&nbsp;quantification selected&nbsp;<BR>'
 	}
 	else {
 		//if (document.getElementById('FG_FILTER').style.display = ''){document.getElementById('FG_FILTER').style.display='none';}
 		document.getElementById('FG_FILTER').style.display='none';
 
-		XHR.open("GET","./startMotifAnalysis.cgi?AJAX=displayListModif&MODIF="+modID+"&id_exp=$expID",false);
+		XHR.open("GET","./startMotifAnalysis.cgi?AJAX=displayListModif&modif="+modID+"&id_exp=$expID",false);
 		XHR.onreadystatechange=function() {
 			if (XHR.readyState == 4 && XHR.responseText) {
-					listDiv.innerHTML=XHR.responseText;
+					listSpan.innerHTML='&nbsp;'+XHR.responseText;
 			}
 		}
-
 		XHR.send(null);
 		ajaxDisplayBackground(modID);
-
 	}
 }
 
@@ -384,48 +414,52 @@ function ajaxDisplayBackground (modID) {
 	XHR.open("GET","./startExploratoryAnalysis.cgi?AJAX=displaySelect&MODIF="+modID+"&QUANTIF_FAM=RATIO&ID=$expID&CALL=motif",true);
 	XHR.onreadystatechange=function() {
 		if (XHR.readyState == 4 && XHR.responseText) {
-				quantifDiv.innerHTML='<input type="radio" name="background" id="quant" value="quanti">'
+				quantifDiv.innerHTML='<INPUT type="radio" name="background" id="quant" value="quanti">&nbsp;'
 				quantifDiv.innerHTML+=XHR.responseText;
 		}
 	}
 	XHR.send(null);
 }
 
-
 function createOptionResidues(modID) {
-	//console.log('modif='+modID);
 	var centralResSEL = document.motifAnaForm.centralRes;
 	centralResSEL.options.length=0;
 	for (var i=0; i<modifInfo[modID].length; i++) {
-		//console.log(modifInfo[modID][i]);
 		centralResSEL.options[i]=new Option(modifInfo[modID][i],modifInfo[modID][i]);
 	}
-
 }
 
 function checkForm(myForm) {
-
 	if (!myForm.MotifName.value) {
-		alert('Provide a name for Motif Analysis');
+		alert('ERROR: Provide a name for Motif Analysis');
+		return false;
+	}
+	if (!myForm.modif.value) {
+		alert('ERROR: No modification selected');
+		return false;
+	}
+	if (!myForm.optionMenu.value) {
+		alert('ERROR: No foreground option selected');
+		return false;
+	}
+	if (myForm.optionMenu.value == 'quantification' && (!myForm.quantif \|\| !myForm.quantif.value)) {
+		alert('ERROR: No foreground quantification selected');
+		return false;
+	}
+	if (myForm.optionMenu.value == 'list' && (!myForm.listMenu \|\| !myForm.listMenu.value)) {
+		alert('ERROR: No foreground list selected');
+		return false;
+	}
+	if (!myForm.background[0].checked && !myForm.background[1].checked) {
+		alert('ERROR: No background option selected');
+		return false;
+	}
+	if (myForm.optionMenu.value=='list' && document.getElementById('quant').checked && !myForm.quantif.value) {
+		alert('ERROR: No background quantification selected');
 		return false;
 	}
 
-	if (myForm.optionMenu.value == 'quantification' && !myForm.quantif.value) {
-		alert('Choose a foreground');
-		return false;
-	}
-
-	if (myForm.optionMenu.value=='list') {
-		if (myForm.quant.checked && myForm.quantif.value=="") {
-			alert('Choose a background');
-			return false;
-		}
-	}
-
-	if (!myForm.rand.checked && !myForm.quant.checked) {
-		alert('Choose a background');
-		return false;
-	}
+	return true;
 }
 
 </SCRIPT>
@@ -436,78 +470,68 @@ function checkForm(myForm) {
 <INPUT type="hidden" name="id_exp" value="$expID">
 <TABLE border="0" bgcolor="$darkColor" >
 	<TR>
-		<TH align="right" nowrap>Motif Analysis Name :</TH>
+		<TH align="right" nowrap>Name :</TH>
 		<TD bgcolor=$lightColor><INPUT type="text" name="MotifName" size="35" maxlength="50" value=""/>&nbsp;</TD>
 	</TR>
 	<TR>
-		<TH align="right" nowrap>Modifications :</TH>
+		<TH align="right" class="title2" nowrap>Modification :</TH>
 		<TD bgcolor=$lightColor>
-		  <SELECT  name="modif" id="modif" onchange="displayForegroundMenu(this.value)">
-			<OPTION value="">==Select==</OPTION>|;
-			foreach my $modID (keys %allModif) {
-				print qq|<OPTION value="$modID">$allModif{$modID}</OPTION>|;
-			}
-			print qq|
-		  </SELECT>
+		  <SELECT  name="modif" id="modif" class="title2" onchange="displayForegroundMenu(this.value)">
+			<OPTION value="">-= Select =-</OPTION>|;
+foreach my $modID (keys %allModif) {
+	print "<OPTION value=\"$modID\">$allModif{$modID}</OPTION>\n";
+}
+print qq
+|		  </SELECT>
 		</TD>
 	</TR>
 	<TR >
-		<TH align="right" nowrap>Foreground Selection :</TH>
+		<TH align="right" nowrap>Foreground selection :</TH>
 		<TD bgcolor=$lightColor nowrap>
-			<DIV id="listOption" style="display:none;float:left">
-				<SELECT name="optionMenu" id="optionMenu" onchange="ajaxDisplayData(this.value)">
-				<OPTION value="">-=Select=-</OPTION>
-				<OPTION value="quantification">Quantification</OPTION>
-				<OPTION value="list">List</OPTION>
-				</SELECT>
-			</DIV>
-			<DIV id="listQuantif" style="overflow:hidden">
-			</DIV>
+			<SELECT name="optionMenu" id="optionMenu" onchange="ajaxDisplayData(this.value)" disabled>
+			<OPTION value="">-= Select =-</OPTION>
+			<OPTION value="quantification">Quantification</OPTION>
+			<OPTION value="list">Site list</OPTION>
+			</SELECT>
+			<SPAN id="listQuantif" style="display:none"></SPAN>
 		</TD>
 	</TR>
-	<TR id="FG_FILTER" >
+	<TR id="FG_FILTER" style="display:none">
 		<TH valign="top" align="right" nowrap >Foreground filtering :</TH>
 		<TD valign="top" nowrap bgcolor=$lightColor >
-			Ratio&nbsp;
+			<UL>
+				<LI>Ratio&nbsp;
 			<SELECT name="foldChgType">
 				<OPTION value="abs">Up &ge; or Down &le; 1/</OPTION>
 				<OPTION value="up">Up &ge;</OPTION>
 				<OPTION value="down">Down &le; 1/</OPTION>
-			</SELECT>
-
-			<INPUT type="text" name="foldChange" value="2" size=2>
-			&nbsp;<input type="checkbox" name="infiniteRatio" value="1">Exclude infinite ratios
-			<br>
-			p-value &le;&nbsp;&nbsp;<INPUT type="text" name="pValue" value="0.01" size="5">
+			</SELECT><INPUT type="text" name="foldChange" value="2" size=2></LI>
+				<LI>p-value &le;&nbsp;&nbsp;<INPUT type="text" name="pValue" value="0.01" size="5"></LI>
+				<LI><INPUT type="checkbox" name="infiniteRatio" value="1">Exclude infinite ratios</LI>
+			</UL>
 		</TD>
-
 	</TR>
 	<TR>
-		<TH align=right nowrap>Central residue :</TH>
-		<TD bgcolor=$lightColor><SELECT NAME="centralRes"><!-- *Updated by JavaScript* --></SELECT></TD>
-	</TR>
-	<TR>
-		<TH align=right nowrap>Width :</TH><TD bgcolor=$lightColor><INPUT type="number" name="width" min="1" step="2" value="11"></TD>
-	</TR>
-	<TR>
-		<TH align=right nowrap>Min. Occurrence :</TH><TD bgcolor=$lightColor><INPUT type="number" name="occurence" min="5"  value="20"></TD>
-	</TR>
-	<TR>
-		<TH align=right nowrap>Significance :</TH><TD bgcolor=$lightColor><INPUT type="text"   name="significance" value="0.000001" max="0.0005" ></TD>
-	</TR>
-	<TR>
-		<TH valign=top nowrap>Background Selection :</TH>
+		<TH valign=top nowrap>&nbsp;Background selection :</TH>
 		<TD align=left nowrap bgcolor=$lightColor>
-
 		<DIV id="displayQuantif">
-			<input type="radio" name="background" id="quant" value="quanti">&nbsp;quantification selected&nbsp;<br>
+			<INPUT type="radio" name="background" id="quant" value="quanti">&nbsp;quantification selected&nbsp;<br>
 		</DIV>
-		<input type="radio" name="background" id="rand" value="random">&nbsp;Random&nbsp;
-		<input type="text" name="seq" value="100000">&nbsp;&nbsp;sequences
+		<INPUT type="radio" name="background" id="rand" value="random">&nbsp;<input type="text" name="seq" value="100000">&nbsp;Random sequences
 		</TD>
 	</TR>
 	<TR>
-		<TD colspan="2" align="center"><INPUT type="submit" name="submitted" value="Run Motif Analysis"></TD>
+		<TH align=right valign="top" nowrap>Motif properties :</TH><TD bgcolor=$lightColor>
+		<UL>
+			<LI>Central residue :<SELECT NAME="centralRes"><!-- *Updated by JavaScript* --></SELECT></LI>
+			<LI>Width :<INPUT type="number" name="width" min="7" max="17" step="2" value="11" style="width:45px"></LI>
+			<LI>Min. occurrence :<INPUT type="number" name="occurence" min="5"  value="20" style="width:45px"></LI>
+			<LI>Significance :<INPUT type="text" name="significance" value="0.000001" max="0.0005" ></LI>
+		</UL>
+		</TD>
+	</TR>
+	<TR>
+		<TD colspan="2" align="center"><INPUT type="submit" name="submitted" value="Run Analysis"></TD>
 	</TR>
 </TABLE>
 </FORM>
@@ -515,7 +539,7 @@ function checkForm(myForm) {
 </BODY>
 |;
 
-sub createMotifFile {
+sub createMotifFiles {
 
 	my ($refBackProt, $refForeProt, $refInfo ,$refSequence, $width, $indexPos, $centralRes, $motifID, $backVal, $idCat)=@_;
 	#print header(-'content-encoding'=>'no',-charset=>'UTF-8');
@@ -525,26 +549,32 @@ sub createMotifFile {
 	##create file with list of analysis_id for displayMotifAnalysis.cgi script
 	open (ANA, ">$tmpMotifPath/analysisList.txt");
 	if (!$idCat) {
-		foreach my $quantifID (sort{ $refInfo->{$a}[5] <=> $refInfo->{$b}[5]} keys $refInfo) {
-			print ANA  @{$refInfo->{$quantifID}}[5];
+		foreach my $quantifID (sort{ $refInfo->{$a}[5] <=> $refInfo->{$b}[5]} keys %{$refInfo}) { # only 1 quantifID
+			print ANA @{$refInfo->{$quantifID}}[5];
 		}
 	}
 	else {
-		my $sthSelAnaProt=$dbh->prepare("SELECT ID_ANALYSIS FROM ANALYSIS_PROTEIN WHERE ID_PROTEIN=? LIMIT 0,1");
 		my @anaTab;
-		foreach my $protID (keys $refForeProt) {
-		$sthSelAnaProt->execute($protID);
-			my ($anaID)=$sthSelAnaProt->fetchrow_array;
-			push @anaTab, $anaID;
+		#my $sthSelAnaProt=$dbh->prepare("SELECT ID_ANALYSIS FROM ANALYSIS_PROTEIN WHERE ID_PROTEIN=? LIMIT 1");
+		#foreach my $protID (keys %{$refForeProt}) {
+		#	$sthSelAnaProt->execute($protID);
+		#	my ($anaID)=$sthSelAnaProt->fetchrow_array;
+		#	push @anaTab, $anaID;
+		#}
+		my $sthSelAnaExp=$dbh->prepare("SELECT ID_ANALYSIS FROM ANALYSIS A,SAMPLE S WHERE A.ID_SAMPLE=S.ID_SAMPLE AND ID_EXPERIMENT=? ORDER BY ID_ANALYSIS");
+		$sthSelAnaExp->execute($expID);
+		while (my ($anaID)=$sthSelAnaExp->fetchrow_array) {
+			push @anaTab,$anaID;
 		}
+		$sthSelAnaExp->finish;
 		print ANA join(",",@anaTab);
 	}
-	close(ANA);
+	close ANA;
 
 	if ($backVal eq "quanti") {#pour le background QUANTI
 		open(MOTIF,">$tmpMotifPath/backgroundQuanti.txt");
 		my %checkBackIsoforms;
-		foreach my $protID (sort{$a <=> $b} keys $refBackProt) {
+		foreach my $protID (sort{$a <=> $b} keys %{$refBackProt}) {
 			my $sequence=$refSequence->{$protID};
 			foreach my $modRes (keys %{$refBackProt->{$protID}}) {
 				my @seqLength=split(//,$sequence);
@@ -625,11 +655,11 @@ sub createMotifFile {
 		close(MOTIF);
 	}
 
-	if (keys $refForeProt) {#FOREGROUND
+	if (keys %{$refForeProt}) {#FOREGROUND
 		open(PROT_INFO,">$tmpMotifPath/foreground_protein.txt");
 		open(MOTIF,">$tmpMotifPath/foreground_sequence.txt");
 		my %checkIsoforms;
-		foreach my $protID (sort{$a <=> $b} keys $refForeProt) {
+		foreach my $protID (sort{$a <=> $b} keys %{$refForeProt}) {
 			my $sequence=$refSequence->{$protID};
 			foreach my $modRes (keys %{$refForeProt->{$protID}}) {
 				my @seqLength=split(//,$sequence);
@@ -723,60 +753,66 @@ sub ajaxDisplayListModif {
 	warningsToBrowser(1);
 
 	my ($modificationID) = @_;
-	my (%modif,%checkModif)=();
-	my $sthSelModifSite=$dbh->prepare("SELECT CL.ID_CLASSIFICATION,CL.NAME, CA.ID_CATEGORY, CA.NAME FROM CATEGORY CA, CLASSIFICATION CL
-					   WHERE CL.ID_PROJECT=? and CL.ID_CLASSIFICATION=CA.ID_CLASSIFICATION
-					   AND CA.LIST_TYPE ='SITE'");
-	$sthSelModifSite->execute($projectID);
-	while (my ($idClassification, $className, $idCategory, $catName)=$sthSelModifSite->fetchrow_array) {
-		next if $checkModif{$idClassification}{$idCategory};
-		push @{$modif{$idClassification."#".$className}},$idCategory."#".$catName;
-		$checkModif{$idClassification}{$idCategory}=1;
+	my (%modifList,%classifName); #%checkModif;
+	my $sthSiteList=$dbh->prepare("SELECT CL.ID_CLASSIFICATION,CL.NAME,CA.ID_CATEGORY,CA.NAME  ,COUNT(CP.ID_CATEGORY_PROTEIN) FROM CATEGORY CA,CLASSIFICATION CL ,CATEGORY_PROTEIN CP
+					   WHERE CL.ID_PROJECT=? AND CL.ID_CLASSIFICATION=CA.ID_CLASSIFICATION  AND CA.ID_CATEGORY=CP.ID_CATEGORY
+					   AND CA.LIST_TYPE ='SITE' GROUP BY CA.ID_CATEGORY");
+	my $sthChkList=$dbh->prepare("SELECT 1 FROM MODIFICATION_SITE WHERE ID_MODIFICATION=$modificationID AND ID_CATEGORY=? LIMIT 1");
+	$sthSiteList->execute($projectID);
+	while (my ($idClassification, $className, $idCategory, $catName, $numSites)=$sthSiteList->fetchrow_array) {
+		#next if $checkModif{$idClassification}{$idCategory};
+		$sthChkList->execute($idCategory);
+		my ($okList)=$sthChkList->fetchrow_array;
+		next unless $okList;
+		push @{$modifList{$idClassification}},[$idCategory,$catName,$numSites];
+		$classifName{$idClassification}=$className;
+		#$checkModif{$idClassification}{$idCategory}=1;
 	}
-	print qq|<SELECT name="listMenu" id="listMenu">|;
-	if (!scalar(keys %modif)) {
-		print qq|<OPTION value="">No List</OPTION>|;
-
+	$sthSiteList->finish;
+	$sthChkList->finish;
+	
+	if (scalar(keys %modifList)) {
+		print qq|<SELECT name="listMenu" id="listMenu"><OPTION value="">-= Select =-</OPTION>|;
+		foreach my $classID (sort{lc($classifName{$a}) cmp lc($classifName{$b})} keys %classifName) {
+			print "<OPTGROUP label=\"$classifName{$classID}:\">\n";
+			foreach my $refCat (@{$modifList{$classID}}) {
+				my ($catID,$catName,$size)=@{$refCat};
+				print "<OPTION value=\"$catID\">$catName [$size sites]</OPTION>\n";
+			}
+			print "</OPTGROUP>\n";
+		}
+		print "</SELECT>\n";
 	}
 	else {
-		foreach my $classStrg (sort{$a cmp $b} keys %modif) {
-			my ($classID, $className)=split(/#/,$classStrg);
-			print qq|<OPTGROUP label="$className">|;
-			foreach my $catStrg (@{$modif{$classStrg}}) {
-				my ($catID, $catName)=split(/#/,$catStrg);
-				print qq|<OPTION value="$catID">$catName</OPTION>|;
-			}
-		}
-
+		print qq|<FONT class="title3" color="#DD0000">No List found</FONT>|;
 	}
-	print qq|</SELECT>|;
-
+	
 }
 
 sub fetchSequence {
-	my ($protID)=@_;
+	my ($protID,$sthGetSequence,$sthGetMasterSeq)=@_;
 
-	my $sthGetSequence=$dbh->prepare("SELECT ID_MASTER_PROTEIN, PROT_SEQ FROM PROTEIN WHERE ID_PROTEIN=? and ID_PROJECT=$projectID");
-	my $sthGetMasterSeq=$dbh->prepare("SELECT PROT_SEQ FROM MASTER_PROTEIN WHERE ID_MASTER_PROTEIN=?");
+	#my $sthGetSequence=$dbh->prepare("SELECT ID_MASTER_PROTEIN, PROT_SEQ FROM PROTEIN WHERE ID_PROTEIN=? and ID_PROJECT=$projectID");
+	#my $sthGetMasterSeq=$dbh->prepare("SELECT PROT_SEQ FROM MASTER_PROTEIN WHERE ID_MASTER_PROTEIN=?");
 
 	$sthGetSequence->execute($protID);
 	my ($masterProtID, $protSeq)=$sthGetSequence->fetchrow_array;
 
-	if ($protSeq eq "+") {
+	if ((!$protSeq || $protSeq eq "+") && $masterProtID) {
 		$sthGetMasterSeq->execute($masterProtID);
-		$protSeq=$sthGetMasterSeq->fetchrow_array;
+		($protSeq)=$sthGetMasterSeq->fetchrow_array;
 	}
 
-	$sthGetMasterSeq->finish;
-	$sthGetSequence->finish;
+	#$sthGetMasterSeq->finish;
+	#$sthGetSequence->finish;
 	return $protSeq;
 }
 
 sub fetchProtMod {
 
-	my ($catID,$modID,$refIsoforms)=@_;
-	my $sthSelMod=$dbh->prepare("SELECT ID_PROTEIN, GROUP_CONCAT('[',ID_MODIFICATION,']',RESIDUE,POSITION ORDER BY ID_MODIFICATION,POSITION SEPARATOR '.') FROM CATEGORY_PROTEIN CP,MODIFICATION_SITE MS
-  WHERE CP.ID_CATEGORY_PROTEIN=MS.ID_CATEGORY_PROTEIN AND CP.ID_CATEGORY=? GROUP BY CP.ID_CATEGORY_PROTEIN");
+	my ($catID,$modID,$sthSelMod,$refIsoforms)=@_;
+#	my $sthSelMod=$dbh->prepare("SELECT ID_PROTEIN, GROUP_CONCAT('[',ID_MODIFICATION,']',RESIDUE,POSITION ORDER BY ID_MODIFICATION,POSITION SEPARATOR '.') FROM CATEGORY_PROTEIN CP,MODIFICATION_SITE MS
+#  WHERE CP.ID_CATEGORY_PROTEIN=MS.ID_CATEGORY_PROTEIN AND CP.ID_CATEGORY=? GROUP BY CP.ID_CATEGORY_PROTEIN");
 	$sthSelMod->execute($catID);
 	while (my ($protID,$modStrg)=$sthSelMod->fetchrow_array) {
 		if ($modStrg=~/^\[$modID\]/) { ##match the modification
@@ -793,13 +829,14 @@ sub fetchProtMod {
 			else { ##Other isoforms
 				$strgIso=$modStrg;
 			}
-			$refIsoforms->{$protID}=$strgIso;
+			$refIsoforms->{$protID.'-'.$modStrg}=$strgIso;
 		}
 	}
 }
 
 
 ####>Revision history<####
+# 1.1.0 Improved check of form submission and code (PP 04/04/19)
 # 1.0.2 change character -> residue (SL 14/03/18)
 # 1.0.1 improve script, add 2 functions fetchSequence, fetchProtMod and available for protein list (24/07/17)
 # 1.0.0 New script for motif enrichment analysis (SL 27/06/17)

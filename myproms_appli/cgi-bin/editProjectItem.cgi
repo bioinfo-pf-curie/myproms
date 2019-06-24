@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# editProjectItem.cgi    3.1.9                                                 #
+# editProjectItem.cgi    3.2.5                                                 #
 # Authors: P. Poullet, G. Arras, F. Yvon, V. Sabatet (Institut Curie)          #
 # Contact: myproms@curie.fr                                                    #
 # Generates the interface allowing                                             #
@@ -47,11 +47,13 @@ $| = 1;
 use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI ':standard';
 use POSIX qw(strftime); # to get the time
+use Time::Piece;
 use Archive::Tar;
 use promsConfig;
 use promsMod;
 use promsQuantif;
 use strict;
+use File::Basename;
 
 #######################
 ####>Configuration<####
@@ -60,7 +62,7 @@ my %promsPath=&promsConfig::getServerInfo;
 my %massSpecType=&promsConfig::getMsType;
 my $maxRank = &promsConfig::getMaxRank;
 my $userID=$ENV{'REMOTE_USER'};
-my $date=strftime("%Y-%m-%d %H:%M:%S",localtime);
+my $date = strftime("%Y-%m-%d %H:%M:%S",localtime);
 
 #print header; warningsToBrowser(1); # DEBUG
 #############################
@@ -75,6 +77,7 @@ my $item=uc(param('ITEM')); # item being processed (child if 'add')
 if ($action eq 'ajaxProteinSummary') {&proteinSummary;}
 elsif ($action eq 'ajaxComputeFDR') {&computeFDR;}
 elsif ($action eq 'downloadSearchFiles') {&downloadSearchFiles;}
+elsif ($action eq 'updateMetadata') { &updateMetadata; }
 my $parentItem=param('PARENT'); # only for add (except PROJECT ($item eq 'PROJECT')? '' : ($item eq 'EXPERIMENT')? 'PROJECT' : ($item eq 'GEL2D' || $item eq 'SAMPLE')? 'EXPERIMENT' : 'SAMPLE'; # for add only
 #my ($item,$parentItem)=($action eq 'add' && $rowID)? (uc(param('CHILD')),param('ITEM')) : (uc(param('ITEM')),undef); # add project: rowID is null;
 my $showParameters=(param('showParam'))? 1 : 0;
@@ -209,17 +212,18 @@ $userWorkgroup='' unless $userWorkgroup;
 ############################
 my $itemID;
 my $itemType=&promsMod::getItemType($item);
+my $itemSubType = &promsMod::cleanParameters(param("TYPE"));
 my @itemInfo;
 if ($action eq 'add') {
 	###>Fetching ParentItem info
-	@itemInfo=&promsMod::getItemInfo($dbh,$parentItem,$rowID) unless $item eq 'PROJECT';
+	@itemInfo=&promsMod::getItemInfo($dbh,$parentItem,$rowID) unless($item eq 'PROJECT');
 
 	###>Completing refItemInfo with item data
 	push @itemInfo,{'ITEM'=>$item,'TYPE'=>$itemType,'ID'=>undef,'NAME'=>''}; # new item id and name are undefined (SPOT->ANALYSIS!)
 }
 else { #if ($action=~/^(edit|summary)\Z/) { #} Edit or Summary
 	$itemID=$rowID;
-	@itemInfo=&promsMod::getItemInfo($dbh,$item,$itemID);
+	@itemInfo=&promsMod::getItemInfo($dbh, ($itemSubType) ? $itemSubType : $item, $itemID);
 }
 my ($projectID,$projectAccess); # not defined for Project addition
 if ($itemInfo[0]{ID}) { # projectID is defined
@@ -249,7 +253,7 @@ elsif ($item eq 'ANALYSIS') {
 		#my $deltaValidTime=($year-$vYear)*525600 + ($month-$vMonth)*45360 + ($mday-$vDay)*1440 + ($hour-$vHour)*60 + ($min-$vMin); # delta time in minutes
 		($missingProteins)=$dbh->selectrow_array("SELECT COUNT(PROTEIN.ID_PROTEIN) FROM PROTEIN,ANALYSIS_PROTEIN WHERE PROTEIN.ID_PROTEIN=ANALYSIS_PROTEIN.ID_PROTEIN AND (MW=0 OR ORGANISM='unknown organism' OR ORGANISM='' OR (PROT_SEQ='-' AND ID_MASTER_PROTEIN IS NOT NULL)) AND ID_ANALYSIS=$itemID");
 		if ($missingProteins) {
-			($selIdentifierType)=$dbh->selectrow_array("SELECT IDENTIFIER_TYPE FROM ANALYSIS_DATABANK AD,DATABANK D WHERE AD.ID_DATABANK=D.ID_DATABANK AND ID_ANALYSIS=$itemID LIMIT 0,1"); # first one only
+			($selIdentifierType)=$dbh->selectrow_array("SELECT IDENTIFIER_TYPE FROM ANALYSIS_DATABANK AD,DATABANK D WHERE AD.ID_DATABANK=D.ID_DATABANK AND ID_ANALYSIS=$itemID LIMIT 1"); # first one only
 			my $sthIT=$dbh->prepare("SELECT DISTINCT DEF_IDENT_TYPE FROM DATABANK_TYPE WHERE DEF_IDENT_TYPE IS NOT NULL");
 			$sthIT->execute;
 			while (my ($idenType)=$sthIT->fetchrow_array) {push @identifierTypes,$idenType;}
@@ -288,14 +292,89 @@ my ($light,$dark)=&promsConfig::getRowColors;
 print qq
 |<HTML>
 <HEAD>
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.4.1/jquery.min.js"></script>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
+<link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.8.2/css/all.css" integrity="sha384-oS3vJWv+0UjzBfQzYUhtDYW+Pj2yciDJxpsK1OYPAYjqT085Qq/1cq5FLXAZQ7Ay" crossorigin="anonymous">
 <STYLE>
 |;
 foreach my $varMod (sort{$a cmp $b} keys %allPostTransModifs) {
 	print ".$allPostTransModifs{$varMod}[2] \{font-weight:bold;$allPostTransModifs{$varMod}[3]\}\n";
 }
-print qq
-|</STYLE>
+print qq |
+	.annot .value, .annot .desc, .meta .name, .meta .desc {
+		display: inline-block;
+	}
+	
+	.annot {
+		padding: 6px;
+	}
+	
+	.meta {
+		margin-top: 15px;
+	}
+	
+	.meta > div {
+		margin-bottom: 5px;
+		display: inline-block;
+	}
+	
+	.annot > div {
+		display: inline-block;
+	}
+	
+	.meta .name {
+		font-weight: bold;
+		text-decoration: underline;
+		font-size: 12.5px;
+	}
+	
+	.meta .desc {
+		font-style: italic;
+	}
+	
+	.annot .desc {
+		font-style: normal;
+	}
+	
+	.annot .value {
+		//min-width: 120px; 
+		padding-right: 15px;
+	}
+
+	.annot .desc {
+		width: 100%;
+	}
+	
+	button.action {
+		width: 25px;
+		height: 15px;
+		font-size: 10px;
+	}
+	
+	.actionsDiv {
+		margin-right: 15px;
+		min-width: 113px;
+	}
+	
+	.imgFile {
+		position: relative;
+		top: 2px;
+	}
+	
+	li.draggable-line {
+		font-size: 11px;
+	}
+	
+	li.annotation-item-row {
+		padding: 1px 0px 3.5px 7px;
+	}
+	
+	#addMetaButton {
+		margin: 5px 0 10px 6px;
+	}
+</STYLE>
+
+<script type="text/javascript" src="$promsPath{html}/js/other/html5sortable.min.js"></script>
 <SCRIPT type="text/javascript">
 var popupWin;
 function closeWindow() {
@@ -305,10 +384,33 @@ function closeWindow() {
 		}
 	}
 }
+
+// AJAX --->
+function getXMLHTTP() {
+	var xhr=null;
+	if(window.XMLHttpRequest) {// Firefox & others
+		xhr = new XMLHttpRequest();
+	}
+	else if(window.ActiveXObject){ // Internet Explorer
+		try {
+		  xhr = new ActiveXObject("Msxml2.XMLHTTP");
+		} catch (e) {
+			try {
+				xhr = new ActiveXObject("Microsoft.XMLHTTP");
+			} catch (e1) {
+				xhr = null;
+			}
+		}
+	}
+	else { // XMLHttpRequest not supported by browser
+		alert("Your browser does not support XMLHTTPRequest objects...");
+	}
+	return xhr;
+}
 |;
 if ($action eq 'summary') {
 	print qq
-|// AJAX --->
+|
 var proteinSummary=false; // flag for displayed or not protein summary
 function ajaxProteinSummary() {
 	if (proteinSummary) return; // in case called by setTimeout but already called by user
@@ -353,27 +455,7 @@ function ajaxComputeFDR() {
 	}
 	XHR.send(null);
 }
-function getXMLHTTP() {
-	var xhr=null;
-	if(window.XMLHttpRequest) {// Firefox & others
-		xhr = new XMLHttpRequest();
-	}
-	else if(window.ActiveXObject){ // Internet Explorer
-		try {
-		  xhr = new ActiveXObject("Msxml2.XMLHTTP");
-		} catch (e) {
-			try {
-				xhr = new ActiveXObject("Microsoft.XMLHTTP");
-			} catch (e1) {
-				xhr = null;
-			}
-		}
-	}
-	else { // XMLHttpRequest not supported by browser
-		alert("Your browser does not support XMLHTTPRequest objects...");
-	}
-	return xhr;
-}
+
 // <--- AJAX
 |;
 }
@@ -388,7 +470,7 @@ else {
 	}
 	print qq
 |function checkForm(myForm) {
-	if (!myForm.name.value) {
+	if ((myForm.name && !myForm.name.value) && (myForm.metaName && !myForm.metaName.value) && (myForm.ANNOT_VALUE && !myForm.ANNOT_VALUE.value)) {
 		alert('Type a name for this $itemType.');
 		return false;
 	}
@@ -482,8 +564,8 @@ else {
 #	doc.close;
 #}
 	print qq
-|function cancelAction() {
-	top.promsFrame.selectedAction='summary'; // set default action to 'summary'
+|function cancelAction(fallback) {
+	top.promsFrame.selectedAction=fallback; // set default action to 'summary'
 	top.promsFrame.optionFrame.selectOption();
 }
 |;
@@ -552,21 +634,136 @@ if ($action eq 'edit') {
 	var newSampVis=(sampID==-1)? 'visible' : 'hidden';
 	document.getElementById('newSample').style.visibility=newSampVis;
 }
-/*
-function changeQuantification() {
-	alert('New quantification will be applied when data will be send to biologist');
+
+function delMetadataRow(row) {
+	var parent = row.parentNode;
+	
+	parent.removeChild(row);
+	
+	var nbChilds = parent.children.length;
+	if(nbChilds == 0 && parent.classList.contains("meta-annotation-list")) {
+		var metaRow = parent.parentNode;
+		metaRow.parentNode.removeChild(metaRow);
+	}
 }
-*/
+
+function activateSortableMetadata() {
+	sortable('.js-sortable', {
+		"items": ":not(.disabled)",
+		"connectWith": null,
+		"disableIEFix": null,
+		"acceptFrom": null,
+		"copy": false,
+		"placeholder": null,
+		"placeholderClass": "border border-orange mb1",
+		"draggingClass": "sortable-dragging",
+		"hoverClass": false,
+		"debounce": 0,
+		"throttleTime": 100,
+		"maxItems": 0,
+		"customDragImage": null,
+		"forcePlaceholderSize": true
+	});
+	
+	sortable('.js-sortable-inner', {
+		"items": ":not(.disabled)",
+		"connectWith": null,
+		"disableIEFix": null,
+		"acceptFrom": null,
+		"copy": false,
+		"placeholder": null,
+		"placeholderClass": "border border-orange mb1",
+		"draggingClass": "sortable-dragging",
+		"hoverClass": false,
+		"debounce": 0,
+		"throttleTime": 100,
+		"maxItems": 0,
+		"customDragImage": null,
+		"forcePlaceholderSize": true
+	});
+	
+	var annotationsSubLists = document.getElementsByClassName('js-sortable-inner');
+	setUpdateMetadataAjax(annotationsSubLists, "sub");
+	
+	var annotationsGlobalLists = document.getElementsByClassName('js-sortable');
+	setUpdateMetadataAjax(annotationsGlobalLists, "global");
+}
+
+function setUpdateMetadataAjax(items, type) {
+	for(var i = 0; i < items.length; i++) {
+		items[i].addEventListener('sortstop', function (e) {
+			var element = e.detail.item
+			var parent = element.parentNode;
+			var currentIndex = 1;
+			var positions = "";
+			for(var y=0; y < parent.children.length; y++) {
+				if(y != 0) {
+					positions += ",";
+				}
+				var currentElementId = parent.children[y].dataset.id;
+				positions += currentElementId + ":" + currentIndex;
+				currentIndex++;
+			}
+			
+			var XHR = getXMLHTTP();
+			XHR.onreadystatechange=function () {
+				if(XHR.readyState==4 && XHR.responseText ) {
+					console.log("Updated all annotations for metadata " + parent.dataset.id);
+				}
+			}
+			XHR.open("GET", "$promsPath{cgi}/editProjectItem.cgi?ITEM=$item&ID=$itemID&ACT=updateMetadata&metaType=" + type + "&positions=" + positions, true);
+			XHR.send(null);
+		});
+	}
+}
+
+window.onload = activateSortableMetadata;
 |;
 }
 
-print qq
-|function editBranch(action) {
-	if (action=='end' && !confirm('Ending Project will also end all on-going Analysis validations. Proceed?')) {return;}
-	else if (action=='archive' && !confirm('Archiving will disable access to Project. Proceed?')) {return;}
-	else if (action=='continue' && !confirm('Continue Project?')) {return;}
-	window.location="./editBranch.cgi?ITEM=$item&ID=$rowID&ACT="+action;
-}
+print qq |
+	function editBranch(action) {
+		if (action=='end' && !confirm('Ending Project will also end all on-going Analysis validations. Proceed?')) {return;}
+		else if (action=='archive' && !confirm('Archiving will disable access to Project. Proceed?')) {return;}
+		else if (action=='continue' && !confirm('Continue Project?')) {return;}
+		window.location="./editBranch.cgi?ITEM=$item&ID=$rowID&ACT="+action;
+	}
+	
+	function switchFieldType() {
+		var type = document.getElementById("ANNOT_TYPE").value;
+		var valueField = document.getElementById("ANNOT_VALUE");
+		var styleField = '';
+		
+		if(type == 'link' \|\| type == 'text') {
+			styleField = 'width: 541px;';
+		} else if(type == 'image') {
+			type = 'file';
+		} else {
+			styleField = 'width: 250px;';
+		}
+		
+		var html = "<input style='" + styleField + "' id='ANNOT_VALUE' name='ANNOT_VALUE' type='" + type + "' value='' />";
+		
+		valueField.insertAdjacentHTML('afterend', html);
+		valueField.parentNode.removeChild(valueField);
+	}
+	
+	function resetForm() {
+		document.getElementById("addItemForm").reset();
+		switchFieldType();
+		
+		var value = document.getElementById("currentValue").innerHTML;
+		if(value !== null && value !== '') {
+			value = value.substring(11, value.length-1);
+		}
+		
+		var type = document.getElementById("ANNOT_TYPE").value;
+		if(type == "date") {
+			var date = value.split("/");
+			value = date[2] + "-" + date[1] + "-" + date[0];
+		}
+		document.getElementById("ANNOT_VALUE").value = value;
+	}
 </SCRIPT>
 </HEAD>
 <BODY background="$promsPath{images}/bgProMS.gif" onunload="closeWindow()">
@@ -582,7 +779,7 @@ my $actionString=($item eq 'ANALYSIS' && $action eq 'add')? 'storeAnalyses.cgi' 
 
 if ($action ne 'summary') {
 	print qq
-|<FORM name="addItemForm" onsubmit="return(checkForm(this));" method="post" action="$actionString" enctype="multipart/form-data\">
+|<FORM name="addItemForm" id="addItemForm" onsubmit="return(checkForm(this));" method="post" action="$actionString" enctype="multipart/form-data\">
 <INPUT type="hidden" name="ACT" value="$action">
 <INPUT type="hidden" name="ITEM" value="$item">
 |;
@@ -611,7 +808,8 @@ if ($action ne 'summary') {
 	print '<INPUT type="submit" name="save" value=" Save " >',"\n"; # style="color: #A0A0A0; background-color: #FF9999"
 	###>CLEAR button
 	my $resetString=($action eq 'add')? '  Clear  ' : ' Cancel changes ';
-	print "&nbsp;&nbsp;&nbsp;<INPUT type='reset' value='$resetString' >";
+	my $onclickEvent = ($item eq 'METADATA') ? 'resetForm();' : 'reset();';
+	print "&nbsp;&nbsp;&nbsp;<INPUT type='button' value='$resetString' onclick='$onclickEvent'>";
 	###>CANCEL button
 	my $urlString;
 	if ($item eq 'PROJECT' && $action eq 'add') {
@@ -625,7 +823,8 @@ if ($action ne 'summary') {
 		else { # action=edit
 			$selectedItem=$item;
 		}
-		$urlString='cancelAction();';
+		my $cancelFallback = ($item eq 'METADATA') ? 'edit' : 'summary';
+		$urlString="cancelAction('$cancelFallback');";
 	}
 
 	print "&nbsp;&nbsp;&nbsp;<INPUT type=\"button\" value=\"Cancel\" onclick=\"$urlString\" >\n";
@@ -725,7 +924,7 @@ if ($action eq 'edit') { # edit => user is not a guest & project status=0
 			print "<TD><INPUT type=\"button\" value=\"Move $itemType\" style=\"width:170px;\" onclick=\"editBranch('move')\"></TD>\n";
 			print "<TD width=30></TD>\n";
 		}
-		if ($item ne 'ANALYSIS') {
+		if ($item ne 'ANALYSIS' && $item ne 'METADATA') {
 			print "<TD><INPUT type=\"button\" value=\"Delete $itemType\" style=\"width:170px;\" onclick=\"editBranch('delete')\"></TD>";
 		}
 		#elsif ($validStatus==2 && !$metaAna && $fileFormat eq 'MASCOT.DAT' && $decoy !~ /EXT:/ && $projectAccess=~/bioinfo|mass|manag|super/) {
@@ -771,6 +970,7 @@ sub project {
 	@nameText=('Name','Description','Protein visibility','Identifier conversion','Relevant PTMs','Project owner','Workgroup','Start date','Status');
 	push @nameText,('Summary','False discovery') if $action eq 'summary';
 	push @nameText,'Comments';
+	push @nameText,'Metadata' if $action ne 'add';
 	my @protVisText=('A protein is <B>Visible</B> only when <B>Alias</B> of a Match Group.',
 					 'A protein is <B>Visible</B> everywhere if <B>Alias</B> of at least 1 Match Group.',
 					 'A protein is <B>Visible</B> everywhere if <B>Alias</B> or made <B>Visible</B> in at least 1 Match Group.'
@@ -891,6 +1091,7 @@ sub project {
 		push @valueText,$fdrDivString; # [9]
 		$comments=&promsMod::HTMLcompatible($comments);
 		push @valueText,"&nbsp;$comments"; # [10]
+		push @valueText, getMetadata($item, $itemID, $action) if($item ne 'METADATA');
 	}
 	else { # add or edit
 		push @valueText,"<INPUT type='text' name='name' value='$name' size='50' maxlength='50'>";
@@ -978,6 +1179,7 @@ sub project {
 		push @valueText,"&nbsp;$startDate";
 		push @valueText,"&nbsp;<B>$statusStrg</B>";
 		push @valueText,"<TEXTAREA name='comments' rows='5' cols='65' maxlength='250'>$comments</TEXTAREA>";
+		push @valueText, getMetadata($item, $itemID, $action) if ($action eq 'edit' && $item ne 'METADATA');
 	}
 }
 
@@ -985,21 +1187,32 @@ sub project {
 ####<Experiment or Sample>####
 ##############################
 sub experiment_sample {
-	my ($name,$description,$displayPos,$startDate,$comments,$prefSpeciesID,$prefSpeciesStrg);
+	my ($name, $description, $displayPos, $startDate, $comments, $prefSpeciesID, $prefSpeciesStrg);
+	my ($metaName, $metaDes, $annotType, $annotValue, $accessibility) = ('', '', '', '', '');
 	if ($action ne 'add') { # summary or edit
 		@nameText=('Name','Description','Position','Start date');
 		push @nameText,'Preferred species' if $item eq 'EXPERIMENT';
 		push @nameText,('Summary','False discovery') if $action eq 'summary';
 		push @nameText,'Comments';
 		push @nameText,'List' if $action eq 'summary';
-		if ($item eq 'SAMPLE') {($name,$description,$displayPos,$startDate,$comments)=$dbh->selectrow_array("SELECT NAME,DES,DISPLAY_POS,START_DATE,COMMENTS FROM SAMPLE WHERE ID_SAMPLE=$itemID");}
-		else {
+		push @nameText,'Metadata';
+		if ($item eq 'SAMPLE') {($name,$description,$displayPos,$startDate,$comments) = $dbh->selectrow_array("SELECT NAME,DES,DISPLAY_POS,START_DATE,COMMENTS FROM SAMPLE WHERE ID_SAMPLE=$itemID");}
+		elsif($item eq 'METADATA') {
+			@nameText=('Category name','Category description', 'Annot. accessibility', 'Annot. type', 'Annot. value', 'Annot. comments');
+			($metaName, $metaDes, $annotType, $annotValue, $comments, $accessibility) = $dbh->selectrow_array("SELECT NAME, M.DES, ANNOT_TYPE, ANNOT_VALUE, A.DES, ACCESSIBILITY FROM META_ANNOTATION M INNER JOIN ANNOTATION_ITEM A ON A.ID_META_ANNOTATION = M.ID_META_ANNOTATION WHERE ID_ANNOTATION_ITEM=$itemID");
+		} else {
 			($name,$description,$displayPos,$startDate,$comments,$prefSpeciesID,my $speciesSc,my $speciesCom)=$dbh->selectrow_array("SELECT NAME,DES,DISPLAY_POS,START_DATE,COMMENTS,E.ID_SPECIES,SCIENTIFIC_NAME,COMMON_NAME FROM EXPERIMENT E LEFT JOIN SPECIES S ON E.ID_SPECIES=S.ID_SPECIES WHERE ID_EXPERIMENT=$itemID");
 			$prefSpeciesStrg=($prefSpeciesID)? "$speciesSc ($speciesCom)" : 'None';
 		}
 	}
 	else { # add
-		if ($item eq 'EXPERIMENT' || $itemInfo[-2]{'ITEM'} eq 'EXPERIMENT') {
+		if($item eq 'METADATA') {
+			if($itemSubType && $itemSubType eq 'ANNOTATION_ITEM') {
+				@nameText=('Annot. type', 'Annot. value', 'Annot. comments');
+			} else {
+				@nameText=('Category name', 'Category description', 'Annot. accessibility', 'Annot. type', 'Annot. value', 'Annot. comments');
+			}
+		} elsif ($item eq 'EXPERIMENT' || $itemInfo[-2]{'ITEM'} eq 'EXPERIMENT') {
 			@nameText=('Name','Multiple entries labels','Description','Start date');
 			push @nameText,'Preferred species' if $item eq 'EXPERIMENT';
 			push @nameText,'Comments';
@@ -1009,6 +1222,7 @@ sub experiment_sample {
 		}
 		$startDate=$date;
 	}
+	
 	($name,$description,$comments)=&promsMod::chkDef($name,$description,$comments);
 	$startDate=&promsMod::formatDate($startDate);
 	if ($action eq 'summary') {
@@ -1024,8 +1238,9 @@ sub experiment_sample {
 			#		$pcMapped=1*(sprintf "%.1f",($numMapped/$totProt)*100);
 			#	}
 			#}
-			my $pepModifStrg=($hasValidAna)? "&nbsp;".&getPtmDistributionButton."&nbsp;" : '';
-			my $anaString=($numAna>1)? "<TH align=right>&nbsp;$numAna</TH><TH align=left>&nbsp;Analyses$pepModifStrg</TH>" : "<TH align=right>&nbsp;$numAna</TH><TH align=left>&nbsp;Analysis$pepModifStrg</TH>";
+			my $pepModifStrg = ($hasValidAna)? getPtmDistributionButton() : '';
+			my $exportAnalysisStrg = ($hasValidAna) ? getExportAnalysisButton() : '';
+			my $anaString=($numAna>1)? "<TH align=right>&nbsp;$numAna</TH><TH align=left>&nbsp;Analyses $pepModifStrg $exportAnalysisStrg</TH>" : "<TH align=right>&nbsp;$numAna</TH><TH align=left>&nbsp;Analysis $pepModifStrg $exportAnalysisStrg</TH>";
 			#my $sStrg=($visProt>1)? 's' : '';
 			#my $protString="<TH align=right>&nbsp;$visProt</TH><TH align=left>&nbsp;Protein$sStrg ($totProt max)";
 			#$protString.="&nbsp;".&getAmbiguityButton."&nbsp;".&getConflictButton if $totProt;
@@ -1060,8 +1275,9 @@ sub experiment_sample {
 			my $gel2dString=($numGel2D>1)? "<TH align=right>&nbsp;$numGel2D</TH><TH align=left>&nbsp;2D Gels</TH>" : "<TH align=right>&nbsp;$numGel2D</TH><TH align=left>&nbsp;2D Gel</TH>";
 			my $spotString=($numSpot>1)? "<TH align=right>&nbsp;$numSpot</TH><TH align=left>&nbsp;Spots</TH>" : "<TH align=right>&nbsp;$numSpot</TH><TH align=left>&nbsp;Spot</TH>";
 			my $sampString=($numSamp>1)? "<TH align=right>&nbsp;$numSamp</TH><TH align=left>&nbsp;Samples</TH>" : "<TH align=right>&nbsp;$numSamp</TH><TH align=left>&nbsp;Sample</TH>";
-			my $pepModifStrg=($hasValidAna)? "&nbsp;".&getPtmDistributionButton."&nbsp;" : '';
-			my $anaString=($numAna>1)? "<TH align=right>&nbsp;$numAna</TH><TH align=left>&nbsp;Analyses$pepModifStrg</TH>" : "<TH align=right>&nbsp;$numAna</TH><TH align=left>&nbsp;Analysis$pepModifStrg</TH>";
+			my $pepModifStrg = ($hasValidAna) ? getPtmDistributionButton() : '';
+			my $exportAnalysisStrg = ($hasValidAna) ? getExportAnalysisButton() : '';
+			my $anaString=($numAna>1)? "<TH align=right>&nbsp;$numAna</TH><TH align=left>&nbsp;Analyses $pepModifStrg $exportAnalysisStrg</TH>" : "<TH align=right>&nbsp;$numAna</TH><TH align=left>&nbsp;Analysis $pepModifStrg $exportAnalysisStrg</TH>";
 			#my $sStrg=($visProt>1)? 's' : '';
 			#my $protString="<TH align=right>&nbsp;$visProt</TH><TH align=left>&nbsp;Protein$sStrg ($totProt max)";
 			#$protString.="&nbsp;".&getAmbiguityButton."&nbsp;".&getConflictButton if $totProt;
@@ -1101,40 +1317,99 @@ sub experiment_sample {
 		push @valueText,"&nbsp;<INPUT type=\"button\" class=\"font11\" value=\"Show item list\" onclick=\"window.location='./selectAnalyses.cgi?callType=list&ID=$item:$itemID'\"/>";
 	}
 	else { # add or edit
-		push @valueText,"<INPUT type='text' name='name' value=\"$name\" size='50' maxlength='50'>";
-		if ($action eq 'add' && ($item eq 'EXPERIMENT' || $itemInfo[-2]{'ITEM'} eq 'EXPERIMENT')) {
-			push @valueText,"<INPUT type='text' name='labels' value='' size='20'/>&nbsp<FONT style=\"font-size:11px\">Use ',' between single values and '-' for range (eg. <B>1,3,5-10</B>).</FONT>"; # labels
-		}
-		push @valueText,"<TEXTAREA name='des' rows='2' cols='65' maxlength='100'>$description</TEXTAREA>";
-		if ($action eq 'edit') {
-			my $parentItem=($item eq 'EXPERIMENT')? 'PROJECT' : 'EXPERIMENT';
-			my ($maxDisplayPos)=$dbh->selectrow_array("SELECT MAX(DISPLAY_POS) FROM $item WHERE ID_$parentItem=(SELECT ID_$parentItem FROM $item WHERE ID_$item=$itemID)");
-			my $positionStrg='<SELECT name="displayPos">';
-			foreach my $pos (1..$maxDisplayPos) {
-				$positionStrg.="<OPTION value=\"$pos\"";
-				$positionStrg.=' selected' if $pos==$displayPos;
-				$positionStrg.=">$pos</OPTION>";
+		if($item eq 'METADATA') {
+			if($action eq 'edit' || !$itemSubType || $itemSubType ne 'ANNOTATION_ITEM') {
+				push @valueText,"<input type='text' name='name' value=\"$metaName\" size='50' maxlength='50' required>";
+				push @valueText, "<textarea name='M.DES' rows='5' cols='65' maxlength='250'>$metaDes</textarea>";
+
+				my @accessibilityValues = ('private', 'bio');
+				push(@accessibilityValues, ('mass', 'bioinfo')) if($projectAccess eq 'bioinfo');
+				push(@accessibilityValues, 'mass') if($projectAccess eq 'mass');
+				my $strAccessibilitySelect = "";
+				$strAccessibilitySelect .= "<select name='ACCESSIBILITY'>";
+				foreach my $accessibilityValue (@accessibilityValues) {
+					my $selected = ($accessibility eq $accessibilityValue) ? 'selected' : '';
+					$strAccessibilitySelect .= "<option value='$accessibilityValue' $selected>".ucfirst($accessibilityValue)."</option>";
+				}
+				$strAccessibilitySelect .= "</select>";
+				push @valueText, $strAccessibilitySelect;
 			}
-			$positionStrg.="</SELECT><INPUT type='hidden' name='oldDisplayPos' value='$displayPos'/>";
-			push @valueText,$positionStrg;
-		}
-		push @valueText,"&nbsp;$startDate";
-		if ($item eq 'EXPERIMENT') {
-			my $sthSpecies=$dbh->prepare("SELECT ID_SPECIES,CONCAT(SCIENTIFIC_NAME,' (',COMMON_NAME,')') FROM SPECIES WHERE IS_REFERENCE=1 ORDER BY SCIENTIFIC_NAME");
-			$sthSpecies->execute;
-			my $speciesSelStrg="<SELECT name=\"prefSpecies\"><OPTION value=\"\">-= Select =-</OPTION>\n";
-			while (my ($spID,$spNames)=$sthSpecies->fetchrow_array) {
-				$speciesSelStrg.="<OPTION value=\"$spID\"";
-				$speciesSelStrg.=' selected' if ($prefSpeciesID && $prefSpeciesID==$spID);
-				$speciesSelStrg.=">$spNames</OPTION>\n";
+			
+			my @annotTypeValues = ('text', 'file', 'image', 'date', 'link', 'number');
+			my $strAnnotTypeSelect = "";
+			$strAnnotTypeSelect .= "<select id='ANNOT_TYPE' name='ANNOT_TYPE' onchange='switchFieldType()'>";
+			$annotType = 'text' if(!$annotType);
+			foreach my $annotTypeValue (@annotTypeValues) {
+				my $selected = ($annotType eq $annotTypeValue) ? 'selected' : '';
+				$strAnnotTypeSelect .= "<option value='$annotTypeValue' $selected>".ucfirst($annotTypeValue)."</option>";
 			}
-			$sthSpecies->finish;
-			$speciesSelStrg.="</SELECT>\n";
-			push @valueText,$speciesSelStrg;
+			$strAnnotTypeSelect .= "</select>";
+			
+			$strAnnotTypeSelect .=  "<input type='hidden' name='PREVIOUS_ID' value=\'".param("PREVIOUS_ID")."'/>" if(param("PREVIOUS_ID"));
+			$strAnnotTypeSelect .=  "<input type='hidden' name='ID' value=\'".param("ID")."'/>" if(param("ID"));
+			$strAnnotTypeSelect .=  "<input type='hidden' name='PARENT_ID' value=\'".param("PARENT_ID")."'/>" if(param("PARENT_ID"));
+			$strAnnotTypeSelect .=  "<input type='hidden' name='PARENT' value=\'".param("PARENT")."'/>" if(param("PARENT"));
+			push @valueText, $strAnnotTypeSelect;
+			
+			my $displayAnnotValue = $annotValue;
+			my $fieldValue = ($annotValue) ? $annotValue : '';
+			my $fieldStyle = "";
+			
+			if($annotType eq 'date') {
+				my $dateFormater = Time::Piece->strptime($annotValue, "%Y-%m-%d");
+				$displayAnnotValue = $dateFormater->strftime("%d/%m/%Y");
+			} elsif($annotType eq 'file' || $annotType eq 'image') {
+				$annotType = 'file';
+				$displayAnnotValue = basename($annotValue);
+				$fieldValue = $displayAnnotValue;
+			} elsif($annotType eq 'link' || $annotType eq 'text') {
+				$annotType = 'text';
+				$fieldStyle = 'width: 541px;';
+				$displayAnnotValue = substr($annotValue, 0, ($annotType eq 'link') ? 30 : 50)."...";
+			}
+			
+			my $currentValue = ($action eq 'edit') ? "(current : $displayAnnotValue)" : "";
+			push @valueText, "<input type='$annotType' style='$fieldStyle' name='ANNOT_VALUE' id='ANNOT_VALUE' value='$fieldValue' /> <span id='currentValue'>$currentValue</span>";
+		} else {
+			push @valueText,"<INPUT type='text' name='name' value=\"$name\" size='50' maxlength='50'>";
+			if ($action eq 'add' && ($item eq 'EXPERIMENT' || $itemInfo[-2]{'ITEM'} eq 'EXPERIMENT')) {
+				push @valueText,"<INPUT type='text' name='labels' value='' size='20'/>&nbsp<FONT style=\"font-size:11px\">Use ',' between single values and '-' for range (eg. <B>1,3,5-10</B>).</FONT>"; # labels
+			}
+			push @valueText,"<TEXTAREA name='des' rows='2' cols='65' maxlength='100'>$description</TEXTAREA>";
+			if ($action eq 'edit') {
+				my $parentItem=($item eq 'EXPERIMENT')? 'PROJECT' : 'EXPERIMENT';
+				my ($maxDisplayPos)=$dbh->selectrow_array("SELECT MAX(DISPLAY_POS) FROM $item WHERE ID_$parentItem=(SELECT ID_$parentItem FROM $item WHERE ID_$item=$itemID)");
+				my $positionStrg='<SELECT name="displayPos">';
+				foreach my $pos (1..$maxDisplayPos) {
+					$positionStrg.="<OPTION value=\"$pos\"";
+					$positionStrg.=' selected' if $pos==$displayPos;
+					$positionStrg.=">$pos</OPTION>";
+				}
+				$positionStrg.="</SELECT><INPUT type='hidden' name='oldDisplayPos' value='$displayPos'/>";
+				push @valueText,$positionStrg;
+			}
+			push @valueText,"&nbsp;$startDate";
+			if ($item eq 'EXPERIMENT') {
+				my $sthSpecies=$dbh->prepare("SELECT ID_SPECIES,CONCAT(SCIENTIFIC_NAME,' (',COMMON_NAME,')') FROM SPECIES WHERE IS_REFERENCE=1 ORDER BY SCIENTIFIC_NAME");
+				$sthSpecies->execute;
+				my $speciesSelStrg="<SELECT name=\"prefSpecies\"><OPTION value=\"\">-= Select =-</OPTION>\n";
+				while (my ($spID,$spNames)=$sthSpecies->fetchrow_array) {
+					$speciesSelStrg.="<OPTION value=\"$spID\"";
+					$speciesSelStrg.=' selected' if ($prefSpeciesID && $prefSpeciesID==$spID);
+					$speciesSelStrg.=">$spNames</OPTION>\n";
+				}
+				$sthSpecies->finish;
+				$speciesSelStrg.="</SELECT>\n";
+				push @valueText,$speciesSelStrg;
+			}
 		}
+		
 		push @valueText,"<TEXTAREA name='comments' rows='5' cols='65' maxlength='250'>$comments</TEXTAREA>";
 	}
-	if ($action eq 'edit') {
+	
+	push @valueText, getMetadata($item, $itemID, $action) if ($action ne 'add' && $item ne 'METADATA');
+	
+	if ($action eq 'edit' && $item ne 'METADATA') {
 		if ($item eq 'EXPERIMENT') {
 			my @userInfoAll=&promsMod::getUserInfo($dbh,$userID); # $userInfoAll[2] is ref to access info for all projects
 			foreach my $projID (keys %{$userInfoAll[2]}) {
@@ -1185,8 +1460,9 @@ sub gel2D {
 		}
 		my $spotString=($numSpot>1)? "<TH align=right>&nbsp;$numSpot</TH><TH align=left>&nbsp;Spots</TH>" : "<TH align=right>&nbsp;$numSpot</TH><TH align=left>&nbsp;Spot</TH>";
 		my $sampString=($numSamp>1)? "<TH align=right>&nbsp;$numSamp</TH><TH align=left>&nbsp;Samples</TH>" : "<TH align=right>&nbsp;$numSamp</TH><TH align=left>&nbsp;Sample</TH>";
-		my $pepModifStrg=($hasValidAna)? "&nbsp;".&getPtmDistributionButton."&nbsp;" : '';
-		my $anaString=($numAna>1)? "<TH align=right>&nbsp;$numAna</TH><TH align=left>&nbsp;Analyses$pepModifStrg</TH>" : "<TH align=right>&nbsp;$numAna</TH><TH align=left>&nbsp;Analysis$pepModifStrg</TH>";
+		my $pepModifStrg = ($hasValidAna)? getPtmDistributionButton() : '';
+		my $exportAnalysisStrg = ($hasValidAna) ? getExportAnalysisButton() : '';
+		my $anaString=($numAna>1)? "<TH align=right>&nbsp;$numAna</TH><TH align=left>&nbsp;Analyses $pepModifStrg $exportAnalysisStrg</TH>" : "<TH align=right>&nbsp;$numAna</TH><TH align=left>&nbsp;Analysis $pepModifStrg $exportAnalysisStrg</TH>";
 		#my $sStrg=($visProt>1)? 's' : '';
 		#my $protString="<TH align=right>&nbsp;$visProt</TH><TH align=left>&nbsp;Protein$sStrg ($totProt max)";
 		#$protString.="&nbsp;".&getAmbiguityButton."&nbsp;".&getConflictButton if $totProt;
@@ -1245,6 +1521,147 @@ sub gel2D {
 
 
 ##############
+## METADATA ##
+##############
+sub getMetadata {
+	my ($item, $itemID, $action) = @_;
+	my	$strMetaData .= "<ul style='padding: 0px 6px 0px 6px; position: relative; bottom: 12px; margin-bottom: -6px;' class='ml4 js-sortable list flex flex-column list-reset' aria-dropeffect='move'>\n";
+	my $idMeta = "";
+	my %itemIcones=&promsConfig::getItemIcones;
+	my $draggableOptions = ($action eq 'edit') ? "aria-dropeffect='move' draggable='true' aria-grabbed='false'" : '';
+	
+	# Filter by item type
+	my ($projectID, $experimentID, $sampleID) = $dbh->selectrow_array("SELECT PROJECT.ID_PROJECT, EXPERIMENT.ID_EXPERIMENT, SAMPLE.ID_SAMPLE FROM PROJECT LEFT JOIN EXPERIMENT ON EXPERIMENT.ID_PROJECT = PROJECT.ID_PROJECT LEFT JOIN SAMPLE ON SAMPLE.ID_EXPERIMENT = EXPERIMENT.ID_EXPERIMENT WHERE $item.ID_$item=$itemID LIMIT 1");
+	my $sampleIDFilter = ($item ne 'SAMPLE') ? "IS NULL" : "=$sampleID";
+	my $experimentIDFilter = ($item eq 'PROJECT') ? "IS NULL" : "=$experimentID";
+	my $itemFilter = "ID_PROJECT=$projectID AND ID_EXPERIMENT $experimentIDFilter AND ID_SAMPLE $sampleIDFilter";
+	
+	# Filter by rights
+	my $rightsFilter = "";
+	if($projectAccess !~ /bioinfo|manag/) {
+		$rightsFilter .= " AND (";
+		$rightsFilter .= "(ACCESSIBILITY='private' AND RECORD_USER='$userID') OR ACCESSIBILITY='bio'";
+		$rightsFilter .= " OR ACCESSIBILITY='mass'" if($projectAccess eq 'mass');
+		$rightsFilter .= ")";
+	}
+
+	my $sthMetaData=$dbh->prepare("SELECT M.ID_META_ANNOTATION, ID_ANNOTATION_ITEM, ID_PROJECT, ID_EXPERIMENT, ID_SAMPLE, NAME, A.DES as DES_ANNOT, M.DES as META_DES, M.DISPLAY_POS as META_DISPLAY_POS, A.DISPLAY_POS as ANNOT_DISPLAY_POS, ANNOT_TYPE, ANNOT_VALUE, ACCESSIBILITY, RECORD_USER, RECORD_DATE FROM META_ANNOTATION M INNER JOIN ANNOTATION_ITEM A ON A.ID_META_ANNOTATION = M.ID_META_ANNOTATION WHERE $itemFilter $rightsFilter ORDER BY M.DISPLAY_POS, A.DISPLAY_POS");
+	$sthMetaData->execute;
+	while (my ($idMetaItem, $idAnnotationItem, $idProject, $idExperiment, $idSample, $metaName, $annotDes, $metaDes, $annotDisplayPos, $metaDisplayPost, $type, $value, $accessibility, $recordUser, $recordDate) = $sthMetaData->fetchrow_array) {
+		if($idMeta != $idMetaItem) {
+			$strMetaData .= "</ul>\n" if($idMeta);
+			$strMetaData .= "<li data-id='$idMetaItem' role='option' class='p1 mb1 meta bg-maroon orange draggable-line meta-annotation-row' style='list-style: none;' $draggableOptions>\n";
+			if($action eq 'edit') {
+				$strMetaData .= qq |
+						<input type="hidden" name="metaAnnot" value="$idMetaItem" />
+						<div class='actionsDiv'>\n
+							<button type="button" class='action' style='cursor: grab'><i class="fas fa-arrows-alt"></i></button>\n
+							<!-- <button type="button" class='action' onclick='window.location="./editProjectItem.cgi?ACT=edit&ITEM=METADATA&ID=$idMetaItem&TYPE=METADATA&PARENT=$item&PARENT_ID=$itemID";'><i class="fas fa-edit"></i></button></i>\n -->
+							<button type="button" class='action' onclick='window.location="./editProjectItem.cgi?ACT=add&ITEM=METADATA&ID=$itemID&TYPE=ANNOTATION_ITEM&PARENT=$item&PREVIOUS_ID=$idMetaItem";'><i class="fas fa-plus"></i></button>\n
+							<!-- <button type="button" class='action' onclick='delMetadataRow(this.parentNode.parentNode)'><i class="fas fa-minus"></i></button>\n -->
+						</div>\n
+				|;
+				
+			}
+			$strMetaData .= qq |
+					<div>\n
+						<span class='name'>$metaName</span> &nbsp;<span class='desc'>$metaDes</span>\n
+					</div>\n
+					<ul style='padding: 0px 6px 8px 6px;' class='ml4 js-sortable-inner list flex flex-column list-reset meta-annotation-list' $draggableOptions>\n
+						<li data-id='$idAnnotationItem' role='option' class='p1 mb1 annot bg-maroon orange draggable-line annotation-item-row' style='list-style: none;' $draggableOptions>\n
+			|;
+		} else {
+			$strMetaData .= "<li data-id='$idAnnotationItem' role='option' class='p1 mb1 annot bg-maroon orange draggable-line annotation-item-row' style='list-style: none;' $draggableOptions>";
+		}
+		
+		if($action eq 'edit') {
+			$strMetaData .= qq |
+								<input type="hidden" name="annotationItem" value="$idAnnotationItem" />
+								<div class='actionsDiv'>
+									<button type="button" class='action' onclick='return false;' style='cursor: grab' formnovalidate><i class="fas fa-arrows-alt"></i></button>\n
+									<button type="button" class='action' onclick='window.location="./editProjectItem.cgi?ACT=edit&ITEM=METADATA&ID=$idAnnotationItem&TYPE=ANNOTATION_ITEM&PARENT=$item&PARENT_ID=$itemID";'><i class="fas fa-edit"></i></button></i>\n
+									<!-- <button type="button" class='action' onclick='window.location="./editProjectItem.cgi?ACT=add&ITEM=METADATA&ID=$itemID&TYPE=ANNOTATION_ITEM&PARENT=$item&PREVIOUS_ID=$idAnnotationItem";'><i class="fas fa-plus"></i></button>\n -->
+									<button type="button" class='action' onclick='delMetadataRow(this.parentNode.parentNode)'><i class="fas fa-minus"></i></button>\n
+								</div>
+			|;
+		}
+		
+		$strMetaData .= "<div>\n";
+		
+		if($type eq 'file' || $type eq 'image') {
+			my $linkFeature = ($type eq 'file') ? "download" : "target='_blank'";
+			my $filePath = $promsPath{"metadata_html"}."/proj_$projectID/";
+			$filePath .= "exp_$experimentID/" if($experimentID && $item ne 'PROJECT');
+			$filePath .= "samp_$sampleID/" if($sampleID && $item eq 'SAMPLE');
+			$filePath .= "$value";
+			
+			$strMetaData .= "<span class='value' style='text-align:left'>\n";
+			$strMetaData .= "<a href='$filePath' $linkFeature>".basename($value)." <img class='imgFile' src='$promsPath{images}/$itemIcones{file}'/></a>\n";
+			$strMetaData .= "</span><span class='desc'>$annotDes</span>\n";
+		} elsif($type eq 'image') {
+			
+		} elsif($type eq 'date') {
+			$strMetaData .= "<span class='value' style='text-align:left'>\n";
+			$strMetaData .= "<b>$value</b>\n";
+			$strMetaData .= "</span><span class='desc'>$annotDes</span>\n";
+		} elsif($type eq 'number') {
+			$strMetaData .= "<span class='value'>\n";
+			$strMetaData .= "<b>$annotDes : $value</b>\n";
+		} elsif($type eq 'link') {
+			my $linkValue = substr($value, 0, 20).'...';
+			$strMetaData .= "<span class='value' style='text-align:left'>\n";
+			$strMetaData .= "<b><a href ='$value' target='_blank'>$linkValue</a></b>\n";
+			$strMetaData .= "</span><span class='desc'>$annotDes</span>\n";
+		} else {
+			$strMetaData .= "<span class='value' style='text-align:left'>\n";
+			$strMetaData .= "<b>$value</b>\n";
+			$strMetaData .= "</span><span class='desc'>$annotDes</span>\n";
+		}
+		
+		$strMetaData .= "	</div>\n";
+		$strMetaData .= "</li>\n";
+		
+		$idMeta = $idMetaItem;
+	}
+	$sthMetaData->finish;
+	
+	$strMetaData .= "</ul></ul>";
+	$strMetaData .= qq | <button type="button" class='action' id='addMetaButton' onclick='window.location="./editProjectItem.cgi?ACT=add&ITEM=METADATA&ID=$itemID&TYPE=META_ANNOTATION&PARENT=$item";'><i class="fas fa-plus"></i></button> | if($action eq 'edit');
+	
+	return $strMetaData;
+}
+
+sub updateMetadata {
+	####<Starting HTML>###
+	print header(-type=>'text/plain',-charset=>'UTF-8'); warningsToBrowser(1);
+	
+	my $metaType = &promsMod::cleanParameters(param("metaType"));
+	my $metaID = &promsMod::cleanParameters(param("metaID"));
+	my $dbh = &promsConfig::dbConnect;
+	my @positions = split(/,/, param("positions")) if(param("positions"));
+	
+	if(@positions) {
+		if($metaType eq "sub") {
+			foreach my $position (@positions) {
+				my ($annotID, $annotPos) = split(/:/, $position);
+				my $affected = $dbh->do("UPDATE ANNOTATION_ITEM SET DISPLAY_POS=$annotPos WHERE ID_ANNOTATION_ITEM=$annotID");
+				print("Affected rows : $affected");
+			}
+		} elsif($metaType eq "global") {
+			foreach my $position (@positions) {
+				my ($annotID, $annotPos) = split(/:/, $position);
+				my $affected = $dbh->do("UPDATE META_ANNOTATION SET DISPLAY_POS=$annotPos WHERE ID_META_ANNOTATION=$annotID");
+				print("Affected rows : $affected");
+			}
+		}
+	}
+	
+	$dbh->commit;
+	$dbh->disconnect;
+	exit;
+}
+
+##############
 ####<Spot>####
 ##############
 sub spot {
@@ -1280,8 +1697,9 @@ sub spot {
 			#}
 		}
 		#my $sampString=($numSamp>1)? "<TH align=right>&nbsp;$numSamp</TH><TH align=left>&nbsp;Samples</TH>" : "<TH align=right>&nbsp;$numSamp</TH><TH align=left>&nbsp;Sample</TH>";
-		my $pepModifStrg=($hasValidAna)? "&nbsp;".&getPtmDistributionButton."&nbsp;" : '';
-		my $anaString=($numAna>1)? "<TH align=right>&nbsp;$numAna</TH><TH align=left>&nbsp;Analyses$pepModifStrg</TH>" : "<TH align=right>&nbsp;$numAna</TH><TH align=left>&nbsp;Analysis$pepModifStrg</TH>";
+		my $pepModifStrg = ($hasValidAna)? getPtmDistributionButton() : '';
+		my $exportAnalysisStrg = ($hasValidAna) ? getExportAnalysisButton() : '';
+		my $anaString = ($numAna>1)? "<TH align=right>&nbsp;$numAna</TH><TH align=left>&nbsp;Analyses $pepModifStrg $exportAnalysisStrg</TH>" : "<TH align=right>&nbsp;$numAna</TH><TH align=left>&nbsp;Analysis $pepModifStrg $exportAnalysisStrg</TH>";
 		#my $sStrg=($visProt>1)? 's' : '';
 		#my $protString="<TH align=right>&nbsp;$visProt</TH><TH align=left>&nbsp;Protein$sStrg ($totProt max)";
 		#$protString.="&nbsp;".&getAmbiguityButton."&nbsp;".&getConflictButton if $totProt;
@@ -1444,7 +1862,7 @@ sub analysis {
 	#$dataBankString="$databankName";
 	#$dataBankString.=" ($versionName)" if $versionName;
 	#$dataBankString.="&nbsp;&nbsp;&nbsp<B>Type:</B> $databankType";
-	my $sthDB=$dbh->prepare("SELECT D.NAME,D.VERSION_NAME,DT.NAME FROM ANALYSIS_DATABANK AD,DATABANK D,DATABANK_TYPE DT WHERE AD.ID_ANALYSIS=$itemID AND AD.ID_DATABANK=D.ID_DATABANK AND D.ID_DBTYPE=DT.ID_DBTYPE");
+	my $sthDB=$dbh->prepare("SELECT D.NAME,D.VERSION_NAME,DT.NAME FROM ANALYSIS_DATABANK AD,DATABANK D,DATABANK_TYPE DT WHERE AD.ID_ANALYSIS=$itemID AND AD.ID_DATABANK=D.ID_DATABANK AND D.ID_DBTYPE=DT.ID_DBTYPE ORDER BY DB_RANK");
 	$sthDB->execute;
 	while (my ($dbName,$dbVersion,$dbType)=$sthDB->fetchrow_array) {
 		$dataBankString.='<BR>&nbsp;' if $dataBankString;
@@ -1703,10 +2121,10 @@ sub analysis {
 		}
 		my $okExport;
 		if ($validStatus<=0) {
-			($okExport)=$dbh->selectrow_array("SELECT 1 FROM QUERY_VALIDATION WHERE ID_ANALYSIS=$itemID AND ELUTION_TIME IS NOT NULL LIMIT 0,1");
+			($okExport)=$dbh->selectrow_array("SELECT 1 FROM QUERY_VALIDATION WHERE ID_ANALYSIS=$itemID AND ELUTION_TIME IS NOT NULL LIMIT 1");
 		}
 		else {
-			($okExport)=$dbh->selectrow_array("SELECT 1 FROM PEPTIDE WHERE ID_ANALYSIS=$itemID AND ELUTION_TIME IS NOT NULL LIMIT 0,1");
+			($okExport)=$dbh->selectrow_array("SELECT 1 FROM PEPTIDE WHERE ID_ANALYSIS=$itemID AND ELUTION_TIME IS NOT NULL LIMIT 1");
 		}
 		my $disabExp=($okExport)? '' : 'disabled';
 		$elutionString.="&nbsp;&nbsp;" unless $elutionString;
@@ -1730,6 +2148,7 @@ sub analysis {
 		#if ($msType ne 'SWATH') {
 			my $jsShowParam=($showParameters==1)? 0 : 1;
 			$dataFileStrg.="&nbsp;&nbsp;&nbsp;<INPUT type=\"button\" class=\"font11\" value=\"Show search parameters\" onclick=\"window.location='./editProjectItem.cgi?ACT=summary&ITEM=ANALYSIS&ID=$rowID&showParam=$jsShowParam'\">";
+			$dataFileStrg .= " ".getExportAnalysisButton();
 		#}
 		push @valueText,"&nbsp;$dataFileStrg";
 		push @valueText,"&nbsp;$wiffFile";
@@ -1901,8 +2320,8 @@ sub reImportData {
 <HEAD>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
 <SCRIPT type="text/javascript">
-function cancelReImport() {
-	top.promsFrame.selectedAction='summary';
+function cancelReImport(fallback) {
+	top.promsFrame.selectedAction=fallback;
 	top.promsFrame.optionFrame.location='$promsPath{cgi}/selectOption.cgi?ID='+top.promsFrame.selectedBranchID;
 }
 function checkForm(myForm) {
@@ -1979,11 +2398,12 @@ function checkForm(myForm) {
 	}
 	if ($okDataFile) {print " <B>Found.</B><INPUT type=\"hidden\" name=\"reval_file_ok\" value=\"1\"><INPUT type=\"hidden\" name=\"data_file\" value=\"$fullDataFile\">";}
 	else {print " <B>Not found!<BR>Upload file:</B><INPUT type=\"file\" name=\"data_file\" size=\"70\">";}
+	my $fallBack = ($item eq 'METADATA') ? 'edit' : 'summary';
 	print qq
 |</TD>
   </TR>
   <TR><TH colspan=2>
-	<INPUT type="submit" name="save" value=" Proceed " >&nbsp;&nbsp;&nbsp;<INPUT type="button" value="Cancel" onclick="cancelReImport()" >
+	<INPUT type="submit" name="save" value=" Proceed " >&nbsp;&nbsp;&nbsp;<INPUT type="button" value="Cancel" onclick="cancelReImport('$fallBack')" >
   </TH></TR>
  </TABLE>
 </TD></TR>
@@ -2240,23 +2660,33 @@ sub checkOnGoingMapping {
 #################
 ####<Buttons>####
 #################
-sub getConflictButton{
+sub getConflictButton {
 	return qq|<INPUT type="button" class="font11" value="Visible & Hidden" onclick="window.location='$promsPath{cgi}/listConflicts.cgi?TYPE=$item&ID=$rowID&ACT=switch'"/>|;
 }
-sub getAmbiguityButton{
+sub getAmbiguityButton {
 	return qq|<INPUT type="button" class="font11" value="List ambiguities" onclick="window.location='$promsPath{cgi}/listConflicts.cgi?TYPE=$item&ID=$rowID&ACT=ambiguity'"/>|;
 }
-sub getPtmDistributionButton{
-	my $lcItem=lc($item);
+sub getPtmDistributionButton {
+	my $lcItem = lc($item);
 	return qq|<INPUT type="button" class="font11" value="Modifications distribution" onclick="window.location='$promsPath{cgi}/selectAnalyses.cgi?ID=$lcItem:$rowID&callType=peptidePTM'"/>|;
 }
-sub getRemapButton{
+sub getExportAnalysisButton {
+	my $lcItem = lc($item);
+	return qq|<INPUT type="button" class="font11" value="Export search file(s)" onclick="window.location='$promsPath{cgi}/selectAnalyses.cgi?ID=$lcItem:$rowID&id_project=$projectID&callType=export'"/>|;
+}
+sub getRemapButton {
 	my $disabButton = ($projectAccess=~/bioinfo|mass/)? " " : " disabled";
 	return qq|<INPUT type="button"$disabButton class="font11" value="Re-map identifiers" onclick="if (confirm('Clear and map all identifiers again?')) {window.location='$promsPath{cgi}/editProjectItem.cgi?ACT=force&ID=$rowID&ITEM=PROJECT';}"/>|; ##rowID == projectID
 
 }
 
 ####>Revision history<####
+# 3.2.5 Change project data path for metadata path (VS 11/06/19)
+# 3.2.4 Add image type to metadata (VS 06/06/19)
+# 3.2.3 [Fix] Bug due to call of &getMetadata in 'add' context (PP/VS 06/06/19)
+# 3.2.2 Add project items' metadata handling (VS 01/06/19)
+# 3.2.1 Multiple sequence databanks are now listed in order in Analysis summary (PP 31/05/19) 
+# 3.2.0 Add export search file button in summary (VS 13/05/19)
 # 3.1.9 [fix] minor display bugs (PP 10/01/19)
 # 3.1.8 Restored classical $promsPath{cgi} instead of ${promsPath{cgi} (PP 21/11/18)
 # 3.1.7 Fix handling of complex search parameters (hash), used in DIA and TDA (VS 20/11/18)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# storeProjectItem.cgi         3.0.4                                           #
+# storeProjectItem.cgi         3.0.7                                           #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Stores/updates project items                                                 #
@@ -49,7 +49,6 @@ use promsConfig;
 use promsMod;
 use strict;
 use File::Copy;
-
 
 #######################
 ####>Configuration<####
@@ -142,7 +141,9 @@ my @colName; my @colValue;
 #my $minScore=&promsConfig::getMinScore; # Minimum score allowed for interpretations
 # my %massAAave=&promsConfig::getMassAAave; # Average mass, needed for protein mass calculation
 # my %massATave=&promsConfig::getMassATave; # Average mass, needed for protein mass calculation
-my @percent=(10,20,30,40,50,60,70,80,90,100); # needed to monitor process progression
+my @percent=(10, 20, 30, 40, 50, 60, 70, 80, 90, 100); # needed to monitor process progression
+
+if($item eq 'METADATA') { &processMetadata; exit; }
 
 
 ##################################
@@ -219,6 +220,7 @@ if ($action ne 'reval') {
 	push @colName,('DES','COMMENTS');
 	push @colValue,( $dbh->quote(param('des')), $dbh->quote(param('comments')) );
 }
+
 my ($projectID,$workgroup);
 if ($item eq 'PROJECT') {
 	push @colName,'PROT_VISIBILITY';
@@ -467,7 +469,31 @@ else { # action = edit or reval
 		$sthDP->finish;
 		$sthUpDP->finish;
 	}
-
+	
+	### Update Metadata list if any ###
+	if($item =~  /PROJECT|EXPERIMENT|SAMPLE/) { # For Experiment, Project and Sample
+		my @annotationItems = param("annotationItem");
+		my $filterAnnotations = (@annotationItems) ? "ID_ANNOTATION_ITEM NOT IN(".join(',', @annotationItems).") AND" : '';
+		my ($projectID, $experimentID, $sampleID) = $dbh->selectrow_array("SELECT PROJECT.ID_PROJECT, EXPERIMENT.ID_EXPERIMENT, SAMPLE.ID_SAMPLE FROM PROJECT LEFT JOIN EXPERIMENT ON EXPERIMENT.ID_PROJECT = PROJECT.ID_PROJECT LEFT JOIN SAMPLE ON SAMPLE.ID_EXPERIMENT = EXPERIMENT.ID_EXPERIMENT WHERE $item.ID_$item=$itemID LIMIT 1");
+		$sampleID = ($item ne 'SAMPLE') ? " IS NULL" : "=$sampleID";
+		$experimentID = ($item eq 'PROJECT') ? " IS NULL" : "=$experimentID";
+		my $sth = $dbh->prepare("SELECT ID_ANNOTATION_ITEM FROM ANNOTATION_ITEM A INNER JOIN META_ANNOTATION M ON M.ID_META_ANNOTATION = A.ID_META_ANNOTATION WHERE $filterAnnotations ID_SAMPLE $sampleID AND ID_EXPERIMENT $experimentID AND ID_PROJECT = $projectID");
+		$sth->execute();
+		my @annotationsIDs = map $_->[0], @{$sth->fetchall_arrayref([0])};
+		if(@annotationsIDs) {
+			$dbh->do("DELETE FROM ANNOTATION_ITEM WHERE ID_ANNOTATION_ITEM IN (".join(',', @annotationsIDs).")");
+		}
+		
+		my @metaAnnotations = param("metaAnnot");
+		my $filterMetaAnnotations = (@metaAnnotations) ? "ID_META_ANNOTATION NOT IN(".join(',', @metaAnnotations).") AND " : '';
+		$sth = $dbh->prepare("SELECT ID_META_ANNOTATION FROM META_ANNOTATION WHERE $filterMetaAnnotations ID_PROJECT = $projectID AND ID_EXPERIMENT $experimentID AND ID_SAMPLE $sampleID");
+		$sth->execute();
+		my @metaAnnotationsIDs = map $_->[0], @{$sth->fetchall_arrayref([0])};
+		if(@metaAnnotationsIDs) {
+			$dbh->do("DELETE FROM META_ANNOTATION WHERE ID_META_ANNOTATION IN (".join(',', @metaAnnotationsIDs).")");
+		}
+	}
+	
 	###>Update Proteins visibility (only for Projects)<###
 	my $protVisibility=param('protVis');
 	my $oldProtVisibility=param('oldProtVis');
@@ -556,29 +582,112 @@ $dbh->disconnect;
 # print "<H3>All tables loaded!</H3>\n";
 sleep 2 if $scanDB;
 #exit;  #debug
-print qq
-|<SCRIPT LANGUAGE="JavaScript">
-top.promsFrame.selectedAction='summary';
-if ('$item'=='project' \|\| ('$item'=='gel2d' && !parent.itemFrame)) {
-	top.promsFrame.location="$promsPath{cgi}/openProject.cgi?ID=$projectID&branchID=$item:$itemStartingID&ACT=open"; // top.promsFrame but ! parent in case new project!
-}
-else if ('$targetFrame'=='navFrame') {
-	if ('$item'=='spot') { // reload navFrame in case modified sample association
-		parent.navFrame.location="$promsPath{cgi}/openProject.cgi?ID=$projectID&branchID=gel2d:$gelID&itemBranchID=$item:$itemID&ACT=nav&VIEW="+parent.navFrame.view;
-	}
-	else {
-		parent.navFrame.location="$promsPath{cgi}/openProject.cgi?ID=$projectID&branchID=$item:$itemStartingID&ACT=nav&VIEW="+parent.navFrame.view;
-	}
-}
-else { //itemFrame
-	parent.itemFrame.location="$promsPath{cgi}/openProject.cgi?ID=$projectID&GEL=gel2d:$gelID&branchID=$item:$itemStartingID&ACT=gel";
-}
-</SCRIPT>
-</BODY>
-</HTML>
+
+goBack();
+
+print qq |
+		</BODY>
+	</HTML>
 |;
 
+#############
+# FUNCTIONS #
+#############
+sub processMetadata {
+	my ($sth, $metaID);
+	my ($metaName, $metaDes, $metaAccessibility) = &promsMod::cleanParameters(param("name"), param("M.DES"), param("ACCESSIBILITY"));
+	my ($annotType, $annotValue, $annotDes) = &promsMod::cleanParameters(param("ANNOT_TYPE"), param("ANNOT_VALUE"), param("comments"));
+	my $itemID = &promsMod::cleanParameters(param('ID'));
+	my $parentItemID = ($action eq 'add') ? $itemID : &promsMod::cleanParameters(param('PARENT_ID'));
+	my ($projectID, $experimentID, $sampleID) = $dbh->selectrow_array("SELECT PROJECT.ID_PROJECT, EXPERIMENT.ID_EXPERIMENT, SAMPLE.ID_SAMPLE FROM PROJECT LEFT JOIN EXPERIMENT ON EXPERIMENT.ID_PROJECT = PROJECT.ID_PROJECT LEFT JOIN SAMPLE ON SAMPLE.ID_EXPERIMENT = EXPERIMENT.ID_EXPERIMENT WHERE $parentItem.ID_$parentItem=$parentItemID LIMIT 1");
+	
+	my $finalFilePath = "proj_$projectID/";
+	$finalFilePath .= "exp_$experimentID/" if($experimentID && $parentItem ne 'PROJECT');
+	$finalFilePath .= "samp_$sampleID/" if($sampleID && $parentItem eq 'SAMPLE');
+	
+	### Upload selected file 
+	if($annotType eq 'file' || $annotType eq 'image') {
+        my $tmpFilePath = tmpFileName($annotValue);
+		system("mkdir -p $promsPath{metadata}/$finalFilePath");
+        move($tmpFilePath, $promsPath{"metadata"}."/$finalFilePath".$annotValue);
+	}
+	
+	$metaName = ($metaName) ? $dbh->quote($metaName) : "''";
+	$metaDes = ($metaDes) ? $dbh->quote($metaDes) : "''";
+	$annotDes = ($annotDes) ? $dbh->quote($annotDes) : "''";
+	$annotValue = ($annotValue) ? $dbh->quote($annotValue) : "''";
+	
+	if($action eq 'edit') {
+		# Remove former file if any
+		my ($annotFormerType, $annotFormerValue) = $dbh->selectrow_array("SELECT ANNOT_TYPE, ANNOT_VALUE FROM ANNOTATION_ITEM WHERE ID_ANNOTATION_ITEM=$itemID");
+		if($annotFormerType eq 'file' || $annotFormerType eq 'image') {
+			system("rm -f $promsPath{metadata}/$finalFilePath".$annotFormerValue);
+		}
+		
+		$metaID = $dbh->selectrow_array("SELECT ID_META_ANNOTATION FROM ANNOTATION_ITEM WHERE ID_ANNOTATION_ITEM=$itemID");
+		$dbh->do("UPDATE META_ANNOTATION SET NAME=$metaName, DES=$metaDes, ACCESSIBILITY='$metaAccessibility' WHERE ID_META_ANNOTATION=$metaID");
+		$dbh->do("UPDATE ANNOTATION_ITEM SET DES=$annotDes, ANNOT_TYPE='$annotType', ANNOT_VALUE=$annotValue WHERE ID_ANNOTATION_ITEM=$itemID");
+	} elsif($action eq 'add') {
+		my $annotDisplayPos = 1;
+		my $previousItemID = &promsMod::cleanParameters(param('PREVIOUS_ID'));
+		
+		$sampleID = "NULL" if($parentItem ne 'SAMPLE');
+		$experimentID = "NULL" if($parentItem eq 'PROJECT');
+		
+		if($previousItemID) {
+			$annotDisplayPos = $dbh->selectrow_array("SELECT MAX(DISPLAY_POS)+1 FROM ANNOTATION_ITEM WHERE ID_META_ANNOTATION=$previousItemID");
+			$annotDisplayPos = 1 if(!$annotDisplayPos);
+			$metaID = $dbh->selectrow_array("SELECT ID_META_ANNOTATION FROM ANNOTATION_ITEM WHERE ID_META_ANNOTATION=$previousItemID");
+			$dbh->do("UPDATE ANNOTATION_ITEM SET DISPLAY_POS=DISPLAY_POS+1 WHERE ID_META_ANNOTATION=$metaID AND DISPLAY_POS >= $annotDisplayPos");
+		} else {
+			my $metaDisplayPos = $dbh->selectrow_array("SELECT MAX(DISPLAY_POS)+1 FROM META_ANNOTATION WHERE ID_$parentItem=$parentItemID");
+			$metaDisplayPos = 1 if(!$metaDisplayPos);
+			$sth = $dbh->prepare("INSERT INTO META_ANNOTATION (ID_PROJECT, ID_EXPERIMENT, ID_SAMPLE, NAME, DES, DISPLAY_POS, ACCESSIBILITY, RECORD_DATE, RECORD_USER) VALUE ($projectID, $experimentID, $sampleID, $metaName, $metaDes, $metaDisplayPos, '$metaAccessibility', NOW(), '$userID')");
+			$sth->execute();
+			$metaID = $dbh->selectrow_array("SELECT MAX(ID_META_ANNOTATION) FROM META_ANNOTATION");
+			$metaID = 1 if(!$metaID);
+		}
+		$sth = $dbh->prepare("INSERT INTO ANNOTATION_ITEM (ID_META_ANNOTATION, DES, DISPLAY_POS, ANNOT_TYPE, ANNOT_VALUE) VALUES ($metaID, $annotDes, $annotDisplayPos, '$annotType', $annotValue)");
+		$sth->execute();
+	}
+	
+	$dbh->commit;
+	$dbh->disconnect;
+	
+	goBack();
+}
+
+sub goBack {
+	print qq |
+	<SCRIPT LANGUAGE="JavaScript">
+		top.promsFrame.selectedAction='summary';
+		
+		if('$item' == 'METADATA') {
+			top.promsFrame.selectedAction='edit';
+			top.promsFrame.optionFrame.selectOption();
+		}
+		else if ('$item'=='project' \|\| ('$item'=='gel2d' && !parent.itemFrame)) {
+			top.promsFrame.location="$promsPath{cgi}/openProject.cgi?ID=$projectID&branchID=$item:$itemStartingID&ACT=open"; // top.promsFrame but ! parent in case new project!
+		}
+		else if ('$targetFrame'=='navFrame') {
+			if ('$item'=='spot') { // reload navFrame in case modified sample association
+				parent.navFrame.location="$promsPath{cgi}/openProject.cgi?ID=$projectID&branchID=gel2d:$gelID&itemBranchID=$item:$itemID&ACT=nav&VIEW="+parent.navFrame.view;
+			}
+			else {
+				parent.navFrame.location="$promsPath{cgi}/openProject.cgi?ID=$projectID&branchID=$item:$itemStartingID&ACT=nav&VIEW="+parent.navFrame.view;
+			}
+		}
+		else { //itemFrame
+			parent.itemFrame.location="$promsPath{cgi}/openProject.cgi?ID=$projectID&GEL=gel2d:$gelID&branchID=$item:$itemStartingID&ACT=gel";
+		}
+	</SCRIPT>
+	|;
+}
+
 ####>Revision history<####
+# 3.0.7 Change project data path for metadata path (VS 11/06/19)
+# 3.0.6 Add Image type to metadata (VS 06/06/19)
+# 3.0.5 Metadata add/modification handling (VS 06/06/19)
 # 3.0.4 Minor bug fix for Add Experiment with Preferred species (PP 04/08/17)
 # 3.0.3 Restores previously commented management of parameter WATCH called by promsMod::getProtInfo (PP 04/01/17)
 # 3.0.2 Bug fix for Experiment when preferred species is undef (PP 15/03/16)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# sequenceView.cgi     3.2.9	                                               #
+# sequenceView.cgi     3.2.11	                                               #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Displays detailed information on a protein:                                  #
@@ -50,7 +50,7 @@ use promsMod;
 use strict;
 use phosphoRS;
 use List::Util qw(max);
-use LWP::UserAgent;
+#use LWP::UserAgent;
 
 #print header(-'content-encoding'=>'no'); warningsToBrowser(1); # DEBUG
 #######################
@@ -598,11 +598,11 @@ if ($validProtID) {
 			$groupBest='none';
 			$groupClass='matchGroupOK';
 		}
-		if ($conf) { # Not a ghost protein => look for ghost peptides
+		#if ($conf) { # Not a ghost protein => look for ghost peptides
 			$sthGhostPep->execute($anaID);
 			my ($numGhostPep)=$sthGhostPep->fetchrow_array;
 			$numPep.="+<FONT class=\"virtualProt\" onmouseover=\"popup('Peptides retrieved from XIC extraction')\" onmouseout=\"popout()\">$numGhostPep</FONT>" if $numGhostPep;
-		}
+		#}
 		@{$analysisInfo{$anaID}}=($anaName,$anaPos,$conf,$vis,$matchGr,$groupBest,$msType,$anaValid,1,$numPep,$pepSpec,$pepCov,$groupClass); # [8]=1: prot is validated in ana
 
 		###>> Get PTM of all peptides for this protein in this $anaID
@@ -2739,6 +2739,8 @@ sub ajaxGetQuantificationList {
 }
 
 ####>Revision history<####
+# 3.2.11 Removed call to unused LWP::UserAgent package (PP 15/05/19)
+# 3.2.10 Number of ghost peptides are also displayed for 100% ghost proteins in "List of Analyses..." (PP 11/02/19)
 # 3.2.9 Improved support for display of MQ, EMPAI and SIN quantifications (PP 02/11/18)
 # 3.2.8 Handles project status=-1 [no auto-end validation] (PP 07/06/18)
 # 3.2.7 Improved check for spectrum availability & added MaxQuant position probability in &ajaxDisplayVarModPeptides2 (PP 22/03/18)

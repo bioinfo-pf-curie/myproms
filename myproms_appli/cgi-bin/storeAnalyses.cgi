@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# storeAnalyses.cgi     3.7.7                                                  #
+# storeAnalyses.cgi     3.7.8                                                  #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Stores analysis data into myProMS server and DB                              #
@@ -1289,7 +1289,27 @@ foreach my $dataFile (sort{$fileList{$a}{'pos'}<=>$fileList{$b}{'pos'}} keys %fi
 				#}else{
 				#
 				#}
-				&promsMod::getProtInfo('verbose',$dbh,$databankIDs[0],[$analysisID],\%protDes,\%protMW,\%protOrg,\%protLength,undef,$refProtMatch,$tempDbFile); # only 1-db search allowed. $tempDbFile only for MSF
+				
+				# Unset previous auto db rank
+				%protDbRank = ();
+				
+				# If multiple banks, assign the rank of the right one to each protein
+				if(scalar @databankIDs > 1) {
+					for(my $i=0; $i < scalar @databankIDs; $i++) {
+						&promsMod::getProtInfo('verbose',$dbh,$databankIDs[$i],[$analysisID],\%protDes,\%protMW,\%protOrg,\%protLength,undef,$refProtMatch); # $tempDbFile only for MSF
+						
+						foreach my $protID (keys %protDes) {
+							$protDbRank{$protID} = $i+1 if(!$protDbRank{$protID} && $protMW{$protID} != 0);
+						}
+					}
+				} else {
+					&promsMod::getProtInfo('verbose',$dbh,$databankIDs[0],[$analysisID],\%protDes,\%protMW,\%protOrg,\%protLength,undef,$refProtMatch,$tempDbFile); # $tempDbFile only for MSF	
+				}
+				
+				# Unmatched proteins take a DB_RANK of 1
+				foreach my $protID (keys %protDbRank) {
+					$protDbRank{$protID} = 1 if(!$protDbRank{$protID});
+				}	
 			}
 			else {
 				foreach my $dbID (@databankIDs) {
@@ -5168,6 +5188,7 @@ sub getPercolatorScores {
 
 
 ####>Revision history<####
+# 3.7.8 Handles multi-databases MSF import (VS 21/06/19)
 # 3.7.7 Javascript now encodes MSF file name when calling convertMsf2Pdm.cgi (PP 22/01/19)
 # 3.7.6 Add rawName to analysis name for merged MSF files (GA 08/01/19)
 # 3.7.5 Minor modification on the promsDIA XTandemXML and XTandemPepXML parsers calling (VS 22/11/18)

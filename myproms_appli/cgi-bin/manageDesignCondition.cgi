@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# manageDesignCondition.cgi    1.3.1m2                                           #
+# manageDesignCondition.cgi    1.3.4                                           #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Create, edit & store Design, Experimental States & associate observations    #
@@ -201,6 +201,7 @@ if ($action =~ /edit/ || $action eq 'summary'){
 			# Otherwise: 0 for label-free and -1 for all channel pos of SILAC-like (true match given by OBS_MODIFCATION)
 			if ($quantifAnnot) {
 				$quantifAnnot=~s/::SOFTWARE=[^:]+//; # remove software & version info for back compatibility
+				$quantifAnnot=~s/::CORRECTION=[^:]+//; # remove correction data if any
 				my ($labelTypeStrg,@labelInfo)=split('::',$quantifAnnot);
 				my ($labelType)=($labelTypeStrg =~ /^LABEL=(.+)/);
 				if ($labelType =~ /FREE|NONE/) { # no labeling in analysis
@@ -1234,6 +1235,15 @@ function extendObservationCheck(chkIdx) {
 	var checkBoxInfo=document.getElementsByName('obsList');
 	if (!checkBoxInfo.length) {return;}
 	var chkStatus=checkBoxInfo[chkIdx].checked;
+	var labelCode=checkBoxInfo[chkIdx].value.replace(/^\\d+,/,''); // remove pep quantID, keep channel & modifID(s)
+	for (let i=chkIdx+1; i < checkBoxInfo.length; i++) {
+		if (checkBoxInfo[i].value.replace(/^\\d+,/,'') == labelCode) { // label channels & modif must match
+			checkBoxInfo[i].checked=chkStatus;
+			autoExtCount--;
+			if (autoExtCount==0) break;
+		}
+	}
+/* Old code. Replaced by shorter one above
 	var refObs=checkBoxInfo[chkIdx].value.split(',');
 	var refChannel=refObs[1];
 	var refModIdStrg='';
@@ -1241,25 +1251,28 @@ function extendObservationCheck(chkIdx) {
 		refObs.shift(); refObs.shift(); // keep only modId list
 		refModIdStrg=refObs.join(',');
 	}
-	for (var i=chkIdx+1; i < checkBoxInfo.length; i++) {
+	for (let i=chkIdx+1; i < checkBoxInfo.length; i++) {
 		var obs=checkBoxInfo[i].value.split(',');
 		if (obs[1]==refChannel) {
 			if (refChannel==0) {checkBoxInfo[i].checked=chkStatus; autoExtCount--;} // unlabeled channel
-			else { // -1
+			else { // -1 (SILAC), 1..n (iTRAQ/TMT)
 				obs.shift(); obs.shift(); // keep only modId list
 				if (refModIdStrg==obs.join(',')) {checkBoxInfo[i].checked=chkStatus; autoExtCount--;}
 			}
 			if (autoExtCount==0) break;
 		}
 	}
+*/
+
 }
 function extendFractionSelection(chkIdx,selIdx) {
 	var autoExtCount=(document.getElementById('autoExtend').value * 1) - 1;
-	if (autoExtCount==0) return;
-	var fractionInfo=document.getElementsByName('fractionGroup');
 	var checkBoxInfo=document.getElementsByName('obsList');
-	for (var i=chkIdx+1; i < fractionInfo.length; i++) {
-		if (checkBoxInfo[i].checked) {
+	if (!checkBoxInfo.length) {return;}
+	var labelCode=checkBoxInfo[chkIdx].value.replace(/^\\d+,/,''); // remove pep quantID, keep channel & modifID(s)
+	var fractionInfo=document.getElementsByName('fractionGroup');
+	for (let i=chkIdx+1; i < checkBoxInfo.length; i++) {
+		if (checkBoxInfo[i].checked && checkBoxInfo[i].value.replace(/^\\d+,/,'') == labelCode) { // label channels & modif must match
 			fractionInfo[i].options.selectedIndex=selIdx;
 			autoExtCount--;
 			if (autoExtCount==0) break;
@@ -1269,10 +1282,12 @@ function extendFractionSelection(chkIdx,selIdx) {
 function extendTechRepSelection(chkIdx,selIdx) {
 	var autoExtCount=(document.getElementById('autoExtend').value * 1) - 1;
 	if (autoExtCount==0) return;
-	var techRepInfo=document.getElementsByName('techRepGroup');
 	var checkBoxInfo=document.getElementsByName('obsList');
-	for (var i=chkIdx+1; i < techRepInfo.length; i++) {
-		if (checkBoxInfo[i].checked) {
+	if (autoExtCount==0) return;
+	var labelCode=checkBoxInfo[chkIdx].value.replace(/^\\d+,/,''); // remove pep quantID, keep channel & modifID(s)
+	var techRepInfo=document.getElementsByName('techRepGroup');
+	for (let i=chkIdx+1; i < checkBoxInfo.length; i++) {
+		if (checkBoxInfo[i].checked && checkBoxInfo[i].value.replace(/^\\d+,/,'') == labelCode) { // label channels & modif must match
 			techRepInfo[i].options.selectedIndex=selIdx;
 			autoExtCount--;
 			if (autoExtCount==0) break;
@@ -1444,6 +1459,8 @@ print "$expStateStrg</CENTER>\n<BR><BR></BODY>\n</HTML>\n";
 
 
 ####>Revision history<####
+# 1.3.4 Fraction and tehcRep auto-extension compatible with 3+ label channels such as iTRAQ/TMT (PP 24/03/19)
+# 1.3.3 Minor change to account for possible CORRECTION tag in peptide quantif QUANTIF_ANNOT field (PP 22/03/19)
 # 1.3.1m2 Improved fraction/tech. rep./biosample declaration (PP 13/11/18)
 # 1.3.1m [Fix] minor bug in SOFTWARE string removal from QUANTIF_ANNOT field value (PP 13/09/18)
 # 1.3.1 Multiple Designs duplication at once (PP 14/03/18)

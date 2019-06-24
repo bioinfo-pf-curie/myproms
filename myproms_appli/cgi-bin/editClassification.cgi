@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# editClassification.cgi    2.3.0                                              #
+# editClassification.cgi    2.3.1                                              #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -187,7 +187,7 @@ my ($nameTheme,$desTheme,$updateDate,$updateUser)=$dbh->selectrow_array("SELECT 
 ($nameTheme,$desTheme)=&promsMod::chkDef($nameTheme,$desTheme);
 my @listList=&promsMod::getChildrenList($dbh,$themeID,'CLASSIFICATION');
 my (%listSize,%listType);
-my $sthLS=$dbh->prepare("SELECT C.ID_CATEGORY,LIST_TYPE,COUNT(DISTINCT ID_PROTEIN),COUNT(ID_CATEGORY_PROTEIN) FROM CATEGORY_PROTEIN CP,CATEGORY C WHERE CP.ID_CATEGORY=C.ID_CATEGORY AND C.ID_CLASSIFICATION=$themeID GROUP BY C.ID_CATEGORY ORDER BY DISPLAY_POS");
+my $sthLS=$dbh->prepare("SELECT C.ID_CATEGORY,LIST_TYPE,COUNT(DISTINCT ID_PROTEIN),COUNT(ID_CATEGORY_PROTEIN) FROM CATEGORY C LEFT JOIN CATEGORY_PROTEIN CP ON CP.ID_CATEGORY=C.ID_CATEGORY WHERE C.ID_CLASSIFICATION=$themeID GROUP BY C.ID_CATEGORY ORDER BY DISPLAY_POS;");
 $sthLS->execute;
 while (my ($listID,$type,$numProt,$numProteoform)=$sthLS->fetchrow_array) {
 	@{$listSize{$listID}}=($numProt,$numProteoform);
@@ -331,8 +331,12 @@ function checkThemeForm(){
 function selectList(id_list,isDeletable) {
 	document.getElementById('displayList').style.display='none';
 	if (editListMode \|\| addListMode \|\| !id_list) {return;}
-	var oldObject=document.getElementById(selList);
-	oldObject.style.color='#000000';
+	
+	if(selList) {
+		var oldObject=document.getElementById(selList);
+		oldObject.style.color='#000000';
+	}
+	
 	var newObject=document.getElementById(id_list);
 	newObject.style.color='#DD0000';
 	selList=id_list;
@@ -889,7 +893,9 @@ function checkListForm(myForm){
 		}
 		print qq
 |</SELECT>
-&nbsp;&nbsp;&bull;<B>Species:</B><SELECT name="species"><OPTION value="">-= Select =-</OPTION>
+&nbsp;&nbsp;&bull;<B>Species:</B><SELECT name="species">
+	<OPTION value="">-= Select =-</OPTION>
+	<OPTION value="-1">No species/Multi species</OPTION>
 |;
 		foreach my $speciesID (sort{lc($speciesList{$a}) cmp lc($speciesList{$b})} keys %speciesList) {
 			print "<OPTION value=\"$speciesID\">$speciesList{$speciesID}</OPTION>\n";
@@ -1053,9 +1059,9 @@ function showIdentifiers(what,show) {
 
 		####<Mapping identifiers>####
 		my (%mappedIdentifiers,%badVisIdentifiers,%proteinList,%allProteins,%notMappedIdentifiers,%usedIdentifiers);
-		#my $sthProt=$dbh->prepare("SELECT P.ID_PROTEIN FROM PROTEIN P,MASTERPROT_IDENTIFIER MI WHERE MI.ID_MASTER_PROTEIN=P.ID_MASTER_PROTEIN AND MI.ID_IDENTIFIER=$identifierID AND P.ID_PROJECT=$projectID AND ID_SPECIES=$specieID AND MI.VALUE=?");
-		my $addProtQuery=($identifierID)?"AND ID_IDENTIFIER=$identifierID":"";
-		my $sthProt=$dbh->prepare("SELECT P.ID_PROTEIN,MAX(AP.VISIBILITY) FROM PROTEIN P,MASTER_PROTEIN MP,MASTERPROT_IDENTIFIER MI,ANALYSIS_PROTEIN AP WHERE P.ID_MASTER_PROTEIN=MP.ID_MASTER_PROTEIN AND MP.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN AND P.ID_PROTEIN=AP.ID_PROTEIN$addProtQuery AND P.ID_PROJECT=$projectID AND MP.ID_SPECIES=$specieID AND MI.VALUE=? GROUP BY P.ID_PROTEIN");
+		my $addProtQuery=($identifierID)?" AND ID_IDENTIFIER=$identifierID":"";
+		my $addSpeciesQuery=($specieID > -1) ? " AND MP.ID_SPECIES=$specieID" : ""; 
+		my $sthProt=$dbh->prepare("SELECT P.ID_PROTEIN, MAX(AP.VISIBILITY) FROM PROTEIN P LEFT JOIN MASTER_PROTEIN MP ON P.ID_MASTER_PROTEIN = MP.ID_MASTER_PROTEIN$addSpeciesQuery LEFT JOIN MASTERPROT_IDENTIFIER MI ON MP.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN LEFT JOIN ANALYSIS_PROTEIN AP ON P.ID_PROTEIN=AP.ID_PROTEIN$addProtQuery WHERE P.ID_PROJECT=$projectID AND (MI.VALUE=? OR P.ALIAS=? OR P.IDENTIFIER=?) GROUP BY P.ID_PROTEIN");
 		my @percent=(10,20,30,40,50,60,70,80,90,100);
 		my @limitValue;
 		foreach my $pc (@percent) {push @limitValue,int(0.5+($numIdentifiers*$pc/100));}
@@ -1071,7 +1077,7 @@ function showIdentifiers(what,show) {
 					}
 					next;
 				}
-				$sthProt->execute($ident);
+				$sthProt->execute($ident, $ident, $ident);
 				my $mapped=0;
 				while (my ($protID,$bestVis)=$sthProt->fetchrow_array) {
 					$mapped=1;
@@ -1154,6 +1160,7 @@ function showIdentifiers(what,show) {
 }
 
 ####>Revision history<####
+# 2.3.1 Add No/Multi species + Fix interactions with theme having no match (VS 14/02/2019)
 # 2.3.0 Compatible with MODIFICATION_SITE & code optimization (PP 01/08/17)
 # 2.2.2 Add unspecified identifier (GA 24/08/16)
 # 2.2.1 Accepts also a pasted list of identifiers during import (PP 04/03/16)

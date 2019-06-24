@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# processAnalyses.cgi    1.4.4                                                 #
+# processAnalyses.cgi    1.4.8                                                 #
 # Authors: P. Poullet, G. Arras, F. Yvon & M. Le Picard (Institut Curie)       #
 # Contact: myproms@curie.fr                                                    #
 # Generates list of options available to manage multiple analyses at once      #
@@ -49,7 +49,7 @@ use CGI ':standard';
 use promsConfig;
 use promsMod;
 
-# print header; warningsToBrowser(1); # DEBUG
+#print header; warningsToBrowser(1); # DEBUG
 #######################
 ####>Configuration<####
 #######################
@@ -80,7 +80,7 @@ my $deleteAccess=($projectAccess =~ /bioinfo|mass|manag/)? 1 : 0;
 ####>Fetching analyses status<####
 #my ($anaQuery,$validQuery,$filterQuery,$numMaldi,$validMascotQuery); #$numUnValidDat,
 my ($anaQuery,$filterQuery);
-my $anaFieldStrg='ID_ANALYSIS,VALID_STATUS,INSTRUMENT,MS_TYPE,FILE_FORMAT,LABELING';
+my $anaFieldStrg='ID_ANALYSIS,VALID_STATUS,INSTRUMENT,MS_TYPE,FILE_FORMAT'; #,LABELING
 if ($item eq 'EXPERIMENT') {
 	$anaQuery="SELECT $anaFieldStrg FROM ANALYSIS,SAMPLE WHERE ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE AND ID_EXPERIMENT=$itemID";
 	#$validQuery="SELECT COUNT(ID_ANALYSIS) FROM ANALYSIS,SAMPLE WHERE ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE AND ID_EXPERIMENT=$itemID AND VALID_STATUS=?";
@@ -112,7 +112,7 @@ elsif ($item eq 'SPOT') {
 my $sthAna=$dbh->prepare($anaQuery);
 my $sthLQ=$dbh->prepare("SELECT QUANTIF_ANNOT FROM QUANTIFICATION Q,ANA_QUANTIFICATION AQ WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND ID_ANALYSIS=? AND FOCUS='peptide'");
 $sthAna->execute;
-my ($numNotImport,$numUnValid,$numPartValid,$numValid,$numMaldi,$numValidMascot,$numValidMascotDAT,$numValidPhenyx,$numValidMIS,$numValidSILAC,$numValidITRAQ,$numValidTMT)=(0,0,0,0,0,0,0,0,0,0,0,0);
+my ($numNotImport,$numUnValid,$numPartValid,$numValid,$numMaldi,$numValidMascot,$numValidMascotDAT,$numValidPhenyx,$numValidMIS,$numValidSILAC,$numValidITRAQ,$numValidTMT,$numIsoNotCorr)=(0,0,0,0,0,0,0,0,0,0,0,0,0);
 while (my ($anaID,$validStatus,$instrument,$msType,$fileFormat,$labeling)=$sthAna->fetchrow_array) {
 	$instrument='Default' unless $instrument;
 	if ($validStatus==-1) {
@@ -129,24 +129,25 @@ while (my ($anaID,$validStatus,$instrument,$msType,$fileFormat,$labeling)=$sthAn
 	if ($validStatus>=1) {
 		$numValid++;
 		$numValidMIS++ if $msType eq 'MIS';
-		#if ($labeling) { (PP 17/08/17)
-		#	if ($labeling=~/SILAC/i) {$numValidSILAC++;}
-		#	elsif ($labeling=~/iTRAQ/i) {$numValidITRAQ++;}
-		#	elsif ($labeling=~/TMT/i) {$numValidTMT++;}
-		#	else { # Labeling type is not always mentioned in labeling name
-		#		$sthLQ->execute($anaID);
-		#		my ($okSILAC,$okITRAQ,$okTMT);
-		#		while (my ($qAnnot)=$sthLQ->fetchrow_array) {
-		#			my ($labelType)=($qAnnot=~/^LABEL=(\w+)/);
-		#			if ($labelType eq 'SILAC') {$okSILAC=1;}
-		#			elsif ($labelType eq 'ITRAQ') {$okITRAQ=1;}
-		#			elsif ($labelType eq 'TMT') {$okTMT=1;}
-		#		}
-		#		$numValidSILAC++ if $okSILAC;
-		#		$numValidITRAQ++ if $okITRAQ;
-		#		$numValidTMT++ if $okTMT;
-		#	}
-		#}
+
+		##>Peptide quantif
+		$sthLQ->execute($anaID);
+		my ($okSILAC,$okITRAQ,$okTMT,$okNotCorrected);
+		while (my ($qAnnot)=$sthLQ->fetchrow_array) {
+			next unless $qAnnot; # just to be safe
+			my ($labelType)=($qAnnot=~/^LABEL=(\w+)/);
+			next unless $labelType; # just to be safe
+			$labelType=uc($labelType);
+			if ($labelType eq 'SILAC') {$okSILAC=1;}
+			elsif ($labelType eq 'ITRAQ') {$okITRAQ=1;}
+			elsif ($labelType eq 'TMT') {$okTMT=1;}
+			$okNotCorrected=1 if (($okITRAQ || $okTMT) && $qAnnot !~ /::CORRECTION=/);
+		}
+		$numValidSILAC++ if $okSILAC;
+		$numValidITRAQ++ if $okITRAQ;
+		$numValidTMT++ if $okTMT;
+		$numIsoNotCorr++ if $okNotCorrected;
+
 	}
 	$numMaldi++ if $instrument eq 'MALDI-TOF-TOF';
 	$numValidMascot++ if (($fileFormat eq 'MASCOT.DAT' || $fileFormat eq 'MASCOT.PDM') && $msType eq 'MIS');
@@ -192,9 +193,10 @@ my $disabFilterSel=($numUnValid)? '' : ' disabled';
 my $disabRemFilter=' disabled';
 if ($numUnValid) {
 	my ($filter)=$dbh->selectrow_array($filterQuery);
-	print $filter;
 	$disabRemFilter='' if $filter;
 }
+##>XIC correction
+my ($okTagDistrib)=$dbh->selectrow_array("SELECT 1 FROM ISOTOPIC_CORRECTION WHERE USE_STATUS='YES' LIMIT 1");
 
 $dbh->disconnect;
 
@@ -208,14 +210,16 @@ my $disabElution=($numMaldi && $projectFullAccess)? '' : ' disabled';
 my $disabDelete=(($numUnValid || $numValid) && $deleteAccess)? '' : ' disabled';
 my $disabDuplicate=($numUnValid)? '' : ' disabled';
 my $disabMaxquant=($item eq 'EXPERIMENT')?'' : ' disabled';
+my $disabExport=($projectFullAccess) ? '' : 'disabled';
 
 ##>Quantification
 my $disabemPAI=($numValidMascot && $projectFullAccess)? '' : ' disabled';
 my $disabXIC=($numValidMIS && $projectFullAccess)? '' : ' disabled';
+my $disabXICCORR=($okTagDistrib && $numIsoNotCorr)? '' : ' disabled';
 my $disabSIN=($numValidMascotDAT && $projectFullAccess)? '' : ' disabled';
-my $disabSILAC=($numValidSILAC)? '' : ' disabled';
-my $disabITRAQ=($numValidITRAQ)? '' : ' disabled';
-my $disabTMT=($numValidTMT)? '' : ' disabled';
+#my $disabSILAC=($numValidSILAC)? '' : ' disabled';
+#my $disabITRAQ=($numValidITRAQ)? '' : ' disabled';
+#my $disabTMT=($numValidTMT)? '' : ' disabled';
 my $disabWatchQuantif=' disabled';
 my $disabWatchPRS=($projectFullAccess)? '' : ' disabled';
 my $disabPkv=($item eq 'EXPERIMENT')?'' : ' disabled';
@@ -331,11 +335,11 @@ function selectAction(action) {
 			window.location="./selectAnalyses.cgi?ID=$branchID&callType=phosphoRS";
 			break;
 		// Quantifications
-		case 'xic':
-			window.location="./selAna4Quantification.cgi?ID=$branchID&quantifType=xic";
-			break;
 		case 'xicmcq':
 			window.location="./selAna4Quantification.cgi?ID=$branchID&quantifType=xicmcq";
+			break;
+		case 'xiccorr':
+			window.location="./selAna4Quantification.cgi?ID=$branchID&quantifType=xiccorr";
 			break;
 		case 'empai':
 			window.location="./selAna4Quantification.cgi?ID=$branchID&quantifType=empai";
@@ -360,11 +364,11 @@ function selectAction(action) {
 		case 'maxquant' :
 			window.location="./importMaxquant.cgi?id_project=$projectID&ID=$itemID";
 			break;
-		case 'pkv' :
-			window.location="./importSwathData.cgi?id_project=$projectID&ID=$branchID&ACT=import&FORMAT=pkv";
+		case 'peakview' :
+			window.location="./importSwathData.cgi?id_project=$projectID&ID=$branchID&ACT=import&FORMAT=peakview";
 			break;
 		case 'openswath' :
-			window.location="./importSwathDataRefonte.cgi?id_project=$projectID&ID=$branchID&ACT=quantification&FORMAT=openswath";
+			window.location="./importSwathData.cgi?id_project=$projectID&ID=$branchID&ACT=quantification&FORMAT=openswath&USERID=$userID";
 			break;
 		case 'openswathImport' :
 			window.location="./importSwathData.cgi?id_project=$projectID&ID=$branchID&ACT=import&FORMAT=openswath&USERID=$userID";
@@ -440,29 +444,20 @@ function selectAction(action) {
 <TABLE bgcolor=$darkColor cellpadding=4 width=500>
 <TR><TD colspan=2><FONT class="title2">&nbsp;Peptide Quantification:</TD></TR>
 <TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('mzxml')"/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">Manage mzXML files</FONT></TD></TR>
-<!-- <TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('xic')"$disabXIC/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">XIC extraction&nbsp;</FONT></TD></TR> -->
 <TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('xicmcq')"$disabXIC/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">XIC extraction with <A href="http://pappso.inra.fr/bioinfo/masschroq/index.php" target="_blank">MassChroQ</A>&nbsp;</FONT></TD></TR>
+<TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('xiccorr')"$disabXICCORR/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">Isobaric XIC correction&nbsp;</FONT></TD></TR>
 </TABLE>
 <BR><BR>
 <TABLE bgcolor=$darkColor cellpadding=4 width=500>
 <TR><TD colspan=2><FONT class="title2">&nbsp;Protein Label-free Quantification:</TD></TR>
-<TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('empai')"$disabemPAI/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">Import emPAI data&nbsp;</FONT></TD></TR>
+<TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('empai')"$disabemPAI/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">Import emPAI data from Mascot server&nbsp;</FONT></TD></TR>
 <TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('sin')"$disabSIN/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">SI<SUB>N</SUB> quantification&nbsp;</FONT></TD></TR>
 </TABLE>
 <BR><BR>
-<!-- label-based internal quantification no longer supported (PP 17/08/17)
-<TABLE bgcolor=$darkColor cellpadding=4 width=500>
-<TR><TD colspan=2><FONT class="title2">&nbsp;Protein Label Quantification:</TD></TR>
-<TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('silac')"$disabSILAC/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">SILAC-based quantification&nbsp;</FONT></TD></TR>
-<TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('itraq')"$disabITRAQ/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">iTRAQ-based quantification&nbsp;</FONT></TD></TR>
-<TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('tmt')"$disabTMT/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">TMT-based quantification&nbsp;</FONT></TD></TR>
-</TABLE>
-<BR><BR>
--->
 <TABLE bgcolor=$darkColor cellpadding=4 width=500>
 <TR><TD colspan=2><FONT class="title2">&nbsp;DIA/TDA Quantification:</TD></TR>
 <TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('prm')"$disabTDA/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">Import TDA data&nbsp;</FONT></TD></TR>
-<TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('pkv')"$disabPkv/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">Import PeakView data&nbsp;</FONT></TD></TR>
+<TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('peakview')"$disabPkv/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">Import PeakView data&nbsp;</FONT></TD></TR>
 <TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('openswath')"$disabOpenSwath/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">OpenSwath based quantification&nbsp;</FONT></TD></TR>
 <TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('openswathImport')"$disabOpenSwathImport/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">Import OpenSwath data&nbsp;</FONT></TD></TR>
 <TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('spectronautImport')"$disabSpectronautImport/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">Import Spectronaut data&nbsp;</FONT></TD></TR>
@@ -477,6 +472,10 @@ function selectAction(action) {
 #<TR><TH>&nbsp;<INPUT type="button" value=" Proceed " onclick="selectAction('combine')"$disabCombine/>&nbsp;</TH><TD bgcolor=$lightColor>&nbsp;<FONT class="title3">Combine analyses</FONT></TD></TR>
 
 ####>Revision history<####
+# 1.4.8 Remove Export analyses (VS 13/05/19)
+# 1.4.7 Improved "Isobaric XIC correction" option (PP 02/05/19)
+# 1.4.6 Add "Export Multiple Analysis" button (VS 21/03/19)
+# 1.4.5 Added "Isobaric XIC correction" option (PP 21/02/19)
 # 1.4.4 Add userID for importSwathData.cgi call (GA 23/11/18)
 # 1.4.3 Add "Monitor PhosphoRS" button (PP 08/11/18)
 # 1.4.2 Change PRM Script path (VS 08/11/18)

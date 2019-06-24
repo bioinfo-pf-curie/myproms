@@ -1,6 +1,6 @@
 /*
 ################################################################################
-# chartLibrary2.js         1.4.4                                               #
+# chartLibrary2.js         1.4.5                                               #
 # Authors: P. Poullet (Institut Curie)                                         #
 # Contact: patrick.poullet@curie.fr                                            #
 ################################################################################
@@ -280,6 +280,8 @@ function initializeChart(mainC) { // *public*
 			C.dragArea=canvas.rect(0,0,0,0,0)
 			.attr({stroke:'#F00',fill:'#600','fill-opacity':0.1})
 			.data({startX:0,startY:0,status:'off',chart:C})
+			//.click(function(){if (modKeyPressed) {clearDragArea(this)}})
+			.dblclick(function() {if (this.data('chart').zoomable) {zoomIn(this.data('chart'))} else {clearDragArea(this)}})
 			.hide();
 
 			if (C.zoomable) {
@@ -288,11 +290,7 @@ function initializeChart(mainC) { // *public*
 					C.zoomText=canvas.text(chartX,10,'').attr({'font-weight':'bold','font-size':12,'text-anchor':'start'});
 				}
 				/* Drag area dblclick */
-				//C.dragArea=canvas.rect(0,0,0,0,0)
-				//.attr({stroke:'#F00',fill:'#600','fill-opacity':0.1})
-				//.data({startX:0,startY:0,status:'off',chart:C})
-				C.dragArea.dblclick(function() {zoomIn(this.data('chart'))});
-				//.hide();
+				//C.dragArea.dblclick(function() {zoomIn(this.data('chart'))});
 			}
 		}
 
@@ -1260,9 +1258,7 @@ function panChart(C) {
 }
 
 function clearChart(C) { // *public*
-    C.dragArea.hide();
-    C.dragArea.data({status:'off'});
-    C.dragArea.attr({width:0,height:0});
+    clearDragArea(C.dragArea);
 
 if (C.thresholdLines) {
     for (var i=0; i<C.thresholdLines.length; i++) {
@@ -1729,10 +1725,12 @@ if (C.autoZoom) {
 }
     }
     else { // too small => hide
-		C.dragArea.hide()
-		.data({status:'off'})
-		.attr({width:0,height:0});
+		clearDragArea(C.dragArea);
     }
+}
+
+function clearDragArea(dragArea) {
+	dragArea.hide().data({status:'off'}).attr({width:0,height:0});
 }
 
 /***************** Mouse and Keyboard events ********************/
@@ -1833,6 +1831,7 @@ function exportSVGtoImg (svgDivId,imgName,exportScript,format) {
 
 /*
 ####>Revision history<####
+# 1.4.5 Double click removes drag area on non-zoomable charts (PP 15/05/19)
 # 1.4.4 Displays both PNG and SVG image export options if format is not specified by user (PP 06/06/18)
 # 1.4.3 Improved chart.showDataSets detection & chart-specific form elements (PP 20/11/16)
 # 1.4.2 Bug fix in new pointOnList behavior (PP 10/11/16)

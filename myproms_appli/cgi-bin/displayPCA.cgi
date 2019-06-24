@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# displayPCA.cgi       1.2.1                                                   #
+# displayPCA.cgi       1.2.2                                                   #
 # Authors: P. Poullet, S.Liva (Institut Curie)      	                       #
 # Contact: myproms@curie.fr                                                    #
 # display and store the results of PCA analysis        	                       #
@@ -1680,10 +1680,10 @@ sub displayFull3D {
 </HEAD>
 <BODY background="$promsPath{images}/bgProMS.gif">
 
+<SCRIPT src="$promsPath{html}/js/plotly/plotly-gl3d-1.47.4.min.js"></SCRIPT>
 <!--
-<SCRIPT src="$promsPath{html}/js/plotly/plotly-gl3d-latest.min.js"></SCRIPT>
--->
 <SCRIPT src="https://cdn.plot.ly/plotly-gl3d-latest.min.js"></SCRIPT>
+-->
 <SCRIPT type="text/javascript">
     var figure = {
     frames: [],
@@ -1816,6 +1816,7 @@ sub displayFull3D {
 }
 
 ####>Revision history<####
+# 1.2.2 Used local version of plotly-gl3d-1.47.4.min.js (PP 24/05/19)
 # 1.2.1 check number of dimension to skip warning (SL 11/01/19)
 # 1.2.0 Added full 3D view with plotly.js & avoid asynchronous ajax (PP 17/12/18)
 # 1.1.2 Minor improvement in highlighting annotations sorting (PP 21/06/18)

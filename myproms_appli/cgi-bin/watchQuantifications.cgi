@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# watchQuantifications.cgi       1.3.8                                         #
+# watchQuantifications.cgi       1.5.0                                         #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Monitors all on-going quantifications                                        #
@@ -52,6 +52,7 @@ use File::Path qw(rmtree); # remove_tree
 use promsConfig;
 use promsMod;
 use promsQuantif;
+#exit;
 
 #print header(-charset=>'UTF-8'); warningsToBrowser(1); # DEBUG
 #######################
@@ -59,7 +60,8 @@ use promsQuantif;
 #######################
 my %promsPath=&promsConfig::getServerInfo;
 my $userID=$ENV{'REMOTE_USER'};
-my %quantifProcesses=('XIC'=>'Ext. ion chrom.','EMPAI'=>'emPAI','SIN'=>'SI<SUB>N</SUB>',
+my %quantifProcesses=('XIC'=>'Ext. ion chrom.','EMPAI'=>'emPAI','SIN'=>'SI<SUB>N</SUB>','XICCORR'=>'XIC correction',
+					  'IMPORT_MQ'=>'MaxQuant Import',
 					  'DESIGN'=>'Protein ratio','PROT_RATIO_PEP'=>'Protein ratio',
 					  'DESIGN:SimpleRatio'=>'Protein ratio','DESIGN:SuperRatio'=>'Super ratio',
 					  'DESIGN:myProMS'=>'Protein ratio',
@@ -93,7 +95,7 @@ print qq
 <HEAD>
 <TITLE>Monitoring Quantifications</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
-<SCRIPT language="JavaScript">
+<SCRIPT type="text/javascript">
 function doNothing() {}
 // AJAX --->
 function deleteJob(jobDir,quantItem) {
@@ -113,6 +115,10 @@ function deleteJob(jobDir,quantItem) {
 				if (selView && selView.value=='quanti') opener.parent.itemFrame.location.reload();
 			}
 			//Update watchQuanti window
+			if (XHR.responseText.match('##DELETE_EXP')) {
+				alert('Experiment data were not deleted.\\nUse "Edit" for Experiment then "Delete Experiment" to force-delete all data');
+				window.location.reload();
+			}
 			if (XHR.responseText.match('##RELOAD')) { // an entire job dir was deleted => reload window
 				window.location.reload();
 				//setTimeout('window.location.reload()',5000);
@@ -159,7 +165,7 @@ function getXMLHTTP(){
 </HEAD>
 <BODY background="$promsPath{images}/bgProMS.gif" >
 <CENTER>
-<FONT class="title">Monitoring Quantifications</FONT>
+<FONT class="title">Monitoring Quantification Jobs</FONT>
 <BR><BR><INPUT type="button" value="Refresh window" onclick="window.location.reload()"/>&nbsp;&nbsp;&nbsp;<INPUT type="button" value="Close window" onclick="window.close()"/><BR><BR>
 |;
 
@@ -176,7 +182,7 @@ my $sthPj=$dbh->prepare("SELECT NAME FROM PROJECT WHERE ID_PROJECT=?");
 my @jobDirList=&getJobList;
 my (%projectJobs,%userList);
 foreach my $jobDir (sort{&promsMod::sortSmart($a,$b)} @jobDirList) {
-	my ($jobUserID,$jobUserName,$quantifType,$designID,@quantItemList,@quantificationList,@quantifNameList,@designList);
+	my ($jobUserID,$jobUserName,$quantifType,$designID,$projID,@quantItemList,@quantificationList,@quantifNameList,@designList,@experimentList);
 	my $section='';
 	open (INFO,"$quantifHomeDir/$jobDir/quantif_info.txt");
 	while (<INFO>) {
@@ -205,10 +211,17 @@ foreach my $jobDir (sort{&promsMod::sortSmart($a,$b)} @jobDirList) {
 			elsif (/^ID_DESIGN\s+(\d+)/) {$designID=$1; push @designList,-$designID;}
 		}
 		elsif ($section eq 'quantifications' && /^(\d+)/) {push @quantificationList,$1;}
+		elsif ($quantifType eq 'IMPORT_MQ') {
+			if (/^ID_EXPERIMENT=(\d+)/) {
+				my $expID=$1;
+				my ($expName)=$dbh->selectrow_array("SELECT NAME FROM EXPERIMENT WHERE ID_EXPERIMENT=$expID");
+				push @experimentList,[$expID,$expName];
+			}
+			elsif (/^ID_PROJECT=(\d+)/) {$projID=$1;}
+		}
 	}
 	close INFO;
 
-	my $projID;
 	if ($quantItemList[0]) {
 		my ($anaID,$parentQuantif)=split(/\./,$quantItemList[0]); # anaID or anaID.parentQuantifID
 		$projID=&promsMod::getProjectID($dbh,$anaID,'analysis');
@@ -242,6 +255,7 @@ foreach my $jobDir (sort{&promsMod::sortSmart($a,$b)} @jobDirList) {
 	if ($quantItemList[0]) {push @jobData,\@quantItemList;}
 	elsif ($quantificationList[0]) {push @jobData,\@quantificationList;}
 	elsif ($quantifNameList[0]) {push @jobData,(\@designList,\@quantifNameList);} # for design-based multi-launch with no quantifID yet
+	elsif ($experimentList[0]) {push @jobData,\@experimentList;} # MaxQuant import
 	push @{$projectJobs{$projID}{'JOBS'}},\@jobData;
 }
 $sthUsr->finish;
@@ -252,7 +266,7 @@ unless (scalar keys %projectJobs) {
 	$dbh->disconnect;
 	print qq
 |<FONT class=\"title2\">No quantifications found.</FONT>
-<SCRIPT language="JavaScript">
+<SCRIPT type="text/javascript">
 setTimeout('window.location.reload()',30000);
 </SCRIPT>
 </BODY>
@@ -282,7 +296,49 @@ foreach my $projectID (sort{lc($projectJobs{$a}{'NAME'}) cmp lc($projectJobs{$b}
 			next;
 		}
 		else {print "&nbsp;</TD></TR>\n";}
-		if (uc($refJob->[1]) !~ /DESIGN|XIC/) {
+		
+		if ($refJob->[1] eq 'IMPORT_MQ') {
+			print qq
+|<TR bgcolor="$darkColor">
+	<TH class="rbBorder" nowrap width=20>#</TH>
+	<TH class="rbBorder" nowrap>Experiment Name</TH>
+	<TH class="bBorder" nowrap width=600>Status</TH>
+</TR>
+|;
+			my $rowColor=$lightColor;
+			my $countImport=0;
+			foreach my $refExp (@{$refJob->[3]}) {
+				my ($expID,$expName)=@{$refExp};
+				my ($scanAgain,$importStatus,$importError,$detailsFile)=&getAnaQuantifInfo($jobDir,$expID);
+				if ($scanAgain==3) { # jobDir was deleted => reload everything
+					print qq
+|</TABLE></TD></TR></TABLE>
+<SCRIPT type="text/javascript">
+window.location.reload();
+</SCRIPT>
+</BODY>
+</HTML>
+|;
+					exit;
+				}
+				$countImport++;
+
+				$importError = "ok" unless $importError;
+				$importError=~s/\n/<BR>/g;
+				my $importStatusStrg;
+				if ($scanAgain) {
+					$importStatusStrg="<SPAN id='status:$jobDir:$expID'>$importStatus</SPAN>\n<DIV id=\"error:$jobDir:$expID\" style=\"display:none\"><FIELDSET><LEGEND><B>Error message:</B></LEGEND>$importError</FIELDSET></DIV>";
+					push @{$watchedAnalyses{$jobDir}},$expID; # quantItems to be watched
+				}
+				else {
+					$importStatusStrg=$importStatus;
+				}
+				print "<TR bgcolor=\"$rowColor\" valign=top><TH align=right valign=top>$countImport&nbsp;</TH><TH align=left valign=top nowrap>&nbsp;$expName&nbsp;</TH><TD valign=top nowrap>&nbsp;$importStatusStrg</TD></TR>\n";
+
+				$rowColor=($rowColor eq $lightColor)? $darkColor : $lightColor;
+			}
+		}
+		elsif (uc($refJob->[1]) !~ /DESIGN/ && uc($refJob->[1]) ne 'XIC') { # MassChroQ=XIC
 			print qq
 |<TR bgcolor="$darkColor">
 	<TH class="rbBorder" nowrap width=20>#</TH>
@@ -298,7 +354,7 @@ foreach my $projectID (sort{lc($projectJobs{$a}{'NAME'}) cmp lc($projectJobs{$b}
 				if ($scanAgain==3) { # jobDir was deleted => reload everything
 					print qq
 |</TABLE></TD></TR></TABLE>
-<SCRIPT language="JavaScript">
+<SCRIPT type="text/javascript">
 window.location.reload();
 </SCRIPT>
 </BODY>
@@ -316,10 +372,10 @@ window.location.reload();
 				my $anaName=join(' > ',@anaHierarchy);
 
 				#>Parent Quantification
-				if ($parentQuantifID && uc($refJob->[1]) =~ /SILAC|ITRAQ|TMT/) {
+				if ($parentQuantifID && uc($refJob->[1]) eq 'XICCORR') { # =~ /SILAC|ITRAQ|TMT/
 					$sthQN->execute($parentQuantifID);
 					my ($parQuantifName)=$sthQN->fetchrow_array;
-					$anaName.="<BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;using $parQuantifName";
+					$anaName.="&nbsp;<BR>&nbsp;&nbsp;&nbsp;&nbsp;using Quantification: $parQuantifName";
 				}
 
 				$anaError = "ok" unless $anaError;
@@ -349,7 +405,6 @@ window.location.reload();
 			my $rowColor=$lightColor;
 			my $countQuant=0;
 			foreach my $refenceID (@{$refJob->[3]}) {
-				$countQuant++;
 				my ($quantID,$quantName);
 				if ($refenceID > 0) { # normal case
 					$quantID=$refenceID;
@@ -374,6 +429,18 @@ window.location.reload();
 					$quantName=$designHierarchyStrg{$designID}.' > '.$refJob->[4][$countQuant-1]; # quantifName always [0] in fact
 				}
 				my ($scanAgain,$quantStatus,$anaError,$RoutFile)=&getAnaQuantifInfo($jobDir,$quantID);
+				if ($scanAgain==3) { # jobDir was deleted => reload everything
+					print qq
+|</TABLE></TD></TR></TABLE>
+<SCRIPT type="text/javascript">
+window.location.reload();
+</SCRIPT>
+</BODY>
+</HTML>
+|;
+					exit;
+				}
+				$countQuant++;
 				$anaError = "ok" unless $anaError;
 				$anaError=~s/\n/<BR>/g;
 				my $quantStatusStrg;
@@ -419,7 +486,7 @@ if (scalar keys %watchedAnalyses) {
 		$watchedAnaStrg.="$jobDir:".join(':',@{$watchedAnalyses{$jobDir}});
 	}
 	print qq
-|<SCRIPT LANGUAGE="JavaScript">
+|<SCRIPT type="text/javascript">
 var watchedAnaStrg='$watchedAnaStrg';
 var autoUpdate=1;
 var noJobErrorUpdate={}; // list of jobs not to be updated because user is reading error message
@@ -585,14 +652,40 @@ sub getAnaQuantifInfo {
 			$RoutFile=(split(/\s/,$RoutFileInfo))[-1] if $RoutFileInfo;
 		}
 		#my $quantiTime=($quantifType eq 'XIC')? 300 : ($quantifType eq 'SIN')? 40 : 5; # min
-		my $quantiTime=($quantifType eq 'XIC')? 600 : ($quantifType eq 'SIN')? 1800 : ($algoType && $algoType=~/MSstats/)? 14400 : 3600; # sec
+		my $quantiTime=($quantifType eq 'XICCORR')? 300 : ($quantifType eq 'XIC')? 600 : ($quantifType eq 'SIN')? 1800 : ($algoType && $algoType=~/MSstats/)? 14400 : ($quantifType eq 'IMPORT_MQ')? 900 : 3600; # sec
 
+		my $error=0;
+		my $errorDisplayStrg='';
+		if ($quantItemID && -e "$quantifHomeDir/current/$quantItemID\_$jobDir\_error.txt") {
+			$error= -s "$quantifHomeDir/current/$quantItemID\_$jobDir\_error.txt" if -e "$quantifHomeDir/current/$quantItemID\_$jobDir\_error.txt";
+			chomp $error if $error;
+			if ($error) {
+				my $errorString;
+				open(ERRORFILE, "$quantifHomeDir/current/$quantItemID\_$jobDir\_error.txt") or die $!;
+				while (<ERRORFILE>) {
+					$errorString .= $_;
+					if ($. > 25) {
+						$errorString.='[Truncated]...';
+						last;
+					}
+				}
+				close ERRORFILE;
+				$errorDisplayStrg="<B><FONT color=\"#DD0000\">**ERROR**</FONT>";
+				$errorDisplayStrg.=$delButtonStrg; #### unless $anaStatus=~/deleteJob/; # delete button already added
+				$errorDisplayStrg.=qq|&nbsp;<INPUT type="button" value="Show/Hide error" onclick="viewError('error:$jobDir:$quantItemID');"></B>|; # id="errorButton:$jobDir:$quantItemID"
+				#$anaStatus.=qq|&nbsp;<INPUT type="button" value="Show/Hide Rout" onclick="viewError('rout:$jobDir:$quantItemID');"></B>| if -e "$quantifHomeDir/$jobDir/quanti_$quantItemID/$RoutFile"; # id="routButton:$jobDir:$quantItemID"
+				$anaError = $errorString;
+				$scanAgain=1;
+			}
+		}
+		
 		if ($quantItemID==0 || -e "$quantifHomeDir/current/$jobDir\_request.flag") { # quantif not yet recorded in DB: design-based multi job launch
 			$anaStatus='<B>Pending...</B> [Request to be processed]';
 			$scanAgain=($OKquantifID)? 3 : 2; # 2: no change, 3: quantification was created in DB => RELOAD
 		}
 		elsif (-e "$quantifHomeDir/current/$quantItemID\_$jobDir\_wait.flag") {
 			$anaStatus='<B>Pending...</B> [Waiting for job to start]';
+			$anaStatus.=$errorDisplayStrg if $error;
 			$scanAgain=1; # tagged as unfinished so always scanned
 		}
 		else {
@@ -674,36 +767,41 @@ sub getAnaQuantifInfo {
 					else {
 						$refFile="$quantifHomeDir/$jobDir/status_$quantItemID.out";
 					}
-					$refFile="$quantifHomeDir/$jobDir/status_$quantItemID.out" unless -e $refFile;
-					open(my $fh, "<", $refFile);
-					my $lastChangeInSec=stat($fh)->[9]; # in sec
-					close $fh;
-					my $now=strftime("%s",localtime); # in sec
-					my $waitTime=strftime("%Hh %Mm %Ss",localtime($now-$lastChangeInSec-3600));
-					$anaStatus.="$progressStrg (Updated $waitTime ago)]&nbsp;";
-					$anaStatus.="<BR><B><FONT color='#DD0000'>Wait &gt ".($quantiTime/60)." min! Possible job failure. </FONT>$delButtonStrg</B>" if $now-$lastChangeInSec > $quantiTime; # in sec
+					unless ($error) {
+						$refFile="$quantifHomeDir/$jobDir/status_$quantItemID.out" unless -e $refFile;
+						open(my $fh, "<", $refFile);
+						my $lastChangeInSec=stat($fh)->[9]; # in sec
+						close $fh;
+						my $now=strftime("%s",localtime); # in sec
+						my $waitTime=strftime("%Hh %Mm %Ss",localtime($now-$lastChangeInSec-3600));
+						$anaStatus.="$progressStrg (Updated $waitTime ago)]&nbsp;";
+						$anaStatus.="<BR><B><FONT color='#DD0000'>Wait &gt ".($quantiTime/60)." min! Possible job failure. </FONT>$delButtonStrg</B>" if $now-$lastChangeInSec > $quantiTime; # in sec
+					}
 				}
 			}
-			my $error=0;
-			$error= -s "$quantifHomeDir/current/$quantItemID\_$jobDir\_error.txt" if -e "$quantifHomeDir/current/$quantItemID\_$jobDir\_error.txt";
-			chomp $error if $error;
-			if ($error) {
-				my $errorString;
-				open(ERRORFILE, "$quantifHomeDir/current/$quantItemID\_$jobDir\_error.txt") or die $!;
-				while (<ERRORFILE>) {
-					$errorString .= $_;
-				}
-				close ERRORFILE;
-				$anaStatus.="<B><FONT color=\"#DD0000\">**ERROR**</FONT>";
-				$anaStatus.=$delButtonStrg unless $anaStatus=~/deleteJob/; # delete button already added
-				$anaStatus.=qq|&nbsp;<INPUT type="button" value="Show/Hide error" onclick="viewError('error:$jobDir:$quantItemID');"></B>|; # id="errorButton:$jobDir:$quantItemID"
-				#$anaStatus.=qq|&nbsp;<INPUT type="button" value="Show/Hide Rout" onclick="viewError('rout:$jobDir:$quantItemID');"></B>| if -e "$quantifHomeDir/$jobDir/quanti_$quantItemID/$RoutFile"; # id="routButton:$jobDir:$quantItemID"
-				$anaError = $errorString;
-				$scanAgain=1;
-			}
+			
+			#my $error=0;
+			#$error= -s "$quantifHomeDir/current/$quantItemID\_$jobDir\_error.txt" if -e "$quantifHomeDir/current/$quantItemID\_$jobDir\_error.txt";
+			#chomp $error if $error;
+			#if ($error) {
+			#	my $errorString;
+			#	open(ERRORFILE, "$quantifHomeDir/current/$quantItemID\_$jobDir\_error.txt") or die $!;
+			#	while (<ERRORFILE>) {
+			#		$errorString .= $_;
+			#	}
+			#	close ERRORFILE;
+			#	$anaStatus.="<B><FONT color=\"#DD0000\">**ERROR**</FONT>";
+			#	$anaStatus.=$delButtonStrg unless $anaStatus=~/deleteJob/; # delete button already added
+			#	$anaStatus.=qq|&nbsp;<INPUT type="button" value="Show/Hide error" onclick="viewError('error:$jobDir:$quantItemID');"></B>|; # id="errorButton:$jobDir:$quantItemID"
+			#	#$anaStatus.=qq|&nbsp;<INPUT type="button" value="Show/Hide Rout" onclick="viewError('rout:$jobDir:$quantItemID');"></B>| if -e "$quantifHomeDir/$jobDir/quanti_$quantItemID/$RoutFile"; # id="routButton:$jobDir:$quantItemID"
+			#	$anaError = $errorString;
+			#	$scanAgain=1;
+			#}
+			$anaStatus.=$errorDisplayStrg if $error;
+
 			if (!$error && !-e "$quantifHomeDir/$jobDir/status_$quantItemID.out") {
-				if (-e "$quantifHomeDir/current/$quantItemID\_$jobDir\_run.flag") { # in case delay between run flag and run dir creation
-					$anaStatus='<B>Starting...</B>';
+				if (-e "$quantifHomeDir/current/$quantItemID\_$jobDir\_run.flag") { # delay between run flag and run dir creation OR during files move at the end
+					$anaStatus='<B>Moving files...</B>';
 					$scanAgain=1;
 				}
 				else {
@@ -736,13 +834,14 @@ sub ajaxDeleteJob {
 	if ($quantItemID) {
 		if (-e "$quantifHomeDir/$jobDir") {
 			my ($runDir,$quantifID);
+			my $quantifType='?';
 			if (-d "$quantifHomeDir/$jobDir/quanti_$quantItemID") { # Design
 				$quantifID=$quantItemID;
 				#$runDir="$quantifHomeDir/$jobDir/quanti_$quantItemID";
 				$runDir="quanti_$quantItemID";
 			}
 			else { # other
-				opendir (DIR, "$quantifHomeDir/$jobDir");
+				opendir (DIR,"$quantifHomeDir/$jobDir");
 				while (defined (my $content = readdir (DIR))) {
 					if ($content=~/quanti_${quantItemID}_(\d+)/) {
 						$quantifID=$1;
@@ -752,11 +851,12 @@ sub ajaxDeleteJob {
 				}
 				close DIR;
 			}
-			unless ($quantifID) { # error at in launchQuantification.cgi ?
+			unless ($quantifID) { # IMPORT_MQ or error at in launchQuantification.cgi ?
 				my $section='';
 				open (INFO,"$quantifHomeDir/$jobDir/quantif_info.txt");
 				while (<INFO>) {
-					if (/^QUANTIFICATIONS:/) {$section='quantifications'; next;}
+					if (/^TYPE=(\S+)/) {$quantifType=$1; next;}
+					elsif (/^QUANTIFICATIONS:/) {$section='quantifications'; next;}
 					elsif ($section eq 'quantifications' && /^(\d+)/) {
 						$quantifID=$1;
 						$runDir=''; # bug occured before creation
@@ -772,23 +872,17 @@ sub ajaxDeleteJob {
 #print "**jobDir=$jobDir\n**quantItemID=$quantItemID\n**runDir=$runDir\n**quantifID=$quantifID\n";
 
 			##<Delete from DB
-			if ($quantifID) { # quantif is recorded in DB BUT all data still in temp dir
+			if ($quantifType eq 'IMPORT_MQ') {
+				rmtree("$quantifHomeDir/$jobDir"); unlink "$quantifHomeDir/$jobDir" if -e "$quantifHomeDir/$jobDir"; # empty dir can remain
 				my $dbh=&promsConfig::dbConnect;
-				#$dbh->do("DELETE FROM PARENT_QUANTIFICATION WHERE ID_QUANTIFICATION=$quantifID");
-				#$dbh->do("DELETE FROM ANA_QUANTIFICATION WHERE ID_QUANTIFICATION=$quantifID");
-				#$dbh->do("DELETE FROM EXPCONDITION_QUANTIF WHERE ID_QUANTIFICATION=$quantifID");
-				##$dbh->do("DELETE FROM PEPTIDE_QUANTIFICATION WHERE ID_QUANTIFICATION=$quantifID");
-				#$dbh->do("DELETE FROM PROTEIN_QUANTIFICATION WHERE ID_QUANTIFICATION=$quantifID");
-				#$dbh->do("DELETE FROM QUANTIFICATION WHERE ID_QUANTIFICATION=$quantifID");
-				#$dbh->commit;
-				#$dbh->disconnect;
-				###<Delete files
-				##remove_tree("$quantifHomeDir/$jobDir/$runDir");
-				#rmtree("$quantifHomeDir/$jobDir/$runDir") if $runDir;
-				#my $projID=&promsMod::getProjectID($dbh,$quantifID,'quantification');
-				#if (-d "$promsPath{quantification}/project_$projID") {
-				#	rmtree("$promsPath{quantification}/project_$projID/quanti_$quantifID") if -d "$promsPath{quantification}/project_$projID/quanti_$quantifID"; # peptide data in file
-				#}
+				my ($hasChild)=$dbh->selectrow_array("SELECT 1 FROM SAMPLE WHERE ID_EXPERIMENT=$quantItemID");
+				$dbh->disconnect;
+				if ($hasChild) {print "##DELETE_EXP\n";}
+				else {print "##RELOAD\n";}
+			}
+			elsif ($quantifID && $quantifType ne 'XICCORR') { # quantif is recorded in DB BUT all data still in temp dir
+#die "BAD: $quantifType!";
+				my $dbh=&promsConfig::dbConnect;
 				my $projID=&promsMod::getProjectID($dbh,$quantifID,'quantification');
 				&promsQuantif::deleteQuantification($dbh,$projID,$quantifID);
 				$dbh->commit;
@@ -805,17 +899,17 @@ sub ajaxDeleteJob {
 
 	##<delete quantif directory if no job left
 	if (-e "$quantifHomeDir/$jobDir") {
-		my $numFiles=`ls -l $quantifHomeDir/$jobDir | wc -l`;
-		chomp($numFiles);
-		if ($numFiles*1 <= 2 || !$quantItemID) { # total + only quantif_info.txt
+		#my $numFiles=`ls -l $quantifHomeDir/$jobDir | wc -l`;
+		#chomp($numFiles);
+		#if ($numFiles*1 <= 2 || !$quantItemID) { # total + only quantif_info.txt
 			#remove_tree("$quantifHomeDir/$jobDir");
 			rmtree("$quantifHomeDir/$jobDir"); unlink "$quantifHomeDir/$jobDir" if -e "$quantifHomeDir/$jobDir"; # empty dir can remain
 			print "##RELOAD\n";
-		}
-		#print '##OK';
-		else {
-			print 'Could not delete all temporary files.';
-		}
+		#}
+		##print '##OK';
+		#else {
+		#	print 'Could not delete all temporary files.';
+		#}
 	}
 	else {
 		#print 'Data directory not found.';
@@ -824,7 +918,12 @@ sub ajaxDeleteJob {
 	exit;
 }
 
+# TODO: Check also for error at cluster connection
 ####>Revision history<####
+# 1.5.0 Adapted for MaxQuant import (PP 20/05/19) 
+# 1.4.1 [Fix] minor bug fix in quantifType detection (PP 22/02/19)
+# 1.4.0 Adapted for XICCORR quantif type (PP 19/02/19) 
+# 1.3.9 Checks for error earlier in pipeline (PP 11/02/19)
 # 1.3.8 [Fix] occasional JS bug following deletion request (PP 04/12/18)
 # 1.3.7 Various improvements (PP 14/11/18)
 # 1.3.6 Minor fix of undef variable (PP 30/10/18)

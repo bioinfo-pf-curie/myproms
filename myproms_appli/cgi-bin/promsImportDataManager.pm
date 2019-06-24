@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# promsImportDataManager.pm         1.0.1                                      #
+# promsImportDataManager.pm         1.0.2                                      #
 # Authors: M. Le Picard, V. Sabatet (Institut Curie)                           #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -61,7 +61,6 @@ use POSIX qw(strftime); # to get the time
 use File::Path qw(rmtree); # remove_tree
 use String::Util qw(trim);
 use File::Spec::Functions qw(splitpath); # Core module
-use Data::Dumper;
 
 $|=1; # buffer flush (allows instant printing)
 
@@ -90,12 +89,10 @@ sub new {
     ###> Fetching project information
     my %promsPath=&promsConfig::getServerInfo('no_user');
     my $dbh = &promsConfig::dbConnect('no_user');
-    my ($protVisibility, $identProject) = $dbh->selectrow_array("SELECT PROT_VISIBILITY, ID_IDENTIFIER FROM PROJECT WHERE ID_PROJECT=".$self->{_projectID});
+    (my $protVisibility, $self->{_identProject}) = $dbh->selectrow_array("SELECT PROT_VISIBILITY, ID_IDENTIFIER FROM PROJECT WHERE ID_PROJECT=".$self->{_projectID});
     $dbh->disconnect;
     
     $self->{_protVisibility} = ($protVisibility) ? $protVisibility : 0;
-    $self->{_identProject} = ($identProject) ? $identProject : '';
-    
     $self->{analysisID} = {};
     $self->{peptidesID} = {};
     $self->{quantiID} = 0;
@@ -219,7 +216,7 @@ sub importData {
         $sthSample->finish;
 
         # Insertion into ANALYSIS
-        $sthAnalysis->execute($sampleID, $analysisName, $self->{_dataFile}, -1, $self->{_userID}, 0, $self->{_userID}, $analysisFile, $decoy, "$topPepNbDecoy:0:$topPepNbTarget:0", $self->{_taxonomy}, $displayPos, $fileFormat, $msType, $self->{_instrument}, 0, 0, 1);
+        $sthAnalysis->execute($sampleID, $analysisName, $self->{_dataFile}, 2, $self->{_userID}, 0, $self->{_userID}, $analysisFile, $decoy, "$topPepNbDecoy:0:$topPepNbTarget:0", $self->{_taxonomy}, $displayPos, $fileFormat, $msType, $self->{_instrument}, 0, 0, 1);
         $sthAnalysis->finish;
         my $analysisID=$dbh->last_insert_id(undef, undef, 'ANALYSIS', 'ID_ANALYSIS');
 
@@ -395,7 +392,7 @@ sub importData {
         
         my $numGroup=0;
         foreach my $i (0..$#sortedProt) {
-            print("Running prot $i / $#sortedProt<br/>");
+            #print("Running prot $i / $#sortedProt<br/>");
             my $prot1 = $sortedProt[$i];
             next if $matchGroup{$prot1}; # already assigned to a match group
             $matchGroup{$prot1} = ++$numGroup;
@@ -431,7 +428,6 @@ sub importData {
             my $matchGroup = $matchGroup{$protein};
             my $pepSpecificity = $bestPepSpecificity{$protein};
             my $visibility = $visibility{$protein};
-            print("Executing with $analysisID, $proteinID, $dbRank, 2, $protScore, $numPep, $numMatch, $coverage, $matchGroup, $pepSpecificity, $visibility");
             $sthAnaProt->execute($analysisID, $proteinID, $dbRank, 2, $protScore, $numPep, $numMatch, $coverage, $matchGroup, $pepSpecificity, $visibility);
 
         }
@@ -448,6 +444,7 @@ sub importData {
     ### Inserting data into tables PEPTIDE,PEPTIDE_MODIFICATION ###
     ###############################################################
     $self->appendLog("Storing peptides data into database.");
+    my $nbPepProcessed = 0;
     foreach my $analysis (keys %{$self->{analysisID}}) {
         my $analysisID = $self->{analysisID}{$analysis};
         foreach my $peptide (keys %{$self->{_peptideList}{$analysis}}) {
@@ -456,15 +453,17 @@ sub importData {
                 my @pepSeq = split(/_/, $peptide);
                 my $pepSequence = $pepSeq[0];
                 $pepSequence=~s/\(UniMod:\d+\)//g; # OpenSwath
+                $pepSequence=~s/(^\.|\.$)//g; # OpenSwath DIA
                 $pepSequence=~s/\[([A-Za-z0-9 -]+)\s\(\w+\)\]//g; # TDA
                 $pepSequence=~s/\(unimod:\d+\)//g; # TDA
                 $pepSequence=~s/\[\+?\w+\.?\d*\]//g; # Peakview
-
+                #print("Processing $pepSeq[0] $pepSeq[1] $rt ($pepSequence) ...\n"); # TODO Remove
+                
                 my $pepLength = length $pepSequence;
                 my $pepCharge = $pepSeq[1];
                 my $mrObs = ($self->{_peptideInfo}{$peptide}[0]) ? $self->{_peptideInfo}{$peptide}[0] : $self->{_peptideList}{$analysis}{$peptide}{$rt}[0] ;
                 my $mrExp = ($mrObs-1.007825032)*$pepCharge;
-                my $missCut = ($self->{_peptideInfo}{$peptide}[1]) ? $self->{_peptideInfo}{$peptide}[1] : '' ;
+                my $missCut = ($self->{_peptideInfo}{$peptide}[1]) ? $self->{_peptideInfo}{$peptide}[1] : '0' ;
                 my $pepScore = ($ghostPep) ? 'NULL' : ($self->{_peptideList}{$analysis}{$peptide}{$rt}[1] && $self->{_peptideList}{$analysis}{$peptide}{$rt}[1]=~/\d+/) ? $self->{_peptideList}{$analysis}{$peptide}{$rt}[1] : 'NULL';
                 
                 $rt = sprintf("%0.2f", $rt);
@@ -492,7 +491,7 @@ sub importData {
                 $sthPeptide->execute($analysisID, $pepSequence, $pepLength, $queryNum, $rank, $rank, $pepScore, $missCut, $mrExp, $mrObs, $pepCharge, $elutionTime, $validStatus, 1);
                 my $peptideID = $dbh->last_insert_id(undef, undef, 'PEPTIDE', 'ID_PEPTIDE');
                 push @{$self->{peptidesID}{$analysis}{$peptide}}, $peptideID;
-
+                
                 ###>Insertion into PEPTIDE_MODIFICATION
                 my %varMods;
                 foreach my $modificationID (keys %{$self->{_peptideModif}{$analysis}{$peptide}}) {
@@ -504,10 +503,17 @@ sub importData {
                     }
                     $sthModification->execute($peptideID,$modificationID,'V',$position);
                 }
-
+                
+                #print(Dumper(\%varMods)); # TODO Remove
+                
                 my $mrCalc = &mrCalc($pepSequence, \%varMods); ## $pepSequence = peptide sequence without modification ; %varMod => {modification position}=modification mass
                 my $delta = $mrCalc-$mrExp;
                 $sthUpdatePeptide->execute($mrCalc, $delta ,$peptideID);
+                $nbPepProcessed++;
+                
+                if($nbPepProcessed % 100000 == 0) {
+                    $self->appendLog("Storing peptides data into database ($nbPepProcessed processed)");
+                }
             }
         }
         $sthPeptide->finish;
@@ -545,18 +551,6 @@ sub importData {
         $sthAttrib->finish;
         $dbh->commit;
     }
-
-
-    ################################################
-    ####> Update VALID_STATUS in ANALYSIS table <###
-    ################################################
-    my $sthAnalysisUpdate = $dbh->prepare("UPDATE ANALYSIS SET VALID_STATUS=2 WHERE ID_ANALYSIS=?");
-    foreach my $analysis (sort {$a cmp $b } keys %{$self->{analysisID}}){
-        my $analysisID = $self->{analysisID}{$analysis};
-        $sthAnalysisUpdate->execute($analysisID);
-    }
-    $sthAnalysisUpdate->finish;
-    $dbh->commit;
 
 
     #######################################################################
@@ -720,5 +714,6 @@ sub _fetchProteinFromTDAFile {
 1;
 
 ####>Revision history<####
+# 1.0.2 Stabilize DIA data import (11/06/19)
 # 1.0.1 Added RT mean computation for TDA MS2 peptides (27/11/18)
 # 1.0.0 Creation (VS 12/11/18)

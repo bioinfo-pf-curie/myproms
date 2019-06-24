@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# runSSProtQuantification.pl       1.2.2                                       #
+# runSSProtQuantification.pl       1.2.3                                       #
 # Component of site myProMS Web Server                                         #
 # Authors: P. Poullet (Institut Curie)                                         #
 # Contact: myproms@curie.fr                                                    #
@@ -40,6 +40,7 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 #-------------------------------------------------------------------------------
+
 $| = 1;
 use promsConfig;
 use promsMod;
@@ -450,8 +451,8 @@ open(FILESTAT,">>$fileStat");
 print FILESTAT "3/4 Running SSP Analysis\n";
 close FILESTAT;
 
-my %clusterInfo=&promsConfig::getClusterInfo; #('debian') # default is 'centos'
-my $pathR=($clusterInfo{'on'})? $clusterInfo{'path'}{'R'} : $promsPath{'R'};
+my %cluster=&promsConfig::getClusterInfo; #('debian') # default is 'centos'
+my $pathR=($cluster{'on'})? $cluster{'path'}{'R'} : $promsPath{'R'};
 
 open(R_SCRIPT,">$runDir/analysisCounting.R");
 print R_SCRIPT qq
@@ -467,61 +468,75 @@ close R_SCRIPT;
 
 my $RcommandString="export LANG=en_US.UTF-8; cd $runDir; $pathR/R CMD BATCH --no-save --no-restore analysisCounting.R";
 
-my $numPepValues=(scalar keys %proteinData) * (scalar @bioRepOrder);
-
-if ($clusterInfo{'on'}) { ###>Run job on cluster
-	my $bashFile = "$runDir/runSSProtQuantification.sh";
-	my $clusterRcommandString=$clusterInfo{'buildCommand'}->($runDir,$RcommandString);
+if ($cluster{'on'}) { ###>Run job on cluster
+#	my $bashFile = "$runDir/runSSProtQuantification.sh";
+#	my $clusterRcommandString=$cluster{'buildCommand'}->($runDir,$RcommandString);
+	my $numPepValues=(scalar keys %proteinData) * (scalar @bioRepOrder);
 	my $maxHours=int(0.5+($numPepValues/25000)); $maxHours=2 if $maxHours < 2; $maxHours=48 if $maxHours > 48; # 1 M lines -> 40 h
 	my $maxMem=int(1.5 + 1E-6 * $numPepValues);
 	$maxMem.='Gb';
-	open (BASH,">$bashFile");
-	print BASH qq
-|#!/bin/bash
-##resources
-#PBS -l mem=$maxMem
-#PBS -l nodes=1:ppn=1
-#PBS -l walltime=$maxHours:00:00
-#PBS -q batch
-##Information
-#PBS -N myProMS_SSPA_$quantifID
-##PBS -M patrick.poullet\@curie.fr
-#PBS -m abe
-#PBS -o $runDir/PBS.txt
-#PBS -e $runDir/PBSerror.txt
+#	open (BASH,">$bashFile");
+#	print BASH qq
+#|#!/bin/bash
+###resources
+##PBS -l mem=$maxMem
+##PBS -l nodes=1:ppn=1
+##PBS -l walltime=$maxHours:00:00
+##PBS -q batch
+###Information
+##PBS -N myProMS_SSPA_$quantifID
+###PBS -M patrick.poullet\@curie.fr
+##PBS -m abe
+##PBS -o $runDir/PBS.txt
+##PBS -e $runDir/PBSerror.txt
+#
+### Command
+#$clusterRcommandString
+#echo _END_$quantifID
+#|;
+#	close BASH;
+#	my $modBash=0775;
+#	chmod $modBash, $bashFile;
+#	#system "$promsPath{qsub}/qsub $bashFile > $runDir/torqueID.txt";
+#	$cluster{'sendToCluster'}->($bashFile);
+#	sleep 30;
+#
+#	###>Waiting for R job to run
+#	my $pbsError;
+#	my $nbWhile=0;
+#	my $maxNbWhile=$maxHours*60*2;
+#	while ((!-e "$runDir/PBS.txt" || !`tail -3 $runDir/PBS.txt | grep _END_$quantifID`) && !$pbsError) {
+#		if ($nbWhile > $maxNbWhile) {
+#			$dbh=&promsConfig::dbConnect('no_user'); # reconnect
+#			$dbh->do("UPDATE QUANTIFICATION SET STATUS=-2 WHERE ID_QUANTIFICATION=$quantifID"); # Failed
+#			$dbh->commit;
+#			$dbh->disconnect;
+#			die "Aborting quantification: R is taking too long or died before completion";
+#		}
+#		sleep 30;
+#		$pbsError=`head -5 $runDir/PBSerror.txt` if -e "$runDir/PBSerror.txt";
+#		$nbWhile++;
+#	}
 
-## Command
-$clusterRcommandString
-echo _END_$quantifID
-|;
-	close BASH;
-	my $modBash=0775;
-	chmod $modBash, $bashFile;
-	#system "$promsPath{qsub}/qsub $bashFile > $runDir/torqueID.txt";
-	$clusterInfo{'sendToCluster'}->($bashFile);
-	sleep 30;
 
-	###>Waiting for R job to run
-	my $pbsError;
-	my $nbWhile=0;
-	my $maxNbWhile=$maxHours*60*2;
-	while ((!-e "$runDir/PBS.txt" || !`tail -3 $runDir/PBS.txt | grep _END_$quantifID`) && !$pbsError) {
-		if ($nbWhile > $maxNbWhile) {
-			$dbh=&promsConfig::dbConnect('no_user'); # reconnect
-			$dbh->do("UPDATE QUANTIFICATION SET STATUS=-2 WHERE ID_QUANTIFICATION=$quantifID"); # Failed
-			$dbh->commit;
-			$dbh->disconnect;
-			die "Aborting quantification: R is taking too long or died before completion";
-		}
-		sleep 30;
-		$pbsError=`head -5 $runDir/PBSerror.txt` if -e "$runDir/PBSerror.txt";
-		$nbWhile++;
+	my %jobParameters=(
+		commandFile=>"$runDir/runSSProtQuantification.sh",
+		maxMem=>$maxMem,
+		numCPUs=>1,
+		maxHours=>$maxHours,
+		jobName=>"myProMS_SSPA_$quantifID"
+	);
+	my ($pbsError,$pbsErrorFile)=$cluster{'runJob'}->($runDir,$RcommandString,\%jobParameters);
+	if ($pbsError) { # move PBS error message to job error file
+		system "cat $pbsErrorFile >> $promsPath{tmp}/quantification/current/$quantifID\_$quantifDate\_error.txt";
 	}
 }
 else { ###>Run job on Web server
 	system $RcommandString;
 }
 sleep 3;
+
+&checkForErrors;
 
 $dbh=&promsConfig::dbConnect('no_user'); # reconnect
 
@@ -637,7 +652,8 @@ unlink $fileStat;
 
 
 sub checkForErrors {
-	my ($errorFile) = glob "$promsPath{tmp}/quantification/current/*_${quantifDate}_error.txt";
+	#my ($errorFile) = glob "$promsPath{tmp}/quantification/current/*_$quantifDate\_error.txt";
+	my $errorFile = "$promsPath{tmp}/quantification/current/$quantifID\_$quantifDate\_error.txt";
 	if ($errorFile && -s $errorFile) {
 		$dbh->do("UPDATE QUANTIFICATION SET STATUS=-2 WHERE ID_QUANTIFICATION=$quantifID"); # Failed
 		$dbh->commit;
@@ -648,6 +664,7 @@ sub checkForErrors {
 
 
 ####>Revision history<####
+# 1.2.3 Uses single $cluster{runJob}->() command (PP 11/07/19)
 # 1.2.2 Uses quanti_$quantifID instead of quantif_$quantifID (PP 18/05/18)
 # 1.2.1 [FIX] Bug due to truncated protein:visibility SQL response string if &gt; 1024 characters (PP 18/01/18)
 # 1.2.0 Now relies on &promsConfig::getClusterInfo (PP 30/11/17)

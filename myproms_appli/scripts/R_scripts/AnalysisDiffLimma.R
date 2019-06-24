@@ -1,5 +1,5 @@
 ################################################################################
-# AnalysisDiffLimma.R         4.2.0                                            #
+# AnalysisDiffLimma.R         4.3.2                                           #
 # Authors: Matthieu Lhotellier & Alexandre Sta (Institut Curie)                #
 # Contact: myproms@curie.fr                                                    #
 # Statiscal Methods for protein quantification by mass spectrometry            #
@@ -133,7 +133,9 @@ if(!is.null(bias))
   write.table(toWrite,paste("results/allbias_coef.txt"),row.names = TRUE,col.names = FALSE ,sep="\t",quote=FALSE)
 }
 #### ResultsPep.txt (outliers here) ####
-resultsPep = historyData$dataNorm %>% dplyr::full_join(outlier,by=names(.)) %>% 
+
+if ( !is.null(dataRef) ){
+resultsPep = historyData$dataNormEachProt %>% dplyr::full_join(outlier,by=names(.)) %>% 
   dplyr::rename( Condition = sample,
                  ProteinID = proteinId, 
                  Peptide = peptide,
@@ -141,7 +143,16 @@ resultsPep = historyData$dataNorm %>% dplyr::full_join(outlier,by=names(.)) %>%
                  log2Measure = M,
                  PeptideId = peptideId
   ) %>% dplyr::select(-A,-quantifSet)
-
+} else if ( is.null(dataRef) ){
+  resultsPep = historyData$dataNorm %>% dplyr::full_join(outlier,by=names(.)) %>% 
+    dplyr::rename( Condition = sample,
+                   ProteinID = proteinId, 
+                   Peptide = peptide,
+                   Experiment = experiment,
+                   log2Measure = M,
+                   PeptideId = peptideId
+    ) %>% dplyr::select(-A,-quantifSet)
+}
 
 order = c("Experiment","Condition","replicate","repTech","ProteinID","normProtein","Peptide","PeptideId","log2Measure","out")
 
@@ -304,6 +315,8 @@ write.table(parameters$design,paste("results/design.txt"),row.names = FALSE,col.
 print("End of the quantification")
 
 ####>Revision history<####
+# 4.3.2 if tableRef doesn't exist, resultsPep uses the dataNorm (IB 05/04/19)
+# 4.3.1 resultsPep uses the dataNormEachProt instead of dataNorm (IB 25/03/19)
 # 4.3.0 normalization.ref.test has now 4 items, 1 and 2 for normalisation of tableRef and 3 and 4 for correction of data with tableRef (IB 29/11/2018)
 # 4.2.0 change Licence from GPL to CeCILL, change order of table.ref reading, create dataRef object (NULL when there isn't table.ref) and add dataRef in .control arguments, remove outliers from data in the graph "distriblog2FC_....jpeg" (16/11/18)
 # 4.1.3 invert the order of normalization and normalization by ref and correct the test on the parameter of normalization of ref (28/06/18)

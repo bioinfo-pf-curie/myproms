@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# showProtQuantification.cgi     2.6.1                                         #
+# showProtQuantification.cgi     2.6.3                                         #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Displays protein quantification data                                         #
@@ -170,8 +170,9 @@ if ($call eq 'ana') {
 	}
 }
 else { # called from quanti frame
-	($quantifType,$designID,$quantifMethDesc,$quantifModID,$modifName,$focus,$quantifAnnot,$quantifStatus,$quantifMethodID,$updateDate,$updateUser)=
-	$dbh->selectrow_array("SELECT QM.CODE,ID_DESIGN,QM.DES,M.ID_MODIFICATION,PSI_MS_NAME,FOCUS,QUANTIF_ANNOT,STATUS,QM.ID_QUANTIFICATION_METHOD,UPDATE_DATE,UPDATE_USER FROM QUANTIFICATION Q
+	my ($interName,$synoName);
+	($quantifType,$designID,$quantifMethDesc,$quantifModID,$modifName,$interName,$synoName,$focus,$quantifAnnot,$quantifStatus,$quantifMethodID,$updateDate,$updateUser)=
+	$dbh->selectrow_array("SELECT QM.CODE,ID_DESIGN,QM.DES,M.ID_MODIFICATION,PSI_MS_NAME,INTERIM_NAME,SYNONYMES,FOCUS,QUANTIF_ANNOT,STATUS,QM.ID_QUANTIFICATION_METHOD,UPDATE_DATE,UPDATE_USER FROM QUANTIFICATION Q
 			LEFT JOIN MODIFICATION M ON Q.ID_MODIFICATION=M.ID_MODIFICATION
 			INNER JOIN QUANTIFICATION_METHOD QM ON Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD
 			WHERE ID_QUANTIFICATION=$selQuantifID");
@@ -181,6 +182,10 @@ else { # called from quanti frame
 	if ($quantifModID) {
 		$dispNumPep=1 if $updateNumPep;
 		my $ratioCorrStrg=($quantifAnnot=~/::INTRA_PROT_REF=/)? 'Fold Change-corrected ' : '';
+		unless ($modifName) {
+			$modifName=$interName || $synoName;
+			$modifName=~s/^##//; $modifName=~s/##.*$//;
+		}
 		$title.="<FONT color=\"#DD0000\">$ratioCorrStrg$modifName</FONT>-sites";
 		$highlighMatchStrg=",'^###-'"; # for matching modProtID with protID in volcanoPlot
 	}
@@ -439,7 +444,7 @@ if ($quantifType !~ /EMPAI|SIN/) { # |MQ
 #print "*** QUANTIF_TYPE='$quantifType' // LABEL_TYPE='$labelType' // FOCUS='$focus' // VIEW='$view' ***<BR>\n";
 	$protQuantifiedStrg="$numProteinsQuantified protein"; $protQuantifiedStrg.='s' if $numProteinsQuantified && $numProteinsQuantified > 1;
 	if ($quantifModID) {
-		$protQuantifiedStrg.=", $numIsoFormsQuantified $modifName-form"; $protQuantifiedStrg.='s' if $numIsoFormsQuantified > 1;
+		$protQuantifiedStrg.=", $numIsoFormsQuantified $modifName-site"; $protQuantifiedStrg.='s' if $numIsoFormsQuantified > 1;
 	}
 	$protQuantifiedStrg.=' quantified';
 }
@@ -503,7 +508,7 @@ if ($labelType eq 'FREE' || $designID) {
 
 		##>Non-quantified proteins (myProMS v3)
 		if ($labelingInfo{'LOST_PROTEINS'}) {
-			my $proteoStrg=($quantifModID)? "$modifName-form" : 'protein';
+			my $proteoStrg=($quantifModID)? "$modifName-site" : 'protein';
 			if ($labelingInfo{'LOST_PROTEINS'}[0]) {
 				$protQuantifiedStrg.=" / $labelingInfo{LOST_PROTEINS}[0] $proteoStrg";
 				$protQuantifiedStrg.=($labelingInfo{'LOST_PROTEINS'}[0] == 1)? ' was ' : 's were ';
@@ -1519,7 +1524,19 @@ sub printQuantificationSummary { # GLOBALS: $selQuantifID, $view, $projectID, $d
 	}
 	my %convPtmParam=('ambiguous'=>'delocalized','exclude'=>'excluded','valid'=>'not delocalized');
 	my %ptmProbSoft=('PRS'=>'PhosphoRS','MQ'=>'MaxQuant');
-	my $ptmQuantifStrg=(!$refInfo->{PTM_POS})? '' : ($refInfo->{PTM_POS}[0]=~/(\w+):(.+)/)? "<B>$modifName</B>-site positions are <B>confirmed</B> if $ptmProbSoft{$1} probability &ge; <B>$2%</B>, others are <B>$convPtmParam{$refInfo->{PTM_POS}[1]}</B>" : "<B>$modifName</B>-sites are $convPtmParam{$refInfo->{PTM_POS}[0]}";
+	my $ptmQuantifStrg='';
+	if ($refInfo->{CREATE_PTM}) {
+		$ptmQuantifStrg="<B>$modifName</B>-sites were recreated on residues: ";
+		foreach my $i (0..$#{$refInfo->{CREATE_PTM}}) {
+			my $res=$refInfo->{CREATE_PTM}[$i];
+			$ptmQuantifStrg.=',' if $i > 0;
+			my $resStrg=($res=~/\w/)? $res : ($res eq '=')? 'Any N-term' :  ($res eq '-')? 'Protein N-term' : ($res eq '*')? 'Any C-term' : 'Protein C-term';
+			$ptmQuantifStrg.=($action eq 'export')? $resStrg : '<B>'.$resStrg.'</B>';
+		}
+	}
+	elsif ($refInfo->{PTM_POS}) {
+		$ptmQuantifStrg=($refInfo->{PTM_POS}[0]=~/(\w+):(.+)/)? "<B>$modifName</B>-site positions are <B>confirmed</B> if $ptmProbSoft{$1} probability &ge; <B>$2%</B>, others are <B>$convPtmParam{$refInfo->{PTM_POS}[1]}</B>" : "<B>$modifName</B>-sites are $convPtmParam{$refInfo->{PTM_POS}[0]}";
+	}
 
 	#<Bias correction
 	my %fdrMethods=('FDR-BH'=>'Benjamini-Hochberg',
@@ -4236,6 +4253,12 @@ my %replicDesign; # v3
 				($protMean{$testStatePos{$ratioPos}})=$sthPR->fetchrow_array;
 				$sthPR->execute('MEAN_STATE',$numRatios+$refStatePos{$ratioPos});
 				($protMean{$refStatePos{$ratioPos}})=$sthPR->fetchrow_array;
+#< Check for bug in state mean allocation => switch if necessary!				
+if ( ($pRatio < 1 && $protMean{$testStatePos{$ratioPos}} > $protMean{$refStatePos{$ratioPos}}) || ($pRatio > 1 && $protMean{$testStatePos{$ratioPos}} < $protMean{$refStatePos{$ratioPos}}) ) {
+	my $meanProt=$protMean{$testStatePos{$ratioPos}};
+	$protMean{$testStatePos{$ratioPos}}=$protMean{$refStatePos{$ratioPos}};
+	$protMean{$refStatePos{$ratioPos}}=$meanProt;
+}
 #print "TEST=$protMean{$testStatePos{$ratioPos}}, REF=$protMean{$refStatePos{$ratioPos}}<BR>\n";
 			}
 		}
@@ -6570,7 +6593,8 @@ sub ajaxRestrictProteinList {
 	unless ($noSelect) { # otherwise <SELECT> and 1st "-= Selec =-" option => written by JS function
 		print "<SELECT name=\"restrictList\" class=\"title3\"";
 		print " onchange=\"document.$submitForm.submit()\"" if $submitForm;
-		print ">\n<OPTION value=\"\">-= Select =-</OPTION>\n";
+		if (scalar keys %savedLists) {print ">\n<OPTION value=\"\">-= Select =-</OPTION>\n";}
+		else {print ">\n<OPTION value=\"\">***No List found***</OPTION>\n";}
 	}
 	foreach my $themeID (sort{lc($themeInfo{$a}) cmp lc($themeInfo{$b})} keys %themeInfo) {
 		print "<OPTGROUP label=\"$themeInfo{$themeID}\">\n";
@@ -6927,6 +6951,8 @@ sub revertLog2 {
 
 # DONE: Remove usage of PEPTIDE_QUANTIFICATION table in peptide view for 'ratio' (PP 09/01/19)
 ####>Revision history<####
+# 2.6.3 Switch protein means when necessary in &ajaxPeptideRatios to handle R AnaDiff bug for PEP_INTENSITY (PP 17/04/19)
+# 2.6.2 Compatible with recreated sites (PP 04/02/19)
 # 2.6.1 Minor change in setting default value for num peptide threshold (PP 25/01/19)
 # 2.6.0 Displays MaxQuant probabilities as popup in peptide view for any PTM-quantif (PP 09/01/19)
 # 2.5.0 Compatible with protein-level normalization of PTMs & missing values display (PP 19/12/18) 

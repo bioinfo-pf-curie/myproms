@@ -1,5 +1,5 @@
 ################################################################################
-# analysisModifQuantif.R       1.0.3                                           #
+# analysisModifQuantif.R       1.0.5                                           #
 # Authors: Patrick Poullet, Stephane Liva, Pierre Gestraud (Institut Curie)    #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -36,8 +36,7 @@
 #
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
-#-------------------------------------------------------------------------------##Analysis Pipeline for modification and non-modification proteomics data
-##No packages need
+#-------------------------------------------------------------------------------
 
 ##delete previous session
 rm(list=ls())
@@ -48,54 +47,75 @@ matrixExport <- args[1]
 pepFileExport <-args[2]
 
 ## Load R Param file from myProms
-## expected format
-## header :MODIF\tQUANTIF_FAM\tPROTEIN_SELECTION\tAGGREGATE\tKEEP_PROT\tKEEP_PROT_NB\tP_VALUE_CHK\tP_VALUE\tMISSING_VALUE\n
-## 2ndLine:INTEGER\tRATIO\tnone(sample or group)\tTRUE(or FALSE)\tTRUE(or FALSE)\tnumber(or FALSE)\tTRUE(or FALSE)\tnumber(or FALSE)\tnumber\n
-
 paramR<-read.table("R_parameters.txt", header=T, sep="\t")
 
 #########Load matrix from myProms
-##Matrix format
-##\tsample1\tsample2\t....\tsampleN\n
-##protA\tval1\tval2\t....\tvalN\n
-##protB\tval1\tval2\t....\tvalN\n
-#protA-1\tval1\tval2\t....\tvalN\n
-
 matrixPTM<-read.table(matrixExport, header=T, sep="\t",row.names=1, check.names=F)
+matInfoValue<-as.matrix(read.table("value_info.txt",header=T,sep="\t",row.names=1, check.names=F,stringsAsFactors = F))
+existSdGeo <- FALSE
+if (file.exists("sd_geo.txt")) {
+	matSDgeo<-read.table("sd_geo.txt",header=T,sep="\t",row.names=1, check.names=F,stringsAsFactors = F)
+	existSdGeo <- TRUE
+}
 
-#########drop ambiguity phospho proteins (format ZFAN5_HUMAN-48~65:1/9)
-##OBSOLETE MANAGE BY PERL SCRIPT
-#if (paramR$EXCLUDE_AMB == "TRUE") {
-#    matrixPTM<-matrixPTM[grep(":",rownames(matrixPTM),invert=T),,drop=FALSE]
-#}
+impMat=data.frame()
 
-###############################EXPORT
-#########replace infinite ratio (1000 and -1000 in this case) by NA
-matrixPTM[matrixPTM == 1000]<-NA
-matrixPTM[matrixPTM == -1000]<-NA
+##IMPUTE DATA
+if ( paramR$IMPUTE == "TRUE" ) {
 
-########keep only proteins with %NA in MISSING_VALUE param
-#matrixPTM<-matrixPTM[rowSums(is.na(matrixPTM))<=paramR$MISSING_VALUE,,drop=FALSE]
+	library(missMDA)
+	#####----- Replacement of +/- infinite ratios ------#####
+	### Compute st.dev, mean, ref max, ref min
+	mat.sd <- sd(matrixPTM[!is.na(matrixPTM) & (matrixPTM != 1000) & (matrixPTM != -1000)])
+	mat.mean <-mean(matrixPTM[!is.na(matrixPTM) & (matrixPTM!= 1000)& (matrixPTM != -1000)])
+	mat.min <- mat.mean - 4 * mat.sd
+	mat.max <- mat.mean + 4 * mat.sd
+	
+	### Replace +/-inf values with random values in the range of mean +/- 4 st.dev +/- random(+/- 0.5 st.dev)
+	matrixPTM <- apply(matrixPTM,1, function(x) { replace(x,which(x == 1000),runif(length(which(x== 1000)), mat.max-0.5*mat.sd,mat.max+0.5*mat.sd)) })
+	matrixPTM <- t(matrixPTM)
+	matrixPTM <- apply(matrixPTM,1, function(x) { replace(x,which(x == -1000),runif(length(which(x== -1000)), mat.min-0.5*mat.sd,mat.min+0.5*mat.sd)) })
+	matrixPTM <- t(matrixPTM)
+	
+	#####----- NA imputation using missMDA ------#####
+	
+	numbNA <- length(matrixPTM[is.na(matrixPTM)])
+	if (numbNA > 0) { # Fails if no NA
+		### Estimate number of composantes required
+		nb <- estim_ncpPCA(matrixPTM,ncp.max=10)
+		nb$ncp
+	
+		### Replacement of NAs
+		resImpute <- imputePCA(matrixPTM,ncp=nb$ncp)
+	
+		impMat <- resImpute$completeObs
+	} else {
+		impMat <- matrixPTM
+	}
+} else {
+	impMat<-matrixPTM
+}
+
 
 ##NONE
 if (paramR$PROTEIN_SELECTION == "none") {
-	PTMSign<-matrixPTM
+	PTMSign<-impMat
 	if (paramR$MODIF != 0){
-		PTMSign$PROTEIN_MODIF<-rownames(matrixPTM)
+		PTMSign$PROTEIN_MODIF<-rownames(impMat)
 	} else {
-		PTMSign$PROTEIN<-rownames(matrixPTM)
+		PTMSign$PROTEIN<-rownames(impMat)
 	}
 }
 
 ##SAMPLE
 if (paramR$PROTEIN_SELECTION == "sample") {
     prot.sd=matrix()
-    for (i in 1:length(matrixPTM[,1])) {
-		prot.sd[i]=sd(matrixPTM[i,],na.rm=TRUE)
+    for (i in 1:length(impMat[,1])) {
+		prot.sd[i]=sd(impMat[i,],na.rm=TRUE)
     }
 
     prot.sd<-as.data.frame(prot.sd)
-    rownames(prot.sd)<-rownames(matrixPTM)
+    rownames(prot.sd)<-rownames(impMat)
     colnames(prot.sd)<-"sd"
 	if (paramR$MODIF != 0){
 		prot.sd$PROTEIN<-gsub("-.*","", rownames(prot.sd))
@@ -123,9 +143,9 @@ if (paramR$PROTEIN_SELECTION == "sample") {
 
     PTMSign<-prot.sd
 	if (paramR$MODIF != 0){
-		matrixPTM<-matrixPTM[PTMSign$PROTEIN_MODIF,,drop=FALSE]
+		impMat<-impMat[PTMSign$PROTEIN_MODIF,,drop=FALSE]
 	} else {
-		matrixPTM<-matrixPTM[PTMSign$PROTEIN,,drop=FALSE]
+		impMat<-impMat[PTMSign$PROTEIN,,drop=FALSE]
 	}
 }
 
@@ -133,18 +153,10 @@ if (paramR$PROTEIN_SELECTION == "sample") {
 if (paramR$PROTEIN_SELECTION == "group") {
 
     #############load group info
-    ##minimum 2 samples by group
-    ##the sample name in group have to be the same in matrix
-    ##Group format
-    ##sample\tgroup_snf
-    ##sample1\tgroupA
-    ##sample2\tgroupA
-    ##sample3\tgroupB
-    ##sample4\tgroupB
     group<-read.table("group.txt",header=T,sep="\t",row.names=1)
 
     ##check if there is at least 2 values by group
-    nbValuesByProtBygroup<-apply(matrixPTM,1, function(x) aggregate(x, by=list(group=group$group_snf),FUN=function(y) sum(!is.na(y))>=2))
+    nbValuesByProtBygroup<-apply(impMat,1, function(x) aggregate(x, by=list(group=group$group_snf),FUN=function(y) sum(!is.na(y))>=2))
 
     ##get all values
     allValues<-sapply(nbValuesByProtBygroup, FUN = function(x) all(x$x) )
@@ -152,10 +164,10 @@ if (paramR$PROTEIN_SELECTION == "group") {
     ##get TRUE values
     trueValues<-as.matrix(which(allValues))
 
-    matrixPTM<-matrixPTM[rownames(trueValues),]
+    impMat<-impMat[rownames(trueValues),]
 
     #launch ANOVA FOR GROUP
-    matrixPTM_Anova<-as.data.frame(apply(matrixPTM, 1,function(x) anova(lm(x ~ group$group_snf))[1,5]))
+    matrixPTM_Anova<-as.data.frame(apply(impMat, 1,function(x) anova(lm(x ~ group$group_snf))[1,5]))
     colnames(matrixPTM_Anova)<-"pvalue"
     if (paramR$MODIF != 0){
 		matrixPTM_Anova$PROTEIN<-gsub("-.*","", rownames(matrixPTM_Anova))
@@ -187,124 +199,71 @@ if (paramR$PROTEIN_SELECTION == "group") {
 
     PTMSign<-matrixPTM_Anova
 	if (paramR$MODIF != 0){
-		matrixPTM<-matrixPTM[PTMSign$PROTEIN_MODIF,,drop=FALSE]
+		impMat<-impMat[PTMSign$PROTEIN_MODIF,,drop=FALSE]
 	} else {
-		matrixPTM<-matrixPTM[PTMSign$PROTEIN,,drop=FALSE]
+		impMat<-impMat[PTMSign$PROTEIN,,drop=FALSE]
 	}
 }
 
 #######load annotation
 matrixAnnot<-read.csv("annotation.txt",sep="\t", header=T, quote = "", stringsAsFactor=FALSE)
 
-if (paramR$MODIF != 0){##modification
-	listAnnotPTM<-cbind(rownames(matrixPTM), gsub("-.*","",rownames(matrixPTM)))
+if (paramR$MODIF != 0){## PTM site
+	listAnnotPTM<-cbind(rownames(impMat), gsub("-.*","",rownames(impMat)))
 	colnames(listAnnotPTM)<-c("PROTEIN_MODIF","PROTEIN")
 	annotPTM<-merge(matrixAnnot, listAnnotPTM, by.x="PROTEIN", by.y="PROTEIN")
 	annotPTM$PROTEIN_MODIF<-as.character(annotPTM$PROTEIN_MODIF)
 } else {
-	listAnnotPTM<-as.data.frame(rownames(matrixPTM))
+	listAnnotPTM<-as.data.frame(rownames(impMat))
 	colnames(listAnnotPTM)<-"PROTEIN"
 	annotPTM<-merge(matrixAnnot, listAnnotPTM, by.x="PROTEIN", by.y="PROTEIN")
 	annotPTM$PROTEIN<-as.character(annotPTM$PROTEIN)
 }
-
+existPvalue <- FALSE
 if (paramR$QUANTIF_FAM == "RATIO" && paramR$MODIF >= 0) {
-	#####load matrice_pep
+	#####load matrix pep
 	matrixPepPTM<-read.table(pepFileExport,sep="\t",header=T,row.names=1,check.names=F)
-	#colPep<-colnames(matrixPepPTM)
-	#rowPep<-rownames(matrixPepPTM)
-	#####load matrice pValue
-	matrixPvaluePTM<-read.table("pvalue.txt",sep="\t",header=T,row.names=1,check.names=F)
-	#colPval<-colnames(matrixPvaluePTM)
-	#rowPval<-rownames(matrixPvaluePTM)
+	
+	#####load matrix pValue
+	if (file.exists("pvalue.txt")) {
+		existPvalue <- TRUE
+		matrixPvaluePTM<-read.table("pvalue.txt",sep="\t",header=T,row.names=1,check.names=F)
 
-	if (paramR$MODIF != 0){
-		pepPTM<-matrixPepPTM[PTMSign$PROTEIN_MODIF,,drop=FALSE]
-		pValuePTM<-matrixPvaluePTM[PTMSign$PROTEIN_MODIF,,drop=FALSE]
-	} else {
-		pepPTM<-matrixPepPTM[PTMSign$PROTEIN,,drop=FALSE]
-		pValuePTM<-matrixPvaluePTM[PTMSign$PROTEIN,,drop=FALSE]
+		if (paramR$MODIF != 0){
+			pepPTM<-matrixPepPTM[PTMSign$PROTEIN_MODIF,,drop=FALSE]
+			pValuePTM<-matrixPvaluePTM[PTMSign$PROTEIN_MODIF,,drop=FALSE]
+		} else {
+			pepPTM<-matrixPepPTM[PTMSign$PROTEIN,,drop=FALSE]
+			pValuePTM<-matrixPvaluePTM[PTMSign$PROTEIN,,drop=FALSE]
+		}
 	}
-
-	#colnames(pepPTM)<-colPep
-	#rownames(pepPTM)<-rowPep
-	#colnames(pValuePTM)<-colPval
-	#rownames(pValuePTM)<-rowPval
 }
 
-#if (paramR$GENE_NAME == "FALSE") {
-	if (paramR$MODIF != 0) {
-		annotPTM<-merge(annotPTM,PTMSign,by.x="PROTEIN_MODIF", by.y="PROTEIN_MODIF")
-	} else {
-		annotPTM<-merge(annotPTM,PTMSign,by.x="PROTEIN", by.y="PROTEIN")
-	}
+#if (paramR$MODIF != 0){
+#	infoValue<-matInfoValue[PTMSign$PROTEIN_MODIF,,drop=FALSE]
+#} else {
+#	infoValue<-matInfoValue[PTMSign$PROTEIN,,drop=FALSE]
 #}
 
-##GENE_NAME, replace phospho name by gene name only if aggregate if choosen
-##if (paramR$GENE_NAME == "TRUE") {
-##
-##	##replace empty gene by _Protein_Name
-##	#annotPTM$PROTEIN_PHOSPHO<-as.character(annotPTM$PROTEIN_PHOSPHO)
-##	if (paramR$MODIF != 0) {
-##		annotPTM[which(annotPTM$GENE==""),"GENE"]<-annotPTM[which(annotPTM$GENE==""),"PROTEIN_MODIF"]
-##		##remove duplicate GENE
-##		annotPTM<-merge(annotPTM,PTMSign,by.x="PROTEIN_MODIF", by.y="PROTEIN_MODIF")
-##	} else {
-##		annotPTM[which(annotPTM$GENE==""),"GENE"]<-annotPTM[which(annotPTM$GENE==""),"PROTEIN"]
-##		#remove duplicate GENE
-##		annotPTM<-merge(annotPTM,PTMSign,by.x="PROTEIN", by.y="PROTEIN")
-##	}
-##
-##	if (paramR$PROTEIN_SELECTION == "sample") {
-##		annotPTM<-annotPTM[order(annotPTM$sd, decreasing=TRUE),]
-##	}
-##	if (paramR$PROTEIN_SELECTION == "group") {
-##		annotPTM<-annotPTM[order(annotPTM$pvalue, decreasing=FALSE),]
-##	}
-##
-##	annotPTM<-annotPTM[!duplicated(annotPTM$GENE),]
-##
-##	if (paramR$MODIF != 0) {
-##		rownames(annotPTM)<-annotPTM$PROTEIN_MODIF
-##		##create new matrice with no duplicated element
-##		matrixPTM<-matrixPTM[annotPTM$PROTEIN_MODIF,,drop=FALSE]
-##	} else {
-##		rownames(annotPTM)<-annotPTM$PROTEIN
-##		#create new matrice with no duplicated element
-##		matrixPTM<-matrixPTM[annotPTM$PROTEIN,,drop=FALSE]
-##	}
-##
-##	##REPLACE IN LOG MATRICE
-##	rownames(matrixPTM)<-annotPTM[rownames(matrixPTM),"GENE"]
-##
-##	##REPLACE IN PEP MATRICE and PVALUE MATRICE
-##	if (paramR$QUANTIF_FAM == "RATIO" && paramR$MODIF >= 0) {
-##		if (paramR$MODIF != 0) {
-##			pepPTM<-pepPTM[annotPTM$PROTEIN_MODIF,,drop=FALSE]
-##			pValuePTM<-pValuePTM[annotPTM$PROTEIN_MODIF,,drop=FALSE]
-##		} else {
-##			pepPTM<-pepPTM[annotPTM$PROTEIN,,drop=FALSE]
-##			pValuePTM<-pValuePTM[annotPTM$PROTEIN,,drop=FALSE]
-##		}
-##		rownames(pepPTM)<-annotPTM[rownames(pepPTM),"GENE"]
-##		rownames(pValuePTM)<-annotPTM[rownames(pValuePTM),"GENE"]
-##	}
-##}
+if (paramR$MODIF != 0) {
+	annotPTM<-merge(annotPTM,PTMSign,by.x="PROTEIN_MODIF", by.y="PROTEIN_MODIF")
+} else {
+	annotPTM<-merge(annotPTM,PTMSign,by.x="PROTEIN", by.y="PROTEIN")
+}
 
 if (paramR$QUANTIF_FAM == "RATIO") {
 	if (paramR$MODIF >= 0){
 		write.table(pepPTM,paste("processed_",pepFileExport,sep=""),col.names=NA, quote=F,sep="\t")
-		write.table(pValuePTM,"processed_pvalue.txt",col.names=NA, quote=F,sep="\t")
+		if (existPvalue) {
+			write.table(pValuePTM,"processed_pvalue.txt",col.names=NA, quote=F,sep="\t")
+		}
 	}
-	#write.table(matrixPTM,"processed_ratio.txt", col.names=NA, quote=F,sep="\t")
+	write.table(impMat,"processed_ratio.txt", col.names=NA, quote=F,sep="\t")
+} else {
+	write.table(impMat,paste("processed_",matrixExport,sep=""), col.names=NA, quote=F,sep="\t")
 }
-#else {
-write.table(matrixPTM,paste("processed_",matrixExport,sep=""), col.names=NA, quote=F,sep="\t")
-#}
 
 if (paramR$MODIF != 0){##modification
-	#annotPTM<-annotPTM[order(annotPTM$PROTEIN, decreasing=TRUE),]
-	#annotPTM<-annotPTM[!duplicated(annotPTM$PROTEIN),]
 	write.table(annotPTM[,c(1,2,3,4,5,6)],"processed_annotation.txt",sep="\t",quote=F, row.names = F)
 } else {
 	write.table(annotPTM[,c(1,2,3,4,5)],"processed_annotation.txt",sep="\t",quote=F, row.names = F)
@@ -326,7 +285,44 @@ if (paramR$PROTEIN_SELECTION == "group") {
 }
 
 
+if (paramR$MODIF != 0) {
+	infoValue<-matInfoValue[PTMSign$PROTEIN_MODIF,,drop=FALSE]
+	if (existSdGeo) {
+		sdGEO<-matSDgeo[PTMSign$PROTEIN_MODIF,,drop=FALSE]
+	}
+} else {
+	infoValue<-matInfoValue[PTMSign$PROTEIN,,drop=FALSE]
+	if (existSdGeo) {
+		sdGEO<-matSDgeo[PTMSign$PROTEIN,,drop=FALSE]
+	}
+}
+if (existSdGeo) {
+	write.table(sdGEO,"processed_sd_geo.txt",quote=F,sep="\t",col.name=NA)
+}
+write.table(infoValue,"processed_value_info.txt",quote=F,sep="\t",col.name=NA)
+
+
+infoValue[infoValue == "Val"]<- 2
+infoValue[infoValue == "MV"]<- 0
+infoValue[infoValue == "-Inf"]<- -1
+infoValue[infoValue == "+Inf"]<- 1
+
+write.table(infoValue,"processed_value_info_sub.txt",quote=F,sep="\t",col.name=NA)
+
+infoHM<-as.matrix(read.table("processed_value_info_sub.txt", header=T, row.names=1,check.names=1))
+
+require(pheatmap)
+png("processed_value_info.png", unit='in', width = 5, height = 15, res=600)
+pheatmap(infoHM,cluster_rows = F,cluster_cols = F, show_rownames = F, color=c("blue","black","red","white"),legend_breaks =  c(-1,0,1,2),legend_labels = c("-Infinite","Missing values","+Infinite","Values"),border_color=NA)
+dev.off()
+
+#if (paramR$IMPUTE == "TRUE") {
+#	write.table(impMat,file="processed_ratio.txt",quote=FALSE, sep="\t", col.names=NA)
+#}
+
 ####>Revision history<####
+# 1.0.5 sd_geo data processed only if data are available & removed/replaced 'matrix_' in files name (PP 26/03/19)
+# 1.0.4 add impute data and draw quality data (SL 15/01/19)
 # 1.0.3 comment AGGREGATE/GENE_NAME and MISSING_VALUES part, manage by perl script (SL 28/09/18)
 # 1.0.2 Changed naming of output files (PP 26/09/18)
 # 1.0.1 add drop=FALSE to keep matrix with 1 dimension (SL 24/11/17)

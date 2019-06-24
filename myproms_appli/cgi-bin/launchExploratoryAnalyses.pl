@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# launchExploratoryAnalyses.pl       1.0.7                                     #
+# launchExploratoryAnalyses.pl       1.0.8                                     #
 # Authors: P. Poullet, S.Liva (Institut Curie)                                 #
 # Contact: myproms@curie.fr                                                    #
 # Launches PCA and Clustering analyses                                         #
@@ -47,12 +47,9 @@ use strict;
 use File::Path qw(rmtree); # remove_tree
 use File::Copy::Recursive qw(dirmove);
 use promsConfig;
-use promsMod;
-my %promsPath=&promsConfig::getServerInfo;
-my $dbh = &promsConfig::dbConnect;
+#use promsMod;
+my %promsPath=&promsConfig::getServerInfo('no_user');
 my ($explorID, $anaType, $projectID, $metric, $method, $itemMetric) = @ARGV;
-
-my $sthUpdateStatus = $dbh -> prepare("UPDATE EXPLORANALYSIS set STATUS=? where ID_EXPLORANALYSIS = ?");
 
 my $explorDIR = "$promsPath{tmp}/exploratory_analysis/$explorID";
 my $explorScript_Rout;
@@ -72,65 +69,92 @@ else {
 	system "cd $promsPath{tmp}/exploratory_analysis/$explorID; $promsPath{R}/R CMD BATCH --no-save --no-restore '--args $metric $method $itemMetric' $promsPath{R_scripts}/cluster_PEP.R &";
 	$explorScript_Rout="$explorDIR/cluster_PEP.Rout";
 }
-my $tempError = "$explorDIR/error.txt";
+#my $tempError = "$explorDIR/error.txt";
 
 my $wait = 1;
-my $error = 0;
+my $errorText = '';
 my $count = 0;
 my ($Rprocess, $RprocessFr);
 
 while ($wait == 1) {
-	sleep 2;
+	sleep 15;
 	if (!-e "$explorScript_Rout") {
-		if ($count > 1200) {
-			open(ERROR, ">$tempError");
-			print ERROR "\n***No server Response or No R.out file***\n";
-			close ERROR;
-			$sthUpdateStatus -> execute(-2, $explorID) or die "Cannot execute: " . $sthUpdateStatus -> errstr();
-			$sthUpdateStatus -> finish;
-			$dbh -> commit;
-			exit;
+		if ($count > 40) { # 10 min
+			$errorText="\n***No server Response or No R.out file***\n";
+			$wait=0;
+			last;
+			#open(ERROR, ">$tempError");
+			#print ERROR "\n***No server Response or No R.out file***\n";
+			#close ERROR;
+			#$sthUpdateStatus -> execute(-2, $explorID) or die "Cannot execute: " . $sthUpdateStatus -> errstr();
+			#$sthUpdateStatus -> finish;
+			#$dbh -> commit;
+			#$dbh -> disconnect;
+			#exit;
 		}
-		$count++;
 	}
-	elsif (! -z  $tempError) {
-		$sthUpdateStatus -> execute(-2, $explorID) or die "Cannot execute: " . $sthUpdateStatus -> errstr();
-		$sthUpdateStatus -> finish;
-		$dbh -> commit;
-		exit;
-	}
+	#elsif (! -z  $tempError) {
+	#	$sthUpdateStatus -> execute(-2, $explorID) or die "Cannot execute: " . $sthUpdateStatus -> errstr();
+	#	$sthUpdateStatus -> finish;
+	#	$dbh -> commit;
+	#	$dbh -> disconnect;
+	#	exit;
+	#}
 	else {
 		$Rprocess = `grep -c '> proc.time()' $explorScript_Rout`;
 		chomp $Rprocess;
 		if ($Rprocess) {
 			$wait = 0;
+			last;
 		}
 		else {
 			$Rprocess = `grep -c '^Execution halted' $explorScript_Rout`;
 			#$RprocessFr = `grep -c '^Exécution' $explorScript_Rout`;
 			chomp $Rprocess;
 			#chomp $RprocessFr;
-			if($Rprocess) { # || $RprocessFr
-				open(ERROR, ">$tempError");
-				print  ERROR "\n**execution halted from R.**\n";
-				close ERROR;
-				$sthUpdateStatus -> execute(-2, $explorID) or die "Cannot execute: " . $sthUpdateStatus -> errstr();
-				$sthUpdateStatus -> finish;
-				$dbh -> commit;
-				exit;
+			if ($Rprocess) { # || $RprocessFr
+				$errorText="\n***Execution halted from R***\n";
+				$wait=0;
+				last;
+				#open(ERROR, ">$tempError");
+				#print  ERROR "\n**execution halted from R.**\n";
+				#close ERROR;
+				#$sthUpdateStatus -> execute(-2, $explorID) or die "Cannot execute: " . $sthUpdateStatus -> errstr();
+				#$sthUpdateStatus -> finish;
+				#$dbh -> commit;
+				#$dbh -> disconnect;
+				#exit;
 			}
 		}
 	}
+
+	$count++;
+	if ($count > 5760) { # *sleep 15sec <=> 24h
+		$errorText="\n***Process duration has exceeded 24h***\n";
+		$wait=0;
+		last;
+	}
 }
 
-if ($wait == 0) {
-	$sthUpdateStatus -> execute(1, $explorID) or die "Cannot execute: " . $sthUpdateStatus -> errstr();
-	$sthUpdateStatus -> finish;
-	$dbh -> commit;
-	dirmove($explorDIR,"$promsPath{data}/exploratory_data/project_$projectID/$explorID");
+my $dbh = &promsConfig::dbConnect('no_user');
+my $sthUpdateStatus = $dbh -> prepare("UPDATE EXPLORANALYSIS SET STATUS=? WHERE ID_EXPLORANALYSIS = ?");
+
+if ($errorText) {
+	open(ERROR,">>$promsPath{tmp}/exploratory_analysis/error_$explorDIR.txt"); # Also detected by parent process startExploratoryAnalyses.cgi => updated as -2	
+	print ERROR "$errorText";
+	close ERROR;
+	$sthUpdateStatus -> execute(-2, $explorID) or die "Cannot execute: " . $sthUpdateStatus -> errstr(); # just to be safe
 }
+else {
+	dirmove($explorDIR,"$promsPath{data}/exploratory_data/project_$projectID/$explorID");
+	$sthUpdateStatus -> execute(1, $explorID) or die "Cannot execute: " . $sthUpdateStatus -> errstr();
+}
+$sthUpdateStatus -> finish;
+$dbh -> commit;
+$dbh -> disconnect;
 
 #####>Revision history<####
+# 1.0.8 Improved wait loop (24h max!) and error management (PP 17/04/19)
 # 1.0.7 Uses File::Copy::Recursive::dirmove instead of File::Copy::move (PP 12/10/18)
 # 1.0.6 add peptide pipeline (SL 06/11/17)
 # 1.0.5 Remove unsued variable (PP 18/07/15)

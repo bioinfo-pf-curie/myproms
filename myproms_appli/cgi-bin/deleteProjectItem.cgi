@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# deleteProjectItem.cgi                  2.6.1                                 #
+# deleteProjectItem.cgi                  2.6.3                                 #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -231,7 +231,8 @@ if ($item eq 'project') { # only 1 project
 				  "$promsPath{go_unix}/project_$projectID",
 				  "$promsPath{peptide}/proj_$projectID",
 				  "$promsPath{quantification}/project_$projectID",
-				  "$promsPath{tmp}/upload/project_$projectID"
+				  "$promsPath{tmp}/upload/project_$projectID",
+				  "$promsPath{metadata}/proj_$projectID"
 				 );
 	foreach my $path (@pathList) {
 		#remove_tree($path) if -e $path;
@@ -342,6 +343,7 @@ sub deleteAnalyses {
 	$sthDelAD->finish;
 	$sthDelAM->finish;
 	$sthS->finish;
+	
 	####> Update PROJECT_MODIFICATION data
 	#&updateProjectModification($dbh,$projectID);
 	foreach my $sampID (keys %modSamples) {
@@ -388,10 +390,15 @@ sub deleteSamples {
 		$sthDel->execute($sampID);
 		print '.';
 		$dbh->commit;
+		
+		# Remove metadata files if any
+		my $sampMetaPath = "$promsPath{metadata}/proj_$projectID/exp_$expID/samp_$sampID";
+		rmtree($sampMetaPath) if -e $sampMetaPath;
 	}
 	$sthSE->finish;
 	$sthSA->finish;
 	$sthDel->finish;
+	
 	foreach my $expID (keys %modExperiments) {
 		&updateBrothersPosition('EXPERIMENT',$expID,'SAMPLE');
 	}
@@ -529,6 +536,10 @@ sub deleteExperiments {
 		while (my ($gelID)=$sthEG->fetchrow_array) {push @exp2dGels,$gelID;}
 		&delete2DGels($dbh,$projectID,\@exp2dGels);
 
+		# Remove metadata files if any
+		my $expMetaPath = "$promsPath{metadata}/proj_$projectID/exp_$expID";
+		rmtree($expMetaPath) if -e $expMetaPath;
+		
 		##>Experiment
 		$sthDelE->execute($expID);
 		$dbh->commit;
@@ -552,6 +563,7 @@ sub deleteExperiments {
 	$sthES->finish;
 	$sthEG->finish;
 	$sthDelE->finish;
+	
 	&updateBrothersPosition('PROJECT',$projectID,'EXPERIMENT');
 	print '.';
 }
@@ -702,6 +714,8 @@ sub updateBrothersPosition {
 }
 
 ####>Revision history<####
+# 2.6.3 Change project data path for metadata path (VS 11/06/19)
+# 2.6.2 Delete Metadata on item deletion (VS 05/06/19)
 # 2.6.1 [Fix] bugs in Experiment global deletion (PP 27/06/18)
 # 2.6.0 Peptide quantification deletion steps moved to &promsQuanti::deleteQuantification (PP 11/05/18)
 # 2.5.3 Compatible with MODIFICATION_SITE table used for list of modification sites (PP 28/07/17)

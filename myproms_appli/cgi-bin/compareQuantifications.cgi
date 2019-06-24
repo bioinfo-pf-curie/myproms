@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# compareQuantifications.cgi          1.6.4                                    #
+# compareQuantifications.cgi          1.6.5                                    #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Simple display of multiple quantifications                                   #
@@ -84,7 +84,8 @@ my $parentItem=(param('parentItem'))? lc(param('parentItem')) : ''; # not define
 my ($item,$itemID)=split(/:/,$parentItem);
 my $view=param('view') || 'list'; $view='list' if ($view eq 'correlMatrix' && $selQuantifFocus < 0); # not for mixte proteo/modif-proteo
 my $sortOrder=param('sort') || 'protein';
-my $restrictListID=param('restrictList') || 0;
+my $restrictListID=param('restrictList') || 0; # exclusion/selection List ID
+my $listAction=param('listAction') || 'restrict';
 my $quantifList=param('quantifList');
 my @selectedQuantifications=($quantifList)? split(':',$quantifList) : (); #param('usedQuantifs'); usedQuantifs requires selection of all options
 my $numSelectedQuantifs=scalar @selectedQuantifications;
@@ -138,7 +139,7 @@ elsif ($action eq 'selQuantifs') {&selectQuantifications; exit;}
 ###############
 #print header(-'content-encoding'=>'no',-charset=>'utf-8'); warningsToBrowser(1); # DEBUG
 my ($workbook,%itemFormat); # globals for export to Excel
-my %selectedProteins; # proteins selected for export
+my (%selectedProteins,%excludedProteins); # proteins selected/excluded
 if ($exportType) {
 	#################################
 	####>Prepare export to Excel<####
@@ -532,16 +533,17 @@ function getDomOffset( Obj, Prop ) {
 ####>Category filter<####
 my ($filterClassName,$filterCatName); #,%restrictProteins
 if ($restrictListID) {
+	my $refprotList=($listAction eq 'restrict')? \%selectedProteins : \%excludedProteins;
 	($filterClassName,$filterCatName,my $type)=$dbh->selectrow_array("SELECT CL.NAME,C.NAME,C.LIST_TYPE FROM CLASSIFICATION CL,CATEGORY C WHERE CL.ID_CLASSIFICATION=C.ID_CLASSIFICATION AND C.ID_CATEGORY=$restrictListID");
 	if ($exportType ne 'selected') { # Not compatible with export=selected: same %selectedProteins is used!
 		if ($type eq 'SITE') {
-			&promsQuantif::fetchSiteList($dbh,$restrictListID,\%selectedProteins,$selModifID);
+			&promsQuantif::fetchSiteList($dbh,$restrictListID,$refprotList,$selModifID);
 		}
 		else {
 			my $sthCP=$dbh->prepare("SELECT ID_PROTEIN FROM CATEGORY_PROTEIN WHERE ID_CATEGORY=$restrictListID");
 			$sthCP->execute;
 			while (my ($protID)=$sthCP->fetchrow_array) {
-				$selectedProteins{$protID}=1;
+				$refprotList->{$protID}=1;
 			}
 			$sthCP->finish;
 		}
@@ -561,7 +563,7 @@ if ($view eq 'correlMatrix') {
 	$parameters{VERBOSE}=1;
 	print "<DIV id=\"correlProgressDIV\">\n<BR><FONT class=\"title3\">Fetching data...";
 }
-&promsQuantif::fetchQuantificationData($dbh,\%parameters,\%quantifInfo,\%quantifValues,\%proteinInfo,\%selectedProteins); # optional %excludedProteins
+&promsQuantif::fetchQuantificationData($dbh,\%parameters,\%quantifInfo,\%quantifValues,\%proteinInfo,\%selectedProteins,\%excludedProteins);
 print " Done.</FONT><BR>\n" if $view eq 'correlMatrix';
 print "<FONT style=\"font-weight:bold;color:#DD0000\">$parameters{RETURN}</FONT><BR>\n" if $parameters{RETURN};
 my ($minRatio,$maxRatio,$minPvalue)=(1,1,1);
@@ -1621,6 +1623,7 @@ sub printProteinList {
 <INPUT type="hidden" name="view" value="$view"/>
 <INPUT type="hidden" name="sort" value="$sortOrder"/>
 <INPUT type="hidden" name="restrictList" value="$restrictListID"/>
+<INPUT type="hidden" name="listAction" value="$listAction"/>
 <INPUT type="hidden" name="quantifList" value="$quantifList"/>
 <INPUT type="hidden" name="foldChange" value="$dispFoldChange"/>
 <INPUT type="hidden" name="pValue" value="$dispPvalue"/>
@@ -1639,7 +1642,7 @@ sub printProteinList {
 	else {
 		$proteinText="<A href=\"javascript:selectSort(\\'protein\\',$ajax)\" onmouseover=\"popup(\\'Click to sort proteins by <B>ascending name</B>.\\')\" onmouseout=\"popout()\">$proteinText</A>";
 	}
-	my $protString=($numModifQuantifs)? "&nbsp;$numTotIsoforms isoforms&nbsp;<BR>&nbsp;$numTotProteins $proteinText&nbsp;" : "&nbsp;$numTotProteins $proteinText&nbsp;";
+	my $protString=($numModifQuantifs)? "&nbsp;$numTotIsoforms sites&nbsp;<BR>&nbsp;$numTotProteins $proteinText&nbsp;" : "&nbsp;$numTotProteins $proteinText&nbsp;";
 	my ($numDispItems,$numDispIsoforms)=(0,0);
 	my %dispProteins;
 
@@ -1935,8 +1938,8 @@ $quantifDataStrg
 </FORM>
 |;
 	unless ($ajax) { # not possible if ajax call
-		#my $protTypeStrg=(scalar keys %{$refQuantifPTM})? ' isoforms' : '';
-		$protString=($numModifQuantifs)? "$numModifQuantifs&nbsp;$numDispIsoforms/$numTotIsoforms isoforms<BR>&nbsp;".(scalar keys %dispProteins)."/$numTotProteins $proteinText&nbsp;" : "&nbsp;$numDispItems/$numTotProteins $proteinText&nbsp;";
+		#my $protTypeStrg=(scalar keys %{$refQuantifPTM})? ' sites' : '';
+		$protString=($numModifQuantifs)? "&nbsp;$numDispIsoforms/$numTotIsoforms sites<BR>&nbsp;".(scalar keys %dispProteins)."/$numTotProteins $proteinText&nbsp;" : "&nbsp;$numDispItems/$numTotProteins $proteinText&nbsp;";
 		print qq
 |<SCRIPT LANGUAGE="javascript">
 document.getElementById('protCountDIV').innerHTML='$protString';
@@ -2007,7 +2010,7 @@ document.getElementById('protCountDIV').innerHTML='$protString';
 		numMatch=1;
 		numProt=1;
 	}
-	document.getElementById('protCountDIV').innerHTML=(existIsoforms>=1)? '&nbsp;'+numMatch+'/$numTotIsoforms isoforms<BR>&nbsp;'+numProt+'/$numTotProteins $proteinText&nbsp;' : '&nbsp;'+numMatch+'/$numTotProteins $proteinText&nbsp;';
+	document.getElementById('protCountDIV').innerHTML=(existIsoforms>=1)? '&nbsp;'+numMatch+'/$numTotIsoforms sites<BR>&nbsp;'+numProt+'/$numTotProteins $proteinText&nbsp;' : '&nbsp;'+numMatch+'/$numTotProteins $proteinText&nbsp;';
 }
 </SCRIPT>
 |;
@@ -2139,7 +2142,7 @@ sub exportProteinList { # Only for design or no-design labeled quantifs
 		#<Identifier header (written last to get remaining number of proteins)
 		#my $protTypeStrg=(scalar keys %{$refQuantifPTM})? ' forms' : '';
 		#$worksheet2->merge_range(1,0,2,0,"$numProt$protTypeStrg/$numTotProteins proteins",$itemFormat{'mergeRowHeader'});
-		my $protString=(scalar keys %{$refQuantifPTM})? "$numDispItems/".(scalar keys %{$refQuantifValues})." isoforms\n".(scalar keys %dispProteins)."/".(scalar keys %{$refProteinInfo})." proteins" : "$numDispItems/".(scalar keys %{$refProteinInfo})." proteins";
+		my $protString=(scalar keys %{$refQuantifPTM})? "$numDispItems/".(scalar keys %{$refQuantifValues})." sites\n".(scalar keys %dispProteins)."/".(scalar keys %{$refProteinInfo})." proteins" : "$numDispItems/".(scalar keys %{$refProteinInfo})." proteins";
 		$worksheet2->merge_range(1,0,2,0,$protString,$itemFormat{'mergeRowHeader'});
 	}
 	elsif ($selQuantifFamily =~ /EMPAI|SIN/) {
@@ -2225,7 +2228,7 @@ sub exportProteinList { # Only for design or no-design labeled quantifs
 		#<Identifier header (written last to get remaining number of proteins)
 		#my $protTypeStrg=(scalar keys %{$refQuantifPTM})? ' forms' : '';
 		#$worksheet2->merge_range(1,0,2,0,"$numProt$protTypeStrg/$numTotProteins proteins",$itemFormat{'mergeRowHeader'});
-		my $protString=(scalar keys %{$refQuantifPTM})? "$numDispItems/".(scalar keys %{$refQuantifValues})." isoforms\n".(scalar keys %dispProteins)."/".(scalar keys %{$refProteinInfo})." proteins" : "$numDispItems/".(scalar keys %{$refProteinInfo})." proteins";
+		my $protString=(scalar keys %{$refQuantifPTM})? "$numDispItems/".(scalar keys %{$refQuantifValues})." sites\n".(scalar keys %dispProteins)."/".(scalar keys %{$refProteinInfo})." proteins" : "$numDispItems/".(scalar keys %{$refProteinInfo})." proteins";
 		$worksheet2->merge_range(0,0,1,0,$protString,$itemFormat{'mergeRowHeader'});
 	}
 
@@ -2749,7 +2752,7 @@ function listAllQuantifications(quantifText) {
 |;
 	}
 	print qq
-|<TR><TH align=left nowrap width=10%>&nbsp;&bull;Restrict to:</TH><TD><DIV id="restrictDIV"><!--Custom list selection comes here with window.onload() --></DIV></TD>
+|<TR><TH align=left nowrap width=10%>&nbsp;&bull;<SELECT name="listAction" class="title3"><OPTION value="restrict">Restrict to</OPTION><OPTION value="exclude">Exclude</OPTION></SELECT>:</TH><TD><DIV id="restrictDIV"><!--Custom list selection comes here with window.onload() --></DIV></TD>
 <TH align=right><FONT class="title3">View:</FONT><SELECT name="view" class="title3" onchange="updateView(this.value)">
 	<OPTION value="list">List</OPTION>
 	<!--OPTION value="heatmap"\$selHeat>Heat map</OPTION-->
@@ -2985,6 +2988,7 @@ sub ajaxListSelectedProteins { # also called by displayClustering.cgi & displayP
 
 
 ####>Revision history<####
+# 1.6.5 Option to exclude list of proteins & [Fix]Minor display bug (PP 17/04/19)
 # 1.6.4 DB +/-inf ratio value now fetched from promsQuantif.pm (PP 24/01/19)
 # 1.6.3 Various improvements for EMPAI (PP 30/10/18)
 # 1.6.2 Desactivate no-scroll option in FRAMESET designeb by &generateFrames fuinction (GA 29/06/18)
