@@ -359,10 +359,10 @@ sub getMascotServers {
 
 ####> FTP config <####
 sub getFTPconfig {
-	return {
-		mode =>'active' # or passive
+	return (
+		mode =>'passive' # or active
 		#firewall => 'xxx'
-	};
+	);
 }
 
 ####> VALIDATION PARAMETERS <####
@@ -677,7 +677,8 @@ sub getFragmentClassif {
 1;
 
 ####>Revision history<####
-# 2.9.14D Adapted for distribution & (PP 24/06/19)
+# 2.9.15D Adapted for distribution & (PP 24/06/19)
+# 2.9.15 &getFTPmode function now returns a hash, not a reference (PP 24/06/19)
 # 2.9.14 Uses new mysql production server smorpym.curie.fr (PP 12/06/19)
 # 2.9.13 &getFTPmode function (PP 11/06/19) 
 # 2.9.12 Rename project_data folder into metadata (VS 11/06/19)

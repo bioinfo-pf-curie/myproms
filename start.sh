@@ -10,7 +10,7 @@ chown -Rh www-data:root ${APPLI_DIR}
 chown -Rh www-data:root ${DATA_DIR}
 
 ### Update index.html file with ENV variable
-sed -i "s@EMAIL_CONTACT@${EMAIL_CONTACT}@g" ${APPLI_DIR}/html/index.html
+sed -i "s/EMAIL_CONTACT/${EMAIL_CONTACT}/g" ${APPLI_DIR}/html/index.html
 
 ### Update promsConfig.pm file with ENV variables
 if [ ! -e ${APPLI_DIR}/cgi-bin/promsConfig.bck ]; then

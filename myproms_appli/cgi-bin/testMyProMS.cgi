@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# testMyProMS.cgi         2.5.1                                                #
+# testMyProMS.cgi         2.5.2                                                #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -770,7 +770,7 @@ foreach my $pathName (sort{lc($a) cmp lc($b)} @execPath) {
 			$javaPath=~s/\/java\s*\Z//;
 		}
 		my @response=`$javaCommand -showversion 2>&1`;
-		my ($version)=($response[0] && $response[0]=~/java version "(\S+)"/);
+		my ($version)=($response[0] && $response[0]=~/ version "([^"]+)"/);
 		&printVersionResponse($pathName,$javaPath,$version,\@response);
 	}
 	elsif ($pathName eq 'R') {
@@ -871,7 +871,7 @@ foreach my $pathName (sort{lc($a) cmp lc($b)} @execPath) {
 		#	}
 		#}
 		my @response=`$promsPath{$pathName}/pyprophet --version 2>&1`;
-		my ($version)=($response[0] && $response[0]=~/^([\d\.]+)/);
+		my ($version)=($response[0] && $response[0]=~/([\d\.]+)/);
 		&printVersionResponse($pathName,$promsPath{$pathName},$version,\@response);
 	}
 	elsif ($pathName eq 'openms') {
@@ -1264,6 +1264,7 @@ sub checkInternetConnection {
 
 
 ####>Revision history<####
+# 2.5.2 [FIX] Bugs in version detection of local java & pyprophet (PP 24/06/19)
 # 2.5.1 Added Singularity image info for cluster (PP 19/06/19)
 # 2.5.0 Uses Net::FTP for testing default and passive FTP connection (PP 06/05/19)
 # 2.4.14 Updated to docker image 1.2.x (PP 29/03/19)
