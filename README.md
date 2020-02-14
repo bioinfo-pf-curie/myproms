@@ -15,8 +15,8 @@ myProMS is freely available under [CeCILL license](LICENSE).
 * Docker: [https://www.docker.com](https://www.docker.com)
 Two Docker images are required:
   * [myproms/myproms\_base:1.3.2](https://hub.docker.com/r/myproms/myproms_base): Tools and system dependencies.
-  * [mysql:5.5](https://hub.docker.com/_/mysql): For database management).
-These images will be automatically pulled at first launch of the server.
+  * [mysql:5.5](https://hub.docker.com/_/mysql): For database management.
+  * These images will be automatically pulled from dockerhub at first launch of the server if necessary.
 * Git: [https://git-scm.com](https://git-scm.com) - *Recommanded*
 
 ## Repository
