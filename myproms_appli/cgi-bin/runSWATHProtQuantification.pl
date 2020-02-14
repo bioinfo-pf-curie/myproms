@@ -1,9 +1,9 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# runSWATHProtQuantification.pl       1.3.2                                    #
+# runSWATHProtQuantification.pl       1.4.2                                    #
 # Component of site myProMS Web Server                                         #
-# Authors: M.Le Picard (Institut Curie)                                        #
+# Authors: P. Poullet, M. Le Picard, V. Sabatet (Institut Curie)               #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
 #----------------------------------CeCILL License-------------------------------
@@ -58,7 +58,6 @@ use File::Copy::Recursive qw(dirmove dircopy);
 #######################
 my %promsPath=&promsConfig::getServerInfo('no_user');
 my %cluster=&promsConfig::getClusterInfo;#('debian'); # default is 'centos'
-
 
 ##########################
 ####>Connecting to DB<####
@@ -233,14 +232,14 @@ if ($quantifiedModifID){
 
 ###>Fetching protein and peptide data
 my $selectedPepQuery=qq
-|SELECT GROUP_CONCAT(DISTINCT PPA.ID_PROTEIN),P.ID_PEPTIDE,ABS(PEP_BEG),PEP_SEQ,GROUP_CONCAT(PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),CHARGE
+|SELECT GROUP_CONCAT(DISTINCT PPA.ID_PROTEIN),P.ID_PEPTIDE,ABS(PEP_BEG),PEP_SEQ,GROUP_CONCAT(PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),CHARGE,MISS_CUT
 FROM PEPTIDE P
 LEFT JOIN PEPTIDE_MODIFICATION PM ON P.ID_PEPTIDE=PM.ID_PEPTIDE
 INNER JOIN PEPTIDE_PROTEIN_ATTRIB PPA ON P.ID_PEPTIDE=PPA.ID_PEPTIDE
 INNER JOIN ANALYSIS_PROTEIN AP ON PPA.ID_PROTEIN=AP.ID_PROTEIN
 WHERE P.ID_ANALYSIS=? AND AP.ID_ANALYSIS=? AND AP.VISIBILITY=2|;
 $selectedPepQuery.=($pepSpecificity eq 'unique')? ' AND PPA.IS_SPECIFIC=1' : ($pepSpecificity eq 'unique_shared')? ' AND AP.PEP_SPECIFICITY=100' : '';
-$selectedPepQuery.=' AND MISS_CUT=0' unless $pepMissedCleavage;
+$selectedPepQuery.=' AND MISS_CUT=0' if $pepMissedCleavage==0; # 0: exclude only missed-cut peptides, 1: allow, -1: also exclude overlapping fully cut
 $selectedPepQuery.=" GROUP BY PPA.ID_PROTEIN,P.ID_PEPTIDE ORDER BY AP.NUM_PEP DESC,ABS(PEP_BEG) ASC;";
 
 my $sthSelectedPeptides=$dbh->prepare("$selectedPepQuery");
@@ -252,15 +251,23 @@ foreach my $modID (@selectedPTMs) {$allowedPtmID{$modID}=1;}
 $allowedPtmID{$quantifiedModifID}=1 if $quantifiedModifID;
 
 my (%validProteins,%pep2prot,%peptideList,%peptideBeg,%peptideUsed);
-foreach my $analysisID (keys %ana2Quant){
+my (%missedCutPeptides,%beg2pepSeq); # only if $pepMissedCleavage=-1 (exclude missCut AND overlapping cut peptides)
+foreach my $analysisID (keys %ana2Quant) {
     $sthSelectedPeptides->execute($analysisID,$analysisID);
     my %excludedSeq;
-    while (my ($protID,$pepID,$pepBeg,$pepSeq,$varModStrg,$charge)=$sthSelectedPeptides->fetchrow_array) {
+    while (my ($protID,$pepID,$pepBeg,$pepSeq,$varModStrg,$charge,$misscut)=$sthSelectedPeptides->fetchrow_array) {
         #>Protein filtering
         if ($protSelectionType) {
             if ($protSelectionType eq 'exclude') {next if $selectExcludeProteins{$protID};}
             else {next unless $selectExcludeProteins{$protID};} # restrict
         }
+		
+if ($pepMissedCleavage==-1 && $misscut) {
+	my $pepLength=length($pepSeq);
+	$missedCutPeptides{$protID}{$pepBeg}=$pepLength if (!$missedCutPeptides{$protID} || !$missedCutPeptides{$protID}{$pepBeg} || $missedCutPeptides{$protID}{$pepBeg} < $pepLength);
+	next;
+}
+
         next if ($quantifiedModifID && (!$varModStrg || $varModStrg!~/(^|&)$quantifiedModifID:/));
 
 
@@ -292,8 +299,11 @@ foreach my $analysisID (keys %ana2Quant){
         push @{$validProteins{$protID}{$analysisID}},$pepID unless ($excludedSeq{$pepSeq} || $excludedSeq{$pepID});
         push @{$pep2prot{$pepID}},$protID unless ($excludedSeq{$pepSeq} || $excludedSeq{$pepID});
         $peptideBeg{$protID}{$peptideList{$pepID}}=$pepBeg unless ($excludedSeq{$pepSeq} || $excludedSeq{$pepID});
-    }
+if ($pepMissedCleavage==-1 && !$misscut) {push @{$beg2pepSeq{$protID}{"$pepBeg:$pepSeq"}},$pepID;} # no need to include missed cleaved here
+    
+	}
     $sthSelectedPeptides->finish;
+	
 
     ###> Recover fragments info
     my $pepQuantifID=$ana2Quant{$analysisID}{PEP_QUANTIF};
@@ -309,15 +319,38 @@ foreach my $analysisID (keys %ana2Quant){
         }
         next if (!$peptideList{$peptideID});
 
-        my ($peptideSeq,$peptideCharge)=split(/_/,$peptideList{$peptideID});
+        #my ($peptideSeq,$peptideCharge)=split(/_/,$peptideList{$peptideID});
         foreach my $protID (@{$pep2prot{$peptideID}}){
-            #$condPeptideList{$protID}{"$peptideSeq\_$peptideCharge"}{"$fragType$fragRes\_$fragCharge"}{ $biorep2cond{$ana2Quant{$analysisID}{$pepQuantifID}} }{ $ana2Quant{$analysisID}{$pepQuantifID} }=$fragArea;
+            #$condPeptideList{$protID}{ $peptideList{$peptideID} }{"$fragType$fragRes\_$fragCharge"}{ $biorep2cond{$ana2Quant{$analysisID}{$pepQuantifID}} }{ $ana2Quant{$analysisID}{$pepQuantifID} }=$fragArea;
             # condPeptideList{protID}{pepIon}{fragIon}{State}{bioRep}{tehcRep}=fragArea
-            $condPeptideList{$protID}{"$peptideSeq\_$peptideCharge"}{"$fragType$fragRes\_$fragCharge"}{ $ana2Quant{$analysisID}{STATE} }{ $ana2Quant{$analysisID}{BIO_REP} }{ $ana2Quant{$analysisID}{TECH_REP} }=$fragArea;
+            $condPeptideList{$protID}{ $peptideList{$peptideID} }{"$fragType$fragRes\_$fragCharge"}{ $ana2Quant{$analysisID}{STATE} }{ $ana2Quant{$analysisID}{BIO_REP} }{ $ana2Quant{$analysisID}{TECH_REP} }=$fragArea;
         }
     }
     close IN;
 }
+
+##>Filter fully cut peptides included in missed-cut (if $pepMissedCleavage==-1). Match is CROSS-ANALYSIS!
+if ($pepMissedCleavage==-1) {
+	foreach my $protID (keys %missedCutPeptides) {
+		next unless $beg2pepSeq{$protID}; # no fully cut peptides for protID
+		foreach my $missBeg (keys %{$missedCutPeptides{$protID}}) {
+			my $missEnd=$missBeg + $missedCutPeptides{$protID}{$missBeg} - 1;
+			foreach my $begSeq (keys %{$beg2pepSeq{$protID}}) {
+				my ($pepBeg,$pepSeq)=split(':',$begSeq);
+				if ($pepBeg >= $missBeg && $pepBeg <= $missEnd) { # match! beg overlaps with missed cut seq
+					foreach my $pepID (@{$beg2pepSeq{$protID}{$begSeq}}) {
+						delete $condPeptideList{$protID}{ $peptideList{$pepID} }; # remove peptide from list of usables
+					}
+					delete $condPeptideList{$protID} unless scalar keys %{$condPeptideList{$protID}};
+					delete $beg2pepSeq{$protID}{$begSeq};
+					delete $beg2pepSeq{$protID} unless scalar keys %{$beg2pepSeq{$protID}};
+				}
+			}
+		}
+	}
+}
+
+
 
 my $numDataLines=0;
 ########################################
@@ -393,7 +426,7 @@ close R_SCRIPT;
 my $RcommandString="export LANG=en_US.UTF-8; cd $runDir; $pathR/R CMD BATCH --no-save --no-restore quantiswath.R";
 my $RoutFile='quantiswath.Rout';
 
-### ALWAYS SKIP CLUSTER (PP 17/09/18)!!! ###
+### ALREADY ON CLUSTER (PP 17/09/18)!!! ###
 ###if ($cluster{'on'}) {
 ###	my $numCPU=$cluster{'maxCPUs'} || 1;
 ###	my $clusterCommandString=$cluster{'buildCommand'}->($runDir,$RcommandString);
@@ -471,22 +504,23 @@ if (-e "$resultDir/sessionInfo.txt") {
     }
 }
 
-####>ERROR Management<####
-my $RoutStrg=`tail -3 $runDir/$RoutFile`;
-unless ($RoutStrg=~/proc\.time\(\)/) {
-	$dbh->do("UPDATE QUANTIFICATION SET STATUS=-2 WHERE ID_QUANTIFICATION=$quantifID");
-	$dbh->commit;
-	$dbh->disconnect;
-	$RoutStrg=`tail -20 $runDir/$RoutFile`;
-	my $RerrorStrg="R script has generated an error!";
-	my $inError=0;
-	foreach my $line (split(/\n/,$RoutStrg)) {
-		next if (!$inError && $line !~ /^Error in/); # skip everything before "Error in..."
-		$inError=1;
-		$RerrorStrg.="\n$line";
-	}
-	die $RerrorStrg;
-}
+#####>ERROR Management<####
+#my $RoutStrg=`tail -3 $runDir/$RoutFile`;
+#unless ($RoutStrg=~/proc\.time\(\)/) {
+#    my $dbh=&promsConfig::dbConnect('no_user');
+#    $dbh->do("UPDATE QUANTIFICATION SET STATUS=-2 WHERE ID_QUANTIFICATION=$quantifID");
+#	$dbh->commit;
+#	$dbh->disconnect;
+#	$RoutStrg=`tail -20 $runDir/$RoutFile`;
+#	my $RerrorStrg="R script has generated an error!";
+#	my $inError=0;
+#	foreach my $line (split(/\n/,$RoutStrg)) {
+#		next if (!$inError && $line !~ /^Error in/); # skip everything before "Error in..."
+#		$inError=1;
+#		$RerrorStrg.="\n$line";
+#	}
+#	die $RerrorStrg;
+#}
 
 
 
@@ -656,7 +690,8 @@ $dbh->commit;
 
 
 ###> Quantification is finished.
-$dbh->do("UPDATE QUANTIFICATION SET STATUS=1 WHERE ID_QUANTIFICATION=$quantifID");
+my $status=($quantifParameters{'DB'}{'VISIBILITY'})? $quantifParameters{'DB'}{'VISIBILITY'}[0] : 1;
+$dbh->do("UPDATE QUANTIFICATION SET STATUS=$status WHERE ID_QUANTIFICATION=$quantifID");
 $dbh->commit;
 
 $dbh->disconnect;
@@ -669,10 +704,13 @@ close(FILESTAT);
 mkdir "$promsPath{quantification}/project_$projectID/quanti_$quantifID" unless -e "$promsPath{quantification}/project_$projectID/quanti_$quantifID";
 dirmove($runDir,"$promsPath{quantification}/project_$projectID/quanti_$quantifID");
 sleep 2;
-unlink $fileStat;
 
 
 ####>Revision history<####
+# 1.4.2 [BUGFIX] Copy quantification file to quantification data folder after computation (VS 11/12/19)
+# 1.4.1 [ENHANCEMENT] Compatible with new visibility status (PP 04/12/19)
+# 1.4.0 [FEATURE] Added optional co-exclusion of fully cut peptides included in missed-cut ones (PP 18/11/19) 
+# 1.3.3 Do not remove status log file to match new monitoring system behavior (VS 10/10/19)
 # 1.3.2 Minor modification because $fragmentFile does not exist (GA 27/11/2018)
 # 1.3.1 Update swath files paths (VS 08/11/2018)
 # 1.3.0 Now runs on cluster itself: R is launcher by system command (PP 17/09/18)

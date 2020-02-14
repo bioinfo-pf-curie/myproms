@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# displayPCA.cgi       1.2.2                                                   #
+# displayPCA.cgi       1.2.6                                                   #
 # Authors: P. Poullet, S.Liva (Institut Curie)      	                       #
 # Contact: myproms@curie.fr                                                    #
 # display and store the results of PCA analysis        	                       #
@@ -52,16 +52,16 @@ use POSIX qw(strftime); # to get the time
 use Text::CSV;
 use Spreadsheet::WriteExcel;
 use utf8; # Tells Perl that characters are UTF8. Necessary for Excel export to work with UTF-8 characters ...
-use Encode qw(encode_utf8); # ... Encode needed if hard UTF8 chars in code!!!
+#use Encode qw(encode_utf8); # ... Encode needed if hard UTF8 chars in code!!!
 
 #######################
 ####>Configuration<####
 #######################
+#print header(-'content-encoding'=>'no',-charset=>'utf-8'); warningsToBrowser(1); # DEBUG
 my %promsPath=&promsConfig::getServerInfo;
 my $userID=$ENV{'REMOTE_USER'};
-my $experimentID = param('experimentID');
+my ($explorID,$experimentID) = &promsMod::cleanNumericalParameters(param('explorID'),param('experimentID'));
 my $ajax = param('AJAX') || '';
-my $explorID = param('explorID');
 my $pcaType = param('selectPCA') || "quantif";
 my $action = param('ACT') || '';
 if ($action eq 'full3D') {
@@ -76,20 +76,45 @@ my $pathToFile = "$promsPath{explorAna}/project_$projectID/$explorID";
 my @userInfo=&promsMod::getUserInfo($dbh,$userID,$projectID);
 my $projectAccess=${$userInfo[2]}{$projectID};
 my $disabSave=($projectAccess eq 'guest')? ' disabled' : '';
-my $selQuantifModif=0;
 
+
+#my $selQuantifModif=0;
 my ($quantifListStrg,%quantificationIDs); # also needed by &changeDimensions
-my $sthSelExplorQuantif = $dbh -> prepare("SELECT Q.ID_QUANTIFICATION,TARGET_POS,ID_MODIFICATION FROM EXPLORANA_QUANTIF EA,QUANTIFICATION Q WHERE EA.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND ID_EXPLORANALYSIS = $explorID ORDER BY ID_QUANTIFICATION,TARGET_POS");
-$sthSelExplorQuantif -> execute;
-while (my($quantifID, $targetPos, $modifID) = $sthSelExplorQuantif -> fetchrow_array) {
+#my $sthSelExplorQuantif = $dbh -> prepare("SELECT Q.ID_QUANTIFICATION,TARGET_POS,ID_MODIFICATION FROM EXPLORANA_QUANTIF EA,QUANTIFICATION Q WHERE EA.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND ID_EXPLORANALYSIS = $explorID ORDER BY ID_QUANTIFICATION,TARGET_POS");
+#$sthSelExplorQuantif -> execute;
+#while (my($quantifID, $targetPos, $modifID) = $sthSelExplorQuantif -> fetchrow_array) {
+#    $quantifListStrg.=':' if $quantifListStrg;
+#    $quantifListStrg.=$quantifID."_".$targetPos;
+#    $quantificationIDs{$quantifID}=1;
+#	$selQuantifModif=$modifID if $modifID;
+#}
+#$sthSelExplorQuantif -> finish;
+
+my $isPtmQuantif=0;
+my %ptmUsed;
+my $sthSelExplorQuantif=$dbh->prepare("SELECT Q.ID_QUANTIFICATION,GROUP_CONCAT(DISTINCT TARGET_POS ORDER BY TARGET_POS SEPARATOR '_'),CONCAT(COALESCE(Q.ID_MODIFICATION,'0'),',',COALESCE(GROUP_CONCAT(DISTINCT MQ.ID_MODIFICATION SEPARATOR ','),'0'))
+								FROM QUANTIFICATION Q
+								LEFT JOIN MULTIMODIF_QUANTIFICATION MQ ON Q.ID_QUANTIFICATION=MQ.ID_QUANTIFICATION
+								INNER JOIN EXPLORANA_QUANTIF EQ ON EQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION
+								WHERE ID_EXPLORANALYSIS=? GROUP BY Q.ID_QUANTIFICATION");
+$sthSelExplorQuantif -> execute($explorID);
+while (my($quantifID,$targetPos,$ptmStrg) = $sthSelExplorQuantif -> fetchrow_array) {
     $quantifListStrg.=':' if $quantifListStrg;
     $quantifListStrg.=$quantifID."_".$targetPos;
     $quantificationIDs{$quantifID}=1;
-	$selQuantifModif=$modifID if $modifID;
+    next if $ptmStrg eq '0,0'; # no PTM quantif
+    foreach my $modID (split(',',$ptmStrg)) {
+        $ptmUsed{$modID}=1 if $modID;
+    }
 }
 $sthSelExplorQuantif -> finish;
 
-my $featureItems=($selQuantifModif)? 'Isoforms' : 'Proteins';
+my $featureItems='Proteins';
+if (scalar keys %ptmUsed) {
+    $isPtmQuantif=1;
+	$featureItems='Sites';
+}
+
 
 ####>EXPORT call<####
 if ($action eq 'export') {
@@ -158,7 +183,8 @@ while (my ($pathID, $catID, $name, $paramStrg)=$sthPA->fetchrow_array) {
 }
 $sthPA->finish;
 
-my ($pcaName) = $dbh -> selectrow_array("SELECT NAME from EXPLORANALYSIS where ID_EXPLORANALYSIS = $explorID");
+my ($pcaName,$paramList,$filterList) = $dbh -> selectrow_array("SELECT NAME,PARAM_LIST,FILTER_LIST FROM EXPLORANALYSIS where ID_EXPLORANALYSIS = $explorID");
+my ($quantifFam,$quantifMeasCode,$pepType)=('','',''); # prot PCA only
 my %bioSampProperties;
 if ($pcaType =~ /^quantif/) {
     my $sthProp=$dbh->prepare("SELECT DISTINCT P.ID_PROPERTY,P.NAME,P.PROPERTY_TYPE FROM PROPERTY P
@@ -171,6 +197,12 @@ if ($pcaType =~ /^quantif/) {
         $bioSampProperties{$propType}{$propID}=$propName;
     }
     $sthProp->finish;
+}
+else { # prot
+	($quantifFam)=$paramList=~/quantFam=(\w+)/;
+	$quantifMeasCode=$1 if $paramList=~/quantCode=(\w+)/;
+	$pepType=$1 if ($filterList && $filterList=~/\/PEP=(\w+)/);
+	$pepType=($pepType eq 'NUM_PEP_USED')? 'all' : ($pepType eq 'DIST_PEP_USED')? 'distinct' : $pepType;
 }
 
 #### START HTML
@@ -218,6 +250,17 @@ function displayFull3D() {
 	myForm.submit();
 	full3dWindow.focus();
 }
+
+function toggleValueDistribution() {
+	var graph = document.getElementById('valueDistribution');
+	var isDisplayed = (graph.style.display == '');
+	graph.style.display = (isDisplayed) ? 'none' : '';
+	
+	
+	var displayButton = document.getElementById('valueDistributionButton');
+	displayButton.innerHTML = (isDisplayed) ? 'Display values distribution' : 'Hide values distribution';
+}
+
 function editDeleteHighligth(name, action, newName) {
     if (action=='delete') {
         var pos = annotSetObject[name].position;
@@ -333,7 +376,7 @@ function ajaxListSignificantProteins() {
     var listDiv=document.getElementById('protListDIV');
     listDiv.innerHTML="<BR><BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<FONT class=\\"title3\\">Fetching data. Please wait...</FONT><BR>&nbsp;&nbsp;&nbsp;&nbsp;<IMG src=\\"$promsPath{images}/scrollbarGreen.gif\\"><BR><BR>";
     listDiv.style.display='';
-    listDiv.scrollIntoView();
+    listDiv.scrollIntoView({block:"start",inline:"nearest",behavior:"smooth"});
 
     var dim=document.getElementById('selectSigProtDim').value;
     //If XHR object already exists, the request is canceled & the object is deleted
@@ -436,8 +479,6 @@ function ajaxPropDecorateGraph(params,saved,jobRank) {
     XHR.open("POST","$promsPath{cgi}/displayPCA.cgi",true); //!saved Switches to synchronous for already saved highlights
     //Send the proper header information along with the request
     XHR.setRequestHeader("Content-type", "application/x-www-form-urlencoded; charset=UTF-8");
-	//XHR.setRequestHeader("Content-length", paramStrg.length);
-    //XHR.setRequestHeader("Connection", "close");
     XHR.onreadystatechange=function() {
         if (XHR.readyState==4) {
             if (XHR.responseText) {
@@ -707,14 +748,27 @@ function ajaxGetPathwayProteinsList(params,saved,jobRank) {
 function ajaxListFromPCA(selectedPoints) {
     ajaxListSelectedProteins(selectedPoints[0].join(','),'protein');
 }
-
-function ajaxListSelectedProteins(selectedPoints,sort) {
+function ajaxSearchConvertIdentifier(graphSearch,graphSearchArgs,searchTextIdx) { // (graph lib search function,array of function arguments,index of search text in array). To be called at end of convertion function
+	var XHR = getXMLHTTP();
+	if (!XHR) {
+		return false;
+	}
+	XHR.open("GET","$promsPath{cgi}/showProtQuantification.cgi?ACT=ajaxConvIdent&projectID=$projectID&quantifList=$quantifListStrg&TEXT="+encodeURIComponent(graphSearchArgs[searchTextIdx]),true); //search text
+	XHR.onreadystatechange=function() {
+		if (XHR.readyState==4 && XHR.responseText) {
+			graphSearchArgs[searchTextIdx]=XHR.responseText; // replace old text with converted one
+			graphSearch(...graphSearchArgs); // call graph lib search fuction & convert array to arguments
+		}
+	};
+	XHR.send(null);
+}
+function ajaxListSelectedProteins(selectedPoints,sort='protein') {
     saveListGlobals.themesFetched=false; // resets ajaxManageSaveProteins mecanism
     var listDiv=document.getElementById('protListDIV');
     listDiv.innerHTML="<BR><BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<FONT class=\\"title3\\">Fetching data. Please wait...</FONT><BR>&nbsp;&nbsp;&nbsp;&nbsp;<IMG src=\\"$promsPath{images}/scrollbarGreen.gif\\"><BR><BR>";
     listDiv.style.display='';
-    listDiv.scrollIntoView();
-    var paramStrg="AJAX=ajaxListProt&CALL=PCA&id_project=$projectID&ACT=result&quantifFocus=$selQuantifModif&quantifList=$quantifListStrg&selProt="+selectedPoints;
+    listDiv.scrollIntoView({block:"start",inline:"nearest",behavior:"smooth"});
+    var paramStrg="AJAX=ajaxListProt&CALL=PCA&id_project=$projectID&ACT=results&quantifFamily=$quantifFam&dispMeasure=$quantifMeasCode&pepType=$pepType&quantifList=$quantifListStrg&sort="+sort+"&selProt="+selectedPoints;
 
     //If XHR object already exists, the request is canceled & the object is deleted
     if (XHR && XHR.readyState != 0) {
@@ -729,8 +783,6 @@ function ajaxListSelectedProteins(selectedPoints,sort) {
     XHR.open("POST","$promsPath{cgi}/compareQuantifications.cgi",true);
     //Send the proper header information along with the request
     XHR.setRequestHeader("Content-type", "application/x-www-form-urlencoded; charset=UTF-8");
-    XHR.setRequestHeader("Content-length", paramStrg.length);
-    XHR.setRequestHeader("Connection", "close");
     XHR.onreadystatechange=function() {
         if (XHR.readyState==4 && XHR.responseText) {
             listDiv.innerHTML=XHR.responseText;
@@ -749,7 +801,7 @@ print qq
         for (var i=0; i<checkedProt.length; i++) {chkList.push(checkedProt[i].value);}
     }
     else {chkList.push(checkedProt.value);}
-    ajaxListSelectedProteins(chkList.join(','),null,newSort);
+    ajaxListSelectedProteins(chkList.join(','),newSort);
 }
 function sequenceView(id_protein,id_analyses) {
     var winLocation="$promsPath{cgi}/sequenceView.cgi?id_ana="+id_analyses+"&id_prot="+id_protein+"&msdata="+top.showMSdata;
@@ -795,8 +847,6 @@ print qq
     XHR.open("POST","$promsPath{cgi}/displayPCA.cgi",true);
     //Send the proper header information along with the request
     XHR.setRequestHeader("Content-type", "application/x-www-form-urlencoded; charset=UTF-8");
-    XHR.setRequestHeader("Content-length", paramStrg.length);
-    XHR.setRequestHeader("Connection", "close");
     XHR.onreadystatechange=function() {
         if (XHR.readyState==4) {
             if (XHR.responseText.match('###OK###')) {
@@ -839,7 +889,7 @@ while (<CONTRIB>) {
 close (CONTRIB);
 my $numDimensions=scalar keys %dimContribution;
 my $stringPCA=&changeDimensions(1,2,3,'true'); # 1st dim, 2nd dim, 3rd dim, true:, transpo or not
-my $pcaTarget=($pcaType=~/^quantif/)? 'Quantifications' : 'Proteins';
+my $pcaTarget=($pcaType=~/^quantif/)? 'Quantifications' : $featureItems; #'Proteins';
 print qq
 |<SCRIPT language="JavaScript">
 var colorList = ['#0000FF','#4AA02C','#F660AB','#FBB917','#8AFB17','#9A9A9A','#7E2217','#95B9C7','#E18B6B'];
@@ -853,11 +903,14 @@ function drawPCA() {
                        axisY:'Dim 2 ($dimContribution{2} %)',
                        //pointOnclick:externalLink,
 |;
-print "                 pointOnList:ajaxListFromPCA,\n" if $pcaType =~ /^prot/;
+print qq
+|						pointOnList:ajaxListFromPCA,
+						searchable:{text:'Extended search',externalSearch:ajaxSearchConvertIdentifier},
+| if $pcaType=~/^prot/;
 print qq
 |                      allowHighlight:true,
                        updateHighlight:{callback:editDeleteHighligth},
-					   exportAsImage:['Export as image','PCA_${pcaTarget}_$pcaName','./exportSVG.cgi']
+					   exportAsImage:['Export as image','PCA_$pcaTarget\_$pcaName','./exportSVG.cgi']
 					   });
     PCA.addDataAsString('$stringPCA');
     PCA.draw();
@@ -1093,6 +1146,17 @@ print qq
 							<INPUT type="button" id="saveButton" style="font-weight:bold;display:none" onclick="ajaxSaveAnnotations()" value="Save highlights"$disabSave>
 							<SPAN id="saveSPAN" class="title3" style="color:#FFF;background-color:#387D38;padding:1px 7px;display:none">Highlights saved !</SPAN>
 						</TH></TR>
+|;
+
+my $distribPlotPath = "$promsPath{explorAna_html}/project_$projectID/$explorID/";
+print qq |
+						<TR><TH>
+							<button id='valueDistributionButton' onclick='toggleValueDistribution();' />Display values distribution</button><br/>
+							<img src='$distribPlotPath/valueDistribution.png' id='valueDistribution' style='display:none' />
+						</TH></TR>
+| if(-e "$pathToFile/valueDistribution.png");
+
+print qq |
 					</TABLE>
 	</TD>
     </TR>
@@ -1148,25 +1212,20 @@ sub changeDimensions {
         print header(-'content-encoding' => 'no',-charset => 'utf-8');warningsToBrowser(1);
     }
 
-    my (%protList,$sthProt,%quantifNames);
+    #my (%protList,$sthProt,%quantifNames);
+    my %quantifNames;
     if ($pcaType=~/^quantif/) { # PCA on samples
         %quantifNames=&promsQuantif::getDistinctQuantifNames($dbh,$quantifListStrg);
     }
-    else { # protein view
-        #my $sthProt=$dbh->prepare("SELECT P.ID_PROTEIN,P.ALIAS FROM EXPLORANA_QUANTIF EQ
-        #                                                  INNER JOIN PROTEIN_QUANTIFICATION PQ ON EQ.ID_QUANTIFICATION=PQ.ID_QUANTIFICATION
-        #                                                  INNER JOIN PROTEIN P ON PQ.ID_PROTEIN=P.ID_PROTEIN
-        #                                                  WHERE EQ.ID_EXPLORANALYSIS=$explorID"); # DISTINCT slows down query!!!!!!!!!
-        #$sthProt->execute;
-        #while (my ($protID,$alias)=$sthProt->fetchrow_array) {
-        #    $protList{$protID}=$alias;
-        #}
-        #$sthProt->finish;
-		$sthProt=$dbh->prepare("SELECT ALIAS FROM PROTEIN WHERE ID_PROTEIN=?");
-    }
-
+#    else { # protein view
+#		$sthProt=$dbh->prepare("SELECT ALIAS FROM PROTEIN WHERE ID_PROTEIN=?");
+#    }
+	
+ my $oldSingleModID=(keys %ptmUsed)[0]; # in case of old single PTM-site format
+ my %protIdList;
     my %coordFiles=(prot=>'protCoordinates.txt',prot_sc=>'protCoordinates_sc.txt',quantif=>'quantifCoordinates.txt',quantif_sc=>'quantifCoordinates_sc.txt');
     my @coord;
+	my $coordIdx=0;
     open(COORD, "$pathToFile/$coordFiles{$pcaType}") || die "Error: $!";
     while (my $lineCoord = <COORD>) {
         chomp($lineCoord);
@@ -1176,11 +1235,19 @@ sub changeDimensions {
         my $alias;
         if ($pcaType=~/^prot/) {
 			my ($protID,$modStrg)=split('-',$infoLine[0]);
-			unless ($protList{$protID}) {
-				$sthProt->execute($protID);
-				($protList{$protID})=$sthProt->fetchrow_array;
+			#unless ($protList{$protID}) {
+			#	$sthProt->execute($protID);
+			#	($protList{$protID})=$sthProt->fetchrow_array;
+			#}
+			if ($modStrg && $modStrg !~ /^\d+:/) { # no starting modifID => old single PTM format
+				$modStrg=$oldSingleModID.':'.$modStrg;
+				$infoLine[0]=$protID.'-'.$modStrg;
 			}
-            $alias=($modStrg)? $protList{$protID}.'-'.$modStrg : $protList{$protID};
+            #$alias=($modStrg)? $protList{$protID}.'-'.$modStrg : $protList{$protID};
+			if ($return eq 'true') {
+				$alias=$protID; # temp. changed later
+				push @{$protIdList{$protID}},[$coordIdx,$modStrg]; # undef for protein quantif
+			}
         }
         else {
             if ($infoLine[0]=~/%/) {
@@ -1205,10 +1272,36 @@ sub changeDimensions {
         }
 		$line.=','.$infoLine[$dimZ] if ($dimZ && $infoLine[$dimZ]);
         push @coord,$line;
+		$coordIdx++;
     }
     close(COORD);
-	$sthProt->finish if $pcaType=~/^prot/;
-    #$dbh -> disconnect;
+	#$sthProt->finish if $pcaType=~/^prot/;
+
+if ($return eq 'true' && $pcaType=~/^prot/) {
+	
+	my %quantifModifInfo;
+	if ($isPtmQuantif) {
+		my @quantifModifs=keys %ptmUsed;
+		&promsQuantif::getQuantifModificationInfo($dbh,\@quantifModifs,\%quantifModifInfo);
+	}
+	
+	my $protIdStrg=join(',',keys %protIdList);
+	my $sthProt=$dbh->prepare("SELECT ID_PROTEIN,ALIAS FROM PROTEIN WHERE ID_PROTEIN IN ($protIdStrg)");
+	$sthProt->execute;
+	while (my ($protID,$alias)=$sthProt->fetchrow_array) {
+		foreach my $refModCode (@{$protIdList{$protID}}) {
+			my ($coordIdx,$modCode)=@{$refModCode};
+			my $proteinName;
+			if ($modCode) {
+				my ($formatCode,$displayCode)=&promsQuantif::formatProteinModificationSites($modCode,\%quantifModifInfo,'text');
+				$proteinName=$alias.'-'.$displayCode;
+			}
+			else {$proteinName=$alias;}
+			$coord[$coordIdx]=~s/^$protID/$proteinName/;
+		}
+	}
+	$sthProt->finish;
+}
 
     my $stringScale = join(";",@coord);
     if ($return eq 'false') {print $stringScale;}
@@ -1221,38 +1314,17 @@ sub ajaxListSignificantProteins {
 
     my $dim=param('dim');
     my $sortOrder=(param('sort')) || 'p-value';
-
-    my $sthP=$dbh->prepare("SELECT ALIAS,MW,PROT_DES,ORGANISM,ID_MASTER_PROTEIN FROM PROTEIN WHERE ID_PROTEIN=?");
-    my $sthMI=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_MASTER_PROTEIN=? and ID_IDENTIFIER=10 ORDER BY RANK");
+ 
     my %protData;
-    my $protFile="$pathToFile/quantifProtDim$dim";
-    $protFile.=($pcaType eq 'quantif_sc')? '_sc.txt' : '.txt';
-    open(DATA,$protFile);
-    while (<DATA>) {
-        #next if $.==1;
-        chomp;
-        my ($modProtID,$correl,$pValue)=split(/\t/,$_);
-        next unless $modProtID;
-	my ($protID,$modStrg)=split('-',$modProtID); # modCode is null for whole protein quantif
-        $correl=sprintf "%.3f",$correl;
-        $pValue=sprintf "%.1e",$pValue;
-        $sthP->execute($protID);
-        my ($alias,$mw,$des,$species,$idMasterProt)=$sthP->fetchrow_array;
-        $mw=($mw)? sprintf "%.1f",$mw/1000 : '-';
-        $sthMI->execute($idMasterProt);
-        my @gene;
-        while (my($geneName)=$sthMI->fetchrow_array) {
-            push @gene,$geneName;
-        }
-        my $strgGene=scalar(@gene);
-        $strgGene.="-";
-        $strgGene.=join(';',@gene);
-        @{$protData{$modProtID}}=($alias,$correl,$pValue,$mw,$des,$species,$strgGene);
-    }
-    close DATA;
-    $sthP->finish;
-    $sthMI->finish;
-
+	&fetchProteinsFromDimFile($dim,'html',\%protData);
+	
+	my $lowerFeatures=lc($featureItems);
+	if (scalar keys %protData==0) {
+		$dbh->disconnect;
+		print qq|<FONT class="title2">No significant $lowerFeatures found for dimension $dim</FONT><BR>|;
+		exit;
+	}
+		
     my $sthA=$dbh->prepare("SELECT DISTINCT ID_ANALYSIS FROM EXPLORANA_QUANTIF EQ,ANA_QUANTIFICATION AQ WHERE EQ.ID_QUANTIFICATION=AQ.ID_QUANTIFICATION AND ID_EXPLORANALYSIS=$explorID");
     my @anaList;
     $sthA->execute;
@@ -1264,8 +1336,7 @@ sub ajaxListSignificantProteins {
 
     $dbh->disconnect;
 
-	my $lowerFeatures=lc($featureItems);
-    my $numTotProteins=scalar keys %protData;
+	my $numTotProteins=scalar keys %protData;
     my $proteinText=($sortOrder eq 'protein')? "<FONT color=\"#DD0000\">$lowerFeatures</FONT>" : $lowerFeatures;
     my $correlText=($sortOrder eq 'correlation')? '<FONT color="#DD0000">Correlation</FONT>' : 'Correlation';
     my $pvalueText=($sortOrder eq 'p-value')? '<FONT color="#DD0000">p-value</FONT>' : 'p-value';
@@ -1285,9 +1356,9 @@ sub ajaxListSignificantProteins {
 <TR><TD colspan=8>
 	<INPUT type="button" value="Clear list" style="font-weight:bold" onclick="document.getElementById('protListDIV').style.display='none'">
 	<INPUT type="button" value="Check all" onclick="checkAllProteins(true)"/><INPUT type="button" value="Uncheck all" onclick="checkAllProteins(false)"/><INPUT type="button" id="saveFormBUTTON" value="Save proteins..." onclick="ajaxManageSaveProteins('getThemes','PROT')"$disabSave/>|;
-	print qq|<INPUT type="button" id="saveSiteFormBUTTON" value="Save isoforms..." onclick="ajaxManageSaveProteins('getThemes','SITE',$selQuantifModif)"$disabSave/>| if $selQuantifModif;
+	print qq|<INPUT type="button" id="saveSiteFormBUTTON" value="Save sites..." onclick="ajaxManageSaveProteins('getThemes','SITE')"$disabSave/>| if $isPtmQuantif;
 	print qq
-|        <INPUT type="button" value="Export proteins" onclick="exportProteins()"/>
+|<INPUT type="button" value="Export $lowerFeatures" onclick="exportProteins()"/>
 </TD></TR>
 <TR><INPUT type="checkbox" id="autoExtend" value="1" checked><FONT class="title3">Auto-extend selection</FONT></TR>
 <TR class="row_0">
@@ -1304,25 +1375,20 @@ sub ajaxListSignificantProteins {
         $numProt++;
         $index++;
         my $trClass='row_'.($numProt % 2);
-	my ($protID,$modStrg)=split('-',$modProtID);
-	my $protLabel=($modStrg)? $protData{$modProtID}[0].'-'.$modStrg : $protData{$modProtID}[0];
+		my ($protID,$modStrg)=split('-',$modProtID);
+		my ($protLabel,$correl,$pValue,$mw,$des,$species,$refGeneList)=@{$protData{$modProtID}};
         print qq
-|<TR class="list $trClass" valign=top><TD class="TH" nowrap><INPUT type="checkbox" name="chkProt" value="$protID" onchange="extendSelection($index,this.checked)" /><A href="javascript:sequenceView($protID,'$anaIDstrg')">$protLabel</A>&nbsp;</TD>
+|<TR class="list $trClass" valign=top><TD class="TH" nowrap><INPUT type="checkbox" name="chkProt" value="$modProtID" onchange="extendSelection($index,this.checked)" /><A href="javascript:sequenceView($protID,'$anaIDstrg')">$protLabel</A>&nbsp;</TD>
 <TH>|;
-        my @popGene;
-        my ($count, $strgGene)=split('-',$protData{$modProtID}[6]);
-        foreach my $gene(split(';',$strgGene)) {
-            push @popGene, $gene;
-        }
-        if (scalar(@popGene) > 1) {
-            print "<A href=\"javascript:void(null)\" onmouseover=\"popup('<B><U>Synonyms:</U><BR>&nbsp;&nbsp;-",join('<BR>&nbsp;&nbsp;-',@popGene[1..$#popGene]),"</B>')\" onmouseout=\"popout()\"><U>",$popGene[0],"</U></A>&nbsp;";
-        }
-        else {
-            print @popGene;
+		my $numGenes=scalar @{$refGeneList};
+		if ($numGenes==0) {print '-';}
+        elsif ($numGenes==1) {print $refGeneList->[0];}
+		else {
+            print "<A href=\"javascript:void(null)\" onmouseover=\"popup('<B><U>Synonyms:</U><BR>&nbsp;&nbsp;-",join('<BR>&nbsp;&nbsp;-',@{$refGeneList}[1..$#{$refGeneList}]),"</B>')\" onmouseout=\"popout()\"><U>",$refGeneList->[0],"</U></A>&nbsp;";
         }
         print qq|</TH>
-<TH>$protData{$modProtID}[1]</TH><TH>$protData{$modProtID}[2]</TH>
-<TD class="TH" align=right>$protData{$modProtID}[3]&nbsp;</TD><TD>$protData{$modProtID}[4] <U><I>$protData{$modProtID}[5]</I></U></TD>
+<TH>$correl</TH><TH>$pValue</TH>
+<TD class="TH" align=right>$mw&nbsp;</TD><TD>$des <U><I>$species</I></U></TD>
 </TR>
 |;
     }
@@ -1510,40 +1576,11 @@ sub exportProteins {
     my $dim=param('dim');
     my $sortOrder=(param('sort')) || 'p-value';
     my %prot2Display;
-    foreach my $prot (param('chkProt')) {
-        $prot2Display{$prot}=1;
+    foreach my $modProtID (param('chkProt')) {
+        $prot2Display{$modProtID}=1;
     }
-
-    my $sthP=$dbh->prepare("SELECT ALIAS,MW,PROT_DES,ORGANISM,ID_MASTER_PROTEIN FROM PROTEIN WHERE ID_PROTEIN=?");
-    my $sthMI=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_MASTER_PROTEIN=? and ID_IDENTIFIER=10 ORDER BY RANK");
     my %protData;
-    my $protFile="$pathToFile/quantifProtDim$dim";
-    $protFile.=($pcaType eq 'quantif_sc')? '_sc.txt' : '.txt';
-    open(DATA,$protFile);
-    while (<DATA>) {
-        chomp;
-        my ($modProtID,$correl,$pValue)=split(/\t/,$_);
-        next unless $modProtID;
-	my ($protID,$modStrg)=split('-',$modProtID); # modCode is null for whole protein quantif
-        next if (!$prot2Display{$protID});
-        $correl=sprintf "%.3f",$correl;
-        $pValue=sprintf "%.1e",$pValue;
-        $sthP->execute($protID);
-        my ($alias,$mw,$des,$species,$idMasterProt)=$sthP->fetchrow_array;
-        $mw=($mw)? sprintf "%.1f",$mw/1000 : '-';
-        $sthMI->execute($idMasterProt);
-        my @gene;
-        while (my($geneName)=$sthMI->fetchrow_array) {
-            push @gene,$geneName;
-        }
-        my $strgGene=scalar(@gene);
-        $strgGene.="-";
-        $strgGene.=join(';',@gene);
-        @{$protData{$modProtID}}=($alias,$correl,$pValue,$mw,$des,$species,$strgGene);
-    }
-    close DATA;
-    $sthP->finish;
-    $sthMI->finish;
+	&fetchProteinsFromDimFile($dim,'export',\%protData,\%prot2Display);
     my $numTotProteins=scalar keys %protData;
     my ($workbook, $worksheet, $formatLine, $title, $lineSize);
     my $iLine = my $yTitle = my $yLine = 0;
@@ -1556,7 +1593,7 @@ sub exportProteins {
     $worksheet -> merge_range('A1:R1', "$title : $numTotProteins proteins (dimension $dim)", $formatTitle);
     $iLine++;
 
-    my @titleHeader = ('Proteins', 'Gene Name', 'Correlation', 'p-value', 'MW', 'Description','Species');
+    my @titleHeader = ('Proteins', 'Gene Name', 'Correlation', 'p-value', 'MW(kDa)', 'Description','Species');
     my $formatHeader = $workbook -> add_format(bold => 1, size => 10, align => 'vcenter', color => 'white', bg_color => 'black');
     foreach my $title (@titleHeader) {
         $worksheet -> write($iLine, $yTitle, $title, $formatHeader);
@@ -1564,39 +1601,92 @@ sub exportProteins {
     }
     $iLine++;
 
-    my $numProt=0;
-    my $index=-1;
     foreach my $modProtID (sort{&sortSigProteins($sortOrder,\%protData)} keys %protData) {
-        $numProt++;
+		#next unless $prot2Display{$modProtID};
         my ($protID,$modStrg)=split('-',$modProtID);
-	my $protLabel=($modStrg)? $protData{$modProtID}[0].'-'.$modStrg : $protData{$modProtID}[0];
+		my ($protLabel,$correl,$pValue,$mw,$des,$species,$refGeneList)=@{$protData{$modProtID}};
         $worksheet->write($iLine,$yLine,$protLabel);
         $yLine++;
-        my @popGene;
-        my ($count, $strgGene)=split('-',$protData{$modProtID}[6]);
-        foreach my $gene(split(';',$strgGene)) {
-            push @popGene, $gene;
-        }
-        if (scalar(@popGene) > 1) {
-            $worksheet->write($iLine,$yLine,join(',',@popGene));
-        }
-        else {
-            $worksheet->write($iLine,$yLine,@popGene);
-        }
+		my $geneStrg=(scalar @{$refGeneList}==0)? '-' : join(',',@{$refGeneList});
+		$worksheet->write($iLine,$yLine,$geneStrg);
         $yLine++;
-        $worksheet->write($iLine,$yLine,$protData{$modProtID}[1]);
+        $worksheet->write($iLine,$yLine,$correl);
         $yLine++;
-        $worksheet->write($iLine,$yLine,$protData{$modProtID}[2]);
+        $worksheet->write($iLine,$yLine,$pValue);
         $yLine++;
-        $worksheet->write($iLine,$yLine,$protData{$modProtID}[3]);
+        $worksheet->write($iLine,$yLine,$mw);
         $yLine++;
-        $worksheet->write($iLine,$yLine,$protData{$modProtID}[4]);
+        $worksheet->write($iLine,$yLine,$des);
         $yLine++;
-        $worksheet->write($iLine,$yLine,$protData{$modProtID}[5]);
+        $worksheet->write($iLine,$yLine,$species);
         $iLine++;
         $yLine=0;
     }
     exit;
+}
+
+
+sub fetchProteinsFromDimFile { # GLOBALS: $dbh,$pathToFile,$isPtmQuantif,%ptmUsed
+	my ($dim,$siteDisplayFormat,$refProtData,$refSelList)=@_;
+	
+	###>Get PTM info if any<###
+	my %quantifModifInfo;
+	if ($isPtmQuantif) {
+		my @quantifModifs=keys %ptmUsed;
+		&promsQuantif::getQuantifModificationInfo($dbh,\@quantifModifs,\%quantifModifInfo);
+	}
+
+    my %protIdList;
+    my $oldSingleModID=(keys %ptmUsed)[0]; # in case of old single PTM-site format
+
+    my $protFile="$pathToFile/quantifProtDim$dim";
+    $protFile.=($pcaType eq 'quantif_sc')? '_sc.txt' : '.txt';
+    open(DATA,$protFile);
+    while (<DATA>) {
+        #next if $.==1;
+        chomp;
+        my ($modProtID,$correl,$pValue)=split(/\t/,$_);
+        next unless $modProtID;
+		my ($protID,$modStrg)=split('-',$modProtID); # modCode is null for whole protein quantif
+        if ($modStrg && $modStrg !~ /^\d+:/) {
+			$modStrg=$oldSingleModID.':'.$modStrg;
+			$modProtID=$protID.'-'.$modStrg;
+		}
+		next if ($refSelList && !$refSelList->{$modProtID});
+		push @{$protIdList{$protID}},$modStrg; # undef for protein quantif
+		$correl=sprintf "%.3f",$correl;
+        $pValue=sprintf "%.1e",$pValue;
+		@{$refProtData->{$modProtID}}=(undef,$correl,$pValue); # [0] for future aias
+    }
+    close DATA;
+	
+	if (scalar keys %protIdList > 0) {
+		my $protIdStrg=join(',',keys %protIdList);
+		my ($GNidentID)=$dbh->selectrow_array("SELECT ID_IDENTIFIER FROM IDENTIFIER WHERE CODE='GN'");
+		my $sthProtInfo=$dbh->prepare("SELECT P.ID_PROTEIN,ALIAS,MW,PROT_DES,ORGANISM,GROUP_CONCAT(DISTINCT MI.VALUE ORDER BY RANK SEPARATOR ',')
+										FROM PROTEIN P
+										LEFT JOIN MASTERPROT_IDENTIFIER MI ON P.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN AND MI.ID_IDENTIFIER=$GNidentID
+										WHERE P.ID_PROTEIN IN ($protIdStrg) GROUP BY P.ID_PROTEIN");
+		$sthProtInfo->execute;
+		while (my ($protID,$alias,$mw,$des,$species,$geneStrg)=$sthProtInfo->fetchrow_array) {
+			$alias=~s/ .*//; # Clean protein alias from badly parsed characters in case identifier conversion
+			$alias=~s/[,;']/\./g; # Clean MaxQuant crappy contaminant identifiers
+			$mw=sprintf "%.1f",$mw/1000;
+			my @geneList=($geneStrg)? split(',',$geneStrg) : ();
+			foreach my $modCode (@{$protIdList{$protID}}) {
+				my $modProtID=$protID;
+				my $protLabel=$alias;
+				if ($modCode) {
+					my ($formatCode,$displayCode)=&promsQuantif::formatProteinModificationSites($modCode,\%quantifModifInfo,$siteDisplayFormat);
+					$protLabel.='-'.$displayCode;
+					$modProtID.='-'.$modCode;
+				}
+				$refProtData->{$modProtID}[0]=$protLabel;
+				push @{$refProtData->{$modProtID}},($mw,$des,$species,\@geneList);
+			}
+		}
+		$sthProtInfo->finish;
+	}
 }
 
 sub sortSigProteins {
@@ -1816,6 +1906,10 @@ sub displayFull3D {
 }
 
 ####>Revision history<####
+# 1.2.6 [ENHANCEMENT] Better management of quantification parameters for ajaxListProt (PP 07/01/20)
+# 1.2.5 [BUGFIX] in SQL query requiring GROUP_CONCAT for TARGET_POS & [UX] Smooth scroll to list of proteins (PP 20/11/19)
+# 1.2.4 [ENHANCEMENT] Multi-site support (PP 28/10/19)
+# 1.2.3 [ENHANCEMENT] Integrates R generated density plot (count normalized) as quality representation of imputed quantification values (VS 14/10/19)
 # 1.2.2 Used local version of plotly-gl3d-1.47.4.min.js (PP 24/05/19)
 # 1.2.1 check number of dimension to skip warning (SL 11/01/19)
 # 1.2.0 Added full 3D view with plotly.js & avoid asynchronous ajax (PP 17/12/18)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 #############################################################################
-# startGOQuantiAnalysis.cgi    1.3.0                                        #
+# startGOQuantiAnalysis.cgi    1.3.1                                        #
 # Authors: P. Poullet, G. Arras, F. Yvon & S. Liva (Institut Curie)         #
 # Contact: myproms@curie.fr                                                 #
 # Setting heatmap GO enrichment test parameters and performing it           #
@@ -645,7 +645,8 @@ print qq
 		<TR>
 			<TH valign='top' align='right'>&nbsp;&nbsp;Protein filtering : </TH><TD bgcolor=$lightColor>
 					&bull;At least <INPUT type='text' name="minPep" value="$minPep" size=2 onchange="updateThreshold();"> quantified peptide(s)/$proteinStrg<BR>
-					&bull;Ratio p-value &le;<INPUT type="text" name="ratioPvalue" id="ratioPvalue" size=3 value="$maxPvalue" onchange="updateThreshold();">&nbsp;<I>(use <B>1</B> for no threshold)</I>
+					&bull;Ratio p-value &le;<INPUT type="text" name="ratioPvalue" id="ratioPvalue" size=3 value="$maxPvalue" onchange="updateThreshold();">&nbsp;<I>(use <B>1</B> for no threshold)</I><br/>
+                    &bull;Restrict to List: <SELECT name="restrictList">$categoryStrg</SELECT>
 			</TD>
         </TR>
         <TR>
@@ -826,20 +827,6 @@ sub processForm {
 <FONT class=\"title3\">
 |;
 
-	############################################################
-	####>Converting sites to proteins (in case PTM quantif)<####
-	############################################################
-	my %protInBins;
-	foreach my $protID0 (keys %{$quantifValues{$quantif}}) {
-		(my $protID=$protID0)=~s/-.+//;
-        my $currentBin = ($quantifValues{$quantif}{$protID0}{RATIO} <= $thrLogRatios[0])? 0 :
-                        ($quantifValues{$quantif}{$protID0}{RATIO} <= $thrLogRatios[1])? 1 :
-                        ($quantifValues{$quantif}{$protID0}{RATIO} < $thrLogRatios[2])? 2 :
-                        ($quantifValues{$quantif}{$protID0}{RATIO} < $thrLogRatios[3])? 3 : 4;
-		$protInBins{$protID}{$currentBin}=1; # only 1 bin for prot quantif BUT can be >1 for site quantif
-	}
-    my $protCount = scalar keys %protInBins; # %{$quantifValues{$quantif}}
-
     #------------------#
     # Parsing OBO file #
     #------------------#
@@ -863,12 +850,6 @@ sub processForm {
     goAnalysis::correctAnnotationForSlim($dbh, $annotation, \%ontologies, [$aspect]);
     print " Done.<BR>\n";
 
-    #-----------------------------------#
-    # Creating master GO analysis in DB #
-    #-----------------------------------#
-    my $masterParamStrg = "criteria=$criteria;threshold=$threshold;method=$method;aspect=$aspect;depth=$depth;$bckgPop;minPep=$minPep;logRatios=" . join(',', @thrLogRatios) . ';';
-    $masterParamStrg .= "ratioPvalue=$maxPvalue;numProtSel=$protCount;";
-	$masterParamStrg .= "numSiteSel=".(scalar keys %{$quantifValues{$quantif}}).';' if $modifQuantifID;
     my $sthGetExp;
     $sthGetExp = $dbh->prepare("SELECT ID_EXPERIMENT FROM DESIGN D,QUANTIFICATION Q WHERE D.ID_DESIGN=Q.ID_DESIGN AND ID_QUANTIFICATION=?");
     $sthGetExp->execute($quantiID);
@@ -886,16 +867,6 @@ sub processForm {
 		die "Unsupported quantification method" unless $expID;
     }
 
-    my $userID = $ENV{'REMOTE_USER'};
-    my $sthInsGOAna = $dbh->prepare("INSERT INTO GO_ANALYSIS (ID_EXPERIMENT,ID_ONTOLOGY,ID_GOANNOTATION,ID_PARENT_GOANA,NAME,DES,GOA_TYPE,ASPECT,PARAM_STRG,UPDATE_DATE,UPDATE_USER) VALUES (?,?,?,?,?,?,?,?,?,NOW(),?)");
-    $sthInsGOAna->execute($expID,$oboID,$goaID,undef,$name,$description,'heatmap',$aspect,$masterParamStrg,$userID);
-    my $masterID = $dbh->last_insert_id(undef, undef, 'GO_ANALYSIS', 'ID_GOANALYSIS');
-
-    # and storing density plot image #
-    mkdir "$promsPath{go_unix}/project_$projectID" unless -d "$promsPath{go_unix}/project_$projectID";
-    mkdir "$promsPath{go_unix}/project_$projectID/$masterID";
-    move("$promsPath{tmp}/GO/$tmpDir/densityPlot.png", "$promsPath{go_unix}/project_$projectID/$masterID/densityPlot.png");
-
     #-------------------#
     # Creating children #
     #-------------------#
@@ -907,6 +878,46 @@ sub processForm {
     $identifierID = 0 unless $identifierID;
 	my $sthAlias = $dbh->prepare("SELECT ALIAS FROM PROTEIN WHERE ID_PROTEIN=?");
 
+    #------------------------------#
+    # Fetching foreground proteins #
+    #------------------------------#
+    my $sthListProt = $dbh->prepare("SELECT DISTINCT P.ID_PROTEIN,P.IDENTIFIER
+                                    FROM CATEGORY_PROTEIN CP,PROTEIN P,ANALYSIS_PROTEIN AP,ANALYSIS A,SAMPLE S
+                                    WHERE CP.ID_PROTEIN=P.ID_PROTEIN
+                                    AND P.ID_PROTEIN=AP.ID_PROTEIN
+                                    AND AP.ID_ANALYSIS=A.ID_ANALYSIS
+                                    AND A.ID_SAMPLE = S.ID_SAMPLE
+                                    AND CP.ID_CATEGORY=? AND S.ID_EXPERIMENT=$expID");
+    
+    
+    print "# Fetching foregroung proteins...<br/>\n";
+    my %protIDs; # ${uniprot} = DB_ID
+    if(param('restrictList') && param('restrictList') != 0) {
+		print "## Fetching protein set from Custom List...<br/>\n";
+        my $catID = param('restrictList');
+        $sthListProt->execute($catID);
+		while(my ($protID, $protName) = $sthListProt->fetchrow_array){
+            $protIDs{$protID} = $protName;
+		}
+    }
+    $sthListProt->finish;
+
+	############################################################
+	####>Converting sites to proteins (in case PTM quantif)<####
+	############################################################
+	my %protInBins;
+	foreach my $protID0 (keys %{$quantifValues{$quantif}}) {
+		(my $protID=$protID0)=~s/-.+//;
+        if(!param('restrictList') || (param('restrictList') && defined $protIDs{$protID})) {
+            my $currentBin = ($quantifValues{$quantif}{$protID0}{RATIO} <= $thrLogRatios[0])? 0 :
+                            ($quantifValues{$quantif}{$protID0}{RATIO} <= $thrLogRatios[1])? 1 :
+                            ($quantifValues{$quantif}{$protID0}{RATIO} < $thrLogRatios[2])? 2 :
+                            ($quantifValues{$quantif}{$protID0}{RATIO} < $thrLogRatios[3])? 3 : 4;
+            $protInBins{$protID}{$currentBin}=1; # only 1 bin for prot quantif BUT can be >1 for site quantif
+        }
+	}
+    my $protCount = scalar keys %protInBins; # %{$quantifValues{$quantif}}
+    
 	foreach my $protID (keys %protInBins) {
 		$sthAlias->execute($protID);
 		my ($protAlias)=$sthAlias->fetchrow_array;
@@ -931,6 +942,23 @@ sub processForm {
 	}
 	$sthAlias->finish;
 
+    #-----------------------------------#
+    # Creating master GO analysis in DB #
+    #-----------------------------------#
+    my $masterParamStrg = "criteria=$criteria;threshold=$threshold;method=$method;aspect=$aspect;depth=$depth;$bckgPop;minPep=$minPep;logRatios=" . join(',', @thrLogRatios) . ';';
+    $masterParamStrg .= "ratioPvalue=$maxPvalue;numProtSel=$protCount;";
+	$masterParamStrg .= "numSiteSel=".(scalar keys %{$quantifValues{$quantif}}).';' if $modifQuantifID;
+    
+    my $userID = $ENV{'REMOTE_USER'};
+    my $sthInsGOAna = $dbh->prepare("INSERT INTO GO_ANALYSIS (ID_EXPERIMENT,ID_ONTOLOGY,ID_GOANNOTATION,ID_PARENT_GOANA,NAME,DES,GOA_TYPE,ASPECT,PARAM_STRG,UPDATE_DATE,UPDATE_USER) VALUES (?,?,?,?,?,?,?,?,?,NOW(),?)");
+    $sthInsGOAna->execute($expID,$oboID,$goaID,undef,$name,$description,'heatmap',$aspect,$masterParamStrg,$userID);
+    my $masterID = $dbh->last_insert_id(undef, undef, 'GO_ANALYSIS', 'ID_GOANALYSIS');
+
+    # and storing density plot image #
+    mkdir "$promsPath{go_unix}/project_$projectID" unless -d "$promsPath{go_unix}/project_$projectID";
+    mkdir "$promsPath{go_unix}/project_$projectID/$masterID";
+    move("$promsPath{tmp}/GO/$tmpDir/densityPlot.png", "$promsPath{go_unix}/project_$projectID/$masterID/densityPlot.png");
+    
 	#foreach my $protID0 (keys %{$quantifValues{$quantif}}) {
 	#	(my $protID=$protID0)=~s/-.+//;
 	#	unless ($protAlias{$protID}) {
@@ -971,10 +999,9 @@ sub processForm {
     # Population #
     #------------#
     my @population=(); # if left empty, then all annotated genes is defined as population by GO::TermFinder
-    print "# Fetching background proteins...\n";
+    print "# Fetching background proteins...<br/>\n";
     if (param('chPopSource') eq 'category') {
 		my $categoryID = param('population');
-		print "Fetching background proteins...\n";
 		my $sthProt = $dbh->prepare("SELECT CATEGORY_PROTEIN.ID_PROTEIN,IDENTIFIER FROM CATEGORY_PROTEIN,PROTEIN WHERE ID_CATEGORY=$categoryID
 						AND CATEGORY_PROTEIN.ID_PROTEIN=PROTEIN.ID_PROTEIN");
 		$sthProt->execute;
@@ -1212,6 +1239,7 @@ exit;
 #}
 
 ####>Revision history
+# 1.3.1 Add foreground filtering option (VS 08/01/20)
 # 1.3.0 Compatible with PTM quantification (PP 27/07/18)
 # 1.2.0 Move tempDir for density plot inside $promsPath{tmp}/GO & added old tempDir clean up with promsMod::cleanDirectory (PP 06/02/18)
 # 1.1.0 add cluster function from displayGOQuantiAnalysis (SL 02/12/14)

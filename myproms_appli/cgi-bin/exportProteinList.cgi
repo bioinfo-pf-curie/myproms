@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# exportProteinList.cgi        2.4.3	                                       #
+# exportProteinList.cgi        2.5.2	                                       #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Exports a list of proteins in MS Excel or HTML format                        #
@@ -45,15 +45,16 @@ use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI ':standard';
 use Encode 'decode_utf8';
 #use utf8; # needed only if utf8 char from script itself must be printed to Excel
+use POSIX qw(strftime);
 use Archive::Zip;
 use Spreadsheet::WriteExcel;
 use promsConfig;
 use promsMod;
+use promsQuantif;
 use phosphoRS;
 use XML::Simple;
-use Storable 'dclone';
+#use Storable 'dclone';
 use strict;
-use Data::Dumper;
 
 #print header; warningsToBrowser(1); # DEBUG
 #######################
@@ -61,14 +62,16 @@ use Data::Dumper;
 #######################
 my %promsPath=&promsConfig::getServerInfo;
 my ($color1,$color2)=&promsConfig::getRowColors;
+my $userID=$ENV{'REMOTE_USER'};
 
 #################################
 ####>Connect to the database<####
 #################################
 my $dbh=&promsConfig::dbConnect;
 
-if(param('ACT') && param('ACT') eq 'export') {
-	exportAnalysis(); exit;
+if (param('ACT')) {
+	if (param('ACT') eq 'export') {&exportAnalysisFiles; exit;}
+	elsif (param('ACT') eq 'download') {&downloadFile; exit;}
 }
 
 ####################
@@ -84,16 +87,17 @@ if (param('AJAX')) {
 my $projectID=param('projectID');
 my $listMode=param('listMode'); # not defined after submit
 my $classificationID=(!$listMode)? param('classID') : ($listMode=~/classification:(\d+)/)? $1 : ($listMode eq 'raw')? -1 : 0; # converts new list prot option to old classification
+my $restrictListID=param('restrictList') || 0; # exclusion/selection List ID
+my $listAction=param('listAction') || 'restrict';
 my $view=(param('view'))? param('view') : 'pepAll'; # depth=analysis by default
 
 ##>Global variables<##
-my (%listProteins,%classProteins); # global because of listItemProteins subroutine
+my (%listProteins,%classProteins,%restrictProteins); # global because of listItemProteins subroutine
 my (%bestScore,%numPeptides,%pepCoverage,%timesFound,%proteinGeneSymbol,%protSpecificity,%protPSM); # global because of sort subroutine
 #my %fontSize=('PROJECT'=>'24px','EXPERIMENT'=>'20px','GEL2D'=>'17px','SPOT'=>'15px','SAMPLE'=>'15px','ANALYSIS'=>'13px','TITLE'=>'28px','CATEGORY'=>'20px','COMMENTS'=>'11px');
 my (%fontSize,@selColName,@selPepColName,@protColumns,@numPepColumns,@checkPosDef,@mappingColumns,%mappingColURLs,%protIdentifierLinks,%mappingLinks);
-my ($exportFormat,$colSpan,$rowSpan,$colSpanNumPep,$colSpanPep,$badConfidence,$ghostProteins,$geneSymbolPos,$geneNamePos,$mwColPos,$newLine);
+my ($exportFormat,$colSpan,$rowSpan,$colSpanNumPep,$colSpanPep,$badConfidence,$ghostProteins,$geneSymbolPos,$geneNamePos,$mwColPos,$newLine,$restrictThemeID);
 my ($workbook,$worksheet,$worksheet2,%format,%itemFormat,@columnSizes,$xlsRow,$rowColor1,$rowColor2);
-my ($prsOutputFile);
 my %relevantPTMs;
 
 ##################
@@ -103,9 +107,18 @@ my ($itemName,$itemDes)=$dbh->selectrow_array("SELECT NAME,DES FROM $ITEM WHERE 
 ($itemDes)=&promsMod::chkDef($itemDes);
 
 ####>Fetching list of classifications<####
-my %classificationList=&promsMod::getListClass($dbh,$projectID);
-# @{$classificationList{-1}}=('Raw list');
-@{$classificationList{0}}=('Project hierarchy');
+#my %classificationList=&promsMod::getListClass($dbh,$projectID);
+#$classificationList{0}='Project hierarchy';
+my $sthL=$dbh->prepare("SELECT T.ID_CLASSIFICATION,T.NAME,L.ID_CATEGORY,L.NAME,L.DISPLAY_POS,LIST_TYPE FROM CLASSIFICATION T,CATEGORY L WHERE T.ID_CLASSIFICATION=L.ID_CLASSIFICATION AND T.ID_PROJECT=$projectID");
+$sthL->execute;
+my (%customList,%classificationList);
+while (my ($themeID,$themeName,$listID,$listName,$listPos,$type)=$sthL->fetchrow_array) {
+	$type='PROT' unless $type;
+	$classificationList{$themeID}=$themeName;
+	@{$customList{$themeID}{$listID}}=($listName,$listPos,$type);
+	$restrictThemeID=$themeID if ($restrictListID && $restrictListID==$listID);
+}
+$sthL->finish;
 
 ####>Fetching list of identifier mappings<####
 my %identifierCodes;
@@ -118,7 +131,7 @@ while (my ($code,$identName,$resrcName,$resrcURL,$identID)=$sthI->fetchrow_array
 $sthI->finish;
 
 ####>Processing Form<####
-&exportList if param('export');
+&exportProteinList if param('export');
 
 $dbh->disconnect;
 
@@ -134,10 +147,7 @@ print qq
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
 <STYLE type="text/css">
 .{font-weight:bold;}
-.notMapped{color:#555555; text-decoration:line-through}
-
-
-
+.notMapped{color:#555555; text-decoration:line-through;}
 #varMod {
 	display: inline-block;
     position: relative;
@@ -146,7 +156,7 @@ print qq
     margin-bottom: 2px;
 }
 </STYLE>
-<SCRIPT LANGUAGE="JavaScript">
+<SCRIPT type="text/javascript">
 |;
 &promsMod::popupInfo();
 print qq
@@ -207,87 +217,93 @@ function getXMLHTTP() {
 }
 // <--- AJAX
 function chooseClass(classID) {
-	if (classID>0) {
+	var myForm=document.exportForm;
+	if (classID > 0) {
 		document.getElementById('itemSpan').style.display='none';
-		document.getElementById('catSpan').style.display='block';
-		document.exportForm.depth.disabled=true;
-		document.exportForm.unclass.disabled=false;
+		document.getElementById('catSpan').style.display='';
+		myForm.depth.disabled=true;
+		myForm.listAction.disabled=true;
+		myForm.restrictList.disabled=true;
+		myForm.unclass.disabled=false;
 		if ('$item'=='analysis') {
-			document.exportForm.sel_matchGr.disabled=false;
+			myForm.sel_matchGr.disabled=false;
 		}
 		else {
-			document.exportForm.sel_times.disabled=false;
-			document.exportForm.sel_matchGr.disabled=true;
-			document.exportForm.sel_cumPepAll.disabled=false;
-			document.exportForm.sel_cumPepNr.disabled=false;
-			document.exportForm.sel_cumCov.disabled=false;
-			document.exportForm.sel_bestSpec.disabled=false;
-			document.exportForm.sel_cumSeqPep.disabled=false;
+			myForm.sel_times.disabled=false;
+			myForm.sel_matchGr.disabled=true;
+			myForm.sel_cumPepAll.disabled=false;
+			myForm.sel_cumPepNr.disabled=false;
+			myForm.sel_cumCov.disabled=false;
+			myForm.sel_bestSpec.disabled=false;
+			myForm.sel_cumSeqPep.disabled=false;
 		}
 		top.promsFrame.selectedMode='classification:'+classID; // update promsFrame variable
 	}
 	else { // project hierarchy
 		document.getElementById('catSpan').style.display='none';
-		document.getElementById('itemSpan').style.display='block';
-		document.exportForm.depth.disabled=false;
-		document.exportForm.unclass.disabled=true;
-		if (document.exportForm.depth.value == 'analysis') {
-			document.exportForm.sel_times.disabled=true;
-			document.exportForm.sel_matchGr.disabled=false;
-			document.exportForm.sel_cumPepAll.disabled=true;
-			document.exportForm.sel_cumPepNr.disabled=true;
-			document.exportForm.sel_cumCov.disabled=true;
-			document.exportForm.sel_bestSpec.disabled=true;
-			document.exportForm.sel_cumSeqPep.disabled=true;
-			if (document.exportForm.view.value.match('cum') \|\| document.exportForm.view.value=='times_found') {
-				document.exportForm.view.selectedIndex=0;
+		document.getElementById('itemSpan').style.display='';
+		myForm.depth.disabled=false;
+		myForm.listAction.disabled=false;
+		myForm.restrictList.disabled=false;
+		myForm.unclass.disabled=true;
+		if (myForm.depth.value == 'analysis') {
+			myForm.sel_times.disabled=true;
+			myForm.sel_matchGr.disabled=false;
+			myForm.sel_cumPepAll.disabled=true;
+			myForm.sel_cumPepNr.disabled=true;
+			myForm.sel_cumCov.disabled=true;
+			myForm.sel_bestSpec.disabled=true;
+			myForm.sel_cumSeqPep.disabled=true;
+			if (myForm.view.value.match('cum') \|\| myForm.view.value=='times_found') {
+				myForm.view.selectedIndex=0;
 			}
 		}
 		else {
-			document.exportForm.sel_matchGr.disabled=true;
+			myForm.sel_matchGr.disabled=true;
 		}
 		top.promsFrame.selectedMode=('$item'=='analysis')? 'raw' : 'child'; // no need to update promsFrame variable...?
 	}
 }
 function chooseDepth(depth) {
+	var myForm=document.exportForm;
 	if (depth=='analysis') {
-		document.exportForm.sel_times.disabled=true;
-		document.exportForm.sel_matchGr.disabled=false;
-		document.exportForm.sel_cumPepAll.disabled=true;
-		document.exportForm.sel_cumPepNr.disabled=true;
-		document.exportForm.sel_cumCov.disabled=true;
-		document.exportForm.sel_bestSpec.disabled=true;
-		document.exportForm.sel_cumSeqPep.disabled=true;
+		myForm.sel_times.disabled=true;
+		myForm.sel_matchGr.disabled=false;
+		myForm.sel_cumPepAll.disabled=true;
+		myForm.sel_cumPepNr.disabled=true;
+		myForm.sel_cumCov.disabled=true;
+		myForm.sel_bestSpec.disabled=true;
+		myForm.sel_cumSeqPep.disabled=true;
 		// just in case...
-		if (document.exportForm.view.value.match('cum') \|\| document.exportForm.view.value=='times_found') {
-			document.exportForm.view.selectedIndex=0;
+		if (myForm.view.value.match('cum') \|\| myForm.view.value=='times_found') {
+			myForm.view.selectedIndex=0;
 		}
-		if (document.exportForm.sel_cumSeqPep.checked==true) {
-			document.exportForm.sel_cumSeqPep.checked=false;
-			document.exportForm.sel_seqPep.disabled=false;
-			document.exportForm.sel_modPep.disabled=true;
-			document.exportForm.sel_modPepProt.disabled=true;
-			document.exportForm.sel_etPep.disabled=true;
-			document.exportForm.sel_posPep.disabled=true;
-			document.exportForm.sel_flkPep.disabled=true;
-			document.exportForm.sel_occPep.disabled=true;
-			document.exportForm.sel_isSpec.disabled=true;
-			document.exportForm.sel_scorePep.disabled=true;
-			document.exportForm.sel_qvalPep.disabled=true;
-			document.exportForm.sel_chargePep.disabled=true;
-			document.exportForm.sel_massPep.disabled=true;
-			document.exportForm.sel_titlePep.disabled=true;
+		if (myForm.sel_cumSeqPep.checked==true) {
+			myForm.sel_cumSeqPep.checked=false;
+			myForm.sel_seqPep.disabled=false;
+			myForm.sel_modPep.disabled=true;
+			myForm.sel_modPepProt.disabled=true;
+			myForm.sel_etPep.disabled=true;
+			myForm.sel_posPep.disabled=true;
+			myForm.sel_flkPep.disabled=true;
+			myForm.sel_occPep.disabled=true;
+			myForm.sel_isSpec.disabled=true;
+			myForm.sel_scorePep.disabled=true;
+			myForm.sel_qvalPep.disabled=true;
+			myForm.sel_chargePep.disabled=true;
+			myForm.sel_massPep.disabled=true;
+			myForm.sel_titlePep.disabled=true;
 		}
 	}
 	else {
-		document.exportForm.sel_times.disabled=false;
-		document.exportForm.sel_matchGr.disabled=true;
-		document.exportForm.sel_cumPepAll.disabled=false;
-		document.exportForm.sel_cumPepNr.disabled=false;
-		document.exportForm.sel_cumCov.disabled=false;
-		document.exportForm.sel_bestSpec.disabled=false;
-		//if (document.exportForm.sel_cumSeqPep.checked==true \|\| document.exportForm.sel_seqPep.checked==false) {
-			document.exportForm.sel_cumSeqPep.disabled=false;
+		myForm.sel_times.disabled=false;
+		myForm.sel_matchGr.disabled=true;
+		myForm.sel_cumPepAll.disabled=false;
+		myForm.sel_cumPepNr.disabled=false;
+		myForm.sel_cumCov.disabled=false;
+		myForm.sel_bestSpec.disabled=false;
+		//if (myForm.sel_cumSeqPep.checked==true \|\| myForm.sel_seqPep.checked==false) {
+			myForm.sel_cumSeqPep.disabled=false;
 		//}
 	}
 }
@@ -342,7 +358,7 @@ var checkedView;
 var reportWin;
 </SCRIPT>
 </HEAD>
-<BODY background='$promsPath{images}/bgProMS.gif' onload="chooseView('$view')">
+<BODY background="$promsPath{images}/bgProMS.gif" onload="chooseView('$view')">
 <CENTER>
 <FONT class="title">Export Proteins Contained in <FONT color="#DD0000">$itemName</FONT></FONT>
 <BR><BR>
@@ -352,8 +368,8 @@ var reportWin;
 <INPUT type="hidden" name="projectID" value="$projectID">
 <TABLE align=center border=0 bgcolor="$color2" cellpadding=0 cellspacing=10>
 <TR><TD colspan=4><TABLE width=100% border=0>
-<TR><TD align=right><FONT style="font-size:20px;">Focus:</FONT></TD>
-<TD><SELECT name="classID" onchange="chooseClass(this.value)" style="font-size:18px;">
+<TR><TD align=right><FONT class="title2">Focus:</FONT></TD>
+<TD colspan=3 nowrap><SELECT name="classID" onchange="chooseClass(this.value)" style="font-size:18px;">
 |;
 # my $selString=(==-1)? 'selected' : '';
 # print "<OPTION value=-1 $selString>Raw list</OPTION>\n";
@@ -362,18 +378,18 @@ print qq
 |<OPTION value=0 $selString>Project hierarchy</OPTION>
 <OPTGROUP label="Themes:">
 |;
-foreach my $classID (sort{lc($classificationList{$a}[0]) cmp lc($classificationList{$b}[0])} keys %classificationList){
-	next if $classID<=0; # raw list, proj hierarchy
-	$selString=($classificationID==$classID)? 'selected' : '';
-	print "<OPTION value=$classID $selString>$classificationList{$classID}[0]</OPTION>\n";
+foreach my $themeID (sort{lc($classificationList{$a}) cmp lc($classificationList{$b})} keys %classificationList){
+	next if $themeID<=0; # raw list, proj hierarchy
+	$selString=($classificationID==$themeID)? 'selected' : '';
+	print "<OPTION value=\"$themeID\" $selString>$classificationList{$themeID}</OPTION>\n";
 }
-print "</OPTGROUP></SELECT></TD></TR>\n";
+print "</OPTGROUP></SELECT>\n";
 
 ##>Expand tree options
-my ($visItemSpan,$visCatSpan,$disabledString1)=($classificationID>0)? ('none','block','disabled') : ('block','none','');
-print "<TR><TD align=right><FONT style=\"font-size:18px;\">Display:</FONT></TD>\n";
+my ($visItemSpan,$visCatSpan,$disabledString1)=($classificationID>0)? ('none','','disabled') : ('','none','');
+print "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<FONT class=\"title2\">Depth:</FONT>&nbsp;";
 my $itemOK=0;
-print "<TD nowrap><SPAN id=\"itemSpan\" style=\"display:$visItemSpan\"><SELECT name=\"depth\" onchange=\"chooseDepth(this.value)\" $disabledString1>\n";
+print "<SPAN id=\"itemSpan\" style=\"display:$visItemSpan\"><SELECT name=\"depth\" style=\"font-size:18px;\" onchange=\"chooseDepth(this.value)\" $disabledString1>\n";
 foreach my $it ('project','experiment','gel2d sample','spot','analysis') {
 	next if ($item eq 'sample' && $it eq 'spot');
 	my $rawString='';
@@ -389,6 +405,23 @@ foreach my $it ('project','experiment','gel2d sample','spot','analysis') {
 	print ">$itemStrg$extraTxt$rawString</OPTION>\n";
 }
 print "</SELECT><SUP>*</SUP></SPAN><SPAN id=\"catSpan\" style=\"display:$visCatSpan\"><FONT style=\"font-size:18px;\">Custom Lists ",&promsMod::getItemType($item),"</FONT><SUP>*</SUP></SPAN></TD></TR>\n";
+
+##>Restrict/exclude List option
+print qq
+|<TR><TD align=right nowrap><SPAN id="listActSpan">
+	<SELECT name="listAction" class="title3"><OPTION value="restrict">Restrict to</OPTION><OPTION value="exclude">Exclude</OPTION></SELECT><FONT class="title3">:</FONT></SPAN>
+	</TD>
+	<TD><SELECT name="restrictList" class="title3"><OPTION value="0">-= No List filtering =-</OPTION>
+|;
+foreach my $themeID (sort{lc($classificationList{$a}) cmp lc($classificationList{$b})} keys %classificationList){
+	print "<OPTGROUP label=\"$classificationList{$themeID}\">\n";
+	foreach my $listID (sort{lc($customList{$themeID}{$a}[1]) cmp lc($customList{$themeID}{$b}[1])} keys %{$customList{$themeID}}) {
+		my $typeStrg=($customList{$themeID}{$listID}[2] eq 'SITE')? ' [Sites]' : '';
+		print "<OPTION value=\"$listID\">$customList{$themeID}{$listID}[0]$typeStrg</OPTION>\n";
+	}
+	print "</OPTGROUP>\n";
+}
+print "</SELECT></TD>\n";
 
 ##>Sort options
 my %viewOptions=(
@@ -407,8 +440,8 @@ if ($item ne 'analysis') {
 	@{$viewOptions{11}}=('cumPepAll','All peptides in displayed Item');
 	@{$viewOptions{12}}=('cumPepNr','Distinct peptides in displayed Item');
 }
-print "<TR><TD align=right><FONT style=\"font-size:18px;\">Sort proteins by:</FONT></TD>\n";
-print "<TD><SELECT name=\"view\" onchange=\"chooseView(this.value)\">\n";
+print "<TD align=right nowrap><FONT class=\"title3\">&nbsp;Sort proteins by:</FONT></TD>\n";
+print "<TD><SELECT name=\"view\" class=\"title3\" onchange=\"chooseView(this.value)\">\n";
 print "<OPTION value=''>-=Select a sort option=-</OPTION>\n"; # used if currently selected option is no longer compatible with form
 foreach my $sortRank (sort{$a<=>$b} keys %viewOptions){
 	my $selString=($viewOptions{$sortRank}[0] eq $view)? 'selected' : '';
@@ -526,7 +559,7 @@ sub checkMapping {
 
 	my @sthAI;
 	if ($ITEM eq 'PROJECT') {
-		$sthAI[0]=$dbh->prepare("SELECT DISTINCT ID_IDENTIFIER FROM MASTERPROT_IDENTIFIER MI,PROTEIN P,ANALYSIS_PROTEIN AP WHERE AP.ID_PROTEIN=P.ID_PROTEIN AND P.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN AND VISIBILITY>=1 AND ID_PROJECT=$itemID");
+		$sthAI[0]=$dbh->prepare("SELECT DISTINCT ID_IDENTIFIER FROM MASTERPROT_IDENTIFIER MI INNER JOIN ROTEIN P ON AP.ID_PROTEIN=P.ID_PROTEIN INNER JOIN ANALYSIS_PROTEIN AP ON P.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN INNER JOIN EXPERIMENT E ON E.ID_PROJECT=$itemID WHERE VISIBILITY>=1 AND P.ID_PROJECT=$itemID AND E.ID_EXPERIMENT NOT IN (SELECT E2.ID_EXPERIMENT FROM EXPERIMENT E2 INNER JOIN USER_EXPERIMENT_LOCK EU ON EU.ID_EXPERIMENT=E2.ID_EXPERIMENT WHERE E2.ID_PROJECT=$itemID AND EU.ID_USER='$userID')");
 	}
 	elsif ($ITEM eq 'EXPERIMENT') {
 		$sthAI[0]=$dbh->prepare("SELECT DISTINCT ID_IDENTIFIER FROM MASTERPROT_IDENTIFIER MI,PROTEIN P,ANALYSIS_PROTEIN AP,ANALYSIS A,SAMPLE S WHERE AP.ID_PROTEIN=P.ID_PROTEIN AND P.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN AND VISIBILITY>=1 AND AP.ID_ANALYSIS=A.ID_ANALYSIS AND A.ID_SAMPLE=S.ID_SAMPLE AND S.ID_SPOT IS NULL AND ID_EXPERIMENT=$itemID");
@@ -563,7 +596,35 @@ sub checkMapping {
 ######################################################
 ####<<<Processing Form: Exporting List to Excel>>>####
 ######################################################
-sub exportList {
+sub exportProteinList {
+	
+	#######################
+	####<Starting HTML>####
+	#######################
+	print header(-'content-encoding'=>'no',-charset=>'utf-8');
+	warningsToBrowser(1);
+	print qq
+|<HTML>
+<HEAD>
+<TITLE>Exporting data files</TITLE>
+<LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
+</HEAD>
+<BODY background="$promsPath{images}/bgProMS.gif">
+<CENTER>
+<FONT class="title">Exporting protein data from <FONT color="#DD0000">$itemName</FONT></FONT>
+<BR><BR>
+<DIV id="waitDIV">
+<BR><BR><BR><BR><BR><FONT class="title3">Fetching data...</FONT><BR><IMG src="$promsPath{images}/scrollbarGreen.gif">
+<BR><BR><FONT class="title3">Status:&nbsp;<SPAN id="waitSPAN"><SPAN>...</FONT>
+</DIV>
+|;
+	
+	###>Config<####
+	mkdir "$promsPath{tmp}/scratch" unless -d "$promsPath{tmp}/scratch";
+	my $exportDir="$promsPath{tmp}/scratch/export";
+	&promsMod::cleanDirectory($exportDir,'15m');
+	my $jobID=strftime("%Y%m%d%H%M%S",localtime).'_'.$userID;
+	
 	if (param('sel_protVmod')) {
 		my %allPostTransModifs=&promsMod::getVariableModifications($dbh);
 		my $sthGetPM=$dbh->prepare("SELECT ID_MODIFICATION FROM PROJECT_MODIFICATION WHERE ID_PROJECT=$projectID");
@@ -574,27 +635,32 @@ sub exportList {
 	}
 
 	@mappingColumns=param('sel_mapping');
-	my ($addColMatchPeptides)=(param('sel_pepType') eq 'TYPIC')?' Proteotypic ':' ';
+	my ($addColMatchPeptides)=(param('sel_pepType') eq 'TYPIC')? ' Proteotypic ' : ' ';
 
 
-	################################
-	####<Starting EXCEL or HTML>####
-	################################
+	##################################
+	####<Writing to EXCEL or HTML>####
+	##################################
 	$exportFormat=param('expFormat');
+	my $exportFile;
 	$xlsRow=0;
 	($rowColor1,$rowColor2)=('#FFFFFF','#DDDDDD');
+	my $focusStrg=($classificationID)? $classificationList{$classificationID} : 'Project hierarchy';
 	if ($exportFormat eq 'XLS') { # EXCEL
+		$exportFile="export_protein_list_$jobID.xls";
 		$newLine="\n";
 		%fontSize=('PROJECT'=>24,'EXPERIMENT'=>20,'GEL2D'=>17,'SPOT'=>15,'SAMPLE'=>15,'ANALYSIS'=>13,'TITLE'=>28,'CATEGORY'=>20,'COMMENTS'=>11);
-		$workbook=Spreadsheet::WriteExcel->new("-");
+		$workbook=Spreadsheet::WriteExcel->new("$exportDir/$exportFile");
 		eval { # Perl 5.8 compatibility
 			$workbook->set_properties(title=>'MS-based protein identification data',
 									  author=>'myProMS server',
 									  comments=>'Automatically generated with Perl and Spreadsheet::WriteExcel'
 									  );
 		};
-		$workbook->set_custom_color(40,224,224,255); # light light color #E0E0FF
-		$workbook->set_custom_color(41,176,176,255); # dark blue color  #B0B0FF
+		#$workbook->set_custom_color(40,224,224,255); # light light color #E0E0FF
+		#$workbook->set_custom_color(41,176,176,255); # dark blue color  #B0B0FF
+		$workbook->set_custom_color(40,189,215,255); # light light color  #BDD7FF (new myProMS colors V3.5+)
+		$workbook->set_custom_color(41,128,179,255); # dark blue color  #80B3FF
 		$worksheet=$workbook->add_worksheet('Data');
 		$worksheet2=$workbook->add_worksheet('Links') if scalar @mappingColumns;
 		$itemFormat{'TITLE'}=$workbook->add_format(align=>'center',size=>$fontSize{'TITLE'},bold=>1,border=>1);
@@ -623,16 +689,19 @@ sub exportList {
 		$format{'mergeNumber1d'}=$workbook->add_format(size=>10,align=>'center',valign=>'top',num_format=>'0.0',border=>1);
 		$format{'seq'}=$workbook->add_format(align=>'left',size=>10,font=>'Monospace',valign=>'top',border=>1);
 
-		print header(-type=>"application/vnd.ms-excel",-attachment=>"$itemName ($classificationList{$classificationID}[0]).xls");
+		#print header(-type=>"application/vnd.ms-excel",-attachment=>"$itemName ($classificationList{$classificationID}).xls");
 	}
 	else { # HTML
 		$newLine='<BR>';
 		%fontSize=('PROJECT'=>'24px','EXPERIMENT'=>'20px','GEL2D'=>'17px','SPOT'=>'15px','SAMPLE'=>'15px','ANALYSIS'=>'13px','TITLE'=>'28px','CATEGORY'=>'20px','COMMENTS'=>'11px');
-		print header(-attachment=>"$itemName ($classificationList{$classificationID}[0]).html");
-		warningsToBrowser(1);
-		print qq
-|<HEAD>
-<TITLE>$itemName ($classificationList{$classificationID}[0])</TITLE>
+		#print header(-attachment=>"$itemName ($classificationList{$classificationID}).html");
+		#warningsToBrowser(1);
+		$exportFile="export_protein_list_$jobID.html";
+		open(HTML,">$exportDir/$exportFile");
+		print HTML qq
+|<HTML>
+<HEAD>
+<TITLE>$itemName ($focusStrg)</TITLE>
 <STYLE type="text/css">
 .lowConf{color:DimGray;}
 .noConf{font-style:italic;}
@@ -764,23 +833,33 @@ sub exportList {
 
 	####<Project hierarchy + Raw list>####
 	if ($classificationID == 0) {
-		if ($exportFormat eq 'XLS') {
-			$worksheet->merge_range(0,0,$xlsRow,$colSpan-1,'Project hierarchy',$itemFormat{'TITLE'});
+		my $listRestricInfo='';
+		if ($restrictListID) {
+			$listRestricInfo=($listAction eq 'restrict')? 'Restricted to' : 'Excluding';
+			$listRestricInfo.=' proteins in List '.$classificationList{$restrictThemeID}.' > '.$customList{$restrictThemeID}{$restrictListID}[0];
+			&promsQuantif::fetchCustomList($dbh,$restrictListID,\%restrictProteins,1);
 		}
-		else {print "<TR><TH colspan=$colSpan><FONT style=\"font-size:$fontSize{TITLE}\">Project hierarchy</FONT></TH></TR>\n";}
+		if ($exportFormat eq 'XLS') {
+			$listRestricInfo=' ('.$listRestricInfo.')' if $listRestricInfo;
+			$worksheet->merge_range(0,0,$xlsRow,$colSpan-1,"$focusStrg$listRestricInfo",$itemFormat{'TITLE'});
+		}
+		else {
+			$listRestricInfo="<FONT style=\"font-size:$fontSize{CATEGORY}\"> ($listRestricInfo)</FONT>" if $listRestricInfo;
+			print HTML "<TR><TH colspan=$colSpan><FONT style=\"font-size:$fontSize{TITLE}\">$focusStrg</FONT>$listRestricInfo</TH></TR>\n";
+		}
 		&displayItemContents(uc($item),$itemID,$depthITEM,'');
 	}
 	####<User-defined classification>####
 	else {
-		my ($className,$classDes)=$dbh->selectrow_array("SELECT NAME,DES FROM CLASSIFICATION WHERE ID_CLASSIFICATION=$classificationID");
+		#my ($className,$classDes)=$dbh->selectrow_array("SELECT NAME,DES FROM CLASSIFICATION WHERE ID_CLASSIFICATION=$classificationID");
 		if ($exportFormat eq 'XLS') {
-			$worksheet->merge_range(0,0,0,$colSpan-1,&promsMod::getItemType($item).": ".decode_utf8($itemName).", Theme: ".decode_utf8($className),$itemFormat{'TITLE'});
-			$worksheet->write_comment(0,0,$classDes) if $classDes;
+			$worksheet->merge_range(0,0,0,$colSpan-1,&promsMod::getItemType($item).": ".decode_utf8($itemName).", Theme: ".decode_utf8($focusStrg),$itemFormat{'TITLE'});
+			#$worksheet->write_comment(0,0,$classDes) if $classDes;
 		}
 		else {
-			print "<TR><TH colspan=$colSpan><FONT style=\"font-size:$fontSize{TITLE}\">",&promsMod::getItemType($item),": $itemName, Theme: $className";
-			print "<BR><FONT style=\"font-size:$fontSize{CATEGORY}\">($classDes)</FONT>" if $classDes;
-			print "</FONT></TH></TR>\n";
+			print HTML "<TR><TH colspan=$colSpan><FONT style=\"font-size:$fontSize{TITLE}\">",&promsMod::getItemType($item),": $itemName, Theme: $focusStrg";
+			#print HTML "<BR><FONT style=\"font-size:$fontSize{CATEGORY}\">($classDes)</FONT>" if $classDes;
+			print HTML "</FONT></TH></TR>\n";
 		}
 		##>Proteins in categories
 		my @listChildren=&promsMod::getChildrenList($dbh,$classificationID,'classification');
@@ -791,8 +870,9 @@ sub exportList {
 				$worksheet->merge_range(++$xlsRow,0,$xlsRow,$colSpan-1,decode_utf8($listChildren[0]{'LIST'}{$catID}[0].$catDes),$itemFormat{'CATEGORY'});
 			}
 			else {
-				print "<TR><TH align=left colspan=$colSpan bgcolor=\"$color2\"><FONT style=\"font-size:$fontSize{CATEGORY}\">$listChildren[0]{LIST}{$catID}[0]$catDes</FONT></TH></TR>\n";
+				print HTML "<TR><TH align=left colspan=$colSpan bgcolor=\"$color2\"><FONT style=\"font-size:$fontSize{CATEGORY}\">$listChildren[0]{LIST}{$catID}[0]$catDes</FONT></TH></TR>\n";
 			}
+			&printWaitingMsg("Processing Custom List $listChildren[0]{LIST}{$catID}[0]");
 			&listItemProteins(uc($item),$catID,0);
 		}
 		##>Unclassified proteins
@@ -801,8 +881,9 @@ sub exportList {
 				$worksheet->merge_range(++$xlsRow,0,$xlsRow,$colSpan-1,'Unclassified Proteins',$itemFormat{'CATEGORY'});
 			}
 			else {
-				print "<TR><TH align=left colspan=$colSpan bgcolor=\"$color2\"><FONT style=\"font-size:$fontSize{CATEGORY}\">Unclassified Proteins</FONT></TH></TR>\n";
+				print HTML "<TR><TH align=left colspan=$colSpan bgcolor=\"$color2\"><FONT style=\"font-size:$fontSize{CATEGORY}\">Proteins not in List(s)</FONT></TH></TR>\n";
 			}
+			&printWaitingMsg("Processing Proteins not in List(s)");
 			&listItemProteins(uc($item),0,1);
 		}
 	}
@@ -853,41 +934,101 @@ sub exportList {
 		$workbook->close();
 	}
 	else {
-		print "<TR><TD colspan=$colSpan><FONT style=\"font-size:$fontSize{COMMENTS}\">Proteins in italics indicate a bad confidence.</FONT></TD></TR>\n" if $badConfidence;
-		print "<TR><TD colspan=$colSpan><FONT style=\"font-size:$fontSize{COMMENTS}\">Proteins in italics are virtual.</FONT></TD></TR>\n" if $ghostProteins;
-		print qq
+		print HTML "<TR><TD colspan=$colSpan><FONT style=\"font-size:$fontSize{COMMENTS}\">Proteins in italics indicate a bad confidence.</FONT></TD></TR>\n" if $badConfidence;
+		print HTML "<TR><TD colspan=$colSpan><FONT style=\"font-size:$fontSize{COMMENTS}\">Proteins in italics are virtual.</FONT></TD></TR>\n" if $ghostProteins;
+		print HTML qq
 |</TABLE>
 <FONT style="font-size:$fontSize{COMMENTS}">Data exported from myProMS Server <I>(<A href="http://www.ncbi.nlm.nih.gov/pubmed/17610305" target="_blank">Poullet et al. Proteomics. 2007 (15):2553-6</A>)</I></FONT>
 </BODY>
 </HTML>
 |;
+		close HTML;
+	}
+	
+	##<Link to download
+		print qq
+|<BR><BR><BR>
+<INPUT type="button" class="title2" value="Download file" onclick="window.location='$promsPath{cgi}/exportProteinList.cgi?ACT=download&FILE=$exportFile'"/>
+</CENTER>
+<SCRIPT type="text/javascript">
+document.getElementById('waitDIV').style.display='none';
+top.promsFrame.selectedAction = 'summary';
+window.location='$promsPath{cgi}/exportProteinList.cgi?ACT=download&FILE=$exportFile'; // auto-start download
+</SCRIPT>
+</BODY>
+</HTML>
+|;	
+	exit;
+}
+
+################################################################################
+####   		Triggers download of exported protein file (HTML/XLS)   	    ####
+################################################################################
+sub downloadFile {
+	my $fileName=param('FILE');
+	print header(-type=>"application/octet-stream", -attachment=>$fileName);
+	
+	if(-e "$promsPath{tmp}/scratch/export/$fileName") {
+	open(FILE,"$promsPath{tmp}/scratch/export/$fileName");
+	while (<FILE>) {print $_;}
+	close FILE;
 	}
 	exit;
 }
 
-
 ################################################################################
-####   		Recover and export MSF files from selected analyses   			####
+####   		Recover and export search files from selected analyses   		####
 ################################################################################
-sub exportAnalysis {
+sub exportAnalysisFiles {
 	my $projectID = param('id_project');
 	my @anaIDs = param('anaList');
 	my $item = (param('item')) ? lc param('item') : '';
 	
+	#######################
+	####<Starting HTML>####
+	#######################
+	print header(-'content-encoding'=>'no',-charset=>'utf-8');
+	warningsToBrowser(1);
+	print qq
+|<HTML>
+<HEAD>
+<TITLE>Exporting data files</TITLE>
+<LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
+</HEAD>
+<BODY background="$promsPath{images}/bgProMS.gif">
+<CENTER>
+<FONT class="title">Exporting search files from selected <FONT color="#DD0000">Analyses</FONT></FONT>
+<BR><BR>
+
+|;
+
 	# Creating archive that contain all msf files
-	if($projectID and @anaIDs) {
+	if ($projectID && scalar @anaIDs) {
+		print qq
+|<DIV id="waitDIV">
+<BR><BR><BR><BR><BR><FONT class="title3">Fetching data...</FONT><BR><IMG src="$promsPath{images}/scrollbarGreen.gif">
+<BR><BR><FONT class="title3">Status:&nbsp;<SPAN id="waitSPAN"><SPAN>...</FONT>
+</DIV>
+|;	
+		###>Config<####
+		mkdir "$promsPath{tmp}/scratch" unless -d "$promsPath{tmp}/scratch";
+		&promsMod::cleanDirectory("$promsPath{tmp}/scratch/export",'15m');
+		my $jobID=strftime("%Y%m%d%H%M%S",localtime);
+		my $exportDir="$promsPath{tmp}/scratch/export/$jobID\_$userID";
+		mkdir "$exportDir";
+
 		my (@msfFiles, $currentAnaFile, $currentSampName);
-		my $designFilePath = "$promsPath{data}/tmp/export_project$projectID\_analyses_from_$item.xls"; # $promsPath{'data'}."/
+		my $designFile = "$exportDir/export_project$projectID\_analyses_from_$item.xls"; # $promsPath{'data'}."/
 		my ($expName, $sampName, $projName) = $dbh->selectrow_array("SELECT E.NAME, S.NAME, P.NAME FROM SAMPLE S INNER JOIN ANALYSIS A ON A.ID_SAMPLE=S.ID_SAMPLE INNER JOIN EXPERIMENT E ON E.ID_EXPERIMENT=S.ID_EXPERIMENT JOIN PROJECT P ON P.ID_PROJECT=E.ID_PROJECT WHERE P.ID_PROJECT=$projectID AND A.ID_ANALYSIS=$anaIDs[0]");
 		my $zip = Archive::Zip->new();
 		
 		# Initialize design file parameters
-		my $workbook=Spreadsheet::WriteExcel->new($designFilePath);
+		my $workbook=Spreadsheet::WriteExcel->new($designFile);
 		eval { # Perl 5.8 compatibility
-		$workbook->set_properties(title=>'Design of ',
-								  author=>'myProMS server',
-								  comments=>"Describes analyses carried out for project $projName"
-								  );
+			$workbook->set_properties(title=>'Design of ',
+									  author=>'myProMS server',
+									  comments=>"Describes analyses carried out for project $projName"
+									  );
 		};
 		
 		# Set design formats
@@ -902,33 +1043,52 @@ sub exportAnalysis {
 		$worksheet->write(0, 3, "Raw file", $headerFormat);
 		
 		# Parse relevant analyses
+		my $totAna=scalar @anaIDs;
 		my $iAna = 1;
-		my $sthAna=$dbh->prepare("SELECT A.ID_ANALYSIS, DATA_FILE, S.NAME, WIFF_FILE, VALID_STATUS FROM SAMPLE S INNER JOIN ANALYSIS A ON A.ID_SAMPLE=S.ID_SAMPLE INNER JOIN EXPERIMENT E ON E.ID_EXPERIMENT=S.ID_EXPERIMENT JOIN PROJECT P ON P.ID_PROJECT=E.ID_PROJECT WHERE P.ID_PROJECT=$projectID AND A.ID_ANALYSIS IN (".join(', ', @anaIDs).")");
+		my %usedDataFile;
+		my $sthAna=$dbh->prepare("SELECT A.ID_ANALYSIS, A.NAME, DATA_FILE, S.NAME, WIFF_FILE, VALID_STATUS FROM SAMPLE S INNER JOIN ANALYSIS A ON A.ID_SAMPLE=S.ID_SAMPLE INNER JOIN EXPERIMENT E ON E.ID_EXPERIMENT=S.ID_EXPERIMENT JOIN PROJECT P ON P.ID_PROJECT=E.ID_PROJECT WHERE P.ID_PROJECT=$projectID AND A.ID_ANALYSIS IN (".join(', ', @anaIDs).")");
+		my $sthFirstQ=$dbh->prepare("SELECT MIN(ID_QUANTIFICATION) FROM ANA_QUANTIFICATION WHERE ID_ANALYSIS=?");
 		$sthAna->execute;
-		while ((my $anaID, my $dataFile, my $currentSampName, my $wiffFile, my $validStatus) = $sthAna->fetchrow_array) {
-			my ($fileExt, $fileName, $dataPath);
-			$fileExt = ($wiffFile =~ /raw/) ? 'msf' : 'dat';
-			($fileName = $wiffFile ) =~ s/\..*$//;
-			$currentAnaFile = ($fileExt eq 'msf') ? "$fileName.$fileExt" : $dataFile;
+		while (my ($anaID,$anaName,$dataFile,$currentSampName,$wiffFile,$validStatus) = $sthAna->fetchrow_array) {
+			&printWaitingMsg("Processing Analysis $iAna/$totAna ($anaName)");			
+			#$currentSampName =~ s/\//-/;
+			my ($fileExt, $fileName);
 			
-			if($validStatus != 2) {
-				$dataPath = $promsPath{'data'}."/validation/";
-				$dataPath .= ($fileExt eq 'msf') ? "multi_ana/proj_$projectID/$currentAnaFile" : "ana_$anaID/$currentAnaFile";
-			} else {
-				$dataPath = $promsPath{'data'}."/peptide_data/proj_$projectID/ana_$anaID/$currentAnaFile";
+			if ($dataFile=~/mqpar.*\.xml|parameters\.txt/) { # MaxQuant
+				$fileExt='';
+				$fileName=$wiffFile;
+				$currentAnaFile='proteinGroups.txt';
+				unless ($usedDataFile{$currentAnaFile}) {
+					$sthFirstQ->execute($anaID);
+					my ($firstQuantID)=$sthFirstQ->fetchrow_array;
+					$zip->addFile("$promsPath{quantification}/project_$projectID/quanti_$firstQuantID/proteinGroups.txt","proteinGroups.txt");
+					$zip->addFile("$promsPath{quantification}/project_$projectID/quanti_$firstQuantID/peptides.txt","peptides.txt");
+				}
 			}
+			# TODO: Handle DIA/TDA
+			else { # Mascot or PD
+				$fileExt = ($wiffFile =~ /raw/) ? 'msf' : 'dat';
+				($fileName = $wiffFile ) =~ s/\..*$//;
 			
-			if(-e $dataPath) {
-				$currentSampName =~ s/\//-/;
-				my $zipOutFolder = ($item eq 'experiment') ? "$currentSampName/" : "";
-				$zip->addFile($dataPath, $zipOutFolder.$currentAnaFile);
-				
-				$worksheet->write($iAna, 0, $expName, $bodyFormat);
-				$worksheet->write($iAna, 1, $currentSampName, $bodyFormat);
-				$worksheet->write($iAna, 2, $currentAnaFile, $bodyFormat);
-				$worksheet->write($iAna, 3, $wiffFile, $bodyFormat);
-				$iAna++;
+				$currentAnaFile = ($fileExt eq 'msf') ? "$anaName.$fileExt" : $dataFile;
+				my $dataFile;
+				if ($validStatus != 2) {
+					$dataFile = ($fileExt eq 'msf') ? "$promsPath{valid}/multi_ana/proj_$projectID/$currentAnaFile" : "$promsPath{valid}/ana_$anaID/$currentAnaFile";
+				}
+				else {
+					$dataFile = "$promsPath{peptide}/proj_$projectID/ana_$anaID/$currentAnaFile";
+				}
+				if (-e $dataFile) {
+					my $zipOutFolder = ($item eq 'experiment') ? "$currentSampName/" : "";
+					$zip->addFile($dataFile, $zipOutFolder.$currentAnaFile) unless $usedDataFile{$currentAnaFile};
+				}
 			}
+			$worksheet->write($iAna, 0, $expName, $bodyFormat);
+			$worksheet->write($iAna, 1, $currentSampName, $bodyFormat);
+			$worksheet->write($iAna, 2, "$fileName.$fileExt", $bodyFormat);
+			$worksheet->write($iAna, 3, $wiffFile, $bodyFormat);
+			$usedDataFile{$currentAnaFile}=1;
+			$iAna++;
 		}
 		
 		$worksheet->set_column(0, 0, 26);
@@ -938,18 +1098,41 @@ sub exportAnalysis {
 		
 		$workbook->close();
 		
-		$zip->addFile($designFilePath, "design.xls");
+		$zip->addFile($designFile,"design.xls");
 		
-		my $outFile = $projName;
-		$outFile .= ($item eq 'experiment') ? " - $expName.zip" : ($item eq 'sample') ? " - $sampName.zip" : " - Analyses.zip";
+		my $archiveFile = $projName;
+		$archiveFile .= ($item eq 'experiment') ? " - $expName.zip" : ($item eq 'sample') ? " - $sampName.zip" : " - Analyses.zip";
+		$archiveFile =~ s/[\/\\]+/-/g;
 		
 		# Export built archive
-		print header(-type=>"application/zip", -attachment=>$outFile);
-		binmode(STDOUT);
-		$zip->writeToFileHandle(*STDOUT);
+		&printWaitingMsg("Building archive");
+		$zip->writeToFileNamed("$promsPath{tmp}/scratch/export/$archiveFile"); # my $status = 
+
+		unlink $designFile;
+		rmdir $exportDir;
 		
-		unlink($designFilePath);
+		##<Link to download
+		print qq
+|<BR><BR><BR>
+<INPUT type="button" class="title2" value="Download archive" onclick="window.location='$promsPath{cgi}/exportProteinList.cgi?ACT=download&FILE=$archiveFile'"/>
+</CENTER>
+<SCRIPT type="text/javascript">
+document.getElementById('waitDIV').style.display='none';
+top.promsFrame.selectedAction = 'summary';
+window.location='$promsPath{cgi}/exportProteinList.cgi?ACT=download&FILE=$archiveFile'; // auto-start download
+</SCRIPT>
+</BODY>
+</HTML>
+|;	
 	}
+	else {
+		print qq
+|<BR><BR><FONT class="title2">Error: No analysis selected.</FONT>
+</BODY>
+</HTML>
+|;
+	}
+	exit;
 }
 
 ################################################################################
@@ -1043,14 +1226,15 @@ sub displayItemContents { # item is upper cased
 		$comments=&promsMod::HTMLcompatible($comments);
 		$des=" ($des)" if $des;
 		$comments="<BR><FONT style=\"font-size:$fontSize{ANALYSIS};font-style:italic\">Comments: </FONT><FONT style=\"font-size:$fontSize{ANALYSIS};font-weight:normal;font-style:italic\">$comments</FONT>" if $comments;
-		print "<TR>";
+		print HTML "<TR>";
 		if ($curITEM eq 'ANALYSIS') {
 			my $validColor=($validStatus<=0)? 'red' : ($validStatus==1)? 'yellow' : 'green';
-			print "<TH bgcolor=\"$validColor\">&nbsp;</TH>";
+			print HTML "<TH bgcolor=\"$validColor\">&nbsp;</TH>";
 		}
-		print "<TH align=left colspan=$itemColSpan bgcolor=\"$color2\">$shiftSize<FONT style=\"font-size:$fontSize{$curITEM}\">",&promsMod::getItemType($curITEM),": $name$des</FONT>$comments</TH></TR>\n";
+		print HTML "<TH align=left colspan=$itemColSpan bgcolor=\"$color2\">$shiftSize<FONT style=\"font-size:$fontSize{$curITEM}\">",&promsMod::getItemType($curITEM),": $name$des</FONT>$comments</TH></TR>\n";
 	}
 	if ($depthITEM =~ /$curITEM/) {
+		&printWaitingMsg("Processing ".&promsMod::getItemType($curITEM)." $name");
 		&listItemProteins($curITEM,$curItemID,0);
 	}
 	else {
@@ -1066,8 +1250,8 @@ sub displayItemContents { # item is upper cased
 		}
 		else {
 			if ($exportFormat eq 'XLS') {$worksheet->merge_range(++$xlsRow,0,$xlsRow,$colSpan-1,'No proteins',$format{'mergeText'});}
-			else {print "<TR><TD colspan=$colSpan>&nbsp;No proteins</TD></TR>\n";}
-			#print "<TR><TD colspan=$colSpan>&nbsp</TD></TR>\n";
+			else {print HTML "<TR><TD colspan=$colSpan>&nbsp;No proteins</TD></TR>\n";}
+			#print HTML "<TR><TD colspan=$colSpan>&nbsp</TD></TR>\n";
 		}
 	}
 }
@@ -1167,13 +1351,25 @@ sub listItemProteins {
 	}
 	elsif ($subjectITEM eq 'PROJECT') {
 		if ($filter) { # unclassified proteins
-			$visibleQuery="SELECT PROTEIN.ID_PROTEIN,$fieldStrg FROM PROTEIN,ANALYSIS_PROTEIN WHERE PROTEIN.ID_PROTEIN=ANALYSIS_PROTEIN.ID_PROTEIN AND VISIBILITY>0 AND ID_PROJECT=$itemID";
+			$visibleQuery="SELECT P.ID_PROTEIN,$fieldStrg
+						   FROM PROTEIN P INNER JOIN ANALYSIS_PROTEIN AP ON P.ID_PROTEIN=AP.ID_PROTEIN INNER JOIN PROJECT PJ ON PJ.ID_PROJECT=P.ID_PROJECT INNER JOIN EXPERIMENT E ON E.ID_PROJECT=PJ.ID_PROJECT
+						   WHERE VISIBILITY>0 AND P.ID_PROJECT=$itemID AND E.ID_EXPERIMENT NOT IN (
+							 SELECT E2.ID_EXPERIMENT
+							 FROM EXPERIMENT E2
+                             INNER JOIN USER_EXPERIMENT_LOCK EU ON EU.ID_EXPERIMENT=E2.ID_EXPERIMENT
+                             WHERE E2.ID_PROJECT=$itemID AND EU.ID_USER='$userID'
+	   					   )";
 		}
 		elsif ($classificationID > 0) { # user-defined
-			$visibleQuery=qq|SELECT PROTEIN.ID_PROTEIN,$fieldStrg
-								FROM PROTEIN,ANALYSIS_PROTEIN,CATEGORY_PROTEIN
-								WHERE PROTEIN.ID_PROTEIN=ANALYSIS_PROTEIN.ID_PROTEIN AND PROTEIN.ID_PROTEIN=CATEGORY_PROTEIN.ID_PROTEIN
-									AND VISIBILITY>0 AND ID_PROJECT=$itemID AND ID_CATEGORY=$subjectID|;
+			$visibleQuery=qq|SELECT P.ID_PROTEIN,$fieldStrg
+							 FROM PROTEIN P INNER JOIN ANALYSIS_PROTEIN AP ON P.ID_PROTEIN=AP.ID_PROTEIN INNER JOIN PROJECT PJ ON PJ.ID_PROJECT=P.ID_PROJECT INNER JOIN EXPERIMENT E ON E.ID_PROJECT=PJ.ID_PROJECT INNER JOIN CATEGORY_PROTEIN CP ON CP.ID_PROTEIN=P.ID_PROTEIN
+							 WHERE VISIBILITY>0 AND PJ.ID_PROJECT=$itemID AND ID_CATEGORY=$subjectID
+							 AND E.ID_EXPERIMENT NOT IN (
+							   SELECT E2.ID_EXPERIMENT
+							   FROM EXPERIMENT E2
+							   INNER JOIN USER_EXPERIMENT_LOCK EU ON EU.ID_EXPERIMENT=E2.ID_EXPERIMENT
+							   WHERE E2.ID_PROJECT=$itemID AND EU.ID_USER='$userID'
+							 )|;
 		}
 		else { # project hierarchy
 			$visibleQuery="SELECT PROTEIN.ID_PROTEIN,$fieldStrg FROM PROTEIN,ANALYSIS_PROTEIN WHERE PROTEIN.ID_PROTEIN=ANALYSIS_PROTEIN.ID_PROTEIN AND VISIBILITY>0 AND ID_PROJECT=$subjectID";
@@ -1193,8 +1389,12 @@ sub listItemProteins {
 	my %analysisList;
 
 	$sthVis->execute;
+	my $protCount=0;
 	if (!$filter) { # proteins in classification
 		while (my ($protID,$anaID,$score,$numPep,$conf,$matchGr,$visibility,$coverage,$specificity,$dbRank)=$sthVis->fetchrow_array) { # $matchGr,$visibility defined if depthITEM=ANALYSIS
+			if ($restrictListID) {
+				next if (($listAction eq 'restrict' && !$restrictProteins{$protID}) || ($listAction eq 'exclude' && $restrictProteins{$protID}));
+			}
 			$dbRank=1 unless $dbRank;
 			#my $nbPep; # nbPep <-> retrieve the number of proteotypic peptides or not, depending on user choice.
 			#if ($addSpecificStg) {
@@ -1206,15 +1406,15 @@ $analysisList{$anaID}=1;
 			$timesFound{$protID}++;
 			$virtualProt{$protID}{$anaID}=1 if $conf==0;
 			@{$listProteins{$protID}}=();
-			if (($bestScore{$protID} && $bestScore{$protID}<$score) || !$bestScore{$protID}) {
+			if(!$numPeptides{$protID}{'BA_ALL'} || $numPep > $numPeptides{$protID}{'BA_ALL'} || ($numPep == $numPeptides{$protID}{'BA_ALL'} && (!$bestScore{$protID} || $score > $bestScore{$protID}))) {
 				$bestScore{$protID}=$score;
-				$numPeptides{$protID}{'BA_ALL'}=$numPep; # always computed (needed for sort if no pepSort)
+				$numPeptides{$protID}{'BA_ALL'} = $numPep; # always computed (needed for sort if no pepSort)
 				$confLevel{$protID}=$conf;
 				@{$bestAnalysis{$protID}}=($anaID,$dbRank);
 				$pepCoverage{$protID}{'BA'}=$coverage if param('sel_cov');
 				$protSpecificity{$protID}{'BA'}=$specificity if param('sel_spec');
 				#$numPeptides{$protID}{'BA_ALL_TYPIC'}=$nbPep if param('sel_pepType') ne 'TYPIC';
-$numPeptides{$protID}{'BA_ALL_TYPIC'}=$numPep if param('sel_pepType') ne 'TYPIC';
+				$numPeptides{$protID}{'BA_ALL_TYPIC'}=$numPep if param('sel_pepType') ne 'TYPIC';
 			}
 			if (param('sel_bestSpec')) {
 				$protSpecificity{$protID}{'BI'}=$specificity if (!$protSpecificity{$protID}{'BI'} || $protSpecificity{$protID}{'BI'}<$specificity);
@@ -1237,11 +1437,16 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 			}
 ##########################################
 			$classProteins{$protID}=1 if $classificationID>0;
+			$protCount++;
+			&printWaitingMsg('.','+=') unless $protCount % 1000;
 		}
 	}
 	else { # unclassified proteins
 		while (my ($protID,$anaID,$score,$numPep,$conf,$matchGr,$visibility,$coverage,$specificity,$dbRank)=$sthVis->fetchrow_array) {
 			next if $classProteins{$protID}; # filter proteins in classification
+			if ($restrictListID) {
+				next if (($listAction eq 'restrict' && !$restrictProteins{$protID}) || ($listAction eq 'exclude' && $restrictProteins{$protID}));
+			}
 			$dbRank=1 unless $dbRank;
 			#my $nbPep; # nbPep <-> retrieve the number of proteotypic peptides or not, depending on user choice.
 			#if ($addSpecificStg) {
@@ -1253,15 +1458,15 @@ $analysisList{$anaID}=1;
 			$timesFound{$protID}++;
 			$virtualProt{$protID}{$anaID}=1 if $conf==0;
 			@{$listProteins{$protID}}=();
-			if (($bestScore{$protID} && $bestScore{$protID}<$score) || !$bestScore{$protID}) {
+			if(!$numPeptides{$protID}{'BA_ALL'} || $numPep > $numPeptides{$protID}{'BA_ALL'} || ($numPep == $numPeptides{$protID}{'BA_ALL'} && (!$bestScore{$protID} || $score > $bestScore{$protID}))) {
 				$bestScore{$protID}=$score;
-				$numPeptides{$protID}{'BA_ALL'}=$numPep; # always computed (needed for sort if no pepSort)
+				$numPeptides{$protID}{'BA_ALL'}= $numPep; # always computed (needed for sort if no pepSort)
 				$confLevel{$protID}=$conf;
 				@{$bestAnalysis{$protID}}=($anaID,$dbRank); # if param('sel_cov');
 				$pepCoverage{$protID}{'BA'}=$coverage if param('sel_cov');
 				$protSpecificity{$protID}{'BA'}=$specificity if param('sel_spec');
 				#$numPeptides{$protID}{'BA_ALL_TYPIC'}=$nbPep;
-$numPeptides{$protID}{'BA_ALL_TYPIC'}=$numPep if param('sel_pepType') ne 'TYPIC';
+				$numPeptides{$protID}{'BA_ALL_TYPIC'}=$numPep if param('sel_pepType') ne 'TYPIC';
 			}
 			if (param('sel_bestSpec')) {
 				$protSpecificity{$protID}{'BI'}=$specificity if (!$protSpecificity{$protID}{'BI'} || $protSpecificity{$protID}{'BI'}<$specificity);
@@ -1283,6 +1488,8 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 				$analysisIdentType{$anaID}{1}='unknown' unless $analysisIdentType{$anaID};
 			}
 ##########################################
+			$protCount++;
+			&printWaitingMsg('.','+=') unless $protCount % 1000;
 		}
 	}
 	$sthVis->finish;
@@ -1301,6 +1508,7 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 			}
 		}
 		$sthAnaPep->finish;
+		&printWaitingMsg('.','+=');
 	}
 
 	####<Fetching info on selected proteins>####
@@ -1312,22 +1520,52 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 			if ($protColumns[$i] eq 'PROT_SEQ') {$protSeqIdx=$i; last;}
 		}
 	}
-	my $sthProtInfo=$dbh->prepare("SELECT PROT_LENGTH,$selProtString FROM PROTEIN WHERE ID_PROTEIN=?");
-	my $sthMPseq=$dbh->prepare("SELECT MP.PROT_SEQ FROM PROTEIN P,MASTER_PROTEIN MP WHERE P.ID_MASTER_PROTEIN=MP.ID_MASTER_PROTEIN AND ID_PROTEIN=?");
-	foreach my $protID (keys %listProteins) {
-		$sthProtInfo->execute($protID);
-		($protLength{$protID},@{$listProteins{$protID}})=$sthProtInfo->fetchrow_array;
-		foreach my $pos (@checkPosDef) {$listProteins{$protID}[$pos]='-' unless $listProteins{$protID}[$pos];}
-		if ($protSeqIdx && $listProteins{$protID}[$protSeqIdx] eq '+') { # '+' means replace with masterProt seq
-			$sthMPseq->execute($protID);
-			($listProteins{$protID}[$protSeqIdx])=$sthMPseq->fetchrow_array;
+	#my $sthProtInfo=$dbh->prepare("SELECT PROT_LENGTH,$selProtString FROM PROTEIN WHERE ID_PROTEIN=?");
+	#my $sthMPseq=$dbh->prepare("SELECT MP.PROT_SEQ FROM PROTEIN P,MASTER_PROTEIN MP WHERE P.ID_MASTER_PROTEIN=MP.ID_MASTER_PROTEIN AND ID_PROTEIN=?");
+	#foreach my $protID (keys %listProteins) {
+	#	$sthProtInfo->execute($protID);
+	#	($protLength{$protID},@{$listProteins{$protID}})=$sthProtInfo->fetchrow_array;
+	#	foreach my $pos (@checkPosDef) {$listProteins{$protID}[$pos]='-' unless $listProteins{$protID}[$pos];}
+	#	if ($protSeqIdx && $listProteins{$protID}[$protSeqIdx] eq '+') { # '+' means replace with masterProt seq
+	#		$sthMPseq->execute($protID);
+	#		($listProteins{$protID}[$protSeqIdx])=$sthMPseq->fetchrow_array;
+	#	}
+	#}
+	#$sthProtInfo->finish;
+	#$sthMPseq->finish;
+	my @proteins=keys %listProteins;
+	my @noSeqProteins;
+	while (my @subProtIDs=splice(@proteins,0,2000)) {
+		my $sthProtInfo=$dbh->prepare("SELECT ID_PROTEIN,PROT_LENGTH,$selProtString FROM PROTEIN WHERE ID_PROTEIN IN (".join(',',@subProtIDs).")");
+		$sthProtInfo->execute;
+		while (my ($protID,$length,@info)=$sthProtInfo->fetchrow_array) {
+			$protLength{$protID}=$length;
+			@{$listProteins{$protID}}=@info;
+			foreach my $pos (@checkPosDef) {$listProteins{$protID}[$pos]='-' unless $listProteins{$protID}[$pos];}
+			push @noSeqProteins,$protID if ($protSeqIdx && $listProteins{$protID}[$protSeqIdx] eq '+');
 		}
+		$sthProtInfo->finish;
+		&printWaitingMsg('.','+=');
 	}
-	$sthProtInfo->finish;
-	$sthMPseq->finish;
+	if (scalar @noSeqProteins) {
+		while (my @subProtIDs=splice(@noSeqProteins,0,2000)) {
+			my $sthMPseq=$dbh->prepare("SELECT ID_PROTEIN,MP.PROT_SEQ FROM PROTEIN P,MASTER_PROTEIN MP WHERE P.ID_MASTER_PROTEIN=MP.ID_MASTER_PROTEIN AND ID_PROTEIN IN (".join(',',@subProtIDs).")");
+			$sthMPseq->execute;
+			while (my ($protID,$protSeq)=$sthMPseq->fetchrow_array) {
+				$listProteins{$protID}[$protSeqIdx]=$protSeq;
+			}
+			$sthMPseq->finish;
+		}
+		&printWaitingMsg('.','+=');
+	}
 
 	if (param('sel_matchGr')) { # depthITEM=ANALYSIS
-		my $sthMGrH=$dbh->prepare("SELECT PROTEIN.ID_PROTEIN,IDENTIFIER FROM PROTEIN,ANALYSIS_PROTEIN WHERE PROTEIN.ID_PROTEIN=ANALYSIS_PROTEIN.ID_PROTEIN AND ID_ANALYSIS=$itemID AND VISIBILITY=2 AND MATCH_GROUP=?");
+		my $sthMGrH=$dbh->prepare("SELECT P.ID_PROTEIN,IDENTIFIER,MATCH_GROUP FROM PROTEIN P,ANALYSIS_PROTEIN AP WHERE P.ID_PROTEIN=AP.ID_PROTEIN AND ID_ANALYSIS=$itemID AND VISIBILITY=2");
+		my %matchGroups;
+		$sthMGrH->execute;
+		while (my ($protID,$ident,$matchGr)=$sthMGrH->fetchrow_array) {@{$matchGroups{$matchGr}}=($protID,$ident);}
+		$sthMGrH->finish;
+		
 		my %externalHeadMGr;
 		foreach my $protID (keys %listProteins) {
 			if ($topMatchGroup{$protMatchGroup{$protID}}) {
@@ -1335,13 +1573,14 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 			}
 			else { # head of MGr is listed in another block (user classification or unclassified proteins)
 				unless ($externalHeadMGr{$protMatchGroup{$protID}}) {
-					$sthMGrH->execute($protMatchGroup{$protID}); # -> fetch it again
-					($externalHeadMGr{$protMatchGroup{$protID}}{'ID'},$externalHeadMGr{$protMatchGroup{$protID}}{'IDENT'})=$sthMGrH->fetchrow_array;
+					#$sthMGrH->execute($protMatchGroup{$protID}); # -> fetch it again
+					#($externalHeadMGr{$protMatchGroup{$protID}}{'ID'},$externalHeadMGr{$protMatchGroup{$protID}}{'IDENT'})=$sthMGrH->fetchrow_array;
+					($externalHeadMGr{$protMatchGroup{$protID}}{'ID'},$externalHeadMGr{$protMatchGroup{$protID}}{'IDENT'})=@{$matchGroups{ $protMatchGroup{$protID} }};
 				}
 				$proteinMGrHead{$protID}=$externalHeadMGr{$protMatchGroup{$protID}}{'IDENT'};
 			}
 		}
-		$sthMGrH->finish;
+		&printWaitingMsg('.','+=');	
 	}
 
 	####<Fetching identifier mapping data>####
@@ -1354,45 +1593,67 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 			$identQueryStrg.=" ID_IDENTIFIER=$identifierCodes{$code}[3]";
 			$identID2code{$identifierCodes{$code}[3]}=$code;
 		}
-		my $sthIV=$dbh->prepare("SELECT ID_IDENTIFIER,VALUE FROM PROTEIN P,MASTERPROT_IDENTIFIER MI WHERE P.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN AND ID_PROTEIN=? AND ($identQueryStrg) ORDER BY RANK");
-		foreach my $protID (keys %listProteins) {
-			$sthIV->execute($protID);
-			while (my ($identID,$value)=$sthIV->fetchrow_array) {
-				push @{$proteinMappings{$protID}{$identID2code{$identID}}},$value; # ordered by rank
+		#my $sthIV=$dbh->prepare("SELECT ID_IDENTIFIER,VALUE FROM PROTEIN P,MASTERPROT_IDENTIFIER MI WHERE P.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN AND ID_PROTEIN=? AND ($identQueryStrg) ORDER BY RANK");
+		#foreach my $protID (keys %listProteins) {
+		#	$sthIV->execute($protID);
+		#	while (my ($identID,$value)=$sthIV->fetchrow_array) {
+		#		push @{$proteinMappings{$protID}{$identID2code{$identID}}},$value; # ordered by rank
+		#	}
+		#	if ($proteinMappings{$protID} && $proteinMappings{$protID}{'GN'}) { # geneName/Symbol
+		#		$proteinGeneSymbol{$protID}=$proteinMappings{$protID}{'GN'}[0];
+		#	}
+		#	else {$proteinGeneSymbol{$protID}='zzz';}
+		#}
+		#$sthIV->finish;
+		my @proteins=keys %listProteins;
+		while (my @subProtIDs=splice(@proteins,0,2000)) {
+			my $sthIV=$dbh->prepare("SELECT ID_PROTEIN,ID_IDENTIFIER,GROUP_CONCAT(VALUE ORDER BY RANK SEPARATOR ',') FROM PROTEIN P,MASTERPROT_IDENTIFIER MI
+									WHERE P.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN AND ID_PROTEIN IN (".join(',',@subProtIDs).") AND ($identQueryStrg)
+									GROUP BY ID_PROTEIN,ID_IDENTIFIER");
+			$sthIV->execute;
+			while (my ($protID,$identID,$valueStrg)=$sthIV->fetchrow_array) {
+				@{$proteinMappings{$protID}{$identID2code{$identID}}}=split(',',$valueStrg);
 			}
+			$sthIV->finish;
+			&printWaitingMsg('.','+=');
+		}		
+		foreach my $protID (keys %listProteins) {
 			if ($proteinMappings{$protID} && $proteinMappings{$protID}{'GN'}) { # geneName/Symbol
 				$proteinGeneSymbol{$protID}=$proteinMappings{$protID}{'GN'}[0];
 			}
 			else {$proteinGeneSymbol{$protID}='zzz';}
 		}
-		$sthIV->finish;
 	}
 
 	####<Cumulated coverage>####
 	if (param('sel_cumCov')) {
 		my $sthPep=$dbh->prepare("SELECT ID_PROTEIN,GROUP_CONCAT(PEP_BEG SEPARATOR ','),GROUP_CONCAT(PEP_END SEPARATOR ',') FROM PEPTIDE_PROTEIN_ATTRIB WHERE ID_ANALYSIS=? $addSpecificStg GROUP BY ID_PROTEIN");
+		my %boundaryStatus;
 		foreach my $anaID (keys %analysisList) {
 			$sthPep->execute($anaID);
 			while (my($protID,$begStrg,$endStrg)=$sthPep->fetchrow_array) {
 				next unless $listProteins{$protID};
-				my %boundaryStatus;
 				my @begs=split(',',$begStrg);
 				my @ends=split(',',$endStrg);
 				foreach my $i (0..$#begs) {
 					if ($virtualProt{$protID} && $virtualProt{$protID}{$anaID}) {
-						$boundaryStatus{abs($begs[$i])}++; # boundary are negative for ghost peptides
-						$boundaryStatus{abs($ends[$i])}--;
+						$boundaryStatus{$protID}{abs($begs[$i])}++; # boundary are negative for ghost peptides
+						$boundaryStatus{$protID}{abs($ends[$i])}--;
 					}
 					else {
 						next if $begs[$i]<0; # ghost peptides
-						$boundaryStatus{$begs[$i]}++;
-						$boundaryStatus{$ends[$i]}--;
+						$boundaryStatus{$protID}{$begs[$i]}++;
+						$boundaryStatus{$protID}{$ends[$i]}--;
 					}
 				}
-				$pepCoverage{$protID}{'CUM'}=($protLength{$protID})? &promsMod::getCoverage($protLength{$protID},\%boundaryStatus) : 0;
 			}
+			&printWaitingMsg('.','+=');	
 		}
 		$sthPep->finish;
+		
+		foreach my $protID (keys %boundaryStatus) {
+			$pepCoverage{$protID}{'CUM'}=($protLength{$protID})? &promsMod::getCoverage($protLength{$protID},\%{$boundaryStatus{$protID}}) : 0;
+		}
 	}
 
 	###<Fetching PhosphoRS results if needed>###
@@ -1424,7 +1685,7 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 	my (%pepSequences,%pepBoundaries,%flankingAA,%pepScores,%pepVarMods,%pepVarModsProt,%pepVarModsComment,%pepElutionTime,%firstPepStart,%pepTitle,%pepQValue,%pepCharge,%pepMass,%isSpecific,%pepComments,%pepPhosphoRS,%probPhosphoRS,%varModName);
 	if (param('sel_pepNr') || param('sel_cumPepNr') || scalar @selPepColName || param('sel_protVmod')) {
 		#my $sthPep2=$dbh->prepare("SELECT ID_PROTEIN,P.ID_PEPTIDE,PEP_SEQ,PEP_BEG,PEP_END,FLANKING_AA,SCORE,CHARGE,MR_OBS,IS_SPECIFIC,COMMENTS,DATA,SPEC_COUNT FROM PEPTIDE_PROTEIN_ATTRIB PPA,PEPTIDE P WHERE P.ID_PEPTIDE=PPA.ID_PEPTIDE AND P.ID_ANALYSIS=? $addSpecificStg ORDER BY ID_PROTEIN");
-		my $sthPep2=$dbh->prepare("SELECT ID_PROTEIN,P.ID_PEPTIDE,PEP_SEQ,ELUTION_TIME,GROUP_CONCAT(PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),PEP_BEG,PEP_END,FLANKING_AA,SCORE,CHARGE,MR_OBS,IS_SPECIFIC,COMMENTS,DATA,SPEC_COUNT
+		my $sthPep2=$dbh->prepare("SELECT ID_PROTEIN,P.ID_PEPTIDE,QUERY_NUM,PEP_SEQ,ELUTION_TIME,GROUP_CONCAT(PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),PEP_BEG,PEP_END,FLANKING_AA,SCORE,CHARGE,MR_OBS,IS_SPECIFIC,COMMENTS,DATA,SPEC_COUNT
 											FROM PEPTIDE P
 											LEFT JOIN PEPTIDE_MODIFICATION PM ON P.ID_PEPTIDE=PM.ID_PEPTIDE
 											INNER JOIN PEPTIDE_PROTEIN_ATTRIB PPA ON P.ID_PEPTIDE=PPA.ID_PEPTIDE
@@ -1432,19 +1693,20 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 		if (param('sel_seqPep') || param('sel_pepNr')) { # best analysis
 			foreach my $anaID (keys %analysisList) {
 				$sthPep2->execute($anaID);
+				my ($prsOutputFile,%dataPhosphoRS);
 				if (param('sel_phosphoRS')) {
 					($prsOutputFile,my $validStatus)=$dbh->selectrow_array("SELECT DATA_FILE,VALID_STATUS FROM ANALYSIS WHERE ID_ANALYSIS=$anaID");
 					$prsOutputFile =~ s/\.\w{3}$/\.xml/;
 					if ($validStatus == 2) {
 						$prsOutputFile = (-e "$promsPath{peptide}/proj_$projectID/ana_$anaID/PRS_$prsOutputFile")? "$promsPath{peptide}/proj_$projectID/ana_$anaID/PRS_$prsOutputFile" : "$promsPath{peptide}/proj_$projectID/ana_$anaID/PRS_ana_$anaID.xml";
 					}
-					else{
+					else {
 						$prsOutputFile = (-e "$promsPath{valid}/ana_$anaID/PRS_$prsOutputFile")?"$promsPath{valid}/ana_$anaID/PRS_$prsOutputFile" : "$promsPath{valid}/ana_$anaID/PRS_ana_$anaID.xml";
 					}
 				}
 				my $prevProtID=0;
 				my (%bestPepScore,%refPeptide,%distinctPep); # in case no sel_modPep => do not duplicate peptides with same sequence
-				while (my ($protID,$pepID,$pepSeq,$elutionTime,$modCode,$beg,$end,$flankingAA,$score,$charge,$massObs,$isSpec,$comments,$data,$specCount)=$sthPep2->fetchrow_array) {
+				while (my ($protID,$pepID,$qNum,$pepSeq,$elutionTime,$modCode,$beg,$end,$flankingAA,$score,$charge,$massObs,$isSpec,$comments,$data,$specCount)=$sthPep2->fetchrow_array) {
 					next if (!$listProteins{$protID} || $bestAnalysis{$protID}[0] != $anaID);
 					if ($protID != $prevProtID) { # reset for each prot
 						$numPeptides{$prevProtID}{'BA_NR'}=scalar keys %distinctPep if (param('sel_pepNr') && $listProteins{$prevProtID});
@@ -1490,65 +1752,75 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 						$pepBoundaries{$protID}{$pepID}{$beg}=$end; # always computed
 						$pepScores{$protID}{$pepID}=$score if param('sel_scorePep');
 
-						if(param('sel_modPep') || param('sel_modPepProt') || param('sel_protVmod')) {
+						if (param('sel_modPep') || param('sel_modPepProt') || param('sel_protVmod')) {
 							($pepVarMods{$protID}{$pepID}= $vMod) =~ s/\[[0-9,]+\]//g;
 							($pepVarModsProt{$protID}{$pepID} = $vModProt) =~ s/\[[0-9,]+\]//g;
-							$pepVarModsComment{$protID}{$pepID} = generateVarModSummary($vModProt, $pepSeq, $beg-1);
+							$pepVarModsComment{$protID}{$pepID} = &generateVarModSummary($vModProt, $pepSeq, $beg-1);
 						}
 						
-						if(param('sel_etPep')) {
+						if (param('sel_etPep')) {
 							my @elutionTimeParsed = ( $elutionTime =~ /et([0-9.]+);?/);
-							$elutionTime = (scalar @elutionTimeParsed == 1) ? $elutionTimeParsed[0] : '-';
-							$pepElutionTime{$protID}{$pepID} = $elutionTime;
+							$elutionTime = (scalar @elutionTimeParsed == 1)? $elutionTimeParsed[0] : '-';
+							$pepElutionTime{$pepID} = $elutionTime;
 						}
 						
-						$pepCharge{$protID}{$pepID}=$charge if param('sel_chargePep');
+						$pepCharge{$pepID}=$charge if param('sel_chargePep');
 						if (param('sel_qvalPep') ){
 							if ($data && $data =~ /QVAL=([^,]+)/) {
 								$pepQValue{$protID}{$pepID}=$1;
 							}
-							else{
+							else {
 								$pepQValue{$protID}{$pepID}='-';
 							}
 						}
-						$pepMass{$protID}{$pepID}=$massObs if param('sel_massPep');
-						$pepComments{$protID}{$pepID}=$comments if param('sel_commentPep');
+						$pepMass{$pepID}=$massObs if param('sel_massPep');
+						$pepComments{$pepID}=$comments if param('sel_commentPep');
 						if (param('sel_isSpec')) {$isSpecific{$protID}{$pepID}=($isSpec)? 'Yes' : 'No';}
 					}
 					if (param('sel_phosphoRS')) {
 						if ($data && $data =~ /PRS=([^#]+)/) {
-							$pepPhosphoRS{$protID}{$pepID} = getPhosphoRsString($1);
-							$probPhosphoRS{$protID}{$pepID} = &getPhosphoRsProbString($pepID,$pepSeq,$dbh,$prsOutputFile);
+							$pepPhosphoRS{$pepID} = &getPhosphoRsString($1);
+							#$probPhosphoRS{$pepID} = &getPhosphoRsProbString($pepID,$pepSeq,$dbh,$prsOutputFile);
+							$dataPhosphoRS{$qNum}=$pepID;
+							
 						} else {
-							$pepPhosphoRS{$protID}{$pepID} = '-';
-							$probPhosphoRS{$protID}{$pepID} = '-';
+							$pepPhosphoRS{$pepID} = '-';
 						}
+						$probPhosphoRS{$pepID} = '-'; # default
 					}
-					if(param('sel_pepPSM')) {
+					if (param('sel_pepPSM')) {
 						$specCount=0 unless defined($specCount);
 						$protPSM{$protID}+=$specCount;
 					}
 				}
 				$numPeptides{$prevProtID}{'BA_NR'}=scalar keys %distinctPep if (param('sel_pepNr') && $listProteins{$prevProtID}); # for last protID in while loop
+				
+				#<Fetch all PRS probabilities
+				if (param('sel_phosphoRS') && scalar keys %pepPhosphoRS) {
+					&getPhosphoRsProbString($prsOutputFile,\%pepPhosphoRS,\%dataPhosphoRS,\%probPhosphoRS);
+				}
+
+				&printWaitingMsg('.','+=');
 			}
 		}
 		if (param('sel_cumSeqPep') || param('sel_cumPepNr') || param('sel_protVmod')) { # cumulated
 			foreach my $anaID (keys %analysisList) {
 				$sthPep2->execute($anaID);
 				my $tot='';
+				my ($prsOutputFile,%dataPhosphoRS);
 				if (param('sel_phosphoRS')) {
 					($prsOutputFile,my $validStatus)=$dbh->selectrow_array("SELECT DATA_FILE,VALID_STATUS FROM ANALYSIS WHERE ID_ANALYSIS=$anaID");
 					$prsOutputFile =~ s/\.\w{3}$/\.xml/;
 					if ($validStatus == 2) {
 						$prsOutputFile = (-e "$promsPath{peptide}/proj_$projectID/ana_$anaID/PRS_$prsOutputFile")? "$promsPath{peptide}/proj_$projectID/ana_$anaID/PRS_$prsOutputFile" : "$promsPath{peptide}/proj_$projectID/ana_$anaID/PRS_ana_$anaID.xml";
 					}
-					else{
+					else {
 						$prsOutputFile = (-e "$promsPath{valid}/ana_$anaID/PRS_$prsOutputFile")?"$promsPath{valid}/ana_$anaID/PRS_$prsOutputFile" : "$promsPath{valid}/ana_$anaID/PRS_ana_$anaID.xml";
 					}
 				}
 				my $prevProtID=0;
 				my (%bestPepScore,%refPeptide,%distinctPep);
-				while (my ($protID,$pepID,$pepSeq,$elutionTime,$modCode,$beg,$end,$flankingAA,$score,$charge,$massObs,$isSpec,$comments,$data,$specCount)=$sthPep2->fetchrow_array) {
+				while (my ($protID,$pepID,$qNum,$pepSeq,$elutionTime,$modCode,$beg,$end,$flankingAA,$score,$charge,$massObs,$isSpec,$comments,$data,$specCount)=$sthPep2->fetchrow_array) {
 					next unless $listProteins{$protID};
 					if ($protID != $prevProtID) { # reset for each prot
 						$numPeptides{$prevProtID}{'CUM_NR'}=scalar keys %distinctPep if (param('sel_cumPepNr') && $listProteins{$prevProtID});
@@ -1588,55 +1860,64 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 						$pepBoundaries{$protID}{$pepID}{$beg}=$end ;#if param('sel_posPep'); #order by pos !
 						$pepScores{$protID}{$pepID}=$score if param('sel_scorePep');
 						
-						if(param('sel_modPep') || param('sel_modPepProt') || param('sel_protVmod')) {
+						if (param('sel_modPep') || param('sel_modPepProt') || param('sel_protVmod')) {
 							($pepVarMods{$protID}{$pepID}= $vMod) =~ s/\[[0-9,]+\]//g;
 							($pepVarModsProt{$protID}{$pepID} = $vModProt) =~ s/\[[0-9,]+\]//g;
-							$pepVarModsComment{$protID}{$pepID} = generateVarModSummary($vModProt, $pepSeq, $beg-1);
+							$pepVarModsComment{$protID}{$pepID} = &generateVarModSummary($vModProt, $pepSeq, $beg-1);
 						}
 						
-						if(param('sel_etPep')) {
+						if (param('sel_etPep')) {
 							my @elutionTimeParsed = ( $elutionTime =~ /et([0-9.]+);?/);
 							$elutionTime = (scalar @elutionTimeParsed == 1) ? $elutionTimeParsed[0] : '-';
-							$pepElutionTime{$protID}{$pepID} = $elutionTime;
+							$pepElutionTime{$pepID} = $elutionTime;
 						}
 						
-						$pepCharge{$protID}{$pepID}=$charge if param('sel_chargePep');
-						if (param('sel_qvalPep') ){
+						$pepCharge{$pepID}=$charge if param('sel_chargePep');
+						if (param('sel_qvalPep')) {
 							if ($data && $data =~ /QVAL=([^,]+)/) {
 								$pepQValue{$protID}{$pepID}=$1;
 							}
-							else{
+							else {
 								$pepQValue{$protID}{$pepID}='-';
 							}
 						}
-						$pepMass{$protID}{$pepID}=$massObs if param('sel_massPep');
-						$pepComments{$protID}{$pepID}=$comments if param('sel_commentPep');
+						$pepMass{$pepID}=$massObs if param('sel_massPep');
+						$pepComments{$pepID}=$comments if param('sel_commentPep');
 						if (param('sel_isSpec')) {$isSpecific{$protID}{$pepID}=($isSpec)? 'Yes' : 'No';}
 						if (param('sel_phosphoRS')) {
 							if ($data && $data =~ /PRS=([^#]+)/) {
-								$pepPhosphoRS{$protID}{$pepID} = getPhosphoRsString($1);
-								$probPhosphoRS{$protID}{$pepID} = getPhosphoRsProbString($pepID,$pepSeq,$dbh,$prsOutputFile);
-							} else {
-								$pepPhosphoRS{$protID}{$pepID} = '-';
-								$probPhosphoRS{$protID}{$pepID} = '-';
+								$pepPhosphoRS{$pepID} = &getPhosphoRsString($1);
+								#$probPhosphoRS{$pepID} = &getPhosphoRsProbString($pepID,$pepSeq,$dbh,$prsOutputFile);
+								$dataPhosphoRS{$qNum}=$pepID;
 							}
+							else {
+								$pepPhosphoRS{$pepID} = '-';
+							}
+							$probPhosphoRS{$pepID} = '-'; # default
 						}
 					}
 					if (param('sel_protVmod')) {
 						$pepVarMods{$protID}{$pepID}=$vMod;
 						$pepBoundaries{$protID}{$pepID}{$beg}=$end;
 					}
-					if(param('sel_pepPSM')) {
+					if (param('sel_pepPSM')) {
 						$specCount=0 unless defined($specCount);
 						$protPSM{$protID}+=$specCount;
 					}
 					$numPeptides{$protID}{'CUM_ALL_TYPIC'}+=1;
 				}
 				$numPeptides{$prevProtID}{'CUM_NR'}=scalar keys %distinctPep if (param('sel_cumPepNr') && $listProteins{$prevProtID}); # for last protID in while loop
+				
+				#<Fetch all PRS probabilities
+				if (param('sel_phosphoRS') && scalar keys %pepPhosphoRS) {
+					&getPhosphoRsProbString($prsOutputFile,\%pepPhosphoRS,\%dataPhosphoRS,\%probPhosphoRS);
+				}
+				
+				&printWaitingMsg('.','+=');	
 			}
 		}
 		$sthPep2->finish;
-
+		
 		##<finding 1st start for all pep/prot>## (used to sort peptides in list)
 		foreach my $protID (keys %pepBoundaries) {
 			foreach my $pepID (keys %{$pepBoundaries{$protID}}) {
@@ -1651,18 +1932,28 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 			}
 
 			#my $sthquery = $dbh->prepare("SELECT PEPTIDE.QUERY_NUM, ANALYSIS.FILE_FORMAT FROM PEPTIDE, ANALYSIS WHERE PEPTIDE.ID_PEPTIDE = ? AND ANALYSIS.ID_ANALYSIS IN (SELECT PEPTIDE.ID_ANALYSIS FROM PEPTIDE WHERE ID_PEPTIDE = ?)");
-			my $sthPep=$dbh->prepare("SELECT QUERY_NUM FROM PEPTIDE WHERE ID_PEPTIDE=?");
 			my $sthAna=$dbh->prepare("SELECT DATA_FILE,FILE_FORMAT FROM ANALYSIS WHERE ID_ANALYSIS=?");
+			#my $sthPep=$dbh->prepare("SELECT QUERY_NUM FROM PEPTIDE WHERE ID_PEPTIDE=?");
 
 			foreach my $anaID (keys (%tempAnaPep)) {
 				$sthAna->execute($anaID);
 				my ($fileName,$fileFormat)=$sthAna->fetchrow_array;
 				my %queryNumList; # queryNumList {query_Number} = pep_ID
-				foreach my $pepID (keys (%{$tempAnaPep{$anaID}})) {
-					$sthPep->execute($pepID);
-					my ($queryNum)=$sthPep->fetchrow_array;
-					$queryNumList{$queryNum}=$pepID;
-					$pepTitle{$pepID}{'title'}='Not found'; # default
+				#foreach my $pepID (keys (%{$tempAnaPep{$anaID}})) {
+				#	$sthPep->execute($pepID);
+				#	my ($queryNum)=$sthPep->fetchrow_array;
+				#	$queryNumList{$queryNum}=$pepID;
+				#	$pepTitle{$pepID}{'title'}='Not found'; # default
+				#}
+				my @pepList=(keys (%{$tempAnaPep{$anaID}}));
+				while (my @subPepIDs=splice(@pepList,0,2000)) {
+					my $sthPep=$dbh->prepare("SELECT ID_PEPTIDE,QUERY_NUM FROM PEPTIDE WHERE ID_PEPTIDE IN (".join(',',@subPepIDs).")");
+					$sthPep->execute;
+					while (my ($pepID,$queryNum)=$sthPep->fetchrow_array) {
+						$queryNumList{$queryNum}=$pepID;
+						$pepTitle{$pepID}{'title'}='Not found'; # default
+					}
+					$sthPep->finish;
 				}
 
 				my $onQuery=0;
@@ -1691,17 +1982,17 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 					}
 				}
 				close DESC;
+				&printWaitingMsg('.','+=');	
 			}
-			$sthPep->finish;
+			#$sthPep->finish;
 			$sthAna->finish;
 		}
-
 	}
 
 	# Fetching peptide var mods for each protein
 	my %protVarMods;
 	if (param('sel_protVmod')) {
-		foreach my $protID (keys %listProteins){
+		foreach my $protID (keys %listProteins) {
 			my %varMod;
 			foreach my $pepID (keys %{$pepVarMods{$protID}}){
 				my $vmodString = $pepVarMods{$protID}{$pepID};
@@ -1747,13 +2038,15 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 	################################
 	####<Printing data in table>####
 	################################
+	&printWaitingMsg('/','+=');
+	
 	####<No proteins>####
 	if (scalar (keys %listProteins)==0) {
 		if ($exportFormat eq 'XLS') {
 			$worksheet->merge_range(++$xlsRow,0,$xlsRow,$colSpan-1,'No proteins',$format{'mergeText'});
 		}
-		else {print "<TR><TD colspan=$colSpan>&nbsp;No proteins</TD></TR>\n";}
-		#print "<TR><TD colspan=$colSpan>&nbsp</TD></TR>\n";
+		else {print HTML "<TR><TD colspan=$colSpan>&nbsp;No proteins</TD></TR>\n";}
+		#print HTML "<TR><TD colspan=$colSpan>&nbsp</TD></TR>\n";
 		return;
 	}
 
@@ -1793,19 +2086,19 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 		$xlsRow++;
 	}
 	else { # HTML
-		print "<TR>\n";
+		print HTML "<TR>\n";
 		foreach my $colName (@selColName) {
 			$colName=~s/#ITEM#/$itemType/;
-			if ($colName eq "Matching${addColMatchPeptides}peptides") {print "<TH colspan=$colSpanNumPep bgcolor=\"$color1\">$colName</TH>\n";}
-			elsif ($colName=~/^Peptide data/) {print "<TH colspan=$colSpanPep bgcolor=\"$color1\">$colName</TH>\n";}
-			else {print "<TH rowspan=$rowSpan bgcolor=\"$color1\">$colName</TH>\n";}
+			if ($colName eq "Matching${addColMatchPeptides}peptides") {print HTML "<TH colspan=$colSpanNumPep bgcolor=\"$color1\">$colName</TH>\n";}
+			elsif ($colName=~/^Peptide data/) {print HTML "<TH colspan=$colSpanPep bgcolor=\"$color1\">$colName</TH>\n";}
+			else {print HTML "<TH rowspan=$rowSpan bgcolor=\"$color1\">$colName</TH>\n";}
 		}
-		print "</TR>\n";
+		print HTML "</TR>\n";
 		if ($rowSpan==2) {
-			print "<TR>\n";
-			foreach my $colName (@numPepColumns) {$colName=~s/#ITEM#/$itemType/; print "<TH bgcolor=\"$color1\">$colName</TH>\n";}
-			foreach my $colName (@selPepColName) {print "<TH bgcolor=\"$color1\">$colName</TH>\n";}
-			print "</TR>\n";
+			print HTML "<TR>\n";
+			foreach my $colName (@numPepColumns) {$colName=~s/#ITEM#/$itemType/; print HTML "<TH bgcolor=\"$color1\">$colName</TH>\n";}
+			foreach my $colName (@selPepColName) {print HTML "<TH bgcolor=\"$color1\">$colName</TH>\n";}
+			print HTML "</TR>\n";
 		}
 	}
 
@@ -1818,13 +2111,13 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 		$sortPep=(param('sel_cumPepAll'))? 'CUM_ALL' : (param('sel_cumPepNr'))? 'CUM_NR' : (param('sel_pepNr'))? 'BA_NR' : 'BA_ALL';
 	}
 	my $rowColor=$rowColor1;
-	my $protCount=0;
+	$protCount=0;
 	foreach my $protID (sort{&sortRule($view,$sortPep)} keys %listProteins) {
 		$protCount++;
 		my $numListedPep=scalar keys %{$pepSequences{$protID}};
 		my $xlsEndRow=$xlsRow+$numListedPep-1;
 		my $rowSpanStrg=($pepSequences{$protID})? "rowspan=$numListedPep" : '';
-		print "<TR valign=top>\n" if $exportFormat ne 'XLS';
+		print HTML "<TR valign=top>\n" if $exportFormat ne 'XLS';
 
 		##<Protein data
 		my $xlsCol=0;
@@ -1855,23 +2148,23 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 			}
 		}
 		else { # HTML
-			print "<TD $rowSpanStrg bgcolor=\"$rowColor\" align=\"right\">$protCount</TD>";
+			print HTML "<TD $rowSpanStrg bgcolor=\"$rowColor\" align=\"right\">$protCount</TD>";
 			my $linkedIdentifier=($linkURL)? "<A href=\"$linkURL\" target=\"_blank\">$listProteins{$protID}[0]</A>" : $listProteins{$protID}[0];
 			if ($confLevel{$protID}==0) { # virtual prot
-				print "<TD $rowSpanStrg bgcolor=\"$rowColor\"><I>$linkedIdentifier</I></TD>";
+				print HTML "<TD $rowSpanStrg bgcolor=\"$rowColor\"><I>$linkedIdentifier</I></TD>";
 				$badConfidence=1;
 			}
 			elsif ($confLevel{$protID}==1) { # bad confidence
-				print "<TD $rowSpanStrg bgcolor=\"$rowColor\"><FONT color=\"DimGray\">$linkedIdentifier</FONT></TD>";
+				print HTML "<TD $rowSpanStrg bgcolor=\"$rowColor\"><FONT color=\"DimGray\">$linkedIdentifier</FONT></TD>";
 				$badConfidence=1;
 			}
-			else {print "<TD $rowSpanStrg bgcolor=\"$rowColor\">$linkedIdentifier</TD>";}
+			else {print HTML "<TD $rowSpanStrg bgcolor=\"$rowColor\">$linkedIdentifier</TD>";}
 			my $colPos=1;
 			foreach my $colData (@{$listProteins{$protID}}[1..$#{$listProteins{$protID}}]) {
-				print "<TD $rowSpanStrg bgcolor=\"$rowColor\">$colData</TD>";
+				print HTML "<TD $rowSpanStrg bgcolor=\"$rowColor\">$colData</TD>";
 				$colPos++;
 			}
-			print "\n";
+			print HTML "\n";
 		}
 
 		##<Mapping data
@@ -1916,10 +2209,10 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 								$listURL.='<BR>' if $listURL;
 								$listURL.='<A href="'.$refLink->[0].'" target="_blank">'.$refLink->[1].'</A>';
 							}
-							print "<TD $rowSpanStrg bgcolor=\"$rowColor\">$listURL</TD>";
+							print HTML "<TD $rowSpanStrg bgcolor=\"$rowColor\">$listURL</TD>";
 						}
 						else { # no link for this code
-							print "<TD $rowSpanStrg bgcolor=\"$rowColor\">",join('<BR>',@{$proteinMappings{$protID}{$code}}),"</TD>";
+							print HTML "<TD $rowSpanStrg bgcolor=\"$rowColor\">",join('<BR>',@{$proteinMappings{$protID}{$code}}),"</TD>";
 						}
 					}
 				}
@@ -1928,10 +2221,10 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 						if ($numListedPep > 1) {$worksheet->merge_range($xlsRow,++$xlsCol,$xlsEndRow,$xlsCol,'-',$format{'mergeText'});}
 						else {$worksheet->write_string($xlsRow,++$xlsCol,'-',$format{'text'});}
 					}
-					else {print "<TD $rowSpanStrg bgcolor=\"$rowColor\">&nbsp;</TD>";}
+					else {print HTML "<TD $rowSpanStrg bgcolor=\"$rowColor\">&nbsp;</TD>";}
 				}
 			}
-			print "\n" if $exportFormat ne 'XLS';
+			print HTML "\n" if $exportFormat ne 'XLS';
 		}
 
 		##<Match data
@@ -1982,27 +2275,27 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 			}
 		}
 		else { # HTML
-			print "<TD $rowSpanStrg bgcolor=\"$rowColor\">$proteinMGrHead{$protID}</TD>" if param('sel_matchGr');
-			print "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">$timesFound{$protID}</TD>" if param('sel_times');
-			print "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">$bestScore{$protID}</TD>" if param('sel_score');
-			print "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">$protPSM{$protID}</TD>" if param('sel_pepPSM');
-			print "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">$numPeptides{$protID}{BA_ALL}</TD>" if param('sel_pepAll') && param('sel_pepType') eq 'ALL';
-			print "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">$numPeptides{$protID}{BA_ALL_TYPIC}</TD>" if param('sel_pepAll') && param('sel_pepType') eq 'TYPIC';
-			print "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">$numPeptides{$protID}{BA_NR}</TD>" if param('sel_pepNr');
-			print "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">$numPeptides{$protID}{CUM_ALL}</TD>" if param('sel_cumPepAll') && param('sel_pepType') eq 'ALL';
-			print "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">$numPeptides{$protID}{CUM_ALL_TYPIC}</TD>" if param('sel_cumPepAll') && param('sel_pepType') eq 'TYPIC';
-			print "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">$numPeptides{$protID}{CUM_NR}</TD>" if param('sel_cumPepNr');
+			print HTML "<TD $rowSpanStrg bgcolor=\"$rowColor\">$proteinMGrHead{$protID}</TD>" if param('sel_matchGr');
+			print HTML "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">$timesFound{$protID}</TD>" if param('sel_times');
+			print HTML "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">$bestScore{$protID}</TD>" if param('sel_score');
+			print HTML "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">$protPSM{$protID}</TD>" if param('sel_pepPSM');
+			print HTML "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">$numPeptides{$protID}{BA_ALL}</TD>" if param('sel_pepAll') && param('sel_pepType') eq 'ALL';
+			print HTML "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">$numPeptides{$protID}{BA_ALL_TYPIC}</TD>" if param('sel_pepAll') && param('sel_pepType') eq 'TYPIC';
+			print HTML "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">$numPeptides{$protID}{BA_NR}</TD>" if param('sel_pepNr');
+			print HTML "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">$numPeptides{$protID}{CUM_ALL}</TD>" if param('sel_cumPepAll') && param('sel_pepType') eq 'ALL';
+			print HTML "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">$numPeptides{$protID}{CUM_ALL_TYPIC}</TD>" if param('sel_cumPepAll') && param('sel_pepType') eq 'TYPIC';
+			print HTML "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">$numPeptides{$protID}{CUM_NR}</TD>" if param('sel_cumPepNr');
 			if (param('sel_cov')) {
-				if ($pepCoverage{$protID} && $pepCoverage{$protID}{'BA'}) {printf "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">%.1f</TD>",$pepCoverage{$protID}{'BA'};}
-				else {print "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">N/A</TD>";}
+				if ($pepCoverage{$protID} && $pepCoverage{$protID}{'BA'}) {printf HTML "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">%.1f</TD>",$pepCoverage{$protID}{'BA'};}
+				else {print HTML "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">N/A</TD>";}
 			}
 			if (param('sel_cumCov')) {
-				if ($pepCoverage{$protID} && $pepCoverage{$protID}{'CUM'}) {printf "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">%.1f</TD>",$pepCoverage{$protID}{'CUM'};}
-				else {print "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">N/A</TD>";}
+				if ($pepCoverage{$protID} && $pepCoverage{$protID}{'CUM'}) {printf HTML "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">%.1f</TD>",$pepCoverage{$protID}{'CUM'};}
+				else {print HTML "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">N/A</TD>";}
 			}
-			print "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">$protSpecificity{$protID}{BA}</TD>" if param('sel_spec');
-			print "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">$protSpecificity{$protID}{BI}</TD>" if param('sel_bestSpec');
-			print "\n";
+			print HTML "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">$protSpecificity{$protID}{BA}</TD>" if param('sel_spec');
+			print HTML "<TD $rowSpanStrg align=center bgcolor=\"$rowColor\">$protSpecificity{$protID}{BI}</TD>" if param('sel_bestSpec');
+			print HTML "\n";
 		}
 
 		###<Listing peptides>###
@@ -2018,9 +2311,9 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 					$worksheet->write_string($pepRow,++$pepCol,$pepVarMods{$protID}{$pepID},$format{'text'}) if (param('sel_modPep'));
 					$worksheet->write_string($pepRow,++$pepCol,$pepVarModsProt{$protID}{$pepID},$format{'text'}) if (param('sel_modPepProt'));
 					$worksheet->write_string($pepRow,++$pepCol,$pepVarModsComment{$protID}{$pepID},$format{'text'}) if (param('sel_modPepProt') || param('sel_modPep'));
-					$worksheet->write_string($pepRow,++$pepCol,$pepElutionTime{$protID}{$pepID},$format{'text'}) if (param('sel_etPep'));
-					$worksheet->write_string($pepRow,++$pepCol,$pepPhosphoRS{$protID}{$pepID},$format{'text'}) if param('sel_phosphoRS');
-					$worksheet->write_string($pepRow,++$pepCol,$probPhosphoRS{$protID}{$pepID},$format{'text'}) if param('sel_phosphoRS');
+					$worksheet->write_string($pepRow,++$pepCol,$pepElutionTime{$pepID},$format{'text'}) if (param('sel_etPep'));
+					$worksheet->write_string($pepRow,++$pepCol,$pepPhosphoRS{$pepID},$format{'text'}) if param('sel_phosphoRS');
+					$worksheet->write_string($pepRow,++$pepCol,$probPhosphoRS{$pepID},$format{'text'}) if param('sel_phosphoRS');
 					if (param('sel_posPep')) {
 						my $posString='';
 						foreach my $beg (sort{$a<=>$b} keys %{$pepBoundaries{$protID}{$pepID}}) {
@@ -2033,9 +2326,9 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 					$worksheet->write_string($pepRow,++$pepCol,$isSpecific{$protID}{$pepID},$format{'text'}) if param('sel_isSpec');
 					$worksheet->write_number($pepRow,++$pepCol,$pepScores{$protID}{$pepID},$format{'number'}) if param('sel_scorePep');
 					$worksheet->write_number($pepRow,++$pepCol,$pepQValue{$protID}{$pepID},$format{'text'}) if param('sel_qvalPep');
-					$worksheet->write_number($pepRow,++$pepCol,$pepCharge{$protID}{$pepID},$format{'number'}) if param('sel_chargePep');
-					$worksheet->write_number($pepRow,++$pepCol,$pepMass{$protID}{$pepID},$format{'number3d'}) if param('sel_massPep');
-					$worksheet->write_string($pepRow,++$pepCol,$pepComments{$protID}{$pepID},$format{'text'}) if param('sel_commentPep');
+					$worksheet->write_number($pepRow,++$pepCol,$pepCharge{$pepID},$format{'number'}) if param('sel_chargePep');
+					$worksheet->write_number($pepRow,++$pepCol,$pepMass{$pepID},$format{'number3d'}) if param('sel_massPep');
+					$worksheet->write_string($pepRow,++$pepCol,$pepComments{$pepID},$format{'text'}) if param('sel_commentPep');
 					$worksheet->write_string($pepRow,++$pepCol,$pepTitle{$pepID}{title},$format{'text'}) if param('sel_titlePep');
 					$pepRow++;
 				}
@@ -2048,16 +2341,16 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 				my $pepCount=0;
 				foreach my $pepID (sort{$firstPepStart{$protID}{$a} <=> $firstPepStart{$protID}{$b} || length($pepSequences{$protID}{$a}) <=> length($pepSequences{$protID}{$b})} keys %{$pepSequences{$protID}}) {
 					$pepCount++;
-					#print "<TR>" unless $firstPep;
-					print "<TR>" if $pepCount>1;
+					#print HTML "<TR>" unless $firstPep;
+					print HTML "<TR>" if $pepCount>1;
 					#$firstPep=0;
-					print "<TD align=right bgcolor=\"$rowColor\">$pepCount</TD><TD bgcolor=\"$rowColor\">$pepSequences{$protID}{$pepID}</TD>";
-					print "<TD bgcolor=\"$rowColor\">$pepVarMods{$protID}{$pepID}</TD>" if (param('sel_modPep')); 
-					print "<TD bgcolor=\"$rowColor\">$pepVarModsProt{$protID}{$pepID}</TD>" if (param('sel_modPepProt'));
-					print "<TD bgcolor=\"$rowColor\">$pepVarModsComment{$protID}{$pepID}</TD>" if (param('sel_modPepProt') || param('sel_modPep'));
-					print "<TD bgcolor=\"$rowColor\">$pepElutionTime{$protID}{$pepID}</TD>" if (param('sel_etPep')); 
-					print "<TD bgcolor=\"$rowColor\">$pepPhosphoRS{$protID}{$pepID}</TD>" if param('sel_phosphoRS');
-					print "<TD bgcolor=\"$rowColor\">$probPhosphoRS{$protID}{$pepID}</TD>" if param('sel_phosphoRS');
+					print HTML "<TD align=right bgcolor=\"$rowColor\">$pepCount</TD><TD bgcolor=\"$rowColor\">$pepSequences{$protID}{$pepID}</TD>";
+					print HTML "<TD bgcolor=\"$rowColor\">$pepVarMods{$protID}{$pepID}</TD>" if (param('sel_modPep')); 
+					print HTML "<TD bgcolor=\"$rowColor\">$pepVarModsProt{$protID}{$pepID}</TD>" if (param('sel_modPepProt'));
+					print HTML "<TD bgcolor=\"$rowColor\">$pepVarModsComment{$protID}{$pepID}</TD>" if (param('sel_modPepProt') || param('sel_modPep'));
+					print HTML "<TD bgcolor=\"$rowColor\">$pepElutionTime{$pepID}</TD>" if (param('sel_etPep')); 
+					print HTML "<TD bgcolor=\"$rowColor\">$pepPhosphoRS{$pepID}</TD>" if param('sel_phosphoRS');
+					print HTML "<TD bgcolor=\"$rowColor\">$probPhosphoRS{$pepID}</TD>" if param('sel_phosphoRS');
 
 					if (param('sel_posPep')) {
 						my $posString='';
@@ -2065,27 +2358,28 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 							$posString.=',' if $posString;
 							$posString.="$beg..$pepBoundaries{$protID}{$pepID}{$beg}";
 						}
-						print "<TD bgcolor=\"$rowColor\">$posString</TD>";
+						print HTML "<TD bgcolor=\"$rowColor\">$posString</TD>";
 					}
-					print "<TD align=center bgcolor=\"$rowColor\">",scalar keys %{$pepBoundaries{$protID}{$pepID}},"</TD>" if param('sel_occPep');
-					print "<TD align=center bgcolor=\"$rowColor\">$isSpecific{$protID}{$pepID}</TD>" if param('sel_isSpec');
-					print "<TD align=center bgcolor=\"$rowColor\">$pepScores{$protID}{$pepID}</TD>" if param('sel_scorePep');
-					print "<TD align=center bgcolor=\"$rowColor\">$pepQValue{$protID}{$pepID}</TD>" if param('sel_qvalPep');
-					print "<TD align=center bgcolor=\"$rowColor\">$pepCharge{$protID}{$pepID}</TD>" if param('sel_chargePep');
-					printf "<TD align=center bgcolor=\"$rowColor\">%.3f</TD>",$pepMass{$protID}{$pepID} if param('sel_massPep');
-					print "<TD bgcolor=\"$rowColor\">$pepComments{$protID}{$pepID}</TD>" if param('sel_commentPep');
-					print "<TD bgcolor=\"$rowColor\">$pepTitle{$pepID}{title}</TD>" if param('sel_titlePep');
-					print "</TR>\n";
+					print HTML "<TD align=center bgcolor=\"$rowColor\">",scalar keys %{$pepBoundaries{$protID}{$pepID}},"</TD>" if param('sel_occPep');
+					print HTML "<TD align=center bgcolor=\"$rowColor\">$isSpecific{$protID}{$pepID}</TD>" if param('sel_isSpec');
+					print HTML "<TD align=center bgcolor=\"$rowColor\">$pepScores{$protID}{$pepID}</TD>" if param('sel_scorePep');
+					print HTML "<TD align=center bgcolor=\"$rowColor\">$pepQValue{$protID}{$pepID}</TD>" if param('sel_qvalPep');
+					print HTML "<TD align=center bgcolor=\"$rowColor\">$pepCharge{$pepID}</TD>" if param('sel_chargePep');
+					printf HTML "<TD align=center bgcolor=\"$rowColor\">%.3f</TD>",$pepMass{$pepID} if param('sel_massPep');
+					print HTML "<TD bgcolor=\"$rowColor\">$pepComments{$pepID}</TD>" if param('sel_commentPep');
+					print HTML "<TD bgcolor=\"$rowColor\">$pepTitle{$pepID}{title}</TD>" if param('sel_titlePep');
+					print HTML "</TR>\n";
 				}
 			}
-			else {print "\n</TR>\n";}
+			else {print HTML "\n</TR>\n";}
 		}
 		$xlsRow++ unless $numListedPep;
 		# set row color
 		$rowColor=($rowColor eq $rowColor1)? $rowColor2: $rowColor1;
+		&printWaitingMsg('.','+=') unless $protCount % 1000;	
 	}
 	$xlsRow-- if $exportFormat eq 'XLS';
-	#print "<TR><TD colspan=$colSpan>&nbsp</TD></TR>\n";
+	#print HTML "<TR><TD colspan=$colSpan>&nbsp</TD></TR>\n";
 }
 
 ############## Protein sort subroutines #########
@@ -2131,36 +2425,51 @@ sub getPhosphoRsString{
 	return $prsString;
 }
 
-sub getPhosphoRsProbString{
-	my ($pepID,$pepSeq,$dbh,$prsOutputFile) = @_;
-	my $prsString='';
-	my ($qNum,$rank) = $dbh->selectrow_array("SELECT QUERY_NUM, PEP_RANK FROM PEPTIDE WHERE ID_PEPTIDE=$pepID");
-
-	my ($spectrumOK,$sitePredictionOK) = (0,0);
+sub getPhosphoRsProbString {
+	my ($prsOutputFile,$refPepPhosphoRS,$refDataPhosphoRS,$refProbPhosphoRS) = @_;
+	return unless -e $prsOutputFile;
+	
+	my ($spectrumOK,$sitePredictionOK,$currentPepID) = (0,0,0);
 	my @positions=();
-
-	open XML, $prsOutputFile or return "-";
+	open (XML,$prsOutputFile);
     while(<XML>){
-		if(/<Spectrum ID="$qNum">/){
+		if (/<Spectrum ID="(\d+)">/ && $refDataPhosphoRS->{$1}) {
+			$currentPepID=$refDataPhosphoRS->{$1};
 			$spectrumOK = 1;
-		} elsif ($spectrumOK and /<SitePrediction>/){
-			$sitePredictionOK = 1;
-		} elsif ($spectrumOK and /<\/SitePrediction>/){
-			last;
-		} elsif ($spectrumOK and $sitePredictionOK){
-			my ($info1,$pos,$info2,$prob,@infos)=split(/\"/,$_);
-			$prob = sprintf("%.2f", 100*$prob) . "%";
-			push @positions,"$pos($prob)";
+		}
+		elsif ($spectrumOK) {
+			if (/<SitePrediction>/) {$sitePredictionOK = 1;}
+			elsif (/<\/SitePrediction>/) {
+				$refProbPhosphoRS->{$currentPepID}=join(', ',@positions);
+				($spectrumOK,$sitePredictionOK,$currentPepID) = (0,0,0);
+				@positions=();
+			}
+			elsif ($sitePredictionOK) {
+				my ($info1,$pos,$info2,$prob,@infos)=split(/\"/,$_);
+				$prob = sprintf("%.2f", 100*$prob) . "%";
+				push @positions,"$pos($prob)";
+			}
 		}
     }
     close XML;
-
-	return join(', ',@positions);
 }
 
+sub printWaitingMsg {
+	my ($msg, $append) = @_;
+	my $appendHTML = ($append) ? "+=" : "=";
+	print qq
+|<SCRIPT type="text/javascript">document.getElementById('waitSPAN').innerHTML $appendHTML '$msg';</SCRIPT>
+|;
+}
 
 ####>Revision history<####
-# 2.4.3 Fix issue with search files export having a different name than sample/analysis, depending on context (VS 13/03/2019)
+# 2.5.2 [ENHANCEMENT] Optimized PhosphoRS file parsing for positions probablility (PP 29/01/20)
+# 2.5.1 [CHANGES] Add more robustness to search files export (VS 08/01/20)
+# 2.5.0 [ENHANCEMENT] File(s) stored server-side to prevents server timeout & [FEATURE] List exclusion/restriction for project hierarchy (PP 07/11/19) 
+# 2.4.6 [ENHANCEMENT] Handles search files runned multiple times : searchFile-(X).msf/dat (VS 30/10/19)
+# 2.4.5 [BUGFIX] Fix amount of peptides in best analysis and cumulative coverage value computing (VS 28/10/19)
+# 2.4.4 [FEATURE] Remove locked experiments from exportable proteins queries (VS 08/08/19)
+# 2.4.3 Fix issue with search files export having a different name than sample/analysis, depending on context (VS 13/03/19)
 # 2.4.2 Added possibility to export whole analyses files: .msf (VS 26/02/19)
 # 2.4.1 Added new export options: variable modifications based on protein sequence + retention time (VS 14/12/18)
 # 2.4.0 Faster form display by moving mapped identifiers detection to user-dependent ajax call (PP 11/04/18)

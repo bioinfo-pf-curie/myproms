@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# exportSwathLibrary.cgi         1.1.8                                         #
+# exportSwathLibrary.cgi         1.2.0                                         #
 # Authors: M. Le Picard (Institut Curie)                                       #
 # Contact: myproms@curie.fr                                                    #
 #Export a librarie available in myProMS  for peakview or openswath             #
@@ -51,15 +51,11 @@ use IO::Handle;
 use promsConfig;
 use File::Copy;
 use File::Basename;
-use XML::Simple;
 use promsMod;
-use LWP::UserAgent;
-use Data::Dumper;
-use promsDIA;
+use promsDIARefonte;
 use String::Util qw(trim);
 use File::Compare;
 use POSIX qw(strftime); # to get the time
-
 
 my %promsPath=&promsConfig::getServerInfo;
 my ($lightColor,$darkColor)=&promsConfig::getRowColors;
@@ -179,7 +175,7 @@ unless ($action){
                 </TR>
                 <TR><TH align=right valign="top">Files : </TH>
                     <TD bgcolor="$lightColor">
-                        Windows SWATH file : <INPUT onmouseover="popup('File containing the swath ranges.')" onmouseout="popout()" type="file" name="-w" required><BR>
+                        Windows SWATH file : <INPUT onmouseover="popup('File containing the swath ranges.')" onmouseout="popout()" type="file" name="swathfile" required><BR>
                         File with modifications delta mass* : <INPUT onmouseover="popup('File with the modifications not specified by default.')" onmouseout="popout()" type="file" name="-m" ><BR>
                         <SMALL>*File headers : modified-AA TPP-nomenclature Unimod-Accession ProteinPilot-nomenclature is_a_labeling composition-dictionary<BR>
                         An example : S S[167] 21 [Pho] False {'H':1,'O':3,'P':1}</SMALL><BR>
@@ -260,51 +256,52 @@ if($action){
             <BR><BR><IMG src='$promsPath{images}/engrenage.gif'>
     |;
     
-    
-    
-    
-    my $workDir="$promsPath{swath_lib}/SwLib_$libID";
+    my $workDir = "$promsPath{tmp}/Swath/export_swath_lib_$libID";
+    system("mkdir -p $workDir");
     
     #############################
     ###> fetching parameters <###
     #############################
-    my ($w,$k,$p,$g,$f,$t,$y,$m,$labelling)=(param('-w'),param('-k'),param('-p'),param('-g'),param('-f'),param('-t'),param('-y'),param('-m'),param('-i'));
-    my $other;
-    foreach my $val (param('other')){
-        $other.="$val ";
-    }
-    my $libraryID=param('ID');
+    my ($swathWindows, $unimod, $w, $m, $fasta, $labelling);
+    my $libraryID = param('ID');
+    my $format = (param('-k')) ? param('-k') : 'openswath'; # peakview, openswath, spectronaut
     
-    my ($lMax,$lMin,$s,$x,$n,$o);
-    if ($other){
-        ($lMax,$lMin,$s,$x,$n,$o,$other)=&promsMod::cleanParameters(param('-lmax'),param('-lmin'),param('-s'),param('-x'),param('-n'),param('-o'),$other) ;
-    }
-    else{($lMax,$lMin,$s,$x,$n,$o)=&promsMod::cleanParameters(param('-lmax'),param('-lmin'),param('-s'),param('-x'),param('-n'),param('-o'));}
+    my $pepMod = param('pepMod');
+    $pepMod = ($pepMod) ? $pepMod : '';
     
-    my $pepMod=param('pepMod');
-    $pepMod=($pepMod)? $pepMod : '';
-    
-    my $protList=param('protList');
-    $protList=($protList) ? $protList : '';
+    my $protList = param('protList');
+    $protList = ($protList) ? $protList : '';
     if ($protList) {
-        my $file=tmpFileName($protList);
-        my $newDir="$workDir/proteinList.txt";
-        move($file,$newDir);
+        my $file = tmpFileName($protList);
+        my $newDir = "$workDir/proteinList.txt";
+        move($file, $newDir);
     }
     
-    if ($m){
-        my $newFile=tmpFileName($m);
-        my $newDir="$workDir/$m";
-        move($newFile,$newDir);
+    ### Upload TPP Window file
+    $w = param('swathfile');
+    if($w){
+        uploadFile($workDir, $w);
     }
     
-    ###> Move Swath windows file into workDir
-    my $swathFile=tmpFileName($w);
-    my $swathFileDir="$workDir/$w";
-    move($swathFile,$swathFileDir);
+    ### Upload modifications file
+    $m = param('-m');
+    if($m) {
+        uploadFile($workDir, $m);
+    }
+    
+    ### Labelling file
+    $labelling = param("-i");
+    if($labelling) {
+        uploadFile($workDir, $labelling);
+    }
+    
+    ### Fasta file
+    $fasta = param("-f");
+    if($fasta) {
+        uploadFile($workDir, $fasta);
+    }
     
     ###> loading div
-    
     print "<BR><BR><FONT color=\"red\"><DIV id=\"waitDIV\"></DIV></FONT><BR>";
     print "<BR><DIV id=\"loadingDIV\"></DIV><SPAN id=\"loadingSPAN\"></SPAN>";
     my $loadingDivID="document.getElementById('loadingDIV')";
@@ -315,19 +312,39 @@ if($action){
     my %libraryParams = (
         "ID"      => $libID,
         "name"    => $libraryName,
-        "dir"     => $workDir,
+        "dir"     => "$promsPath{swath_lib}/SwLib_$libID",
         "version" => $libVersion,
     );
     
-    DIAWorkflow::new($workDir, \%promsPath, \%libraryParams);
+    DIAWorkflow::new($workDir, undef, \%promsPath, \%libraryParams);
+    
+    # Mass range (lmin/lmax), Ion series (s) and charge (x), Number of ions per peptide (min: o / max: n)
+    my ($lMax, $lMin, $s, $x, $o, $n) = &promsMod::cleanParameters(param('-lmax'), param('-lmin'), param('-s'), param('-x'), param('-o'), param('-n'));
+    
+    # Maximum error (p), Allowed fragment mass modif (g), Fasta file (f), Time scale (t), UIS order (y), Labelling file (i == labelling)
+    my ($p, $g, $t, $y) = &promsMod::cleanParameters(param('-p'), param('-g'), param('-t'), param('-y'));
+    
+    $labelling = "$workDir/$labelling" if($labelling);
+    $w = "$workDir/$w" if($w);
+    $fasta = "$workDir/$fasta" if($fasta);
+    $m = "$workDir/$m" if($m);
+    
+    # Process other parameters (-d: remove duplicate masses / -e: use theorical mass)
+    my $other = '';
+    if (param('other')) {
+        foreach my $value (param('other')) {
+            $other .= " $value";
+        }
+        $other = &promsMod::cleanParameters($other);
+    }
     
     my %exportParams = (
         "lmin" => $lMin, "lmax" => $lMax, "s" => $s, "x" => $x, "o" => $o, "n" => $n,
-        "p" => $p, "g" => $g, "f" => $f, "t" => $t, "y" => $y, "i" => $labelling, "m" => $m, "other" => $other,
-        "w" => $w, "format" => $k,
+        "p" => $p, "g" => $g, "f" => $fasta, "t" => $t, "y" => $y, "i" => $labelling, "m" => $m, "other" => $other,
+        "w" => $w, "format" => $format,
     );
     
-    my ($finalFile, $paramFile) = DIAWorkflow::exportLibrary(\%exportParams, $dbh, $pepMod, 0, $protList, $processText, $loadingDivID, $loadingSPAN);
+    my ($finalFile, $paramFile) = DIAWorkflow::exportLibrary(\%exportParams, $pepMod, 0, $protList, $processText, $loadingDivID, $loadingSPAN);
     
     ###> deleting temporary files
     system "rm $workDir/$w ;";
@@ -336,14 +353,18 @@ if($action){
     system "rm $workDir/convertopenswath.sptxt" if  -e "$workDir/convertopenswath.sptxt";
     system "rm $workDir/$libraryName\_peakview.tsv" if  -e "$workDir/$libraryName\_peakview.tsv";
     system "rm $workDir/proteinList.txt" if -e "$workDir/proteinList.txt";
+    system "rm $m" if($m);
+    system "rm $w" if($w);
+    system "rm $fasta" if($fasta);
+    system "rm $labelling" if($labelling);
     
     ###> Link to upload the final file : 
     print "<B>Done.</B><BR></DIV><BR>";
     print qq
     |   
         <SCRIPT LANGAGE="JavaScript">$loadingDivID.innerHTML="";$loadingSPAN.innerHTML="";</SCRIPT>
-        <BR><BR><A class="button" href="$promsPath{swath_lib_html}/SwLib_$libID/$finalFile" download><B>Download $k file</B></A>
-        <BR><BR><A class="button" href="$promsPath{swath_lib_html}/SwLib_$libID/$paramFile" download><B>Download param file</B></A><BR><BR><BR><BR><BR><BR>
+        <BR><BR><A class="button" href="$promsPath{tmp_html}/Swath/export_swath_lib_$libID/$finalFile" download><B>Download $format file</B></A>
+        <BR><BR><A class="button" href="$promsPath{tmp_html}/Swath/export_swath_lib_$libID/$paramFile" download><B>Download param file</B></A><BR><BR><BR><BR><BR><BR>
         <INPUT type="button" class="buttonadd" value="Return to spectral libraries list." onclick="window.location='./listSwathLibraries.cgi'"></CENTER>
     </CENTER>
     </BODY>
@@ -358,11 +379,26 @@ print qq
 $dbh->disconnect; 
 
 
-
-
-
+sub uploadFile {
+    my ($destFolder, $fileName) = @_;
+    
+    if($fileName) {
+        my $newFileDir = "$destFolder/".basename($fileName);
+        
+        if(not -e $newFileDir) {
+            my $newFile = tmpFileName($fileName);
+            move($newFile, $newFileDir);
+        }
+        
+        return $newFileDir; 
+    }
+    
+    return "";
+}
 
 ####>Revision history<####
+# 1.2.0 [BUGFIX] Changed path to exported file: tmp_html directory (VS 16/12/19)
+# 1.1.9 [ENHANCEMENT] Properly handles new DIA workflow for protein exportation (VS 18/11/19)
 # 1.1.8 Update exportLibrary function to match the DIAWorkflow module (VS 07/01/19)
 # 1.1.7 Minor modification on the exportLibrarySCRIPT call (VS 22/11/18)
 # 1.1.6 Minor modif (MLP 13/12/17)

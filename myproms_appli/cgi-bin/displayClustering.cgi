@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# displayClustering.cgi       1.2.2                                            #
+# displayClustering.cgi       1.2.6                                            #
 # Authors: P. Poullet, S.Liva (Institut Curie)                                 #
 # Contact: myproms@curie.fr                                                    #
 # display and store the results of Clustering analysis        		           #
@@ -53,10 +53,10 @@ use Text::CSV;
 #######################
 ####>Configuration<####
 #######################
+#print header(-'content-encoding'=>'no',-charset=>'utf-8'); warningsToBrowser(1); # DEBUG
 my %promsPath=&promsConfig::getServerInfo;
 my $userID=$ENV{'REMOTE_USER'};
-my $explorID = param('explorID');
-my $experimentID = param('experimentID');
+my ($explorID,$experimentID) = &promsMod::cleanNumericalParameters(param('explorID'),param('experimentID'));
 my $ajax = param('AJAX') || '';
 my $view=param('VIEW') || "1D";
 my ($sel1D, $sel2D)= ($view eq "1D")? (" selected", "") : (""," selected");
@@ -69,19 +69,31 @@ my $pathToFile = "$promsPath{explorAna}/project_$projectID/$explorID";
 my $protAnnotMatchStrg=''; # required for ajax protein annotation calls
 my $quantifListStrg='';
 my %quantificationIDs;
-my $selQuantifModif=0;
-my $sthSelExplorQuantif = $dbh -> prepare("SELECT Q.ID_QUANTIFICATION,TARGET_POS,ID_MODIFICATION FROM EXPLORANA_QUANTIF EQ,QUANTIFICATION Q WHERE EQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND ID_EXPLORANALYSIS = $explorID ORDER BY Q.ID_QUANTIFICATION,TARGET_POS");
-$sthSelExplorQuantif -> execute;
-while (my($quantifID, $targetPos,$quantifModID) = $sthSelExplorQuantif -> fetchrow_array) {
+my $isPtmQuantif=0;
+my %ptmUsed;
+my $sthSelExplorQuantif=$dbh->prepare("SELECT Q.ID_QUANTIFICATION,GROUP_CONCAT(DISTINCT TARGET_POS ORDER BY TARGET_POS SEPARATOR '_'),CONCAT(COALESCE(Q.ID_MODIFICATION,'0'),',',COALESCE(GROUP_CONCAT(DISTINCT MQ.ID_MODIFICATION SEPARATOR ','),'0'))
+								FROM QUANTIFICATION Q
+								LEFT JOIN MULTIMODIF_QUANTIFICATION MQ ON Q.ID_QUANTIFICATION=MQ.ID_QUANTIFICATION
+								INNER JOIN EXPLORANA_QUANTIF EQ ON EQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION
+								WHERE ID_EXPLORANALYSIS=? GROUP BY Q.ID_QUANTIFICATION");
+$sthSelExplorQuantif -> execute($explorID);
+while (my($quantifID,$targetPos,$ptmStrg) = $sthSelExplorQuantif -> fetchrow_array) {
     $quantifListStrg.=':' if $quantifListStrg;
     $quantifListStrg.=$quantifID."_".$targetPos;
     $quantificationIDs{$quantifID}=1;
-    if ($quantifModID) { # should be the same for all quantif
-		$selQuantifModif=$quantifModID;
-		$protAnnotMatchStrg=",'^###(\$|-)'";
-	}
+    next if $ptmStrg eq '0,0'; # no PTM quantif
+    foreach my $modID (split(',',$ptmStrg)) {
+        $ptmUsed{$modID}=1 if $modID;
+    }
 }
 $sthSelExplorQuantif -> finish;
+
+my $oldSingleModID=0; # to handle old single-site format stored in files (no modifID)
+if (scalar keys %ptmUsed) {
+    $isPtmQuantif=1;
+	$oldSingleModID=(keys %ptmUsed)[0]; # just in case PTM
+    $protAnnotMatchStrg=",'^###(\$|-)'";
+}
 
 ##AJAX call
 if ($ajax eq 'propAnnotateClustering') {
@@ -114,12 +126,12 @@ my $projectAccess=${$userInfo[2]}{$projectID};
 my $disabSave=($projectAccess eq 'guest')? ' disabled' : '';
 
 my ($clusteringName,$paramList,$filterList) = $dbh->selectrow_array("SELECT NAME,PARAM_LIST,FILTER_LIST FROM EXPLORANALYSIS WHERE ID_EXPLORANALYSIS = $explorID");
-my ($quantifFam,$quantifMeasName); # for 2D only
+my ($quantifFam,$quantifMeasCode,$quantifMeasName)=('','',''); # for 2D only
 if ($view eq '2D') {
 	my %proteinQuantifFamilies=&promsQuantif::getProteinQuantifFamilies;
 	($quantifFam)=$paramList=~/quantFam=(\w+)/;
-	my ($quantifMeasCode)=$paramList=~/quantCode=(\w+)/;
-	if ($quantifMeasCode) {
+	if ($paramList=~/quantCode=(\w+)/) {
+		$quantifMeasCode=$1;
 		foreach my $refMeasInfo (@{$proteinQuantifFamilies{MEASURES}{$quantifFam}}) {
 			if ($refMeasInfo->[0] eq $quantifMeasCode) {
 				$quantifMeasName=$refMeasInfo->[1];
@@ -130,7 +142,8 @@ if ($view eq '2D') {
 	else {$quantifMeasName=$proteinQuantifFamilies{NAME}{$quantifFam};}
 }
 
-my ($pepType)=$filterList=~/\/PEP=(\w+)/; # needed in ajaxListSelectedProteins JS function
+my $pepType=($filterList && $filterList=~/\/PEP=(\w+)/)? $1 : ''; # needed in ajaxListSelectedProteins JS function
+$pepType=($pepType eq 'NUM_PEP_USED')? 'all' : ($pepType eq 'DIST_PEP_USED')? 'distinct' : $pepType;
 
 my %bioSampProperties;
 my $sthProp=$dbh->prepare("SELECT DISTINCT P.ID_PROPERTY,P.NAME,P.PROPERTY_TYPE FROM PROPERTY P
@@ -182,7 +195,7 @@ if ($view eq '2D') {
 #######################
 ####>Starting HTML<####
 #######################
-my $hmRowItem=($selQuantifModif)? 'Isoform' : 'Protein';
+my $hmRowItem=($isPtmQuantif)? 'Site' : 'Protein';
 my $hmRowItems=$hmRowItem.'s';
 $quantifMeasName=~s/Protein/$hmRowItem/ if $view eq '2D'; # undef otherwise
 print header(-'content-encoding'=>'no',-charset=>'utf-8');
@@ -236,17 +249,17 @@ if ($view eq '2D') {
 |;
 	}
 	print qq
-|function listProteins(selectedProteins,quantifs) {
-    ajaxListSelectedProteins(selectedProteins.join(','),'protein',quantifs.join(':'));
+|function listProteins(selectedProteins) {
+    ajaxListSelectedProteins(selectedProteins.join(','),'protein');
 }
 
-function ajaxListSelectedProteins(selectedPoints,sort,quantifList) {
+function ajaxListSelectedProteins(selectedPoints,sort='protein') { // 2D view only
     saveListGlobals.themesFetched=false; // resets ajaxManageSaveProteins mecanism
     var listDiv=document.getElementById('protListDIV');
     listDiv.innerHTML="<BR><BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<FONT class=\\"title3\\">Fetching data. Please wait...</FONT><BR>&nbsp;&nbsp;&nbsp;&nbsp;<IMG src=\\"$promsPath{images}/scrollbarGreen.gif\\"><BR><BR>";
     listDiv.style.display='';
-    listDiv.scrollIntoView();
-    var paramStrg="AJAX=ajaxListProt&CALL=PCA&id_project=$projectID&ACT=result&quantifFocus=$selQuantifModif&pepType=$pepType&quantifList="+quantifList+"&selProt="+selectedPoints;
+    listDiv.scrollIntoView({block:"start",inline:"nearest",behavior:"smooth"});
+    var paramStrg="AJAX=ajaxListProt&CALL=PCA&id_project=$projectID&ACT=results&quantifFamily=$quantifFam&dispMeasure=$quantifMeasCode&pepType=$pepType&quantifList=$quantifListStrg&sort="+sort+"&selProt="+selectedPoints; // quantifFocus set to any modID
     var XHR = getXMLHTTP();
     if (!XHR) {
         return false;
@@ -254,8 +267,6 @@ function ajaxListSelectedProteins(selectedPoints,sort,quantifList) {
     XHR.open("POST","$promsPath{cgi}/compareQuantifications.cgi",true);
     //Send the proper header information along with the request
     XHR.setRequestHeader("Content-type", "application/x-www-form-urlencoded; charset=UTF-8");
-    XHR.setRequestHeader("Content-length", paramStrg.length);
-    XHR.setRequestHeader("Connection", "close");
     XHR.onreadystatechange=function() {
         if (XHR.readyState==4 && XHR.responseText) {
             listDiv.innerHTML=XHR.responseText;
@@ -330,10 +341,10 @@ function selectSort(newSort,ajax) { // view=list (true or from Volcano ajax)
     var checkedProt=document.protForm.chkProt;
     var chkList=[];
     if (checkedProt.length) {
-        for (var i=0; i<checkedProt.length; i++) {chkList.push(checkedProt[i].value);}
+        for (let i=0; i<checkedProt.length; i++) {chkList.push(checkedProt[i].value);}
     }
     else {chkList.push(checkedProt[i].value);}
-    ajaxListSelectedProteins(chkList.join(','),null,newSort);
+    ajaxListSelectedProteins(chkList.join(','),newSort);
 }
 function sequenceView(id_protein,id_analyses) {
     var winLocation="$promsPath{cgi}/sequenceView.cgi?id_ana="+id_analyses+"&id_prot="+id_protein+"&msdata="+top.showMSdata;
@@ -436,8 +447,6 @@ function ajaxPropAnnotateClustering(selProp,propName,saved) {
     XHR.open("POST","$promsPath{cgi}/displayClustering.cgi",!saved); // Switches to synchronous for already saved nnotations
 	//Send the proper header information along with the request
     XHR.setRequestHeader("Content-type", "application/x-www-form-urlencoded; charset=UTF-8");
-    XHR.setRequestHeader("Content-length", paramStrg.length);
-    XHR.setRequestHeader("Connection", "close");
     XHR.onreadystatechange=function() {
         if (XHR.readyState == 4 && XHR.responseText) {
             if (eval(XHR.responseText)) {
@@ -763,8 +772,6 @@ function ajaxGoAnnotateClustering(annotName,goID,goAspect,termsStrg,saved) {
     XHR.open("POST","$promsPath{cgi}/displayClustering.cgi",!saved); // Switches to synchronous for already saved annotations
     //Send the proper header information along with the request
     XHR.setRequestHeader("Content-type", "application/x-www-form-urlencoded; charset=UTF-8");
-    XHR.setRequestHeader("Content-length", paramStrg.length);
-    XHR.setRequestHeader("Connection", "close");
     XHR.onreadystatechange=function() {
         if (XHR.readyState == 4 && XHR.responseText) {
             if (eval(XHR.responseText)) {
@@ -842,8 +849,6 @@ function ajaxSaveAnnotations() {
     XHR.open("POST","$promsPath{cgi}/displayClustering.cgi",true);
     //Send the proper header information along with the request
     XHR.setRequestHeader("Content-type", "application/x-www-form-urlencoded; charset=UTF-8");
-    XHR.setRequestHeader("Content-length", paramStrg.length);
-    XHR.setRequestHeader("Connection", "close");
     XHR.onreadystatechange=function() {
         if (XHR.readyState==4) {
             if (XHR.responseText.match('###OK###')) {
@@ -860,12 +865,25 @@ function ajaxSaveAnnotations() {
     XHR.send(paramStrg);
 }
 
+function toggleValueDistribution() {
+	var graph = document.getElementById('valueDistribution');
+	var isDisplayed = (graph.style.display == '');
+	graph.style.display = (isDisplayed) ? 'none' : '';
+	
+	
+	var displayButton = document.getElementById('valueDistributionButton');
+	displayButton.innerHTML = (isDisplayed) ? 'Display values distribution' : 'Hide values distribution';
+}
+
 </SCRIPT>
 </HEAD>
 <BODY background="$promsPath{images}/bgProMS.gif">
 <CENTER>
 <FONT class="title">Clustering&nbsp;<SELECT class="title2" name="viewDim" onchange="selectClustDim(this.value)"><OPTION value="1D"$sel1D>1D</FONT></OPTION><OPTION value="2D"$sel2D>2D</OPTION></SELECT> : <FONT color=#DD0000>$clusteringName</FONT></FONT><BR>
 <BR>
+|;
+
+print qq |
 <DIV id="waitDIV">
 <BR><BR><FONT class="title3">Fetching data. Please wait...</FONT><BR>&nbsp;&nbsp;&nbsp;&nbsp;<IMG src="$promsPath{images}/scrollbarGreen.gif"><BR><BR>
 </DIV>
@@ -896,6 +914,8 @@ while (my $lineQuantif = <QUANTIF_ORDER>) {
     }
     else {
         $strgQuantif=$quantifNames{OPTIMAL}{$quantif};
+        #$strgQuantif=$quantifNames{OPTIMAL}{$quantif}  || $quantif;
+        #$strgQuantif.='-'.$quantif;
     }
     push @quantifOrder, $quantif;
     push @quantifInfo, "['$strgQuantif','$quantif']";
@@ -923,34 +943,46 @@ close (QUANTIF_DENDRO);
 
 ##>Proteins
 if ($view eq '2D') {
-    #my $sthProt=$dbh->prepare("SELECT P.ID_PROTEIN,P.ALIAS FROM EXPLORANA_QUANTIF EQ
-    #                                INNER JOIN PROTEIN_QUANTIFICATION PQ ON EQ.ID_QUANTIFICATION=PQ.ID_QUANTIFICATION
-    #                                INNER JOIN PROTEIN P ON PQ.ID_PROTEIN=P.ID_PROTEIN
-    #                                WHERE EQ.ID_EXPLORANALYSIS=$explorID"); # DISTINCT slows down query!!!!!!!!!
-    #$sthProt->execute;
-    #while (my ($protID,$alias)=$sthProt->fetchrow_array) {
-    #    $proteinNames{$protID}=$alias;
-    #}
-    #$sthProt->finish;
-    my $sthProt=$dbh->prepare("SELECT ALIAS FROM PROTEIN WHERE ID_PROTEIN=?");
-    my %protList;
+	
+	###>Get PTM info if any<###
+	my %quantifModifInfo;
+	if ($isPtmQuantif) {
+		my @quantifModifs=keys %ptmUsed;
+		&promsQuantif::getQuantifModificationInfo($dbh,\@quantifModifs,\%quantifModifInfo);
+	}
+
+    my %protIdList;
+    #my $oldSingleModID=(keys %ptmUsed)[0]; # in case of old single PTM-site format
     open (PROTEIN_ORDER,"$pathToFile/protCluster.txt") || &stopOnError("ERROR!<BR>$!: '$pathToFile/protCluster.txt'");
     while (my $lineProtein = <PROTEIN_ORDER>) {
         chomp($lineProtein);
         next if ($. == 1);
         my ($index, $pos, $modProtID) = split("\t", $lineProtein);
-        push @proteinList, $modProtID;
+		my ($protID,$modCode)=$modProtID=~/^(\d+)-*(.*)/;
+		if ($modCode && $modCode !~ /^\d+:/) { # no starting modifID => old single PTM format
+			$modCode=$oldSingleModID.':'.$modCode;
+			$modProtID=$protID.'-'.$modCode;
+		}
+        push @proteinList,$modProtID;
+		push @{$protIdList{$protID}},$modCode; # undef for protein quantif
         $proteinDendro{$pos} = $modProtID;
-        my ($protID,$modStrg)=split('-',$modProtID);
-        unless ($protList{$protID}) {
-            $sthProt->execute($protID);
-            ($protList{$protID})=$sthProt->fetchrow_array;
-        }
-        $proteinNames{$modProtID}=($modStrg)? $protList{$protID}.'-'.$modStrg : $protList{$protID};
     }
-    close (PROTEIN_ORDER);
-    $sthProt->finish;
-
+    close PROTEIN_ORDER;
+    
+	my $protIdStrg=join(',',keys %protIdList);
+	my $sthProt=$dbh->prepare("SELECT ID_PROTEIN,ALIAS FROM PROTEIN WHERE ID_PROTEIN IN ($protIdStrg)");
+	$sthProt->execute;
+	while (my ($protID,$alias)=$sthProt->fetchrow_array) {
+		foreach my $modCode (@{$protIdList{$protID}}) {
+			if ($modCode) {
+				my ($formatCode,$displayCode)=&promsQuantif::formatProteinModificationSites($modCode,\%quantifModifInfo,'text');
+				$proteinNames{"$protID-$modCode"}=$alias.'-'.$displayCode;
+			}
+			else {$proteinNames{$protID}=$alias;}
+		}
+	}
+	$sthProt->finish;
+	
     open (PROTEIN_DENDRO,"$pathToFile/protDendro.txt") || &stopOnError("ERROR!<BR>$!: '$pathToFile/protDendro.txt'");
     while (my $lineProteinDendro = <PROTEIN_DENDRO>) {
         next if $. == 1;
@@ -982,6 +1014,10 @@ if ($view eq '2D') {
             next;
         }
         my ($modProtID,@values) = split("\t",$_);
+		my ($protID,$modCode)=$modProtID=~/^(\d+)-*(.*)/;
+		if ($modCode && $modCode !~ /^\d+:/) {
+			$modProtID=$protID.'-'.$oldSingleModID.':'.$modCode; # $oldSingleModID should be defined above
+		}
         for (my $j=0; $j <= $#values; $j++) {
             if (!$values[$j] || $values[$j] eq 'NA') {$values[$j]='';} # NA imputed to 0 (before missMDA)
             $quantifProteinValues{$modProtID}{$quantifs[$j]} = $values[$j];
@@ -996,13 +1032,16 @@ if ($view eq '2D') {
         while (<MISSING>) {
             chomp;
             my ($modProtID,@quantifsNA)=split(/\t/,$_);
+			my ($protID,$modCode)=$modProtID=~/^(\d+)-*(.*)/;
+			if ($modCode && $modCode !~ /^\d+:/) {
+				$modProtID=$protID.'-'.$oldSingleModID.':'.$modCode; # $oldSingleModID should be defined above
+			}
             foreach my $quantif (@quantifsNA) {
                 push @{$missingValues{$modProtID}},$quantifIndex{$quantif};
             }
         }
         close MISSING;
     }
-
 }
 
 my $strgProteinDendro = join(";", @proteinTab);
@@ -1229,8 +1268,19 @@ print qq
     <TR><TD><DIV id="listDisplayDIV" style="max-height:150px;max-width:300px;overflow:auto;display:none"></DIV><DIV id="saveList" style="display:none"><B>Annotation name:</B><INPUT type="text" id="annotListName" style="width:160px"/><br><INPUT type="button" value="Annotate" id="annotList" onclick="userListAnnotateClustering()"/></DIV></TD></TR>
     <TR><TD><INPUT type="button" id="saveButton" style="font-weight:bold;display:none" onclick="ajaxSaveAnnotations()" value="Save annotations"$disabSave></TD></TR>
     <TR><TD><SPAN id="saveSPAN" class="title3" style="color:#FFF;background-color:#387D38;padding:1px 7px;display:none">Annotations saved !</SPAN></TD></TR>
-    </TABLE></TD></TR>
+|;
 
+my $distribPlotPath = "$promsPath{explorAna_html}/project_$projectID/$explorID/";
+print qq |
+    <TR><TH><br/>
+        <button id='valueDistributionButton' onclick='toggleValueDistribution();' />Display values distribution</button><br/>
+		<img src='$distribPlotPath/valueDistribution.png' id='valueDistribution' style='display:none' />
+    </TH></TR>
+| if(-e "$pathToFile/valueDistribution.png");
+
+
+print qq |
+    </TABLE></TD></TR>
 </TABLE>
 <DIV id="protListDIV" style="clear:both;height:535;overflow:auto"></DIV>
 <DIV id="displayDIV" class="popup"> <!--filter:alpha(opacity=80);opacity:0.8;-->
@@ -1293,7 +1343,7 @@ sub ajaxPropAnnotateClustering {
     $dbh->disconnect;
     exit;
 }
-sub ajaxThemeAnnotateClustering() {
+sub ajaxThemeAnnotateClustering {
     print header(-type=>'text/plain',-charset => 'utf-8');
     warningsToBrowser(1);
 
@@ -1305,15 +1355,15 @@ sub ajaxThemeAnnotateClustering() {
     &getProteinsInCluster(\%protInCluster);
     #my ($themeName)=$dbh->selectrow_array("SELECT NAME FROM CLASSIFICATION WHERE ID_CLASSIFICATION=$themeID");
     my $sthList=$dbh->prepare("SELECT ID_CATEGORY,NAME,LIST_TYPE FROM CATEGORY WHERE ID_CLASSIFICATION=? ORDER BY DISPLAY_POS");
-    my $sthProt=$dbh->prepare("SELECT DISTINCT ID_PROTEIN FROM CATEGORY_PROTEIN WHERE ID_CATEGORY=?");
+	#my $sthProt=$dbh->prepare("SELECT DISTINCT ID_PROTEIN FROM CATEGORY_PROTEIN WHERE ID_CATEGORY=?");
     $sthList->execute;
     my $jsAnnotStrg='';
     if ($type eq 'THEME') {
         $sthList->execute($themeID);
         while (my ($listID,$listName,$type)=$sthList->fetchrow_array) {
-			if ($selQuantifModif && $type eq 'SITE') {
+			if ($isPtmQuantif && $type eq 'SITE') {
 				my %siteList;
-				&promsQuantif::fetchSiteList($dbh,$listID,\%siteList,$selQuantifModif);
+				&promsQuantif::fetchCustomList($dbh,$listID,\%siteList);
 				my $first=1;
 				foreach my $modProtID (keys %siteList) {
 					next unless $protInCluster{$modProtID};
@@ -1327,9 +1377,12 @@ sub ajaxThemeAnnotateClustering() {
 				$jsAnnotStrg.="'" unless $first;
 			}
 			else {
-				$sthProt->execute($listID);
+				#$sthProt->execute($listID);
+				my %protList;
+				&promsQuantif::fetchCustomList($dbh,$listID,\%protList,1);
 				my $first=1;
-				while (my ($protID)=$sthProt->fetchrow_array) {
+				#while (my ($protID)=$sthProt->fetchrow_array) { #}
+				foreach my $protID (keys %protList) {
 					next unless $protInCluster{$protID};
 					if ($first) {
 						$jsAnnotStrg.=',' if $jsAnnotStrg;
@@ -1346,9 +1399,12 @@ sub ajaxThemeAnnotateClustering() {
         foreach my $listID (split(':',$themeID)) {
             #$listID=~s/#//g;
             my ($listName)=$dbh->selectrow_array("SELECT NAME FROM CATEGORY WHERE ID_CATEGORY=$listID");
-            $sthProt->execute($listID);
+            #$sthProt->execute($listID);
             my $first=1;
-            while (my($protID)=$sthProt->fetchrow_array) {
+			my %protList;
+			&promsQuantif::fetchCustomList($dbh,$listID,\%protList,1);
+            #while (my ($protID)=$sthProt->fetchrow_array) { #}
+			foreach my $protID (keys %protList) {
                 next unless $protInCluster{$protID};
                 if ($first) {
                     $jsAnnotStrg.=',' if $jsAnnotStrg;
@@ -1361,7 +1417,7 @@ sub ajaxThemeAnnotateClustering() {
         }
     }
     $sthList->finish;
-    $sthProt->finish;
+    #$sthProt->finish;
     $dbh->disconnect;
     print "HM.addAnnotation('row','$themeName',{$jsAnnotStrg}$protAnnotMatchStrg);"; # compatible with modif quantif
     exit;
@@ -1568,17 +1624,21 @@ sub ajaxSaveAnnotations {
     exit;
 }
 
-
-sub getProteinsInCluster { # records both protID & (modProtID if any);
+sub getProteinsInCluster { # records both protID & (modProtID if any); GLOBALS: $explorID,$dbh,$pathToFile,$oldSingleModID
     my ($refProtList)=@_;
-    open (PROTEIN_ORDER,"$pathToFile/protCluster.txt") || die "Error: $!";
+	open (PROTEIN_ORDER,"$pathToFile/protCluster.txt") || die "Error: $!";
     while (<PROTEIN_ORDER>) {
         chomp;
         next if $. == 1;
         my ($index, $pos, $modProtID) = split("\t",$_);
+		my ($protID,$modCode)=$modProtID=~/^(\d+)-*(.*)/;
+		$refProtList->{$protID}=1;
+		if ($modCode) {
+			if ($modCode !~ /^\d+:/) { # no starting modifID => old format
+				$modProtID=$protID.'-'.$oldSingleModID.':'.$modCode;
+			}
+		}
         $refProtList->{$modProtID}=1;
-        my ($protID,$modCode)=split('-',$modProtID);
-        $refProtList->{$protID}=1 if $modCode;
     }
     close PROTEIN_ORDER;
 }
@@ -1624,6 +1684,10 @@ sub stopOnError {
 }
 
 ####>Revision history<####
+# 1.2.6 [ENHANCEMENT] Better management of quantification parameters for ajaxListProt (PP 07/01/20)
+# 1.2.5 [BUGFIX] in SQL query requiring GROUP_CONCAT for TARGET_POS & [UX] Smooth scroll to list of proteins (PP 20/11/19)
+# 1.2.4 [ENHANCEMENT] Multi-site support (PP 24/10/19)
+# 1.2.3 [ENHANCEMENT] Integrates R generated density plot (count normalized) as quality representation of imputed quantification values (VS 14/10/19)
 # 1.2.2 Minor improvement in highlighting annotations sorting (PP 20/06/18)
 # 1.2.1 Compatible with modification sites list (PP 12/11/17)
 # 1.2.0 Compatible with non-ratio (eg. MaxQuant) quantif (PP 11/01/17)

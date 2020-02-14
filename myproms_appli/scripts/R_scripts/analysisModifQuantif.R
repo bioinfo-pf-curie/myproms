@@ -1,5 +1,5 @@
 ################################################################################
-# analysisModifQuantif.R       1.0.5                                           #
+# analysisModifQuantif.R       1.0.6                                           #
 # Authors: Patrick Poullet, Stephane Liva, Pierre Gestraud (Institut Curie)    #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -100,7 +100,7 @@ if ( paramR$IMPUTE == "TRUE" ) {
 ##NONE
 if (paramR$PROTEIN_SELECTION == "none") {
 	PTMSign<-impMat
-	if (paramR$MODIF != 0){
+	if (paramR$FOCUS != 0){
 		PTMSign$PROTEIN_MODIF<-rownames(impMat)
 	} else {
 		PTMSign$PROTEIN<-rownames(impMat)
@@ -117,7 +117,7 @@ if (paramR$PROTEIN_SELECTION == "sample") {
     prot.sd<-as.data.frame(prot.sd)
     rownames(prot.sd)<-rownames(impMat)
     colnames(prot.sd)<-"sd"
-	if (paramR$MODIF != 0){
+	if (paramR$FOCUS != 0){
 		prot.sd$PROTEIN<-gsub("-.*","", rownames(prot.sd))
 		prot.sd$PROTEIN_MODIF<-rownames(prot.sd)
 	} else {
@@ -142,7 +142,7 @@ if (paramR$PROTEIN_SELECTION == "sample") {
     }
 
     PTMSign<-prot.sd
-	if (paramR$MODIF != 0){
+	if (paramR$FOCUS != 0){
 		impMat<-impMat[PTMSign$PROTEIN_MODIF,,drop=FALSE]
 	} else {
 		impMat<-impMat[PTMSign$PROTEIN,,drop=FALSE]
@@ -169,7 +169,7 @@ if (paramR$PROTEIN_SELECTION == "group") {
     #launch ANOVA FOR GROUP
     matrixPTM_Anova<-as.data.frame(apply(impMat, 1,function(x) anova(lm(x ~ group$group_snf))[1,5]))
     colnames(matrixPTM_Anova)<-"pvalue"
-    if (paramR$MODIF != 0){
+    if (paramR$FOCUS != 0){
 		matrixPTM_Anova$PROTEIN<-gsub("-.*","", rownames(matrixPTM_Anova))
 		matrixPTM_Anova$PROTEIN_MODIF<-rownames(matrixPTM_Anova)
 	} else {
@@ -198,7 +198,7 @@ if (paramR$PROTEIN_SELECTION == "group") {
     }
 
     PTMSign<-matrixPTM_Anova
-	if (paramR$MODIF != 0){
+	if (paramR$FOCUS != 0){
 		impMat<-impMat[PTMSign$PROTEIN_MODIF,,drop=FALSE]
 	} else {
 		impMat<-impMat[PTMSign$PROTEIN,,drop=FALSE]
@@ -208,7 +208,7 @@ if (paramR$PROTEIN_SELECTION == "group") {
 #######load annotation
 matrixAnnot<-read.csv("annotation.txt",sep="\t", header=T, quote = "", stringsAsFactor=FALSE)
 
-if (paramR$MODIF != 0){## PTM site
+if (paramR$FOCUS != 0){## PTM site
 	listAnnotPTM<-cbind(rownames(impMat), gsub("-.*","",rownames(impMat)))
 	colnames(listAnnotPTM)<-c("PROTEIN_MODIF","PROTEIN")
 	annotPTM<-merge(matrixAnnot, listAnnotPTM, by.x="PROTEIN", by.y="PROTEIN")
@@ -220,7 +220,7 @@ if (paramR$MODIF != 0){## PTM site
 	annotPTM$PROTEIN<-as.character(annotPTM$PROTEIN)
 }
 existPvalue <- FALSE
-if (paramR$QUANTIF_FAM == "RATIO" && paramR$MODIF >= 0) {
+if (paramR$QUANTIF_FAM == "RATIO" && paramR$FOCUS != 2) {
 	#####load matrix pep
 	matrixPepPTM<-read.table(pepFileExport,sep="\t",header=T,row.names=1,check.names=F)
 	
@@ -229,7 +229,7 @@ if (paramR$QUANTIF_FAM == "RATIO" && paramR$MODIF >= 0) {
 		existPvalue <- TRUE
 		matrixPvaluePTM<-read.table("pvalue.txt",sep="\t",header=T,row.names=1,check.names=F)
 
-		if (paramR$MODIF != 0){
+		if (paramR$FOCUS != 0){
 			pepPTM<-matrixPepPTM[PTMSign$PROTEIN_MODIF,,drop=FALSE]
 			pValuePTM<-matrixPvaluePTM[PTMSign$PROTEIN_MODIF,,drop=FALSE]
 		} else {
@@ -239,20 +239,20 @@ if (paramR$QUANTIF_FAM == "RATIO" && paramR$MODIF >= 0) {
 	}
 }
 
-#if (paramR$MODIF != 0){
+#if (paramR$FOCUS != 0){
 #	infoValue<-matInfoValue[PTMSign$PROTEIN_MODIF,,drop=FALSE]
 #} else {
 #	infoValue<-matInfoValue[PTMSign$PROTEIN,,drop=FALSE]
 #}
 
-if (paramR$MODIF != 0) {
+if (paramR$FOCUS != 0) {
 	annotPTM<-merge(annotPTM,PTMSign,by.x="PROTEIN_MODIF", by.y="PROTEIN_MODIF")
 } else {
 	annotPTM<-merge(annotPTM,PTMSign,by.x="PROTEIN", by.y="PROTEIN")
 }
 
 if (paramR$QUANTIF_FAM == "RATIO") {
-	if (paramR$MODIF >= 0){
+	if (paramR$FOCUS != 2){
 		write.table(pepPTM,paste("processed_",pepFileExport,sep=""),col.names=NA, quote=F,sep="\t")
 		if (existPvalue) {
 			write.table(pValuePTM,"processed_pvalue.txt",col.names=NA, quote=F,sep="\t")
@@ -263,21 +263,21 @@ if (paramR$QUANTIF_FAM == "RATIO") {
 	write.table(impMat,paste("processed_",matrixExport,sep=""), col.names=NA, quote=F,sep="\t")
 }
 
-if (paramR$MODIF != 0){##modification
+if (paramR$FOCUS != 0){##modification
 	write.table(annotPTM[,c(1,2,3,4,5,6)],"processed_annotation.txt",sep="\t",quote=F, row.names = F)
 } else {
 	write.table(annotPTM[,c(1,2,3,4,5)],"processed_annotation.txt",sep="\t",quote=F, row.names = F)
 }
 
 if (paramR$PROTEIN_SELECTION == "sample") {
-	if (paramR$MODIF != 0){##modification
+	if (paramR$FOCUS != 0){##modification
 		write.table(cbind(annotPTM$GENE,annotPTM$PROTEIN_MODIF,annotPTM$sd),"sd.txt",quote=F,sep="\t",row.names=F,col.names = c("GENE","PROTEIN_MODIF","SD"))
 	} else {
 		write.table(cbind(annotPTM$GENE,annotPTM$PROTEIN,annotPTM$sd),"sd.txt",quote=F,sep="\t",row.names=F,col.names = c("GENE","PROTEIN","SD"))
 	}
 }
 if (paramR$PROTEIN_SELECTION == "group") {
-	if (paramR$MODIF != 0){##modification
+	if (paramR$FOCUS != 0){##modification
 		write.table(cbind(annotPTM$GENE,annotPTM$PROTEIN_MODIF,annotPTM$pvalue),"anova_pvalue.txt",quote=F,sep="\t",row.names=F,col.names = c("GENE","PROTEIN_MODIF","PVALUE"))
 	} else {
 		write.table(cbind(annotPTM$GENE,annotPTM$PROTEIN,annotPTM$pvalue),"anova_pvalue.txt",quote=F,sep="\t",row.names=F,col.names = c("GENE","PROTEIN","PVALUE"))
@@ -285,7 +285,7 @@ if (paramR$PROTEIN_SELECTION == "group") {
 }
 
 
-if (paramR$MODIF != 0) {
+if (paramR$FOCUS != 0) {
 	infoValue<-matInfoValue[PTMSign$PROTEIN_MODIF,,drop=FALSE]
 	if (existSdGeo) {
 		sdGEO<-matSDgeo[PTMSign$PROTEIN_MODIF,,drop=FALSE]
@@ -321,6 +321,7 @@ dev.off()
 #}
 
 ####>Revision history<####
+# 1.0.6 Uses R_PARAM$FOCUS instead of R_PARAM$MODIF (PP 12/07/19)
 # 1.0.5 sd_geo data processed only if data are available & removed/replaced 'matrix_' in files name (PP 26/03/19)
 # 1.0.4 add impute data and draw quality data (SL 15/01/19)
 # 1.0.3 comment AGGREGATE/GENE_NAME and MISSING_VALUES part, manage by perl script (SL 28/09/18)

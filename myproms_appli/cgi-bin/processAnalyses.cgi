@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# processAnalyses.cgi    1.4.8                                                 #
+# processAnalyses.cgi    1.4.11                                                #
 # Authors: P. Poullet, G. Arras, F. Yvon & M. Le Picard (Institut Curie)       #
 # Contact: myproms@curie.fr                                                    #
 # Generates list of options available to manage multiple analyses at once      #
@@ -271,16 +271,6 @@ function displayProcesses(type) {
 	if (type) document.getElementById(type).style.display='block';
 	selType=type;
 }
-function watchQuantifications() {
-	var watchQuantifWin=window.open("$promsPath{cgi}/watchQuantifications.cgi",'WatchQuantifWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
-	watchQuantifWin.focus();
-	parent.optionFrame.selectOption(parent.optionFrame.document.getElementById('summary')); // refresh optionFrame with summary option
-}
-function watchPhosphoRS() {
-	var watchPhosphoWin=window.open("$promsPath{cgi}/watchPhosphoAnalyses.cgi",'WatchPhosphoWindow','width=1000,height=500,scrollbars=yes,resizable=yes');
-	watchPhosphoWin.focus();
-	parent.optionFrame.selectOption(parent.optionFrame.document.getElementById('summary')); // refresh optionFrame with summary option
-}
 function selectAction(action) {
 	switch(action) {
 		case 'import':
@@ -368,16 +358,20 @@ function selectAction(action) {
 			window.location="./importSwathData.cgi?id_project=$projectID&ID=$branchID&ACT=import&FORMAT=peakview";
 			break;
 		case 'openswath' :
+			window.location="./importSwathDataRefonte.cgi?id_project=$projectID&ID=$branchID&ACT=quantification&FORMAT=openswath&USERID=$userID";
+			break;
+		case 'openswathOld' :
 			window.location="./importSwathData.cgi?id_project=$projectID&ID=$branchID&ACT=quantification&FORMAT=openswath&USERID=$userID";
 			break;
 		case 'openswathImport' :
-			window.location="./importSwathData.cgi?id_project=$projectID&ID=$branchID&ACT=import&FORMAT=openswath&USERID=$userID";
+			window.location="./importSwathDataRefonte.cgi?id_project=$projectID&ID=$branchID&ACT=import&FORMAT=openswath&USERID=$userID";
+			//window.location="./importSwathData.cgi?id_project=$projectID&ID=$branchID&ACT=import&FORMAT=openswath&USERID=$userID";
 			break;
 		case 'spectronautImport' :
 			window.location="./importSwathData.cgi?id_project=$projectID&ID=$branchID&ACT=import&FORMAT=spectronaut";
 			break;
-		case 'prm' :
-			window.location="./importTDAData.cgi?id_project=$projectID&ID=$branchID&ACT=import&FORMAT=prm";
+		case 'skyline' :
+			window.location="./importSkyline.cgi?id_project=$projectID&ID=$branchID&ACT=import&FORMAT=prm";
 			break;
 		default:
 			alert('"'+action+'" is not recognized');
@@ -429,13 +423,10 @@ function selectAction(action) {
 <TABLE bgcolor=$darkColor cellpadding=4 width=500>
 <TR><TD colspan=2><FONT class="title2">&nbsp;Phosphorylation sites:</TD></TR>
 <TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('phosphoRS')"/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">Run PhosphoRS analysis&nbsp;</FONT></TD></TR>
-<TR><TH><INPUT type="button" value=" Proceed " onclick="watchPhosphoRS()"$disabWatchPRS/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">Monitor PhosphoRS analyses&nbsp;</FONT></TD></TR>
 </TABLE>
 </DIV>
 
 <DIV id="anaQuant" style="display:none">
-<INPUT type="button" value="Monitor on-going quantifications" onclick="watchQuantifications()"$disabWatchQuantif/>
-<BR><BR>
 <TABLE bgcolor=$darkColor cellpadding=4 width=500>
 <TR><TD colspan=2><FONT class="title2">&nbsp;<A href="http://maxquant.org/" target="_blank">MaxQuant</A>:</TD></TR>
 <TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('maxquant')"$disabMaxquant/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">Import MaxQuant quantitation</FONT></TD></TR>
@@ -456,9 +447,10 @@ function selectAction(action) {
 <BR><BR>
 <TABLE bgcolor=$darkColor cellpadding=4 width=500>
 <TR><TD colspan=2><FONT class="title2">&nbsp;DIA/TDA Quantification:</TD></TR>
-<TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('prm')"$disabTDA/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">Import TDA data&nbsp;</FONT></TD></TR>
+<TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('skyline')"$disabTDA/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">Import Skyline data&nbsp;</FONT></TD></TR>
 <TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('peakview')"$disabPkv/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">Import PeakView data&nbsp;</FONT></TD></TR>
-<TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('openswath')"$disabOpenSwath/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">OpenSwath based quantification&nbsp;</FONT></TD></TR>
+<TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('openswath')"$disabOpenSwath/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">OpenSwath based quantification (new)&nbsp;</FONT></TD></TR>
+<TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('openswathOld')"$disabOpenSwath/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">OpenSwath based quantification (old)&nbsp;</FONT></TD></TR>
 <TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('openswathImport')"$disabOpenSwathImport/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">Import OpenSwath data&nbsp;</FONT></TD></TR>
 <TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('spectronautImport')"$disabSpectronautImport/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">Import Spectronaut data&nbsp;</FONT></TD></TR>
 </TABLE>
@@ -472,6 +464,9 @@ function selectAction(action) {
 #<TR><TH>&nbsp;<INPUT type="button" value=" Proceed " onclick="selectAction('combine')"$disabCombine/>&nbsp;</TH><TD bgcolor=$lightColor>&nbsp;<FONT class="title3">Combine analyses</FONT></TD></TR>
 
 ####>Revision history<####
+# 1.4.11 Remove monitoring buttons from every specific tabs since it is now global to all job types (VS 21/10/19)
+# 1.4.10 Replace call to importTDAData by importSkyline and corresponding button (VL 11/09/19) 
+# 1.4.9 Add OpenSwath new workflow (VS 05/06/19)
 # 1.4.8 Remove Export analyses (VS 13/05/19)
 # 1.4.7 Improved "Isobaric XIC correction" option (PP 02/05/19)
 # 1.4.6 Add "Export Multiple Analysis" button (VS 21/03/19)

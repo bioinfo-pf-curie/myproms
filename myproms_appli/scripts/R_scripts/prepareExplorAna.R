@@ -1,5 +1,5 @@
 ################################################################################
-# prepareExplorAna.R       1.0.4                                               #
+# prepareExplorAna.R       1.0.6                                               #
 # Authors: Patrick Poullet, Stephane Liva, Guillaume Arras (Institut Curie)    #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -47,39 +47,64 @@ inputMat <- read.table("matrix.txt", header=TRUE, check.names=FALSE)
 
 impMat=data.frame()
 
+#write.table(inputMat,file="matrixWithMissingValues.txt",quote=FALSE, sep="\t", col.names=FALSE)
+
+#####----- Replacement of +/- infinite ratios ------#####
+# If exist infinite ratios (+/-1000 values) then they are NOT treated as NA (otherwise already replaced by NA by startExploratoryAnalysis.cgi)
+### Compute st.dev, mean, ref max, ref min
+mat.sd <- sd(inputMat[!is.na(inputMat) & (inputMat != 1000) & (inputMat != -1000)])
+mat.mean <-mean(inputMat[!is.na(inputMat) & (inputMat!= 1000)& (inputMat != -1000)])
+mat.min <- mat.mean - 4 * mat.sd
+mat.max <- mat.mean + 4 * mat.sd
+
+### Replace +/-inf values with random values in the range of mean +/- 4 st.dev +/- random(+/- 0.5 st.dev)
+inputMat <- apply(inputMat,1, function(x) { replace(x,which(x == 1000),runif(length(which(x== 1000)), mat.max-0.5*mat.sd,mat.max+0.5*mat.sd)) })
+inputMat <- t(inputMat)
+inputMat <- apply(inputMat,1, function(x) { replace(x,which(x == -1000),runif(length(which(x== -1000)), mat.min-0.5*mat.sd,mat.min+0.5*mat.sd)) })
+inputMat <- t(inputMat)
+
+
+#####----- NA imputation using missMDA ------#####
+#numbNA <- length(inputMat[is.na(inputMat)])
+numbNA <- length(which(is.na(inputMat)))
+
 ##Launch missMDA if missing values
-if ( paramR$MISSING_VALUE != 0) {
+if (paramR$MISSING_VALUE != 0 && numbNA > 0) { # missMDA fails if no NA at all
 
 	library(missMDA)
-	#####----- Replacement of +/- infinite ratios ------#####
-	### Compute st.dev, mean, ref max, ref min
-	mat.sd <- sd(inputMat[!is.na(inputMat) & (inputMat != 1000) & (inputMat != -1000)])
-	mat.mean <-mean(inputMat[!is.na(inputMat) & (inputMat!= 1000)& (inputMat != -1000)])
-	mat.min <- mat.mean - 4 * mat.sd
-	mat.max <- mat.mean + 4 * mat.sd
+	### Estimate number of composantes required
+	nb <- estim_ncpPCA(inputMat,ncp.max=10)
+	nb$ncp
 
-	### Replace +/-inf values with random values in the range of mean +/- 4 st.dev +/- random(+/- 0.5 st.dev)
-	inputMat <- apply(inputMat,1, function(x) { replace(x,which(x == 1000),runif(length(which(x== 1000)), mat.max-0.5*mat.sd,mat.max+0.5*mat.sd)) })
-	inputMat <- t(inputMat)
-	inputMat <- apply(inputMat,1, function(x) { replace(x,which(x == -1000),runif(length(which(x== -1000)), mat.min-0.5*mat.sd,mat.min+0.5*mat.sd)) })
-	inputMat <- t(inputMat)
+	### Replacement of NAs
+	resImpute <- imputePCA(inputMat,ncp=nb$ncp)
 
-	#####----- NA imputation using missMDA ------#####
-
-	numbNA <- length(inputMat[is.na(inputMat)])
-	if (numbNA > 0) { # Fails if no NA
-		### Estimate number of composantes required
-		nb <- estim_ncpPCA(inputMat,ncp.max=10)
-		nb$ncp
-
-		### Replacement of NAs
-		resImpute <- imputePCA(inputMat,ncp=nb$ncp)
-
-		impMat <- resImpute$completeObs
-	} else {
-		impMat <- inputMat
-	}
-	#dim(impMat)
+	impMat <- resImpute$completeObs
+    
+    ## Create distribution plot for existing/missing values
+    library(plyr)
+    library(ggplot2)
+    theme_set(theme_classic())
+    
+    # Categorize missing and imputed values
+    rep = rbind(data.frame(type=factor('Existing values'), value=impMat[!is.na(inputMat)]), data.frame(type=factor('Imputed'), value=impMat[is.na(inputMat)]))
+    
+    # Get mean of each set 
+    mu <- ddply(rep, "type", summarise, grp.mean=mean(value))
+    
+    # Plot both density distribution
+    p <- ggplot(rep, aes(value, fill=type, color=type)) +
+      geom_density(aes(y = ..count..), alpha=.2) +
+      geom_vline(data=mu, aes(xintercept=grp.mean, color=type), 
+                 linetype="dashed", size=0.5) + 
+      labs(title="Values distribution", 
+           subtitle="For both initial and imputed ones",
+           x="Quantification value",
+           y="Amount of proteins")
+    
+    png(filename="valueDistribution.png")
+    plot(p)
+    dev.off()
 } else {
 	impMat<-inputMat
 }
@@ -114,10 +139,11 @@ if (paramR$PROTEIN_SELECTION == "none") {
     }
 
 	write.table(impMat_merge,file="matrixProcessed.txt",quote=FALSE, sep="\t", col.names=NA)
-
 }
 
 ####>Revision history<####
+# 1.0.6 [BUGFIX] NA distribution plot is not drawn is no NA (PP 13/11/19)
+# 1.0.5 [FEATURE] Add density plot (count normalized) as imputation quality representation (VS 14/10/19)
 # 1.0.4 rename AGREGATE to AGGREGATE and comment ambiguity exclusion, manage by perl(SL 28/09/18)
 # 1.0.3 add modification pipeline (SL 28/09/17)
 # 1.0.2 Moved nb$ncp within definition scope of nb (PP 11/01/17)

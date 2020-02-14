@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# manageBioSample.cgi               1.0.5                                      #
+# manageBioSample.cgi               1.0.6                                      #
 # Authors: P. Poullet, G. Arras, S.Liva (Institut Curie)              	       #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -64,7 +64,7 @@ my $biosampleID = param('biosampleID') || 0;
 
 ##AJAX : check sample name and sample code
 if ($action eq 'ajaxCheckBiosample') {
-	&checkBiosample(param('name'),$biosampleID);
+	&checkBiosample(param('name'),$biosampleID,$projectID);
 	exit;
 }
 
@@ -82,8 +82,7 @@ my $projectFullAccess=($projectAccess =~ /bioinfo/)? 1 : 0;
 my ($titleStrg, %refBiosamples, %allSpecies, %allProperties, %biosampleInfo, %sampleTreatments, %sampleProperties);
 my $numAllProperties = param('numAllProp') || 0;
 
-if ($action=~/add|edit/ && param('submit')) {
-
+if ($action=~/add|edit/ && param('submitted')) {
 	my $sampleName = param('bioSampName');
 	my $speciesID = param('species');
 	my $isRef = param('isReference') || 0;
@@ -212,7 +211,7 @@ parent.itemFrame.location="$promsPath{cgi}/openProject.cgi?ACT=project&ID=$proje
 }
 
 my $disableSteps=1;
-if ($action eq 'summary' || $action eq 'edit') {
+if ($action=~/summary|edit/) {
 
 	##Get All info for specific sample
 	my $sthSelBiosampleInfo = $dbh -> prepare("SELECT ID_REFBIOSAMPLE,ID_SPECIES, NAME, DES, IS_REFERENCE, RECORD_DATE, UPDATE_DATE, UPDATE_USER from BIOSAMPLE where ID_BIOSAMPLE = $biosampleID");
@@ -456,49 +455,52 @@ var usedPropertiesPos=new Object();
 	document.getElementById('divInner_'+propertyPos).innerHTML = strgInnerHtml;
 }
 
-var existSampName;
-function ajaxCheckBiosample (itemName){
+function ajaxCheckBiosample(myForm) {
+	var itemName=myForm.bioSampName.value;
 	//Creation of the XMLHTTPRequest object
 	var XHR = getXMLHTTP();
 	if (!XHR) {
 		return false;
 	}
-	paramStrg="ACT=ajaxCheckBiosample&projectID=$projectID&biosampleID=$biosampleID&name="+itemName;
-	XHR.open("POST","$promsPath{cgi}/manageBioSample.cgi",false);
+	paramStrg="ACT=ajaxCheckBiosample&projectID=$projectID&biosampleID=$biosampleID&name="+encodeURIComponent(itemName);
+	XHR.open("POST","$promsPath{cgi}/manageBioSample.cgi",true);
 	//Send the proper header information along with the request
 	XHR.setRequestHeader("Content-type", "application/x-www-form-urlencoded; charset=UTF-8");
-	XHR.setRequestHeader("Content-length", paramStrg.length);
-	XHR.setRequestHeader("Connection", "close");
+	//XHR.setRequestHeader("Content-length", paramStrg.length);
+	//XHR.setRequestHeader("Connection", "close");
 	XHR.onreadystatechange=function() {
 		if (XHR.readyState==4 && XHR.responseText) {
-			existSampName = (XHR.responseText.match('###OK###'))? false : true;
+			var response=XHR.responseText;
+			if (response.match('###BAD###')) {
+				alert('Another sample with same name already exist in this project. Please choose another one.');
+			}
+			else if (response.match('###WARN###')) {
+				if (confirm('Warning: this sample is also used in other projects. Proceed anyway?')) {checkForm(myForm,true);}
+			}
+			else {checkForm(myForm,true);} // ###OK###
 		}
 	}
 	XHR.send(paramStrg);
 }
 
-function checkForm(myForm) {
-
-	if (!myForm.bioSampName.value) {
-		alert('Give a name to biological sample');
-		return false;
+function checkForm(myForm,okSample=false) {
+	if (okSample===false) {
+		if (!myForm.bioSampName.value) {
+			alert('Give a name to biological sample');
+			return false;
+		}
+		ajaxCheckBiosample(myForm);
+		return false; // ajax call will resubmit form with okSample=true (if name is is OK)
 	}
 	if (!myForm.species.value){
 		alert('Choose a species');
 		return false;
 	}
 
-	ajaxCheckBiosample(myForm.bioSampName.value); // synchronous AJAX
-
-	if (existSampName) {
-		alert('The name used for this sample already exists. Please choose another one.');
-		return false;
-	}
-
 	//treatments
 	var okTreat;
 	var okProp;
-	for (var i=1; i<=$maxTreatment; i++) {
+	for (let i=1; i<=$maxTreatment; i++) {
 		if (document.getElementById('treatment_'+i).value) {
 			if (document.getElementById('quantity_'+i).value) {
 				if (document.getElementById('quantUnit_'+i).value) {
@@ -522,7 +524,7 @@ function checkForm(myForm) {
 	}
 
 	//properties
-	for (var i=1; i<=$numAllProperties; i++ ) {
+	for (let i=1; i<=$numAllProperties; i++ ) {
 		if (document.getElementById('propName_'+i).value) {
 			if (!document.getElementById('propValue_'+i).value) {
 				alert('Missing value for Property "'+document.getElementById('propName_'+i).value+'"!');
@@ -531,8 +533,8 @@ function checkForm(myForm) {
 		}
 	}
 
-	//return false;
-	return true;//for on submit form
+	//return true; //for on submit form
+	myForm.submit(); // true submission is called by ajaxCheckBiosample()
 }
 |;
 }
@@ -760,7 +762,8 @@ if ($action eq 'summary') {
 
 else { # add edit
 	print qq
-|<FORM name="bioSampForm" method="post" onsubmit="return checkForm(this);">
+|<FORM name="bioSampForm" method="post" onsubmit="return checkForm(this,false);">
+<INPUT type="hidden" name="submitted" value="1">
 <INPUT type="hidden" name="ACT" value="$action">
 <INPUT type="hidden" name="projectID" value="$projectID">
 <INPUT type="hidden" name="numAllProp" value="$numAllProperties">
@@ -926,7 +929,7 @@ print qq
 |;
 	}
 	print qq
-|	<TR><TH colspan=2><INPUT type="submit" name="submit" id="buttonItem" value=" Save "></TD></TR>
+|	<TR><TH colspan=2><INPUT type="submit" value=" Save "></TH></TR>
 </TABLE>
 </FORM>
 |;
@@ -941,17 +944,27 @@ $dbh -> disconnect;
 sub checkBiosample {
 	my $dbh=&promsConfig::dbConnect;
 
-	my ($itemName, $bioSampID) = @_;
-
-	my $sthSelBiosampName = $dbh -> prepare("SELECT COUNT(*) FROM BIOSAMPLE B,PROJECT_BIOSAMPLE P WHERE B.ID_BIOSAMPLE=P.ID_BIOSAMPLE AND B.ID_BIOSAMPLE != $bioSampID AND UPPER(NAME) = ?");
-
-	$sthSelBiosampName -> execute(uc($itemName));
+	my ($itemName,$bioSampID,$projectID) = @_;
+	my $response='OK';
+	my $sthSelBiosampName = $dbh -> prepare("SELECT 1 FROM BIOSAMPLE B,PROJECT_BIOSAMPLE P WHERE B.ID_BIOSAMPLE=P.ID_BIOSAMPLE AND P.ID_PROJECT=? AND B.ID_BIOSAMPLE != ? AND UPPER(NAME) = ? LIMIT 1");
+	$sthSelBiosampName -> execute($projectID,$bioSampID,uc($itemName));
 	my ($existItemName) = $sthSelBiosampName -> fetchrow_array;
 	$sthSelBiosampName -> finish;
+	if ($existItemName) {
+		$response='BAD';
+	}
+	elsif ($bioSampID) { # skip if creating new bioSample
+		my $sthSelBiosampProj = $dbh -> prepare("SELECT COUNT(*) FROM PROJECT_BIOSAMPLE WHERE ID_BIOSAMPLE=?");
+		$sthSelBiosampProj->execute($bioSampID);
+		my ($numProjects)=$sthSelBiosampProj->fetchrow_array;
+		$response='WARN' if $numProjects > 1;
+		$sthSelBiosampProj->finish;
+	}
+	
 	$dbh -> disconnect;
 
-	print header(-charset=>'utf-8'); warningsToBrowser(1);
-	if ($existItemName) {print '###BAD###';} else {print '###OK###';}
+	print header(-type=>'text/plain',-charset=>'utf-8'); warningsToBrowser(1);
+	print "###$response###";
 }
 
 sub getConcentrationUnits {
@@ -970,6 +983,7 @@ sub getConcentrationUnits {
 
 
 ####>Revision history<####
+# 1.0.6 [BUGFIX] restrict duplicate bioSample name check to current project (PP 27/11/19)
 # 1.0.5 Minor bug fix in label-free observation display (PP 11/04/19)
 # 1.0.4 Minor modification for TMT (GA 03/04/17)
 # 1.0.3 Restrict sample unique naming to project & minor display improvement for iTRAQ Observations (PP 15/04/15)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# scanDatabank.pl               3.0.8                                          #
+# scanDatabank.pl               3.0.9                                          #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -78,7 +78,6 @@ mkdir $promsPath{'logs'} unless -e $promsPath{'logs'};
 my $year=strftime("%Y",localtime);
 
 ####>Disconnecting from parent's STDs<####
-open STDOUT, '>/dev/null' or die "Can't open /dev/null: $!";
 open STDIN, '</dev/null' or die "Can't open /dev/null: $!";
 open STDERR, ">>$promsPath{logs}/databankScan_$year.log";
 open STDOUT, ">>$promsPath{logs}/databankScan_$year.log";
@@ -145,7 +144,7 @@ $sthDB->execute;
 while (my ($dbID,$dbName,$dbRank)=$sthDB->fetchrow_array) {
 	$numDatabanks++;
 	print "+ Scanning databank #$numDatabanks ($dbName)...";
-	my ($error)=&promsMod::getProtInfo('silent',$dbh,$dbID,\@analysisList,\%protDes,\%protMW,\%protOrg,\%protLength,undef,$protList{$dbRank});
+	my ($error)=&promsMod::getProtInfo('verbose',$dbh,$dbID,\@analysisList,\%protDes,\%protMW,\%protOrg,\%protLength,undef,$protList{$dbRank});
 	if ($error) {
 		print $error;
 		$protInfoErrors++;
@@ -154,9 +153,8 @@ while (my ($dbID,$dbName,$dbRank)=$sthDB->fetchrow_array) {
 }
 $sthDB->finish;
 if ($protInfoErrors == $numDatabanks) {
-	$dbh->disconnect;
 	unlink $jobFlagFile;
-	die "\n**Too many errors. Databank scan failed**\n";
+	print "\n**Too many errors. Databank scan stopped**\n";
 }
 
 ###########################################
@@ -190,8 +188,12 @@ unlink $jobFlagFile;
 my $jobEndTime=strftime("%Y%m%d%H%M%S",localtime);
 print "<JOB END $jobEndTime\n";
 
+open(OUT,">$promsPath{logs}/scan_$userID.end");
+print OUT "#";
+close OUT;
 
 ####>Revision history<####
+# 3.0.9 [BUGFIX] Do not exit script when too many unmatched proteins (VS 12/08/19)
 # 3.0.8 Minor modification on the getProtInfo call (VS 16/11/2018)
 # 3.0.7 Bug fix by better separation of multi-databanks (PP 25/03/14)
 # 3.0.6 Uses mkdir instead of make_path (PP 10/03/14)

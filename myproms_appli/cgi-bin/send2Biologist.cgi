@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# send2Biologist.cgi       3.3.2                                               #
+# send2Biologist.cgi       3.3.4                                               #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Reports and/or terminates a validation (Analysis)                            #
@@ -40,6 +40,7 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 #-------------------------------------------------------------------------------
+
 $| = 1;
 use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI ':standard';
@@ -414,7 +415,7 @@ foreach my $analysisID (@analysisList) {
 						$quantifNodeNum=$processingNodeParameters->{ProcessingNodeNumber};
 						if ($labelMethod =~ /TMT|iTRAQ/i) { # get the reporterIonList
 								my $tmtData=$xml->XMLin($processingNodeParameter->{content});
-								foreach my $repMass (keys $tmtData->{MethodPart}{MethodPart}){
+								foreach my $repMass (keys %{$tmtData->{MethodPart}{MethodPart}}){
 										#next unless $tmtData->{MethodPart}{MethodPart}{$repMass}{Parameter}{IsActive}{content}; # Commented on 2017/11/02 because of PD 2.0.0.802 version where IsActive do not exist
 										my $channelID=$tmtData->{MethodPart}{MethodPart}{$repMass}{Parameter}{TagID}{content};
 										my $monoMass=$tmtData->{MethodPart}{MethodPart}{$repMass}{Parameter}{MonoisotopicMZ}{content};
@@ -1237,50 +1238,13 @@ if ($rank==1) {
 
 	####>Finding match groups and protein visibility
 	print "&nbsp;&nbsp;&nbsp;- Building match groups...";
-	my (%matchGroup,%visibility);
-	#my @sortedProtIDs=sort{scalar (keys %{$matchList{$b}})<=>scalar (keys %{$matchList{$a}}) || $numProtTop{$b}<=>$numProtTop{$a} || $proteinScore{$b}<=>$proteinScore{$a} || $proteinAnnotQual{$a} <=> $proteinAnnotQual{$b} || $proteinLength{$a}<=>$proteinLength{$b} || $a<=>$b} keys %matchList;
 	# Rules of ordering: numPep > num@top > score > delta length > annotQuality > length > identifier
-	my @sortedProtIDs=sort{$numProtPeptides{$b}<=>$numProtPeptides{$a} || $protSpeciesClass{$b}<=>$protSpeciesClass{$a} || $numProtTop{$b}<=>$numProtTop{$a} || $proteinScore{$b}<=>$proteinScore{$a} || &deltaLength($proteinLength{$a},$proteinLength{$b},$proteinPepDens{$a},$proteinPepDens{$b}) || $proteinAnnotQual{$a}<=>$proteinAnnotQual{$b} || $proteinLength{$a}<=>$proteinLength{$b} || $a<=>$b} keys %matchList;
-	my $numGroup=0;
-	$count=0;
-	foreach my $i (0..$#sortedProtIDs) {
-		#$count++;
-		#if ($count >= 100) {
-		#	$count=0;
-		#	print '.';
-		#}
-		my $protID=$sortedProtIDs[$i];
-		next if $matchGroup{$protID}; # already assigned to a match group
-		$matchGroup{$protID}=++$numGroup;
-		$visibility{$protID}=2; # Reference protein
-		$bestProtVis{$protID}=2; # update bestVis
-		foreach my $j ($i+1..$#sortedProtIDs) {
-			my $protID2=$sortedProtIDs[$j];
-			next if $matchGroup{$protID2}; # already assigned to a match group
-			$count++;
-			if ($count >= 500000) {
-				$count=0;
-				print '.';
-			}
+	#my @sortedProtIDs=sort{scalar (keys %{$matchList{$b}})<=>scalar (keys %{$matchList{$a}}) || $numProtTop{$b}<=>$numProtTop{$a} || $proteinScore{$b}<=>$proteinScore{$a} || $proteinAnnotQual{$a} <=> $proteinAnnotQual{$b} || $proteinLength{$a}<=>$proteinLength{$b} || $a<=>$b} keys %matchList;
+	my @sortedProtIDs = sort{$numProtPeptides{$b}<=>$numProtPeptides{$a} || $protSpeciesClass{$b}<=>$protSpeciesClass{$a} || $numProtTop{$b}<=>$numProtTop{$a} || $proteinScore{$b}<=>$proteinScore{$a} || &deltaLength($proteinLength{$a},$proteinLength{$b},$proteinPepDens{$a},$proteinPepDens{$b}) || $proteinAnnotQual{$a}<=>$proteinAnnotQual{$b} || $proteinLength{$a}<=>$proteinLength{$b} || $a<=>$b} keys %matchList;
+	my (%matchGroup, %visibility);
+	&promsMod::createMatchGroups(\%matchList, \%matchGroup, \@sortedProtIDs, \%visibility, \%bestProtVis, $protVisibility, 1);
 
-			##>Comparing peptide contents of protID and protID2<##
-			my $matchOK=1;
-			foreach my $pepID (keys %{$matchList{$protID2}}) {
-				if (!$matchList{$protID}{$pepID}) {
-					delete $matchList{$protID}{$pepID}; # to be safe
-					$matchOK=0;
-					last;
-				}
-			}
-			if ($matchOK) {
-				$matchGroup{$protID2}=$matchGroup{$protID};
-				$visibility{$protID2}=($protVisibility && defined($bestProtVis{$protID2}) && ($bestProtVis{$protID2}==2 || ($protVisibility==2 && $bestProtVis{$protID2})))? 1 : 0; # visible or hidden
-				$bestProtVis{$protID2}=$visibility{$protID2} if (!defined($bestProtVis{$protID2}) || $visibility{$protID2} > $bestProtVis{$protID2}); # update bestVis
-			}
-		}
-	}
-	print " Done.<BR>\n";
-
+	
 	####>Computing PEP_SPECIFICITY
 	my %pepSpecificity;
 	foreach my $peptideID (keys %pepProteins) {
@@ -2446,6 +2410,8 @@ write.table(exportData, file="$exportFile",sep=c('\\t'),quote=F,row.names=F,col.
 
 
 ####>Revision history<####
+# 3.3.4 [MODIF] Restore lost CeCILL license text (PP 28/08/19)
+# 3.3.3 [MODIF] Changed createMatchGroup to fit with promsMod.pm prototype (VS 03/07/19)
 # 3.3.2 Removed all usages of PEPTIDE_QUANTIFICATION table (PP 27/06/18)
 # 3.3.1 Minor bug correction for TMT (GA 18/06/18)
 # 3.3.0 Peptide quantification data now written to file $promsPath{quantification}/project_$projectID/quanti_$quantifID/peptide_quantification(_$targetPos).txt (PP 24/05/18)

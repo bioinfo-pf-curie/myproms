@@ -1,6 +1,6 @@
 /*
 ################################################################################
-# pcaPlot.js      1.1.0                                                        #
+# pcaPlot.js      1.1.1                                                        #
 # Authors: P. Poullet (Institut Curie)                                         #
 # Contact: patrick.poullet@curie.fr                                            #
 ################################################################################
@@ -92,7 +92,7 @@ function pcaPlot(pca) {
     this.divID=pca.div;
 	this.exportAsImage=pca.exportAsImage;
 	var canvasDivID; // initialized by this.draw()
-	this.getDivID=function(){return canvasDivID;}
+	this.getDivID=function(){return canvasDivID;};
     this.div=document.getElementById(this.divID);
 
 	/******** Chart geometry ********/
@@ -128,24 +128,24 @@ function pcaPlot(pca) {
 	this.sameScale=1;
  	this.convertValue=function(axis,value) {
 		return value;
-	}
-    this.minValueX,this.maxValueX,this.minValueY,this.maxValueY;
+	};
+    this.minValueX=null;this.maxValueX=null;this.minValueY=null;this.maxValueY=null;
 	this.chartSettings={};
 	this.chartSettings.reference={};
 	this.chartSettings.current={};
 	this.axisClosure=true; // draw 4 axes
 	this.chartMarks=[];
 	this.zoomable=true;
-	this.zoomText;
-	this.plotArea;
-	this.dragArea;
+	this.zoomText=null;
+	this.plotArea=null;
+	this.dragArea=null;
 	this.dragContext='area';
 	this.panProcess={x:0,y:0,dx:0,dy:0}; //new Object();
 	this.pointOpacity=(pca.pointOpacity)? pca.pointOpacity : 0.7;
 	this.pointOnclick=pca.pointOnclick;
 	this.pointOnList=pca.pointOnList;
 	this.selectable=true;
-	this.searchable=true;
+	this.searchable=pca.searchable || true;
 
 	/****************** Data point object ******************************/
 	var dataPoint=function(set,data) {
@@ -159,7 +159,7 @@ function pcaPlot(pca) {
 		this.point=null; // ref to the svg element
 		this.highlightNames=[]; // new Array()
 		this.isHidden=false;
-	}
+	};
 	dataPoint.prototype = {
 		computeSize: function(refMinSize,minZ,scale) {
 			//var r=(this.z-minZ)*scale;
@@ -193,12 +193,12 @@ function pcaPlot(pca) {
 		//setY: function(newValue) {
 		//	this.y=newValue;
 		//}
-	}
+	};
 
     /********************* Data import *********************/
     /***** Threshold lines *****/
 	this.editThreshold=false;
-	this.thresholdLines=new Array();
+	this.thresholdLines=[];
 	this.thresholdLines.push(new thresholdLine(PCA,'X','',0,'#555555','- '));
 	this.thresholdLines.push(new thresholdLine(PCA,'Y','',0,'#555555','- '));
 
@@ -219,14 +219,14 @@ function pcaPlot(pca) {
     this.addDataAsString=function(dataStrg) {
 		if (!this.dataSets[0]) {
 			this.addDataSet(0,{name:'PCA data',color:'#000000'});
-			this.dataSets[0].data=new Array();
+			this.dataSets[0].data=[];
 		}
 		var dataSet=dataStrg.split(';');
 		for (var i=0; i < dataSet.length; i++) {
 			var data=dataSet[i].split(',');
 			var dp=new dataPoint(this.dataSets[0],data);
 			this.dataSets[0].data.push(dp);
-			if (this.minValueX==null) { // 1st point
+			if (this.minValueX===null) { // 1st point
 				this.minValueX=dp.x;
 				this.maxValueX=dp.x;
 				this.minValueY=dp.y;
@@ -241,7 +241,7 @@ function pcaPlot(pca) {
 			minZ=Math.min(minZ,dp.z);
 			maxZ=Math.max(maxZ,dp.z);
 		}
-    }
+    };
 
     /********************* PCA display (Raphael) *********************/
     this.draw=function() {
@@ -254,17 +254,17 @@ function pcaPlot(pca) {
 			//var scaleZ=8/(maxZ-minZ); // max r=8 => max size ~200; min/max size overwritten by sizeRule
 			scaleZ=(sizeRule.max-sizeRule.min)/((maxZ-minZ)*(maxZ-minZ)*3.14); // radius -> surface
 		}
-		for (var j=0; j < this.dataSets[0].data.length; j++) {
+		for (let j=0; j < this.dataSets[0].data.length; j++) {
 			//this.dataSets[0].data[j].computeSize(minZ,scaleZ);
 			this.dataSets[0].data[j].computeSize(refMinSize,minZsize,scaleZ);
 		}
-		minZ=1e200,maxZ=-1e-200; // reset in case resetData() & redraw()
+		minZ=1e200; maxZ=-1e-200; // reset in case resetData() & redraw()
 		/* Cross-dataset links (links between dataPoint with same externalID) */
 		if (this.dataSets.length > 1) {
-			for (var i=0; i < this.dataSets.length; i++) {
-				for (var j=0; j < this.dataSets[i].data.length; j++) {
+			for (let i=0; i < this.dataSets.length; i++) {
+				for (let j=0; j < this.dataSets[i].data.length; j++) {
 					var dataPointID=this.dataSets[i].data[j].externalID;
-					if (!this.dataSetLinks[dataPointID]) {this.dataSetLinks[dataPointID]=new Array();}
+					if (!this.dataSetLinks[dataPointID]) {this.dataSetLinks[dataPointID]=[];}
 					this.dataSetLinks[dataPointID].push(this.dataSets[i].data[j]);
 				}
 			}
@@ -287,14 +287,14 @@ function pcaPlot(pca) {
 			  function(x,y,e) {setDragging(PCA,x,y,e);},
 			  function() {endDragging(PCA);}
 			  )
-		.dblclick(function(){zoomOut(PCA)});
+		.dblclick(function(){zoomOut(PCA);});
 
 		/* Display chart */
 		initializeChart(PCA);
-    }
+    };
 
 	/***** Reset data values (x,y values) *****/
-	var tmpDataList=new Object();
+	var tmpDataList={};
 	this.resetData=function(dataStrg) {
 		var dataSet=dataStrg.split(';');
 		for (var i=0; i < dataSet.length; i++) {
@@ -305,14 +305,14 @@ function pcaPlot(pca) {
 				maxZ=Math.max(maxZ,data[3]);
 			}
 		}
-	}
+	};
 
 	/***** Redraw graph with new values *****/
 	this.redraw=function(titleX,titleY) {
-		var chartX=this.plotArea.attr('x'); var chartX0=chartX-1;
-		var chartY=this.plotArea.attr('y');
-		var chartW=this.plotArea.attr('width');
-		var chartH=this.plotArea.attr('height');
+		//var chartX=this.plotArea.attr('x'); var chartX0=chartX-1;
+		//var chartY=this.plotArea.attr('y');
+		//var chartW=this.plotArea.attr('width');
+		//var chartH=this.plotArea.attr('height');
 
 		this.axisXtext=titleX;
 		this.axisYtext=titleY;
@@ -359,7 +359,7 @@ function pcaPlot(pca) {
 			dp.point.attr({r:sizeRule.ratio*Math.sqrt(dp.size/3.14)});
 		}
 		tmpDataList={}; // clear list
-		minZ=1e200,maxZ=-1e-200; // reset in case new resetData() & redraw()
+		minZ=1e200; maxZ=-1e-200; // reset in case new resetData() & redraw()
 
 		/*** Compute default range ***/
 		computeDefaultRange(PCA);
@@ -367,12 +367,13 @@ function pcaPlot(pca) {
 		/*** Clear & plot chart ***/
 		clearChart(PCA);
 		plotChart(PCA);
-	}
+	};
 
 } // end of PCA
 
 /*
 ####>Revision history<####
+# 1.1.1 [FEATURE] Optional external pre-search function (PP 29/10/19)
 # 1.1.0 Improved computation of point size based on 3rd dimension (PP 02/02/17)
 # 1.0.9 Uses chart registering for dynamic html calls (PP 20/02/16)
 # 1.0.8 Added 3rd dimension projection as point size (PP 08/11/15)

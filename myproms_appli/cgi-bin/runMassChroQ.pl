@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# runMassChroQ.pl              1.7.6                                           #
+# runMassChroQ.pl              1.7.7                                           #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Interface between myProMS and MassChroQ software, developed by Inra.         #
@@ -1179,7 +1179,7 @@ foreach my $anaID (keys %{$params{'MZXML'}}) {
 
 	###> Create Match Group.
     my @sortedIdentifiers=sort{$numProtPeptides{$identifiers{$b}}<=>$numProtPeptides{$identifiers{$a}} || $numProtTop{$identifiers{$b}}<=>$numProtTop{$identifiers{$a}} ||  $proteinScore{$anaID}{$identifiers{$b}}<=>$proteinScore{$anaID}{$identifiers{$a}} || &deltaLength($proteinLength{$identifiers{$a}},$proteinLength{$identifiers{$b}},$proteinPepDens{$identifiers{$a}},$proteinPepDens{$identifiers{$b}}) || $proteinLength{$identifiers{$a}}<=>$proteinLength{$identifiers{$b}} || $identifiers{$a}<=>$identifiers{$b}} keys %matchList;
-	&promsMod::createMatchGroups(\%matchList,\%matchGroup,\%visibility,\%bestProtVis,$protVisibility,\@sortedIdentifiers,0);
+	&promsMod::createMatchGroups(\%matchList,\%matchGroup,\@sortedIdentifiers,\%visibility,\%bestProtVis,$protVisibility,0);
 	foreach my $identifier (keys %matchList){
 		$sthUpMG->execute($visibility{$identifier},$matchGroup{$identifier},$anaID,$identifiers{$identifier});
 	}
@@ -1405,6 +1405,7 @@ package mzXMLHandler; {
 
 
 ####> Revision history
+# 1.7.7 [MODIF] Changed createMatchGroup to fit with promsMod.pm prototype (VS 03/07/19)
 # 1.7.6 Change to use $cluster{'runJob'} for jobs (GA 12/11/18)
 # 1.7.5 Add export LC_ALL="C" in all cluster calls (GA 09/11/18)
 # 1.7.4 Also tests for 2.2.12 version when running MassChroQ locally (PP 11/10/18)

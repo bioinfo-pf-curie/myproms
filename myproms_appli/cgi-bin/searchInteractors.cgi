@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# searchInteractors.cgi       1.1.0                                            #
+# searchInteractors.cgi       1.1.1                                            #
 # Authors: P. Poullet, S.Liva (Institut Curie)	                               #
 # Contact: myproms@curie.fr                                                    #
 # Fetch and provide proteins and parameters for GO enrichment analysis         #
@@ -401,7 +401,7 @@ sub ajaxSearchInteractors {
     $responseList{"imex"} = $agent->get('http://www.ebi.ac.uk/Tools/webservices/psicquic/imex/webservices/current/search/query/'.$uniAC);
     $responseList{"intact"} = $agent->get('http://www.ebi.ac.uk/Tools/webservices/psicquic/intact/webservices/current/search/query/'.$uniAC);
     $responseList{"innatedb-all"} = $agent->get('https://psicquic.all.innatedb.com/webservices/current/search/query/'.$uniAC);
-    $responseList{"irefindex"} = $agent->get('http://irefindex.vib.be/webservices/current/search/query/'.$uniAC);
+    #$responseList{"irefindex"} = $agent->get('http://irefindex.vib.be/webservices/current/search/query/'.$uniAC);
     $responseList{"reactome-fi"} = $agent->get('http://www.ebi.ac.uk/Tools/webservices/psicquic/reactome-fi/webservices/current/search/query/'.$uniAC);
     $responseList{"uniprot"} = $agent->get('http://www.ebi.ac.uk/Tools/webservices/psicquic/uniprot/webservices/current/search/query/'.$uniAC);
 
@@ -608,6 +608,7 @@ sub getXrefByDbName { ##from EBI
     return @listXref;
 }
 ####>Revision history<####
+# 1.1.1 [BUGFIX] Temporary remove irefindex web service since it is down (VS 31/01/20)
 # 1.1.0 Add more services to retrieve Interactors (VS 04/06/19)
 # 1.0.1 Minor display changes (PP 29/10/14)
 # 1.0.0 new script to retrieve protein interactions through web services (SL 26/09/14)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# linkBioSample2Observations.cgi     1.1.0                                     #
+# linkBioSample2Observations.cgi     1.1.1                                     #
 # Authors: P. Poullet, G. Arras, S.Liva (Institut Curie)              	       #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -461,7 +461,16 @@ if ($action eq 'propagate') {
 }
 
 my (@experiments,%bioSampleNames,@sortedBioSamples,$title);
-my $sthExp=$dbh->prepare("SELECT ID_EXPERIMENT,NAME FROM EXPERIMENT WHERE ID_PROJECT=$projectID ORDER BY DISPLAY_POS");
+my $sthExp=$dbh->prepare("SELECT ID_EXPERIMENT,NAME
+						  FROM EXPERIMENT
+						  WHERE ID_PROJECT=$projectID
+						  AND EXPERIMENT.ID_EXPERIMENT NOT IN (
+							  SELECT E2.ID_EXPERIMENT
+							  FROM EXPERIMENT E2
+							  INNER JOIN USER_EXPERIMENT_LOCK EU ON EU.ID_EXPERIMENT=E2.ID_EXPERIMENT
+							  WHERE E2.ID_PROJECT=$projectID AND EU.ID_USER='$userID'
+						  )
+						  ORDER BY DISPLAY_POS");
 $sthExp->execute;
 while (my ($expID,$expName)=$sthExp->fetchrow_array) {
 	push @experiments,[$expID,$expName];
@@ -827,6 +836,7 @@ print qq
 |;
 
 ####>Revision history<####
+# 1.1.1 [FEATURE] Remove locked experiments from BioSamples searches (VS 08/08/19)
 # 1.1.0 Added option to propagate links from one Exp to another based on analysis name/MS file or design states name (PP 25/04/19)
 # 1.0.6 Also removes software version from QUANTIF_ANNOT (PP 09/12/18)
 # 1.0.5 Minor modification for TMT (GA 03/04/17)

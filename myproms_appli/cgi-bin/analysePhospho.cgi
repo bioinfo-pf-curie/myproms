@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 #############################################################################
-# analysePhospho.cgi         2.0.1                                          #
+# analysePhospho.cgi         2.0.4                                          #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                   #
 # Contact: myproms@curie.fr                                                 #
 # Script processing PhosphoRS analyses started by selectAnalyses.cgi        #
@@ -170,7 +170,7 @@ overWrite=$overWrite
 		close INFO;	
 	}
 	$sthAN->finish;
-	$dbh->disconnect;
+    $dbh->disconnect;
 	print "<BR><BR> Done.</FONT><BR>\n";
 
 	####>Forking to launch master job in background<####
@@ -189,12 +189,12 @@ overWrite=$overWrite
 <BR><BR><INPUT type="button" value="New PhosphoRS Analysis" onclick="newPhosphoRS();">
 </CENTER>
 |;
-	####>Calling watch popup window<####
+	####>Calling monitoring popup window<####
 	sleep 3;
 	print qq
 |<SCRIPT type="text/javascript">
-var watchPhosphoWin=window.open("$promsPath{cgi}/watchPhosphoAnalyses.cgi",'WatchPhosphoWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
-watchPhosphoWin.focus();
+var monitorJobsWin=window.open("$promsPath{cgi}/monitorJobs.cgi?filterType=Phospho&filterDateNumber=1&filterDateType=DAY&filterStatus=Queued&filterStatus=Running",'monitorJobsWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
+monitorJobsWin.focus();
 </SCRIPT>
 </BODY>
 </HTML>
@@ -487,20 +487,19 @@ close PRSPARAM;
 ####>Updating validation history<####
 my $paramStrg = "threshold:$probThreshold;massTolerance:$massTolerance;activationType:$activationType;";
 &promsMod::updateAnalysisHistory($dbh,$anaID,$paramStrg,'prs',$userID);
-
 $dbh->commit;
 $dbh->disconnect;
 		
 rename("$currentPRSDir/$anaID\_$jobDir\_run.flag","$currentPRSDir/$anaID\_$jobDir\_end.flag"); # end flag file
-		
+
 open(FILESTAT,">>$fileStat");
-print FILESTAT "Ended ",strftime("%H:%M:%S %d/%m/%Y",localtime),"\n";
+print FILESTAT "PhosphoRS Ended.",strftime("%H:%M:%S %d/%m/%Y",localtime),"\n";
 close(FILESTAT);
+
 
 sleep 30;
 
 ##>Cleaning tmp job directory
-rmtree($fullJobDir); rmdir $fullJobDir if -e $fullJobDir;
 unlink "$currentPRSDir/$anaID\_$jobDir\_error.txt";
 unlink "$currentPRSDir/$anaID\_$jobDir\_end.flag";
 
@@ -517,12 +516,11 @@ sub launchAllJobs { # Globals: $phosphoRSDir,$currentPRSDir
 	my %runningJobs;
 	my $cgiUnixDir=`pwd`;
 	$cgiUnixDir=~s/\/*\s*$//; # trim any trailing '/' & spaces
-	
+	my $dbh=&promsConfig::dbConnect;
 	my %cluster=&promsConfig::getClusterInfo;
-	
+    
 	####>Cluster jobs<####
 	if ($cluster{'on'}) {
-		
 		my $checkForEndedJobs=sub { # This sub can access all variables global to parent bloc code!!!
 			foreach my $anaID (keys %runningJobs) {
 				my $jobDir=$masterJobCode.'.'.$runningJobs{$anaID};
@@ -540,7 +538,7 @@ sub launchAllJobs { # Globals: $phosphoRSDir,$currentPRSDir
 			noWatch=>1 # do not wait for job to end
 		);
 		my $MAX_PARALLEL_JOBS=$cluster{'maxJobs'};
-
+        
 		####>Looping through job list
 		my $curJobIdx=-1;
 		MAIN_LOOP:while (1) {
@@ -562,9 +560,13 @@ sub launchAllJobs { # Globals: $phosphoRSDir,$currentPRSDir
 				my %jobParameters=%baseJobParameters;
 				$jobParameters{jobName}="myProMS_phosphoRS_$anaID";
 				my $commandString="$cgiUnixDir/analysePhospho.cgi $userID $jobDir $anaID $probThreshold $massTolerance $activationType $overWrite 2> $currentPRSDir/$anaID\_$jobDir\_error.txt";
-				my ($pbsError,$pbsErrorFile)=$cluster{'runJob'}->($fullJobDir,$commandString,\%jobParameters);
+				my ($pbsError, $pbsErrorFile, $jobClusterID) = $cluster{'runJob'}->($fullJobDir, $commandString, \%jobParameters);
 				$runningJobs{$anaID}=$jobPos;
 				
+                my $projectID = &promsMod::getProjectID($dbh, $anaID, 'ANALYSIS');
+                $dbh->do("INSERT INTO JOB_HISTORY (ID_JOB, ID_USER, ID_PROJECT, ID_JOB_CLUSTER, TYPE, STATUS, FEATURES, SRC_PATH, LOG_PATH, ERROR_PATH, STARTED) VALUES('$jobDir', '$userID', $projectID, 'C$jobClusterID', 'Phospho', 'Queued', 'ID_ANALYSIS=$anaID;PROB_THRESHOLD=$probThreshold;MASS_TOLERANCE=$massTolerance;ACTIVATION_TYPE=$activationType;OVERWRITE=$overWrite', '$fullJobDir', '$fullJobDir/status.out', '$currentPRSDir/$anaID\_$jobDir\_error.txt', NOW())");
+                $dbh->commit;
+                
 				last MAIN_LOOP if $curJobIdx==$#{$refAnalysisList}; # no more jobs to launch => break MAIN_LOOP
 				sleep 2;
 			}
@@ -614,10 +616,16 @@ sub launchAllJobs { # Globals: $phosphoRSDir,$currentPRSDir
 					my $jobPos=$curJobIdx+1;
 					my $jobDir=$masterJobCode.'.'.$jobPos;
 					my $anaID=$refAnalysisList->[$curJobIdx];
+                    my $fullJobDir="$phosphoRSDir/$jobDir";
+                    my $projectID = &promsMod::getProjectID($dbh, $anaID, 'ANALYSIS');
+                    
+                    $dbh->do("INSERT INTO JOB_HISTORY (ID_JOB, ID_USER, ID_PROJECT, ID_JOB_CLUSTER, TYPE, STATUS, FEATURES, SRC_PATH, LOG_PATH, ERROR_PATH, STARTED) VALUES('$jobDir', '$userID', $projectID, 'L$$', 'Phospho', 'Queued', 'ID_ANALYSIS=$anaID;PROB_THRESHOLD=$probThreshold;MASS_TOLERANCE=$massTolerance;ACTIVATION_TYPE=$activationType;OVERWRITE=$overWrite', '$fullJobDir', '$fullJobDir/status.out', '$currentPRSDir/$anaID\_$jobDir\_error.txt', NOW())");
+                    $dbh->commit;
 					system "$cgiUnixDir/analysePhospho.cgi $userID $jobDir $anaID $probThreshold $massTolerance $activationType $overWrite 2> $currentPRSDir/$anaID\_$jobDir\_error.txt";
 					exit;
 				}
 				$runningJobs{$childPid}=$curJobIdx;
+                
 				last MAIN_LOOP if $curJobIdx==$#{$refAnalysisList}; # no more jobs to launch => break MAIN_LOOP
 				sleep 2;
 			}
@@ -631,6 +639,8 @@ sub launchAllJobs { # Globals: $phosphoRSDir,$currentPRSDir
 			sleep 60; # $SIG{CHLD} is active during sleep
 		}
 	}
+    
+    $dbh->disconnect;
 }
 
 sub deletePRS{
@@ -705,6 +715,9 @@ sub deletePRS{
 }
 
 ####>Revision history<####
+# 2.0.4 [CHANGES] Use new job monitoring window opening parameters (VS 18/11/19)
+# 2.0.3 [MODIF] Switch from watchPhosphoAnalyses to monitorJobs script (VS 21/10/19)
+# 2.0.2 [ENHANCEMENT] Add insertion into JOB_HISTORY table for job monitoring (VS 08/10/19)
 # 2.0.1 Added 10% step progression for msf spectra extraction (PP 07/01/19)
 # 2.0.0 Major code rewrite for full background run support with call of watchPhosphoAnalyses.cgi (PP 08/11/18)
 # 1.1.3 Minor bug fix in call for a new PhosphoRS analysis (PP 15/06/18)

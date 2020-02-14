@@ -20,6 +20,7 @@ services:
    - Mascot/mascot.env
   environment:
    - "EMAIL_CONTACT=myproms@curie.fr"
+   - "SERVER_ADMIN=myproms@curie.fr"
    - "SERVICE_80_NAME=myproms-server"
    - "SERVICE_80_TAGS=apache,cgi"
    - "APPLI_DIR=/myproms"
@@ -42,6 +43,8 @@ services:
    - "./myproms_data:/data"
    - "./myproms_shared:/myproms_shared"
    - "./start.sh:/start.sh"
+#   - "/path/to/mascot/data:/mascot/data:ro"
+#   - "/path/to/mascot/sequence:/mascot/sequence:ro"
   links:
    - myproms-mysql:myproms-mysql
   entrypoint: ["/dumb-init","/start.sh"]

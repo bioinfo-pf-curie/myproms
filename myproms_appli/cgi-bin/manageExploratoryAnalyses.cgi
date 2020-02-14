@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# manageExploratoryAnalyses.cgi       1.1.7                                    #
+# manageExploratoryAnalyses.cgi       1.1.8                                    #
 # Authors: P. Poullet, S.Liva (Institut Curie)                                 #
 # Contact: myproms@curie.fr                                                    #
 # Display PCA & clustering analysis                                            #
@@ -198,7 +198,7 @@ my (%quantifList,%dataParams,%dataFilters,%refQuantif,%analysisList,$focusStrg,$
 if ($action eq 'summary') {
 	my $modifID;
 	
-    if ($anaType eq ('PCA') || $anaType eq ('cluster')) {
+    if ($anaType eq 'PCA' || $anaType eq 'cluster') {
         my $sthDesQuantif = $dbh -> prepare("SELECT EQ.ID_QUANTIFICATION,EQ.TARGET_POS,CONCAT(D.NAME,' > ',Q.NAME),Q.QUANTIF_ANNOT,ID_MODIFICATION FROM EXPLORANA_QUANTIF EQ
                                                     INNER JOIN QUANTIFICATION Q ON EQ.ID_QUANTIFICATION = Q.ID_QUANTIFICATION
                                                     INNER JOIN DESIGN D ON Q.ID_DESIGN = D.ID_DESIGN
@@ -210,17 +210,18 @@ if ($action eq 'summary') {
                 my (%labelingInfo,%stateInfo);
                 &promsQuantif::extractQuantificationParameters($dbh,$quantifAnnot,\%labelingInfo,\%stateInfo);
                 if ($labelingInfo{'RATIOS'}) {
-                    my ($testStatePos,$refStatePos)=split(/\//,$labelingInfo{'RATIOS'}[$targetPos-1]);
+                    my ($testCondID,$refCondID)=split(/\//,$labelingInfo{'RATIOS'}[$targetPos-1]);
                     my $normTag='';
-                    if ($testStatePos=~/%/) { # Super ratio
+                    if ($testCondID=~/%/) { # Super ratio
                         $normTag='°';
-                        $testStatePos=~s/%\d+//;
-                        $refStatePos=~s/%\d+//;
+                        $testCondID=~s/%\d+//;
+                        $refCondID=~s/%\d+//;
                     }
-                    $quantifList{$quantifID.'_'.$targetPos}="$quantifPath : $stateInfo{$testStatePos}{NAME}$normTag/$stateInfo{$refStatePos}{NAME}$normTag";
+                    $quantifList{$quantifID.'_'.$targetPos}="$quantifPath : $stateInfo{$testCondID}{NAME}$normTag/$stateInfo{$refCondID}{NAME}$normTag";
                 }
-                else {
-                    $quantifList{$quantifID.'_'.$targetPos}="$quantifPath : $stateInfo{$targetPos}{NAME}";
+                else { # MQ
+					my ($numBioRep,$quantiObsIDs,$condID)=split(',',$labelingInfo{'STATES'}[$targetPos-1]);
+                    $quantifList{$quantifID.'_'.$targetPos}="$quantifPath : $stateInfo{$condID}{NAME}";
                 }
             }
         }
@@ -626,6 +627,7 @@ print qq
 $dbh -> disconnect;
 
 ####>Revision history<####
+# 1.1.8 [ENHANCEMENT] Code update to match new behavior of &promsQuantif(v1.5.4)::extractQuantificationParameters for MaxQuant quantif (PP 21/11/19)
 # 1.1.7 fix little bug (SL 31/01/18)
 # 1.1.6 Compatible with peptide exploratory analysis (SL 30/11/17)
 # 1.1.5 Compatible with MaxQuant non-ratio quantifs (PP 12/01/17)

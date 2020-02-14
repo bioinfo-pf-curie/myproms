@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# runSSProtQuantification.pl       1.2.3                                       #
+# runSSProtQuantification.pl       1.3.3                                       #
 # Component of site myProMS Web Server                                         #
 # Authors: P. Poullet (Institut Curie)                                         #
 # Contact: myproms@curie.fr                                                    #
@@ -51,10 +51,12 @@ use MIME::Base64;
 use POSIX qw(strftime);
 use File::Copy::Recursive qw(dirmove);
 use File::Path;
+
 #exit;
 #######################
 ####>Configuration<####
 #######################
+my $REF_XIC_MEDIAN_VALUE=10;
 my %promsPath=&promsConfig::getServerInfo('no_user');
 
 ###############################
@@ -81,7 +83,7 @@ mkdir $dataDir;
 mkdir $resultDir;
 mkdir $graphDir;
 
-#open (DEBUG,">$promsPath{tmp}/quantification/debug.txt"); # DEBUG
+#open (DEBUG,">$promsPath{tmp}/quantification/debug_SSPA.txt"); # DEBUG
 #print DEBUG "PEPTIDES: '@{$quantifParameters{'DB'}{PEPTIDES}}'\n";
 my $fileStat="$quantifDir/status_$quantifID.out";
 open(FILESTAT,">$fileStat") || die "Error while opening $fileStat";
@@ -102,7 +104,8 @@ $stateStrg=~s/#//g; # remove all id tags
 ################################
 ####>Get states composition<####
 ################################
-my (%quantifDesign,%obs2Ana); # SSPA
+my ($pepSpecificity,$pepMissedCleavage,$ptmFilter,$pepFocus,$skipRescued)=@{$quantifParameters{'DB'}{'PEPTIDES'}};
+my (%quantifDesign,%obs2Ana,%peptideQuantifs,%fragQuantifs,%obs2targetPos,$algoType); # SSPA
 my (%ana2Obs,%labelModifs,%anaLabelModifs);
 
 my $sthALM=$dbh->prepare("SELECT M.ID_MODIFICATION FROM ANALYSIS_MODIFICATION AM,MODIFICATION M WHERE AM.ID_MODIFICATION=M.ID_MODIFICATION AND AM.ID_ANALYSIS=? AND M.IS_LABEL=1");
@@ -131,7 +134,19 @@ foreach my $state (split(/;/,$stateStrg)) { # 'state1;state2;---;stateN',  state
 				$numBioRepObs++;
 				my ($obsID,$parQuantifID,$anaID,$targetPos)=split(/:/,$fraction); # $parQuantifID can be 0 for SSPA
 				$obs2Ana{$obsID}=$anaID;
+				$obs2targetPos{$obsID}=$targetPos;
 				push @fractionObs,$obsID;
+				if ($pepFocus eq 'xic') {
+					unless ($algoType) { # same for all peptide quantifs
+						($algoType)=$dbh->selectrow_array("SELECT QM.CODE FROM QUANTIFICATION Q,QUANTIFICATION_METHOD QM WHERE Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD AND ID_QUANTIFICATION=$parQuantifID");
+					}
+					if ($algoType=~/^(TDA|DIA)$/) { # MS2 XIC
+						$fragQuantifs{$parQuantifID}{$anaID}=1; #$obsID;
+					}
+					else { # MS1 XIC
+						$peptideQuantifs{$parQuantifID}{$targetPos}=1; #$obsID;
+					}
+				}
 				#$sthObsBioSamp->execute($obsID);
 				#my ($bsID)=$sthObsBioSamp->fetchrow_array;
 				#$nameList{BIOSAMPLE}{$bsID}++ if $bsID;
@@ -193,26 +208,84 @@ $sthObsMod->finish;
 #$sthObsBioSamp->finish;
 #$sthObsMsSamp->finish;
 
-#print Dumper %quantifDesign;
-#print "",Dumper %ana2Obs
-#$dbh->disconnect;
-#exit;
 
+###################################################
+####>Fetching peptide xic values (feature=xic)<####
+###################################################
+my %pepQuantifValues;
+if ($pepFocus eq 'xic') {
+	if ($algoType=~/^(TDA|DIA)$/) { # MS2 XIC
+		foreach my $ms2Quantif (keys %fragQuantifs) {
+			foreach my $anaID (keys %{$peptideQuantifs{$ms2Quantif}}) {
+				open (FRAG_QUANTIF,"$promsPath{quantification}/project_$projectID/quanti_$ms2Quantif/swath_ana_$anaID.txt") || die $!;
+				while (<FRAG_QUANTIF>) {
+					next if /^PEP/; # $.=1
+					s/\s\Z//g; # chomp is not enough. More hidden Windows character
+					my ($pepID,$fragMZ,$fragCharge,$fragType,$fragRes,$fragArea,$fragRT)=split(/!/,$_);
+					next if $fragArea=~/^(N\/A|None|0)$/;
+					$pepQuantifValues{"$pepID:0"}+=$fragArea; # Sum all fragments targetPos=0!!!!
+				}
+				close FRAG_QUANTIF;
+			}
+		}
+	}
+	else { # MS1 XIC
+		my $sthPepQP=$dbh->prepare("SELECT ID_QUANTIF_PARAMETER FROM QUANTIFICATION Q,QUANTIFICATION_PARAMETER QP WHERE Q.ID_QUANTIFICATION_METHOD=QP.ID_QUANTIFICATION_METHOD AND Q.ID_QUANTIFICATION=? AND (CODE LIKE '%_INTENSITY' OR CODE LIKE '%_AREA')");
+		foreach my $xicQuantif (keys %peptideQuantifs) {
+			my %usedParamIDs;
+			$sthPepQP->execute($xicQuantif);
+			while (my ($paramID)=$sthPepQP->fetchrow_array) {
+				$usedParamIDs{$paramID}=1;
+			}
+			my $signalParamID;
+			foreach my $targetPos (keys %{$peptideQuantifs{$xicQuantif}}) {
+				#my $obsID=$obs2targetPos{$targetPos};
+				my $pepQuantifFile=($labeling eq 'FREE')? 'peptide_quantification.txt' : "peptide_quantification_$targetPos.txt";
+				open (PEP_QUANTIF,"$promsPath{quantification}/project_$projectID/quanti_$xicQuantif/$pepQuantifFile") || die $!;
+				while(<PEP_QUANTIF>) {
+					next if $.==1;
+					chomp;
+					my ($paramID,$pepID,$quantifValue)=split(/\t/,$_);
+					#next if $paramID != $peptideAreaParamID{$xicQuantif};
+					next if $quantifValue <= 0; # Isobaric bug
+					unless ($signalParamID) {
+						next unless $usedParamIDs{$paramID};
+						$signalParamID=$paramID;
+					}
+					next if $paramID != $signalParamID;
+					$pepQuantifValues{"$pepID:$targetPos"}=$quantifValue;
+				}
+				close PEP_QUANTIF;
+			}
+		}
+		$sthPepQP->finish;
+	}
+}
 
 #################################################################
 ####>Fetching and filtering peptides associated with samples<####
 #################################################################
+my $useHiddenProt=$quantifParameters{'DB'}{'HIDDEN_PROT'}[0]; # count protein where hidden if visible once
+my %visibleProteins;
+my $visibilityThres=1;
+if ($useHiddenProt) {
+	my $sthVisProt=$dbh->prepare("SELECT DISTINCT ID_PROTEIN FROM ANALYSIS_PROTEIN WHERE ID_ANALYSIS IN (".join(',',keys %ana2Obs).") AND VISIBILITY >= 1");
+	$sthVisProt->execute;
+	while (my($protID)=$sthVisProt->fetchrow_array) {$visibleProteins{$protID}=1;}
+	$sthVisProt->finish;
+	$visibilityThres=0;
+}
 # Retrieve all visible & hidden proteins but keeps only those visible in at least 1 analysis
-my ($pepSpecificity,$pepMissedCleavage,$ptmFilter,$pepFocus)=@{$quantifParameters{'DB'}{'PEPTIDES'}};
-#my ($pepSpecificity,$pepMissedCleavage,$ptmFilter,$pepFocus)=('unique_shared',1,1,'psm');
-my $chargeStrg=($pepFocus=~/sp_count|_ion/)? 'CHARGE' : '0'; # sp_count|all_ion|all_pep|dist_ion|dist_pep|dist_seq (before: peptide or pepSeq)
-my $peptideQuery=qq|SELECT PEP_SEQ,GROUP_CONCAT(DISTINCT PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),ABS(PEP_BEG),CHARGE,SPEC_COUNT
+my $chargeStrg=($pepFocus=~/sp_count|_ion|xic/)? 'CHARGE' : '0'; # sp_count|all_ion|all_pep|dist_ion|dist_pep|dist_seq (before: peptide or pepSeq)
+my $peptideQuery=qq|SELECT GROUP_CONCAT(DISTINCT PPA.ID_PROTEIN,':',ABS(PPA.PEP_BEG),':',AP.VISIBILITY ORDER BY AP.VISIBILITY DESC SEPARATOR '&'),P.ID_PEPTIDE,PEP_SEQ,GROUP_CONCAT(DISTINCT PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),CHARGE,SPEC_COUNT,MISS_CUT
 		FROM PEPTIDE P
 		LEFT JOIN PEPTIDE_MODIFICATION PM ON P.ID_PEPTIDE=PM.ID_PEPTIDE
 		INNER JOIN PEPTIDE_PROTEIN_ATTRIB PPA ON P.ID_PEPTIDE=PPA.ID_PEPTIDE
-		WHERE P.ID_ANALYSIS=? AND PPA.ID_PROTEIN=?|; # No need for group_concat on PEP_BEG since only 1 position is usable
+		INNER JOIN ANALYSIS_PROTEIN AP ON PPA.ID_PROTEIN=AP.ID_PROTEIN
+		WHERE P.ID_ANALYSIS=AP.ID_ANALYSIS AND AP.ID_ANALYSIS=? AND AP.VISIBILITY >= $visibilityThres|; # No need for group_concat on PEP_BEG since only 1 position is usable
 	$peptideQuery.=($pepSpecificity eq 'unique')? ' AND PPA.IS_SPECIFIC=1' : ($pepSpecificity eq 'unique_shared')? ' AND AP.PEP_SPECIFICITY=100' : ''; # Filter at DB level
-	$peptideQuery.=' AND MISS_CUT=0' unless $pepMissedCleavage;
+	$peptideQuery.=' AND MISS_CUT=0' if $pepMissedCleavage==0; # 0: exclude only missed-cut peptides, 1: allow, -1: also exclude overlapping fully cut
+	$peptideQuery.=' AND P.VALID_STATUS > 0' if $skipRescued; # No ghost/MBR/rescued peptides
 	$peptideQuery.=' GROUP BY P.ID_PEPTIDE'; # PPA.ID_PROTEIN,
 #print DEBUG "\nQUERY=$peptideQuery\n";
 my $sthGetPep=$dbh->prepare($peptideQuery);
@@ -223,15 +296,71 @@ my %allowedPtmID;
 foreach my $modID (@selectedPTMs) {$allowedPtmID{$modID}=1;}
 $allowedPtmID{$quantifiedModifID}=1 if $quantifiedModifID; # to allow modif quantification
 
+
+##>Pre-processing in case $pepMissedCleavage = -1
+my %missedCutExcludedSeq; # only if $pepMissedCleavage=-1 (exclude missCut AND overlapping cut peptides)
+if ($pepMissedCleavage==-1) {
+	my (%missedCutPeptides,%beg2pepSeq,%seenData);
+	foreach my $statePos (keys %quantifDesign) {
+		foreach my $refBioRep (@{$quantifDesign{$statePos}}) {
+			foreach my $refTechRep (@{$refBioRep}) {
+				foreach my $obsID (@{$refTechRep}) { # 1 obs = 1 fraction
+					my $anaID=$obs2Ana{$obsID};
+					my (%missingSpCount,%obsIonCount);
+					if (!$seenData{$anaID}) {
+						$sthGetPep->execute($anaID);
+						while (my ($protStrg,$pepID,$pepSeq,$varModStrg,$charge,$spCount,$misscut)=$sthGetPep->fetchrow_array) {
+							my $pepLength;
+							if ($misscut) {
+								$missedCutExcludedSeq{$pepSeq}=1;
+								$pepLength=length($pepSeq);
+							}
+							my @protList;
+							foreach my $protData (split('&',$protStrg)) {
+								my ($protID,$pepBeg,$visibility)=split(':',$protData);
+								last unless defined $visibility; # truncated string if peptide matches too many proteins (response max length=1024 chars)
+								next if ($visibility==0 && !$visibleProteins{$protID}); # $visibility is 0 => must be $useHiddenProt=1 
+								if ($misscut) {
+									$missedCutPeptides{$protID}{$pepBeg}=$pepLength if (!$missedCutPeptides{$protID} || !$missedCutPeptides{$protID}{$pepBeg} || $missedCutPeptides{$protID}{$pepBeg} < $pepLength);
+								}
+								else {$beg2pepSeq{$protID}{$pepBeg}=$pepSeq;} # fully cut pep seq (only 1 seq per beg)
+							}
+						}
+						$seenData{$anaID}=1;
+					}
+				}
+			}
+		}
+	}
+	##>Filter fully cut peptides included in missed-cut. Match is CROSS-ANALYSIS!
+	foreach my $protID (keys %missedCutPeptides) {
+		next unless $beg2pepSeq{$protID}; # no fully cut peptides for protID
+		foreach my $missBeg (keys %{$missedCutPeptides{$protID}}) {
+			my $missEnd=$missBeg + $missedCutPeptides{$protID}{$missBeg} - 1;
+			foreach my $pepBeg (keys %{$beg2pepSeq{$protID}}) {
+				if ($pepBeg >= $missBeg && $pepBeg <= $missEnd) { # match! beg overlaps with missed cut seq
+					my $pepSeq=$beg2pepSeq{$protID}{$pepBeg};
+					$missedCutExcludedSeq{$pepSeq}=1;
+					delete $beg2pepSeq{$protID}{$pepSeq};
+					delete $beg2pepSeq{$protID} unless scalar keys %{$beg2pepSeq{$protID}};
+				}
+			}
+		}
+	}
+}
+
+
 ##>Data file
 my (@bioRepOrder,%anaData,%proteinData,%bestVisibility,%excludedSeq);
+my (%missedCutPeptides,%beg2pepSeq); # only if $pepMissedCleavage=-1 (exclude missCut AND overlapping cut peptides)
+my (%ionAllXicValues,%tmpProteinData); # for pepFocus=xic
 foreach my $statePos (sort{$a<=>$b} keys %quantifDesign) {
-#print DEBUG ">STATE #$statePos ($stateLabel)\n";
+#print DEBUG ">STATE #$statePos\n";
 	my $bioRepPos=0;
 	foreach my $refBioRep (@{$quantifDesign{$statePos}}) {
 		$bioRepPos++;
 		my $bioRepLabel="State$statePos.BioRep$bioRepPos";
-#print DEBUG "  -BioRep $bioRepLabel (x",scalar @{$refBioRep->{OBS}}," TechRep):\n";
+#print DEBUG "  -BioRep $bioRepLabel (x",scalar @{$refBioRep}," TechRep):\n";
 		push @bioRepOrder,$bioRepLabel;
 
 		####>Data
@@ -239,26 +368,32 @@ foreach my $statePos (sort{$a<=>$b} keys %quantifDesign) {
 		my $numTechRep=0;
 		foreach my $refTechRep (@{$refBioRep}) {
 			$numTechRep++;
-#print DEBUG "#@{$refTechRep}#\n";
-			my %fracSpCount;
+#print DEBUG "\tTechRep #$numTechRep: @{$refTechRep}\n";
+			my (%fracSpCount,%fracXic);
 			foreach my $obsID (@{$refTechRep}) { # 1 obs = 1 fraction
 				%{$fracSpCount{$obsID}}=(); # defined so no need to checked later
+				%{$fracXic{$obsID}}=(); # defined so no need to checked later
 				my $anaID=$obs2Ana{$obsID};
+				my $targetPos=$obs2targetPos{$obsID};
 				my (%missingSpCount,%obsIonCount);
+				#my @pepIdList;
 				if (!$anaData{$anaID}) {
-#print DEBUG "($anaID,$obsID)"; #{@{$ana2Obs{$anaID}}}
-					$sthGetPep->execute($anaID,$anaID);
-					PEP:while (my ($protStrg,$pepSeq,$varModStrg,$charge,$spCount)=$sthGetPep->fetchrow_array) {
+#print DEBUG "\t\tANA=$anaID, OBS=$obsID, TGTPOS=$targetPos:\n"; #{@{$ana2Obs{$anaID}}}
+					$sthGetPep->execute($anaID);
+					PEP:while (my ($protStrg,$pepID,$pepSeq,$varModStrg,$charge,$spCount,$misscut)=$sthGetPep->fetchrow_array) {
 						next if $excludedSeq{$pepSeq}; # skip any future seq
+						next if ($pepMissedCleavage==-1 && $missedCutExcludedSeq{$pepSeq});
 						#$varModStrg='' unless $varModStrg;
 						next if ($quantifiedModifID && (!$varModStrg || $varModStrg !~ /(^|&)$quantifiedModifID:/)); # skip peptides not containing quantified modif
+						next if ($pepFocus eq 'xic' && !$pepQuantifValues{"$pepID:$targetPos"});
 						$spCount=0 unless $spCount; # in case only ghost (not defined), set to 1 if feature is not sp_count
 						my @protList;
 						foreach my $protData (split('&',$protStrg)) {
-							my ($protID,$visibility)=split(':',$protData);
+							my ($protID,$pepBeg,$visibility)=split(':',$protData);
 							last unless defined $visibility; # truncated string if peptide matches too many proteins (response max length=1024 chars)
+							next if ($visibility==0 && !$visibleProteins{$protID}); # $visibility is 0 => must be $useHiddenProt=1
 							push @protList,$protID;
-							$bestVisibility{$protID}=$visibility if (!$bestVisibility{$protID} || $bestVisibility{$protID} < $visibility);
+							#$bestVisibility{$protID}=$visibility if (!$bestVisibility{$protID} || $bestVisibility{$protID} < $visibility);
 						}
 						#>Processing var mods & matching label channel (checking allowed & removing label if labeled quantif)
 						my @varMods=($varModStrg)? split(/&/,$varModStrg) : ();
@@ -306,7 +441,7 @@ foreach my $statePos (sort{$a<=>$b} keys %quantifDesign) {
 								}
 								if ($anaObsID == $obsID) {$matchedChannel=1;}
 								else { # stored to be recalled when proper obsID is wanted
-									push @{$anaData{$anaID}{$anaObsID}},[\@protList,$pepSeq,$varModCode,$charge,$spCount];
+									push @{$anaData{$anaID}{$anaObsID}},[\@protList,$pepID,$pepSeq,$varModCode,$charge,$spCount];
 								}
 								last; # obs in Ana: current anaObs was matched by peptide: no need to scan others
 							}
@@ -324,8 +459,16 @@ foreach my $statePos (sort{$a<=>$b} keys %quantifDesign) {
 									$obsIonCount{$protID}{$ionKey}++;
 								}
 							}
+							elsif ($pepFocus eq 'xic') {
+								foreach my $protID (@protList) {
+									$fracXic{$obsID}{$protID}{$ionKey}=$pepQuantifValues{"$pepID:$targetPos"};
+								}
+#$techRepData{$protID}{$numTechRep}{$ionKey}+=$pepQuantifValues{"$pepID:$obsID"}; # sum fractions						
+#push @{$ionAllXicValues{$ionKey}},$pepQuantifValues{"$pepID:$obsID"}; # records all pep XICs associated with this ion (needed later for xic rescaling)
+							}
 							else { # all|distinct ion|pep|seq
 								foreach my $protID (@protList) {$techRepData{$protID}{$numTechRep}{$ionKey}++;}
+#@pepIdList,$pepID if $pepFocus eq 'xic';
 							}
 #print DEBUG '+';
 						}
@@ -334,7 +477,7 @@ foreach my $statePos (sort{$a<=>$b} keys %quantifDesign) {
 				else { # analysis data already fetched & assigned to an Obs =>  $anaData{$anaID}{$obsID} defined
 #print DEBUG "[$anaID,$obsID]=",scalar @{$anaData{$anaID}{$obsID}};
 					foreach my $refPep (@{$anaData{$anaID}{$obsID}}) {
-						my ($refProtList,$pepSeq,$varModCode,$charge,$spCount)=@{$refPep};
+						my ($refProtList,$pepID,$pepSeq,$varModCode,$charge,$spCount)=@{$refPep};
 						$varModCode='' if $pepFocus eq 'dist_seq';
 						my $ionKey="$pepSeq:$varModCode:$charge";
 						if ($pepFocus eq 'sp_count') { # record best spCount for each ion in each fraction (cannot be directly summed because of multiple occurences of same ion with same spCount)
@@ -345,8 +488,16 @@ foreach my $statePos (sort{$a<=>$b} keys %quantifDesign) {
 								$obsIonCount{$protID}{$ionKey}++;
 							}
 						}
+						elsif ($pepFocus eq 'xic') {
+							foreach my $protID (@{$refProtList}) {
+								$fracXic{$obsID}{$protID}{$ionKey}=$pepQuantifValues{"$pepID:$targetPos"};
+							}
+#$techRepData{$protID}{$numTechRep}{$ionKey}+=$pepQuantifValues{"$pepID:$targetPos"}; # sum fractions						
+#push @{$ionAllXicValues{$ionKey}},$pepQuantifValues{"$pepID:$targetPos"}; # records all pep XICs associated with this ion (needed later for xic rescaling)
+						}
 						else { # all|distinct ion|pep|seq
 							foreach my $protID (@{$refProtList}) {$techRepData{$protID}{$numTechRep}{$ionKey}++;}
+#@pepIdList,$pepID if $pepFocus eq 'xic';
 						}
 					}
 				}
@@ -370,16 +521,33 @@ foreach my $statePos (sort{$a<=>$b} keys %quantifDesign) {
 					}
 				}
 			}
+			elsif ($pepFocus eq 'xic') {
+				my %techRepXic;
+				foreach my $obsID (keys %fracXic) { # sum fractions if any (combine all obs in techRep)
+					foreach my $protID (keys %{$fracXic{$obsID}}) {
+						foreach my $ionKey (keys %{$fracXic{$obsID}{$protID}}) {
+							$techRepData{$protID}{$numTechRep}{$ionKey}+=$fracXic{$obsID}{$protID}{$ionKey};
+							$techRepXic{$ionKey}+=$fracXic{$obsID}{$protID}{$ionKey};
+						}
+					}
+				}
+				foreach my $ionKey (keys %techRepXic) {
+					push @{$ionAllXicValues{$ionKey}},$techRepXic{$ionKey}; # rescale must occur on XIC from summed fractions
+				}
+			}
 
 			###>Clean excluded pepSeq ($ptmAllowed <= -1)
 			foreach my $pepSeq (keys %excludedSeq) {
+				my $firstProt=1;
 				foreach my $protID (keys %{$excludedSeq{$pepSeq}}) {
 					my @peps=grep{/^$pepSeq:/} keys %{$techRepData{$protID}{$numTechRep}};
-					foreach my $pep (@peps) {
-						delete $techRepData{$protID}{$numTechRep}{$pep};
+					foreach my $ionKey (@peps) {
+						delete $techRepData{$protID}{$numTechRep}{$ionKey};
 						delete $techRepData{$protID}{$numTechRep} unless scalar keys %{$techRepData{$protID}{$numTechRep}};
 						delete $techRepData{$protID} unless scalar keys %{$techRepData{$protID}};
+						delete $ionAllXicValues{$ionKey} if ($pepFocus eq 'xic' && $firstProt);
 					}
+					$firstProt=0;
 				}
 				%{$excludedSeq{$pepSeq}}=(); # reset list of matching prot to 0 before next techRep
 			}
@@ -397,6 +565,18 @@ foreach my $statePos (sort{$a<=>$b} keys %quantifDesign) {
 				$proteinData{$protID}{$bioRepLabel}=int(0.5 + ($proteinData{$protID}{$bioRepLabel}/$numTechRep));
 			}
 		}
+		elsif ($pepFocus eq 'xic') { # Divide by num techRep here & compute mean for bioRep later by just summing
+#print DEBUG "\n>$bioRepLabel\n";
+			foreach my $protID (keys %techRepData) {
+				foreach my $techRepPos (keys %{$techRepData{$protID}}) {
+					foreach my $ionKey (keys %{$techRepData{$protID}{$techRepPos}}) {
+#print DEBUG "\t-$protID, $techRepPos, $ionKey = $techRepData{$protID}{$techRepPos}{$ionKey}\n";
+						$techRepData{$protID}{$techRepPos}{$ionKey}/=$numTechRep;
+					}
+				}
+			}
+			$tmpProteinData{$bioRepLabel}=\%techRepData;
+		}
 		else { # ion or peptide or pepSeq (distinct +/- charge)
 			foreach my $protID (keys %techRepData) {
 				foreach my $techRepPos (keys %{$techRepData{$protID}}) {
@@ -409,6 +589,47 @@ foreach my $statePos (sort{$a<=>$b} keys %quantifDesign) {
 
 } # End of State
 $sthGetPep->finish;
+
+####>Rescaling & summing XICs for feature=xic<####
+if ($pepFocus eq 'xic') {
+	undef %pepQuantifValues; # no longer needed
+	
+	###>Computing scale for each ion<###
+	# Set median value to 100
+	my %ionScale;
+	foreach my $ionKey (keys %ionAllXicValues) {
+		my @sortedXICs=sort{$a<=>$b} @{$ionAllXicValues{$ionKey}};
+		delete $ionAllXicValues{$ionKey};
+		my $xicLength=scalar @sortedXICs;
+		my $midLength=$xicLength/2;
+		my $medianValue;
+		if ($xicLength % 2) { # odd number
+			$medianValue=$sortedXICs[int($midLength)]; # int => index
+		}
+		else { # even number: take mean of boundary values
+			$medianValue=( $sortedXICs[$midLength-1] + $sortedXICs[$midLength] ) / 2;
+		}
+		$ionScale{$ionKey}=($medianValue)? $REF_XIC_MEDIAN_VALUE/$medianValue : 1;
+	}
+	undef %ionAllXicValues;
+	
+	###>Rescaling & summing XICs for each protein<###
+	foreach my $bioRepLabel (keys %tmpProteinData) {
+		my %techMean;
+		my $refTechRepData=$tmpProteinData{$bioRepLabel};
+		foreach my $protID (keys %{$refTechRepData}) {
+			foreach my $techRepPos (keys %{$refTechRepData->{$protID}}) {
+				foreach my $ionKey (keys %{$refTechRepData->{$protID}{$techRepPos}}) {
+					$techMean{$protID}+=($refTechRepData->{$protID}{$techRepPos}{$ionKey} * $ionScale{$ionKey});
+				}
+			}
+			$techMean{$protID}/=scalar keys %{$refTechRepData->{$protID}};
+		}
+		foreach my $protID (keys %techMean) {
+			$proteinData{$protID}{$bioRepLabel}=int(0.5 + $techMean{$protID});
+		}
+	}
+}
 
 
 ####################################
@@ -425,7 +646,7 @@ foreach my $bioRepLabel (@bioRepOrder) {print DATA "\t$bioRepLabel";}
 ##>Data
 if (scalar keys %proteinData) {
 	foreach my $protID (sort {$a<=>$b} keys %proteinData) {
-		next if $bestVisibility{$protID}==0;
+		#next if $bestVisibility{$protID}==0;
 		print DATA "\n".$protID;
 		foreach my $bioRepLabel (@bioRepOrder) {
 			if ($proteinData{$protID}{$bioRepLabel}) {print DATA "\t".$proteinData{$protID}{$bioRepLabel};}
@@ -468,72 +689,27 @@ close R_SCRIPT;
 
 my $RcommandString="export LANG=en_US.UTF-8; cd $runDir; $pathR/R CMD BATCH --no-save --no-restore analysisCounting.R";
 
-if ($cluster{'on'}) { ###>Run job on cluster
-#	my $bashFile = "$runDir/runSSProtQuantification.sh";
-#	my $clusterRcommandString=$cluster{'buildCommand'}->($runDir,$RcommandString);
-	my $numPepValues=(scalar keys %proteinData) * (scalar @bioRepOrder);
-	my $maxHours=int(0.5+($numPepValues/25000)); $maxHours=2 if $maxHours < 2; $maxHours=48 if $maxHours > 48; # 1 M lines -> 40 h
-	my $maxMem=int(1.5 + 1E-6 * $numPepValues);
-	$maxMem.='Gb';
-#	open (BASH,">$bashFile");
-#	print BASH qq
-#|#!/bin/bash
-###resources
-##PBS -l mem=$maxMem
-##PBS -l nodes=1:ppn=1
-##PBS -l walltime=$maxHours:00:00
-##PBS -q batch
-###Information
-##PBS -N myProMS_SSPA_$quantifID
-###PBS -M patrick.poullet\@curie.fr
-##PBS -m abe
-##PBS -o $runDir/PBS.txt
-##PBS -e $runDir/PBSerror.txt
-#
-### Command
-#$clusterRcommandString
-#echo _END_$quantifID
-#|;
-#	close BASH;
-#	my $modBash=0775;
-#	chmod $modBash, $bashFile;
-#	#system "$promsPath{qsub}/qsub $bashFile > $runDir/torqueID.txt";
-#	$cluster{'sendToCluster'}->($bashFile);
-#	sleep 30;
-#
-#	###>Waiting for R job to run
-#	my $pbsError;
-#	my $nbWhile=0;
-#	my $maxNbWhile=$maxHours*60*2;
-#	while ((!-e "$runDir/PBS.txt" || !`tail -3 $runDir/PBS.txt | grep _END_$quantifID`) && !$pbsError) {
-#		if ($nbWhile > $maxNbWhile) {
-#			$dbh=&promsConfig::dbConnect('no_user'); # reconnect
-#			$dbh->do("UPDATE QUANTIFICATION SET STATUS=-2 WHERE ID_QUANTIFICATION=$quantifID"); # Failed
-#			$dbh->commit;
-#			$dbh->disconnect;
-#			die "Aborting quantification: R is taking too long or died before completion";
-#		}
-#		sleep 30;
-#		$pbsError=`head -5 $runDir/PBSerror.txt` if -e "$runDir/PBSerror.txt";
-#		$nbWhile++;
-#	}
-
-
-	my %jobParameters=(
-		commandFile=>"$runDir/runSSProtQuantification.sh",
-		maxMem=>$maxMem,
-		numCPUs=>1,
-		maxHours=>$maxHours,
-		jobName=>"myProMS_SSPA_$quantifID"
-	);
-	my ($pbsError,$pbsErrorFile)=$cluster{'runJob'}->($runDir,$RcommandString,\%jobParameters);
-	if ($pbsError) { # move PBS error message to job error file
-		system "cat $pbsErrorFile >> $promsPath{tmp}/quantification/current/$quantifID\_$quantifDate\_error.txt";
-	}
-}
-else { ###>Run job on Web server
+### ALREADY ON CLUSTER (PP 17/09/18)!!! ###
+###if ($cluster{'on'}) { ###>Run job on cluster
+###	my $numPepValues=(scalar keys %proteinData) * (scalar @bioRepOrder);
+###	my $maxHours=int(0.5+($numPepValues/25000)); $maxHours=2 if $maxHours < 2; $maxHours=48 if $maxHours > 48; # 1 M lines -> 40 h
+###	my $maxMem=int(1.5 + 1E-6 * $numPepValues);
+###	$maxMem.='Gb';
+###	my %jobParameters=(
+###		commandFile=>"$runDir/runSSProtQuantification.sh",
+###		maxMem=>$maxMem,
+###		numCPUs=>1,
+###		maxHours=>$maxHours,
+###		jobName=>"myProMS_SSPA_$quantifID"
+###	);
+###	my ($pbsError,$pbsErrorFile)=$cluster{'runJob'}->($runDir,$RcommandString,\%jobParameters);
+###	if ($pbsError) { # move PBS error message to job error file
+###		system "cat $pbsErrorFile >> $promsPath{tmp}/quantification/current/$quantifID\_$quantifDate\_error.txt";
+###	}
+###}
+###else { ###>Run job on Web server
 	system $RcommandString;
-}
+###}
 sleep 3;
 
 &checkForErrors;
@@ -577,21 +753,65 @@ while (my ($paramID,$code)=$sthQP->fetchrow_array) {
 }
 $sthQP->finish;
 
-####>Fetching list of possible sets & positions<####
-my ($setStrg)=($quantifAnnot=~/SETS=([^\$]+)/);
-my %setPosition;
-my $tgtPos=0;
-foreach my $set (split(/;/,$setStrg)) {
-	my $setKey='';
-	foreach my $pos (split('\+',$set)) {
-		$setKey.='State'.$pos;
-	}
-	$setPosition{$setKey}=++$tgtPos;
+####>Fetching list of sets used<####
+my %usedSets;
+foreach my $pos (1..$numStates) {$usedSets{"State$pos"}=1;} # Always keep single-state sets (required for recording mean state values)
+open(RES,"$resultDir/outTable.txt"); # reading outTable.txt for the 1st time
+while(<RES>) {
+	next if $.==1;
+	chomp;
+	s/"//g;
+	my ($protID,$setStrg)=split(/\t/,$_);
+	my ($testStrg,$refStrg)=split(/ \/ /,$setStrg);
+	(my $setKey=$testStrg)=~s/ \+ //g;
+	$usedSets{$setKey}=1;
 }
+close RES;
+
+####>Computing all possible sets & positions of used<####
+my @sets;
+my (@flags) = (0) x $numStates;
+$flags[0] = 1; # skip empty subset
+my $stateIdx;
+while (1) {
+	my @subset = ();
+	for ($stateIdx=0; $stateIdx<$numStates; $stateIdx++) {
+		push @subset, $stateIdx+1 if $flags[$stateIdx] == 1; # record state positions
+	}
+	last if scalar @subset == $numStates; # exclude complete subset (size=numStates) and exit while loop
+	push @sets,\@subset;
+	for ($stateIdx=0; $stateIdx<$numStates; $stateIdx++) {
+		if($flags[$stateIdx] == 0) {
+			$flags[$stateIdx] = 1;
+			last;
+		}
+		$flags[$stateIdx] = 0;
+	}
+}
+my (%setPosition,@recordedSets);
+my $setPos=0;
+foreach my $refSubset (sort{scalar @{$a} <=> scalar @{$b} || $a->[0]<=>$b->[0]} @sets) { # size then 1st state in subset (should be enough)
+	my $setKey='State'.join('State',@{$refSubset});
+	next unless $usedSets{$setKey};
+	$setPosition{$setKey}=++$setPos;
+	my $recSetKey=join('+',@{$refSubset});
+	push @recordedSets,$recSetKey;
+}
+
+#my ($setStrg)=($quantifAnnot=~/SETS=([^\$]+)/);
+#my %setPosition;
+#my $tgtPos=0;
+#foreach my $set (split(/;/,$setStrg)) {
+#	my $setKey='';
+#	foreach my $pos (split('\+',$set)) {
+#		$setKey.='State'.$pos;
+#	}
+#	$setPosition{$setKey}=++$tgtPos;
+#}
 
 my $sthInsProt=$dbh->prepare("INSERT INTO PROTEIN_QUANTIFICATION (ID_QUANTIFICATION,ID_PROTEIN,ID_QUANTIF_PARAMETER,QUANTIF_VALUE,TARGET_POS) VALUES ($quantifID,?,?,?,?)"); # PK autoincrement
 
-open(RES,"$resultDir/outTable.txt");
+open(RES,"$resultDir/outTable.txt"); # reading outTable.txt a 2nd time
 while(<RES>) {
 	next if $.==1;
 	chomp;
@@ -631,7 +851,9 @@ $sthInsProt->finish;
 
 
 ###> Quantification is finished.
-$dbh->do("UPDATE QUANTIFICATION SET STATUS=1 WHERE ID_QUANTIFICATION=$quantifID");
+my $status=($quantifParameters{'DB'}{'VISIBILITY'})? $quantifParameters{'DB'}{'VISIBILITY'}[0] : 1;
+my $setString=join(';',@recordedSets);
+$dbh->do("UPDATE QUANTIFICATION SET STATUS=$status,QUANTIF_ANNOT=CONCAT(QUANTIF_ANNOT,'::SETS=$setString') WHERE ID_QUANTIFICATION=$quantifID");
 $dbh->commit;
 
 $dbh->disconnect;
@@ -648,8 +870,6 @@ mkdir "$promsPath{quantification}/project_$projectID" unless -e "$promsPath{quan
 dirmove($runDir,"$promsPath{quantification}/project_$projectID/quanti_$quantifID");
 
 sleep 2;
-unlink $fileStat;
-
 
 sub checkForErrors {
 	#my ($errorFile) = glob "$promsPath{tmp}/quantification/current/*_$quantifDate\_error.txt";
@@ -664,6 +884,11 @@ sub checkForErrors {
 
 
 ####>Revision history<####
+# 1.3.3 [FEATURE] Compatible with visible/hidden proteins, peptide xic as feature and only used sets are recorded (PP 28/01/20)
+# 1.3.2 [FEATURE] Compatible with MBR-peptide filter (PP 22/01/20)
+# 1.3.1 [BUGFIX] commented forgotten exit & [ENHANCEMENT] compatible with quantification visibility status (PP 19/12/19)
+# 1.3.0 [FEATURE] Added optional co-exclusion of fully cut peptides included in missed-cut ones & No cluster call for R since caller script is already running on cluster (PP 19/11/19)
+# 1.2.4 Do not remove status log file to match new monitoring system behavior (VS 10/10/19)
 # 1.2.3 Uses single $cluster{runJob}->() command (PP 11/07/19)
 # 1.2.2 Uses quanti_$quantifID instead of quantif_$quantifID (PP 18/05/18)
 # 1.2.1 [FIX] Bug due to truncated protein:visibility SQL response string if &gt; 1024 characters (PP 18/01/18)

@@ -1,8 +1,8 @@
 /*=============================================================================*/
-/*                  myProMS database v3.5.12                                   */
-/* MySQL script for required starting values of myProMS v3.6 database          */
+/*                  myProMS database v3.5.14                                   */
+/* MySQL script for required starting values of myProMS v3.9 database          */
 /* Requires MySQL 5+                                                           */
-/* Patrick Poullet    06/12/2017                                               */
+/* Patrick Poullet    15/01/2020                                               */
 /* Command:                                                                    */
 /* >mysql -u <DB_USER> -p -D <DB_NAME> -h <DB_HOST> < myproms_start_values.sql */
 /*=============================================================================*/
@@ -24,7 +24,7 @@ INSERT INTO USER_PROFILE (ID_PROFILE,NAME) VALUES
 /*==============================================================*/
 /* Loading table USER_LIST                                      */
 /*==============================================================*/
-INSERT INTO USER_LIST (ID_USER,USER_NAME,USER_STATUS,USER_PASSWORD,USER_INFO,USER_PREF) VALUES ('login','No name','bioinfo','Pr4XYhK.C.eos','Default bioinformatician','specApp=1;');
+INSERT INTO USER_LIST (ID_USER,USER_NAME,USER_STATUS,USER_PASSWORD,USER_INFO,USER_PREF,START_DATE) VALUES ('login','Default User','bioinfo','Pr4XYhK.C.eos','Default bioinformatician','specApp=1;',NOW());
 
 
 /*==============================================================*/
@@ -53,12 +53,12 @@ INSERT INTO DATABANK_TYPE (ID_DBTYPE,NAME,DES,PARSE_RULES,DEF_IDENT_TYPE,PARSE_S
 /* Loading table INSTRUMENT                                     */
 /*==============================================================*/
 INSERT INTO INSTRUMENT (ID_INSTRUMENT,NAME,DES,COMMENTS,USE_STATUS,UPDATE_DATE,UPDATE_USER,DELTA_PARENT,DELTA_FRAGMENT,TOL_FRAGMENT,NR_LEVEL,RULES) VALUES
-(1, 'ESI-FTICR', '', '', 'yes', '2008-02-04 16:30:46', 'myproms', 'ppm', 'Da', 0.8, 0.02, 'b*=1,y°=1,a=2,2+=1,y*=1,y=2,+=1,b=2,b°=1'),
-(2, 'MALDI-TOF-TOF', '', '', 'yes', '2008-02-04 17:07:07', 'myproms', 'ppm', 'Da', 0.3, 0.03, 'b*=1,y°=1,a=2,y*=1,ya=2,y=2,+=1,yb=2,b=2,b°=1'),
-(3, 'ESI-TRAP', '', '', 'yes', '2008-02-04 16:30:46', 'myproms', 'Da', 'Da', 0.8, 0.02, 'b*=1,y°=1,a=2,2+=1,y*=1,y=2,+=1,b=2,b°=1'),
-(4, 'ESI-QUAD-TOF', '', '', 'yes', '2008-02-04 16:30:46', 'myproms', 'Da', 'Da', 0.2, 0.02, 'b*=1,y°=1,a=2,2+=1,y*=1,y=2,+=1,b=2,b°=1'),
-(5, 'MALDI-TOF-PSD', '', '', 'yes', '2008-02-04 17:07:07', 'myproms', 'ppm', 'Da', 0.3, 0.03, 'b*=1,y°=1,a=2,y*=1,ya=2,y=2,+=1,yb=2,b=2,b°=1'),
-(6, 'ESI-QUAD', '', '', 'yes', '2008-02-04 16:30:46', 'myproms', 'Da', 'Da', 0.6, 0.02, 'b*=1,y°=1,a=2,2+=1,y*=1,y=2,+=1,b=2,b°=1');
+(1,'ESI-FTICR','','','yes','2008-02-04 16:30:46','myproms','ppm','Da',0.8,0.02,'b*=1,y°=1,a=2,2+=1,y*=1,y=2,+=1,b=2,b°=1'),
+(2,'MALDI-TOF-TOF','','','yes','2008-02-04 17:07:07','myproms','ppm','Da',0.3,0.03,'b*=1,y°=1,a=2,y*=1,ya=2,y=2,+=1,yb=2,b=2,b°=1'),
+(3,'ESI-TRAP','','','yes','2008-02-04 16:30:46','myproms','Da','Da',0.8,0.02,'b*=1,y°=1,a=2,2+=1,y*=1,y=2,+=1,b=2,b°=1'),
+(4,'ESI-QUAD-TOF','','','yes','2008-02-04 16:30:46','myproms','Da','Da',0.2,0.02,'b*=1,y°=1,a=2,2+=1,y*=1,y=2,+=1,b=2,b°=1'),
+(5,'MALDI-TOF-PSD','','','yes','2008-02-04 17:07:07','myproms','ppm','Da',0.3,0.03,'b*=1,y°=1,a=2,y*=1,ya=2,y=2,+=1,yb=2,b=2,b°=1'),
+(6,'ESI-QUAD','','','yes','2008-02-04 16:30:46','myproms','Da','Da',0.6,0.02,'b*=1,y°=1,a=2,2+=1,y*=1,y=2,+=1,b=2,b°=1');
 
 
 /*==============================================================*/
@@ -128,7 +128,10 @@ INSERT INTO QUANTIFICATION_METHOD (ID_QUANTIFICATION_METHOD,NAME,CODE,DES) VALUE
 (9,'DIA','DIA','Data independant acquisition'),
 (10,'SSP Analysis','SSPA','State-Specific Protein Analysis'),
 (11,'TMT','TMT','Tandem mass tag'),
-(12,'TDA','TDA','Targeted data acquisition (PRM,SRM,MRM)');
+(12,'TDA','TDA','Targeted data acquisition (PRM,SRM,MRM)'),
+(13,'Prot. Ruler','PROT_RULER','Proteomic Ruler'),
+(14,'Prot. abundance','PROT_ABUNDANCE', 'Protein or site abundance');
+
 
 /*==============================================================*/
 /* Loading table QUANTIFICATION_PARAMETER                       */
@@ -210,7 +213,23 @@ INSERT INTO QUANTIFICATION_PARAMETER (ID_QUANTIF_PARAMETER,ID_QUANTIFICATION_MET
 
 (111,11,'Reporter intensity','REP_INTENSITY','Intensity of reporter ion chromatogram'),
 (112,11,'Reporter area','REP_AREA','Area of reporter ion chromatogram'),
-(113,11,'Reporter mass','REP_MASS','Observed mass of reporter ion');
+(113,11,'Reporter mass','REP_MASS','Observed mass of reporter ion'),
+
+(131,13,'Copy number per cell','COPY_NB','Protein copy number per cell'),
+(132,13,'Concentration [nM]','CONCENTRATION','Protein concentration [nM]'),
+(133,13,'Mass per cell [pg]','MASS_PER_CELL','Protein mass per cell [pg]'),
+(134,13,'Mass Abundance (mass/total mass)','MASS_ABUNDANCE','Relative mass abundance (mass/total mass) [*10^-6] in sample'),
+(135,13,'Molecular Abundance (molecules/total molecules)','MOL_ABUNDANCE','Relative molecular abundance (molecules/total molecules) [*10^-6] in sample'),
+(136,13,'Copy number rank','COPY_RANK','Rank of the protein copy number in sample'),
+(137,13,'Rel. copy nb. rank','REL_COPY_RANK','Relative rank of the protein copy number in sample'),
+
+(141,14,'Mean intensity','MEAN_INT','Mean of peptides intensity'),
+(142,14,'Median intensity','MEDIAN_INT','Median of peptides intensity'),
+(143,14,'Sum intensity','SUM_INT','Sum of peptides intensity'),
+(144,14,'LFQ','MY_LFQ','Label-free quantification'),
+(145,14,'# dist. pep. used','DIST_PEP_USED','Number of distinct peptides used for protein abundance calculation'),
+(146,14,'# pep. used','NUM_PEP_USED','Number of peptides used for protein abundance calculation'),
+(147,14,'# pep. total','NUM_PEP_TOTAL','Number of peptides provided for protein abundance calculation');
 
 
 /*==============================================================*/

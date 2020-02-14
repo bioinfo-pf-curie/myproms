@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# listSwathLibraries.cgi         1.1.9                                         #
+# listSwathLibraries.cgi         1.2.1                                         #
 # Authors: M. Le Picard, V. Sabatet (Institut Curie)                           #
 # Contact: myproms@curie.fr                                                    #
 # Lists the libraries available in myProMS                                     #
@@ -64,12 +64,18 @@ print header(-'content-encoding'=>'no',-charset=>'UTF-8'); warningsToBrowser(1);
 my $dbh = &promsConfig::dbConnect;
 my $act = param("ACT");
 
-if($act eq "showLibProteinContent") {
-    my ($libID, $libName, $stats) = &promsMod::cleanParameters(param("libID"), param("libName"), param("stats"));
-    if($libID and $libName and $stats) {
-        showLibProteinContent($libID, $libName, $stats);
+if($act) {
+    if($act eq "showLibProteinContent") {
+        my ($libID, $libName, $stats) = &promsMod::cleanParameters(param("libID"), param("libName"), param("stats"));
+        if($libID and $libName and $stats) {
+            showLibProteinContent($libID, $libName, $stats);
+        }
+        exit;
+    } elsif($act eq "showAssociatedProject") {
+        my $libID = &promsMod::cleanParameters(param("libID"));
+        showAssociatedProject($libID) if($libID);
+        exit;
     }
-    exit;
 }
 
 my $sthDataLibrary = $dbh->prepare("SELECT SL.ID_SWATH_LIB,RT.NAME,SL.NAME,SL.DES,SL.IDENTIFIER_TYPE,SL.ORGANISM,SL.VERSION_NAME,SL.START_DATE,SL.SPLIT,SL.STATISTICS,SL.USE_STATUS FROM SWATH_LIB SL,REFERENCE_RT RT WHERE SL.USE_STATUS!='no' AND SL.USE_STATUS!='err' AND SL.ID_REFERENCE_RT=RT.ID_REFERENCE_RT ORDER BY SL.NAME ASC");
@@ -126,8 +132,8 @@ print qq |
             }
             
             function monitorLibCreation() {
-                var monitorLibWindows = window.open("$promsPath{cgi}/monitorDIAProcess.cgi?ACT=library",'Monitoring libraries creation','width=1000,height=500,scrollbars=yes,resizable=yes');
-                monitorLibWindows.focus();
+                var monitorJobsWin=window.open("$promsPath{cgi}/monitorJobs.cgi?filterType=Import [TPP]&filterDateNumber=1&filterDateType=DAY&filterStatus=Queued&filterStatus=Running",'monitorJobsWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
+                monitorJobsWin.focus();
             }
             
             function showLibProteinContent(libraryID, libraryName, stats) {
@@ -140,6 +146,19 @@ print qq |
                     }
                 }
                 XHR.open("GET","$promsPath{cgi}/listSwathLibraries.cgi?ACT=showLibProteinContent&libID=" + libraryID + "&libName=" + libraryName + "&stats=" + stats, true);
+                XHR.send(null);
+            }
+            
+            function showAssociatedProjects(libraryID) {
+                var libraryAssocProjectsContentDiv = document.getElementById('libraryAssocProjects'+libraryID);
+                var XHR = getXMLHTTP();
+                libraryAssocProjectsContentDiv.innerHTML = '<IMG src="$promsPath{images}/scrollbarGreen.gif" \><br/>';
+                XHR.onreadystatechange = function () {
+                    if(XHR.readyState==4 && XHR.responseText ) {
+                        libraryAssocProjectsContentDiv.innerHTML = XHR.responseText;
+                    }
+                }
+                XHR.open("GET","$promsPath{cgi}/listSwathLibraries.cgi?ACT=showAssociatedProject&libID=" + libraryID, true);
                 XHR.send(null);
             }
         </SCRIPT>
@@ -157,12 +176,13 @@ print qq |
             </TH></TR></TABLE>
         </DIV>
         <CENTER>
-            <FONT class="title1">List of spectral libraries<BR></FONT><BR><BR><BR>
+        <FONT class="title1">List of spectral libraries<BR></FONT><BR><BR><BR>
         
         <INPUT type="button" class="buttonlib" value="Add new spectral library" onclick="window.location='./editSwathLibrary.cgi?ACT=add'">
         <INPUT type="button" class="buttonlib" value="Merge two spectral libraries" onclick="window.location='./editSwathLibrary.cgi?ACT=merge'">
-        <INPUT type="button" class="buttonlib" value="Monitor spectral libraries" onclick="monitorLibCreation()">
-        <TABLE border=0 cellspacing=0 class="tablelib" >
+        <INPUT type="button" class="buttonlib" value="Monitor spectral libraries" onclick="monitorLibCreation()"><br/><br/><br/>
+        
+        <table>
     |;
     
     foreach my $dataRow (@{$refDataLib}) {
@@ -199,48 +219,68 @@ print qq |
         }
         
         print qq |
-            <TR bgcolor=$bgColor>
-                <TD>&nbsp&nbsp</TD>
-                <TD width=600><FONT style="font-size:18px;font-weight:bold;">$libraryName</FONT>
+            <tr id='lib$libraryID' bgcolor='$bgColor' style='margin-bottom:10px'><td>
+                <table>
+                    <td id='libInfos$libraryID' style='width:600px'>
+                        <p style='font-size:18px;font-weight:bold;margin:3px 0 0 12px;'>$libraryName
+                        
         |;
         print "<FONT color=\"red\" style=\"font-size:18px;font-weight:bold;\">&nbsp;(Archived)</FONT>" if ($useStatus eq 'arc');
-        print "<BR>";
-        print "<BR><B>&nbsp;&nbsp;&nbsp;Version:</B> $versionName" if $versionName;
-        print "<BR><B>&nbsp;&nbsp;&nbsp;Mode:</B> $split";
-        print "<BR><B>&nbsp;&nbsp;&nbsp;Identifier type:</B> $identifierType" if $identifierType;
+        print "</p><p style='margin-left:12px;'>";
+        print "<B>Version:</B> $versionName<br/>" if $versionName;
+        print "<B>Mode:</B> $split<br/>";
+        print "<B>Identifier type:</B> $identifierType<br/>" if $identifierType;
         print qq |
-               <BR><B>&nbsp;&nbsp;&nbsp;Database(s):</B> $dbFile
-               <BR><B>&nbsp;&nbsp;&nbsp;RT:</B> $rtFile
+               <B>Database(s):</B> $dbFile<br/>
+               <B>RT:</B> $rtFile<br/>
         |;
-        if ($des) { print "<BR><B>&nbsp;&nbsp;&nbsp;Description:</B> $des";}
-        if ($organism){print "<BR><B>&nbsp;&nbsp;&nbsp;Organism:</B> $organism";}
-        if ($startDate){print "<BR><B>&nbsp;&nbsp;&nbsp;Creation date:</B> $startDate";}
+        if ($des) { print "<B>Description:</B> $des<br/>";}
+        if ($organism){print "<B>Organism:</B> $organism<br/>";}
+        if ($startDate){print "<B>Creation date:</B> $startDate<br/>";}
         print qq |
-            <br/><B>&nbsp;&nbsp;&nbsp;<div id="libraryProteinContent$libraryID"><INPUT type="button" value="Show protein content" style="width:161px" onclick="showLibProteinContent('$libraryID', '$libraryName', '$stat')"></div></B><br/>
-        |;
-               
-        print qq |
-            </TD>
-            <TH width=100>
-                <INPUT type="button" value="Delete" style="width:75px" onclick="deleteSwathLibrary($libraryID,'$libraryName')">
-                <INPUT type="button" value="Edit" style="width:75px" onclick="window.location='./editSwathLibrary.cgi?ACT=edit&ID=$libraryID'">
-                <INPUT type="button" value="Export" style="width:75px" onclick="window.location='./exportSwathLibrary.cgi?ID=$libraryID'">
-                <INPUT type="button" value="Search" style="width:75px" onclick="window.location='./searchSwathLibrary.cgi?ID=$libraryID'">
+                        </p>
+                    </td>
+            
+                    <td id="libActions$libraryID" style='width:225px;'>
+                        <INPUT type="button" value="Delete" style="width:100px" onclick="deleteSwathLibrary($libraryID,'$libraryName')">
+                        <INPUT type="button" value="Edit" style="width:100px" onclick="window.location='./editSwathLibrary.cgi?ACT=edit&ID=$libraryID'">
+                        <INPUT type="button" value="Export library" style="width:100px" onclick="window.location='./exportSwathLibrary.cgi?ID=$libraryID'">
+                        <INPUT type="button" value="Export proteins" style="width:115px" onclick="window.location='./exportLibraryProteins.cgi?ID=$libraryID'">
+                        <INPUT type="button" value="Search" style="width:100px" onclick="window.location='./searchSwathLibrary.cgi?ID=$libraryID'">
                 
         |;
+        
         if (-e "$workDir/Lib$libraryID\_v$version.tar.gz" || $modeSplit==1) {
-            print "<INPUT type=\"button\" value=\"Update\" style=\"width:75px\" onclick=\"window.location='./editSwathLibrary.cgi?ACT=update&ID=$libraryID'\">&nbsp;";
+            print "<INPUT type=\"button\" value=\"Update\" style=\"width:100px\" onclick=\"window.location='./editSwathLibrary.cgi?ACT=update&ID=$libraryID'\">&nbsp;";
         }
         my $prevVersion=$version-1;
         if (-e "$workDir/Lib$libraryID\_v$version.tar.gz"){
-            print "<INPUT type=\"button\" value=\"Archive\" style=\"width:75px\" onclick=\"archiveSwathLibrary($libraryID,'$libraryName')\">";
+            print "<INPUT type=\"button\" value=\"Archive\" style=\"width:100px\" onclick=\"archiveSwathLibrary($libraryID,'$libraryName')\">";
         }
         
         if ($version >1 and -e "$workDir/Lib$libraryID\_v$prevVersion.tar.gz") {
             print "<INPUT type=\"button\" value=\"Restore previous version\" style=\"width:175px\" onclick=\"window.location='./editSwathLibrary.cgi?ACT=restore&ID=$libraryID'\"><BR>";
         }
-        print "</TH></TR><TR><TH><BR></TH></TR>";
         
+        print qq |
+                    </td>
+                </tr>
+                
+                <tr>
+                    <td style="font-weight:bold;" colspan=2>
+                        <div id="libraryProteinContent$libraryID" style="margin:5px 0 0 18px;">
+                            <INPUT type="button" value="Library statistics" style="width:161px" onclick="showLibProteinContent('$libraryID', '$libraryName', '$stat')">
+                        </div>
+            
+                        <div id="libraryAssocProjects$libraryID" style="margin:5px 0 10px 18px;">
+                            <INPUT type="button" value="Associated project(s)" style="width:161px" onclick="showAssociatedProjects('$libraryID')">
+                        </div>
+                    </td>
+                </tr>
+            </table>
+        </td></tr>
+        |;
+          
         $bgColor=($bgColor eq $lightColor)? $darkColor : $lightColor;
     }
     if (scalar @{$refDataLib} == 0) {
@@ -255,6 +295,49 @@ print qq |
 $dbh->disconnect;
 
 
+sub showAssociatedProject {
+    my ($libraryID, $libraryName) = @_;
+    my $sthLibProj =$dbh->prepare("SELECT P.OWNER, P.ID_PROJECT, P.NAME, E.NAME, COUNT(A.ID_ANALYSIS) AS COUNT_ANA FROM ANALYSIS_SWATH_LIB ASL INNER JOIN ANALYSIS A ON A.ID_ANALYSIS=ASL.ID_ANALYSIS INNER JOIN SAMPLE S ON S.ID_SAMPLE=A.ID_SAMPLE INNER JOIN EXPERIMENT E ON E.ID_EXPERIMENT=S.ID_EXPERIMENT INNER JOIN PROJECT P ON P.ID_PROJECT=E.ID_PROJECT WHERE ASL.ID_SWATH_LIB=? GROUP BY P.OWNER, P.ID_PROJECT, E.ID_EXPERIMENT ORDER BY P.OWNER, P.NAME, E.NAME");
+    my ($displayData, $currentUserName, $currentProjectName) = ('', '', '');
+    
+    $sthLibProj->execute($libraryID);
+    while(my ($userName, $projectID, $projectName, $expName, $countAna) = $sthLibProj->fetchrow_array) {
+        $displayData .= qq |
+            <tr>
+                <td align='center'>$userName</td>
+                <td align='center'>$projectName</td>
+                <td align='left'>$expName (used in $countAna analysis)</td>
+            </tr>|;
+    }
+    
+    if($displayData) {
+        $displayData = qq |
+            <table>
+                <thead>
+                    <th style='max-width: 200px;min-width: 170px;' align='center'>User</th>
+                    <th style='max-width: 250px;min-width: 200px;' align='center'>Project</th>
+                    <th style='max-width: 350px' align='center'>Experiment</th>
+                </thead>
+                <tbody>
+                    $displayData
+                </tbody>
+            </table>
+        |;
+    } else {
+        $displayData = "No related projects";
+    }
+    
+    print qq |
+        <br/><fieldset>
+            <legend><B>Related Experiments:</B></legend>
+            <div id="projectsLib:$libraryID" style="width: 100%; max-height: 200px !important; overflow-y: auto; overflow-x: hidden;">
+                $displayData
+            </div>
+        </fieldset>
+    |;
+}
+
+
 sub showLibProteinContent {
     my ($libraryID, $libraryName, $stat) = @_;
     my ($xmlStat, $numProt, $numPep, $numProtSpe, $numPepModList);
@@ -267,7 +350,6 @@ sub showLibProteinContent {
         $numProtSpe = $xmlStat->{'NUM_ENTRY'}->{'NUM_PROT_SPECIFIC'};
         $numPepModList = $xmlStat->{'NUM_ENTRY'}->{'NUM_PEP_MOD'} if($xmlStat->{'NUM_ENTRY'}->{'NUM_PEP_MOD'});
     }
-    
     
     unless($numPepModList){
         my (%modifLib, %numPepMod);
@@ -308,20 +390,37 @@ sub showLibProteinContent {
         
     }
     
-    if ($numProt) { print "<B>&nbsp;&nbsp;&nbsp;Number of proteins:</B> $numProt";}
-    if ($numProtSpe) { print "<BR><B>&nbsp;&nbsp;&nbsp;Number of unambigious proteins:</B> $numProtSpe";}
-    if ($numPep) { print "<BR><B>&nbsp;&nbsp;&nbsp;Number of peptides:</B> $numPep";}
+    my $displayData = '';
+    if ($numProt) { $displayData .= "<B>Number of proteins:</B> $numProt";}
+    if ($numProtSpe) { $displayData .= "<BR><B>Number of unambigious proteins:</B> $numProtSpe";}
+    if ($numPep) { $displayData .= "<BR><B>Number of peptides:</B> $numPep";}
     if ($numPepModList){
         my @modList=split(/&/,$numPepModList);
         foreach my $mod (@modList) {
             my ($modName,$numPepMod,$numModSite)=($mod=~/(.+):(\d+)\/(\d+)/);
-            print "<BR><B>&nbsp;&nbsp;&nbsp;Number of $modName sites:</B> $numModSite";
-            print "<BR><B>&nbsp;&nbsp;&nbsp;Number of peptides with $modName:</B> $numPepMod";
+            $displayData .= "<BR><B>Number of $modName sites:</B> $numModSite";
+            $displayData .= "<BR><B>Number of peptides with $modName:</B> $numPepMod";
         }
+    }
+    
+    $displayData = "No proteins information found" if(!$displayData);
+    if($displayData) {
+        print qq |
+            <fieldset>
+                <legend><B>Protein content:</B></legend>
+                <div id="protInfoLib:$libraryID" style="width: 100%">
+                    $displayData
+                </div>
+            </fieldset>
+        |;
     }
 }
 
 ####>Revision history<####
+# 1.2.1 [CHANGES] Use new job monitoring window opening parameters (VS 18/11/19)
+# 1.2.0 [ENHANCEMENT] Possibility to display projects and experiments associated to a library (VS 13/11/19)
+# 1.1.11 [MODIF] Switch from monitorDIA to monitorJobs script (VS 21/10/19)
+# 1.1.10 Add "Export proteins" option (VL 20/09/19)
 # 1.1.9 Speed up page loading using asynchronous protein content computing (VS 25/03/19)
 # 1.1.8 Add acetyl count displaying (VS 22/10/2018)
 # 1.1.7 Minor modif to increase the time before temporary folder deletion (MLP 05/02/18)

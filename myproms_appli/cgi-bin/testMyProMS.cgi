@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# testMyProMS.cgi         2.5.2                                                #
+# testMyProMS.cgi         2.5.4                                                #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -62,6 +62,8 @@ my @execPath=qw(
 
 ###>List of R packages<###
 my @Rpackages=qw(
+	bit
+	bit64
 	broom
 	data.table
 	dplyr
@@ -975,15 +977,15 @@ if (scalar keys %mascotServers && $lwpOK) {
 	my $agent = LWP::UserAgent->new(agent=>'libwww-perl myproms@curie.fr');
 	$agent->timeout(360);
 	foreach my $mascotServer (sort{lc($a) cmp lc($b)} keys %mascotServers) {
-		print "&nbsp;&nbsp;<B>&bull;$mascotServer</B> ($mascotServers{$mascotServer}[0]):<BR>\n";
-		if ($mascotServers{$mascotServer}[1]) { # proxy settings
-			if (lc($mascotServers{$mascotServer}[1]) eq 'no') {$agent->no_proxy($mascotServers{$mascotServer}[0]);}
-			else {$agent->proxy('http', $mascotServers{$mascotServer}[1]);}
+		print "&nbsp;&nbsp;<B>&bull;$mascotServer</B> ($mascotServers{$mascotServer}{url}):<BR>\n";
+		if ($mascotServers{$mascotServer}{proxy}) { # proxy settings
+			if (lc($mascotServers{$mascotServer}{proxy}) eq 'no') {$agent->no_proxy($mascotServers{$mascotServer}{url});}
+			else {$agent->proxy('http', $mascotServers{$mascotServer}{proxy});}
 		}
 		else {$agent->env_proxy;}
 		#>Checking scripts
 		foreach my $script ('myproms4datFiles.pl','myproms4databanks.pl','myproms4emPAI.pl') {
-			my $response = $agent->get("$mascotServers{$mascotServer}[0]/cgi/$script?ACT=test");
+			my $response = $agent->get("$mascotServers{$mascotServer}{url}/cgi/$script?ACT=test");
 			while (my $wait = $response->header('Retry-After')) {
 				sleep $wait;
 				$response = $agent->get($response->base);
@@ -1006,14 +1008,14 @@ if (scalar keys %mascotServers && $lwpOK) {
 			print "<FONT color=red>&nbsp;&nbsp;&nbsp;&nbsp;-No response from $script</FONT><BR>\n" unless $responded;
 		}
 		#>Checking path to dat file if declared
-		if ($mascotServers{$mascotServer}[2]) {
-			if (-e "$mascotServers{$mascotServer}[2]/data") {
-				print "&nbsp;&nbsp;&nbsp;&nbsp;-Local path to data is found: <B>$mascotServers{$mascotServer}[2]/data</B><BR>\n";
+		if ($mascotServers{$mascotServer}{data_local_path}) {
+			if (-e "$mascotServers{$mascotServer}{data_local_path}") { # $mascotServers{$mascotServer}[2]/data
+				print "&nbsp;&nbsp;&nbsp;&nbsp;-Local path to data is found: <B>$mascotServers{$mascotServer}{data_local_path}</B><BR>\n";
 			}
 			else {
-				print "<FONT color=red>&nbsp;&nbsp;&nbsp;&nbsp;-Local path to data <B>not</B> found: <B>$mascotServers{$mascotServer}[2]/data</B></FONT><BR>\n";
+				print "<FONT color=red>&nbsp;&nbsp;&nbsp;&nbsp;-Local path to data <B>not</B> found: <B>$mascotServers{$mascotServer}{data_local_path}</B></FONT><BR>\n";
 			}
-			if ($mascotServers{$mascotServer}[3]) {print "&nbsp;&nbsp;&nbsp;&nbsp;-Search files are <B>linked</B>, not copied<BR>\n";}
+			if ($mascotServers{$mascotServer}{link_files}) {print "&nbsp;&nbsp;&nbsp;&nbsp;-Search files are <B>linked</B>, not copied<BR>\n";}
 			else {print "&nbsp;&nbsp;&nbsp;&nbsp;-Search files are <B>copied</B>, not linked<BR>\n";}
 		}
 		else {print "&nbsp;&nbsp;&nbsp;&nbsp;-Search files are <B>copied</B><BR>\n";}
@@ -1264,6 +1266,8 @@ sub checkInternetConnection {
 
 
 ####>Revision history<####
+# 2.5.4 [UPDATE] Added R packages 'bit' and 'bit64' (PP 20/11/19)
+# 2.5.3 Uses new &promsConfig::getMascotServers function (PP 25/06/19)
 # 2.5.2 [FIX] Bugs in version detection of local java & pyprophet (PP 24/06/19)
 # 2.5.1 Added Singularity image info for cluster (PP 19/06/19)
 # 2.5.0 Uses Net::FTP for testing default and passive FTP connection (PP 06/05/19)

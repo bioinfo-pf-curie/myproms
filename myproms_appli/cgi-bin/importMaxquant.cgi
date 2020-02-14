@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# importMaxquant.cgi       2.1.1                                               #
+# importMaxquant.cgi       2.1.7                                               #
 # Component of site myProMS Web Server                                         #
 # Authors: P. Poullet, G. Arras, S. Liva (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
@@ -316,7 +316,7 @@ mkdir $tmpFilesDir;
 my $importPepQuantif=1;
 my $importProtQuantif=param('protQuantif');
 
-print "<BR><FONT class=\"title3\">Moving File(s)...";
+print "<BR><FONT class=\"title3\">Retrieving File(s)...";
 my $newFile;
 my $numFiles=0;
 my $archiveFile;
@@ -335,6 +335,7 @@ else { # from shared directory
 		print '.';
 		if ($fileName =~/\.(gz|zip)\Z/) { # keep only archive if extra files
 			$numFiles=1;
+			$archiveFile=$fileName;
 			last;
 		}
 		else {$numFiles++;}
@@ -369,7 +370,6 @@ ID_PROJECT=$projectID
 DATABANKS=@databankIDs
 EXCLUDE_CON=$excludeCON
 MG_TYPE=$matchGroupType
-PARAM_GR=0
 PROT_QUANTIF=$importProtQuantif
 |;
 print INFO "ID_CONT_DB=$contaminantDB\n" if $contaminantDB;
@@ -383,6 +383,10 @@ open(FLAG,">$currentQuantifDir/$experimentID\_$jobID\_wait.flag"); # flag file u
 print FLAG "#";
 close FLAG;
 
+$dbh->do("INSERT INTO JOB_HISTORY (ID_JOB, ID_USER, ID_PROJECT, TYPE, STATUS, FEATURES, SRC_PATH, LOG_PATH, ERROR_PATH, STARTED) VALUES('$jobID', '$userID', $projectID, 'Import [MaxQuant]', 'Queued', 'ID_EXPERIMENT=$experimentID', '$tmpFilesDir', '$tmpFilesDir/status_$experimentID.out', '$currentQuantifDir/$experimentID\_$jobID\_error.txt', NOW())");
+$dbh->commit;
+$dbh->disconnect;
+
 ###>Forking
 my $childPid = fork;
 unless ($childPid) { # child here
@@ -392,15 +396,17 @@ unless ($childPid) { # child here
 	#open STDERR, ">>$promsPath{logs}/launchQuantification.log";
 	#system "./launchQuantifications.pl single $userID $jobID MAXQUANT $experimentID";
 	
+	my $dbh=&promsConfig::dbConnect;
 	my $error;
 	my %cluster=&promsConfig::getClusterInfo;
-	if ($cluster{'on'}) {
-		my $eviSize=-s "$tmpFilesDir/$evidenceFile";
+#$cluster{'on'}=0; # TEMP >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+	my $eviSize=("$tmpFilesDir/$evidenceFile")? -s "$tmpFilesDir/$evidenceFile" : 5 * (-s $archiveFile);
+	if ($cluster{'on'} && $eviSize > 50000000) { # 50 Mb
 		my $cgiUnixDir=`pwd`;
 		$cgiUnixDir=~s/\/*\s*$//;
 		# cd is required for script to find myproms .pm files!!!!
 		my $commandString="export LC_ALL=\"C\"; cd $cgiUnixDir; $cluster{path}{perl}/perl runMaxquantImport.pl $experimentID $jobID 2> $currentQuantifDir/$experimentID\_$jobID\_error.txt";
-		my $maxMem=int(0.5 + (10 * $eviSize / 1024**3)); $maxMem=1 unless $maxMem; # 10 * size in Gb
+		my $maxMem=int(2 + (15 * $eviSize / 1024**3)); # 2 + 15 * size in Gb
 		my %jobParameters=(
 			maxMem=>$maxMem.'Gb',
 			numCPUs=>1,
@@ -409,7 +415,12 @@ unless ($childPid) { # child here
 			pbsRunDir=>$cgiUnixDir,
 			commandBefore=>"mv $currentQuantifDir/$experimentID\_$jobID\_wait.flag $currentQuantifDir/$experimentID\_$jobID\_run.flag" # run flag file
 		);
-		my ($pbsError,$pbsErrorFile)=$cluster{'runJob'}->($tmpFilesDir,$commandString,\%jobParameters);
+		my ($pbsError,$pbsErrorFile,$jobClusterID)=$cluster{'runJob'}->($tmpFilesDir,$commandString,\%jobParameters);
+		
+		# Add cluster job id to current job in DB
+		$dbh->do("UPDATE JOB_HISTORY SET ID_JOB_CLUSTER='C$jobClusterID' WHERE ID_JOB='$jobID'");
+		$dbh->commit;
+		
 		if ($pbsError) { # move PBS error message to job error file
 			system "cat $pbsErrorFile >> $currentQuantifDir/$experimentID\_$jobID\_error.txt";
 			$error=1;
@@ -417,14 +428,19 @@ unless ($childPid) { # child here
 	}
 	else { # Local launch (web server): No cluster OR XICMCQ|SIN|EMPAI
 		rename("$currentQuantifDir/$experimentID\_$jobID\_wait.flag","$currentQuantifDir/$experimentID\_$jobID\_run.flag"); # run flag file
-		system "./runMaxQuantImport.pl $jobID 2> $currentQuantifDir/$experimentID\_$jobID\_error.txt";
+
+		# Add process PID to current job in DB
+		$dbh->do("UPDATE JOB_HISTORY SET ID_JOB_CLUSTER='L$$' WHERE ID_JOB='$jobID'");
+		$dbh->commit;
+		
+		system "./runMaxquantImport.pl $experimentID $jobID 2> $currentQuantifDir/$experimentID\_$jobID\_error.txt";
+
 		if (-s "$currentQuantifDir/$experimentID\_$jobID\_error.txt") {
 			$error=1;
 		}
 		
 	} # end of local launch
 	if ($error) { # Update Quantifications status
-		my $dbh=&promsConfig::dbConnect;
 		my $sthQ=$dbh->prepare("SELECT DISTINCT Q.ID_QUANTIFICATION FROM QUANTIFICATION Q,ANA_QUANTIFICATION AQ,ANALYSIS A,SAMPLE S
 								WHERE Q.ID_QUANTIFICATION=AQ.ID_QUANTIFICATION AND AQ.ID_ANALYSIS=A.ID_ANALYSIS AND A.ID_SAMPLE=S.ID_SAMPLE
 								AND S.ID_EXPERIMENT=? AND Q.STATUS=0");
@@ -436,7 +452,6 @@ unless ($childPid) { # child here
 		$sthQ->finish;
 		$sthUpQ->finish;
 		$dbh->commit;
-		$dbh->disconnect;
 	}
 	
 	unlink "$currentQuantifDir/$experimentID\_$jobID\_run.flag";
@@ -447,10 +462,12 @@ unless ($childPid) { # child here
 			my $anaStrg=<MAPPING>;
 			system "./mapProteinIdentifiers.pl $userID $anaStrg";
 		}
-		rmtree($tmpFilesDir);
+
 		#unlink "$currentQuantifDir/$quantifItemID\_$jobID\_end.flag";
 		unlink "$currentQuantifDir/$experimentID\_$jobID\_error.txt";
 	}
+	
+	$dbh->disconnect;
 	exit;
 } # end of child
 
@@ -460,8 +477,8 @@ print qq
 Progress can be tracked in "Monitor Quantifications" window.<BR><BR>
 This page will refresh itself in a few seconds.</FONT>
 <SCRIPT type="text/javascript">
-var watchQuantifWin=window.open("$promsPath{cgi}/watchQuantifications.cgi",'WatchQuantifWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
-watchQuantifWin.focus();
+var monitorJobsWin=window.open("$promsPath{cgi}/monitorJobs.cgi?filterType=Import [MaxQuant]&filterDateNumber=1&filterDateType=DAY&filterStatus=Queued&filterStatus=Running",'monitorJobsWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
+monitorJobsWin.focus();
 </SCRIPT>
 |;
 #exit; # DEBUG!!!!!
@@ -477,9 +494,15 @@ parent.optionFrame.selectOption(parent.optionFrame.document.getElementById('summ
 
 
 ####>Revision history<####
+# 2.1.7 [CHANGES] Use new job monitoring window opening parameters (VS 18/11/19)
+# 2.1.6 [ENHANCEMENT] Handles new job monitoring system (VS 16/10/19)
+# 2.1.5 [FEATURE] Improved cluster memory calculation & removed 'PARAM_GR=0' in quantif_info.txt (PP 23/08/19)
+# 2.1.4 [BUGFIX] missing experimentID argument and archive parameter for local job launch (PP 10/07/19)
+# 2.1.3 Better cluster memory estimation for small job (PP 08/07/19)
+# 2.1.2 [Fix] mispelled runMaxQuantImport.pl to runMaxquantImport.pl (PP 02/07/19)
 # 2.1.1 [Fix] bug full path for archive file (PP 20/06/19)
 # 2.1.0 Improved error management & cluster resources calculation (PP 11/06/19)
-# 2.0.0 Restricted to form submission & data file transfert. Import is performed in background by runMaxQuantImport.cgi (PP 31/05/19)
+# 2.0.0 Restricted to form submission & data file transfert. Import is performed in background by runMaxquantImport.cgi (PP 31/05/19)
 # 1.3.11 Improved contaminents exclusion & memory management (PP 17/05/19)
 # 1.3.10 Improved handling of TMT/iTRAQ and fix $massErrorDa bug recomputing for isobaric data (PP 10/04/19)
 # 1.3.9 Minor modification for TMT as Terminal label has to be parsed as well (GA 25/02/19)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# selectOption.cgi    2.6.7                                                    #
+# selectOption.cgi    2.7.3													   #
 # Authors: P. Poullet, G. Arras & F. Yvon (Institut Curie)                     #
 # Contact: myproms@curie.fr                                                    #
 # Generates list of options available to user                                  #
@@ -97,29 +97,15 @@ elsif ($item eq 'EXPERIMENT') {
 	($numUnValidDat)=$dbh->selectrow_array("SELECT COUNT(ID_ANALYSIS) FROM ANALYSIS,SAMPLE WHERE ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE AND ID_EXPERIMENT=$itemID AND (VALID_STATUS=0 OR VALID_STATUS=1) AND FILE_FORMAT='MASCOT.DAT'");
 
 }
-elsif ($item eq 'GEL2D') {
-	$validQuery="SELECT COUNT(ID_ANALYSIS) FROM SPOT,SAMPLE,ANALYSIS WHERE SPOT.ID_SPOT=SAMPLE.ID_SPOT AND SAMPLE.ID_SAMPLE=ANALYSIS.ID_SAMPLE AND ID_GEL2D=$itemID AND VALID_STATUS=?";
-	$filterQuery="SELECT COUNT(*) FROM PROTEIN_VALIDATION,ANALYSIS,SAMPLE,SPOT WHERE PROTEIN_VALIDATION.ID_ANALYSIS=ANALYSIS.ID_ANALYSIS AND ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE AND SPOT.ID_SPOT=SAMPLE.ID_SPOT AND SEL_STATUS=-3 AND ID_GEL2D=$itemID";
-	($numUnValidDat)=$dbh->selectrow_array("SELECT COUNT(ID_ANALYSIS) FROM ANALYSIS,SAMPLE,SPOT WHERE ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE AND SPOT.ID_SPOT=SAMPLE.ID_SPOT AND ID_GEL2D=$itemID AND (VALID_STATUS=0 OR VALID_STATUS=1) AND FILE_FORMAT='MASCOT.DAT'");
-}
-elsif ($item eq 'SPOT') {
-	$validQuery="SELECT COUNT(ID_ANALYSIS) FROM SAMPLE,ANALYSIS WHERE SAMPLE.ID_SAMPLE=ANALYSIS.ID_SAMPLE AND ID_SPOT=$itemID AND VALID_STATUS=?";
-	$filterQuery="SELECT COUNT(*) FROM PROTEIN_VALIDATION,ANALYSIS,SAMPLE WHERE PROTEIN_VALIDATION.ID_ANALYSIS=ANALYSIS.ID_ANALYSIS AND ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE AND SEL_STATUS=-3 AND ID_SPOT=$itemID";
-	($numUnValidDat)=$dbh->selectrow_array("SELECT COUNT(ID_ANALYSIS) FROM ANALYSIS,SAMPLE WHERE ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE AND ID_SPOT=$itemID AND (VALID_STATUS=0 OR VALID_STATUS=1) AND FILE_FORMAT='MASCOT.DAT'");
-}
-#elsif ($item eq 'DESIGN') {
-#	$validQuery="SELECT COUNT(ID_ANALYSIS) FROM ANALYSIS,SAMPLE WHERE ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE AND ID_EXPERIMENT=$itemID AND VALID_STATUS=?";
-#	$filterQuery="SELECT COUNT(*) FROM PROTEIN_VALIDATION,ANALYSIS,SAMPLE WHERE PROTEIN_VALIDATION.ID_ANALYSIS=ANALYSIS.ID_ANALYSIS AND ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE AND SEL_STATUS=-3 AND ID_EXPERIMENT=$itemID";
-#	($nbExpCond)=$dbh->selectrow_array("SELECT COUNT(*) FROM EXPCONDITION WHERE ID_DESIGN=$itemID");
-#
+#elsif ($item eq 'GEL2D') {
+#	$validQuery="SELECT COUNT(ID_ANALYSIS) FROM SPOT,SAMPLE,ANALYSIS WHERE SPOT.ID_SPOT=SAMPLE.ID_SPOT AND SAMPLE.ID_SAMPLE=ANALYSIS.ID_SAMPLE AND ID_GEL2D=$itemID AND VALID_STATUS=?";
+#	$filterQuery="SELECT COUNT(*) FROM PROTEIN_VALIDATION,ANALYSIS,SAMPLE,SPOT WHERE PROTEIN_VALIDATION.ID_ANALYSIS=ANALYSIS.ID_ANALYSIS AND ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE AND SPOT.ID_SPOT=SAMPLE.ID_SPOT AND SEL_STATUS=-3 AND ID_GEL2D=$itemID";
+#	($numUnValidDat)=$dbh->selectrow_array("SELECT COUNT(ID_ANALYSIS) FROM ANALYSIS,SAMPLE,SPOT WHERE ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE AND SPOT.ID_SPOT=SAMPLE.ID_SPOT AND ID_GEL2D=$itemID AND (VALID_STATUS=0 OR VALID_STATUS=1) AND FILE_FORMAT='MASCOT.DAT'");
 #}
-#elsif ($item eq 'EXPCONDITION') {
-#	$validQuery="SELECT COUNT(ID_ANALYSIS) FROM ANALYSIS,SAMPLE WHERE ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE AND ID_EXPERIMENT=$itemID AND VALID_STATUS=?";
-#	$filterQuery="SELECT COUNT(*) FROM PROTEIN_VALIDATION,ANALYSIS,SAMPLE WHERE PROTEIN_VALIDATION.ID_ANALYSIS=ANALYSIS.ID_ANALYSIS AND ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE AND SEL_STATUS=-3 AND ID_EXPERIMENT=$itemID";
-#}
-#elsif ($item eq 'QUANTIFICATION') {
-#	$validQuery="SELECT COUNT(ANA_QUANTIFICATION.ID_ANALYSIS) FROM ANA_QUANTIFICATION,ANALYSIS WHERE ANA_QUANTIFICATION.ID_ANALYSIS=ANALYSIS.ID_ANALYSIS AND ID_QUANTIFICATION=$itemID AND VALID_STATUS=?";
-#	$filterQuery="SELECT COUNT(*) FROM PROTEIN_VALIDATION,ANALYSIS,ANA_QUANTIFICATION WHERE PROTEIN_VALIDATION.ID_ANALYSIS=ANALYSIS.ID_ANALYSIS AND ANALYSIS.ID_ANALYSIS=ANA_QUANTIFICATION.ID_ANALYSIS AND SEL_STATUS=-3 AND ID_QUANTIFICATION=$itemID";
+#elsif ($item eq 'SPOT') {
+#	$validQuery="SELECT COUNT(ID_ANALYSIS) FROM SAMPLE,ANALYSIS WHERE SAMPLE.ID_SAMPLE=ANALYSIS.ID_SAMPLE AND ID_SPOT=$itemID AND VALID_STATUS=?";
+#	$filterQuery="SELECT COUNT(*) FROM PROTEIN_VALIDATION,ANALYSIS,SAMPLE WHERE PROTEIN_VALIDATION.ID_ANALYSIS=ANALYSIS.ID_ANALYSIS AND ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE AND SEL_STATUS=-3 AND ID_SPOT=$itemID";
+#	($numUnValidDat)=$dbh->selectrow_array("SELECT COUNT(ID_ANALYSIS) FROM ANALYSIS,SAMPLE WHERE ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE AND ID_SPOT=$itemID AND (VALID_STATUS=0 OR VALID_STATUS=1) AND FILE_FORMAT='MASCOT.DAT'");
 #}
 elsif ($item eq 'SAMPLE') {
 	$validQuery="SELECT COUNT(ID_ANALYSIS) FROM ANALYSIS WHERE ID_SAMPLE=$itemID AND VALID_STATUS=?";
@@ -164,41 +150,42 @@ my $hasAnaQuantifs=0;
 my $okReport=1;
 if ($item eq 'ANALYSIS') {
 	#>Quantification
-	if ($projectFullAccess && $numNotImport==0 && $numValid<=1) { # validStatus==0 or 1
-		my ($userQuantif)=$dbh->selectrow_array("SELECT 1 FROM ANA_QUANTIFICATION AQ,QUANTIFICATION Q,QUANTIFICATION_METHOD QM WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD AND QM.CODE !='SILAC' AND QM.CODE !='ITRAQ' AND QUANTIF_ANNOT NOT LIKE '%::SOFTWARE=PD%' AND AQ.ID_ANALYSIS=$itemID LIMIT 0,1");
+	if ($projectFullAccess && $numNotImport==0 && $numValid <= 2) { # validStatus==0, 1 or 2
+		my ($userQuantif)=$dbh->selectrow_array("SELECT 1 FROM ANA_QUANTIFICATION AQ,QUANTIFICATION Q,QUANTIFICATION_METHOD QM WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD AND QM.CODE !='SILAC' AND QM.CODE !='ITRAQ' AND QUANTIF_ANNOT NOT LIKE '%::SOFTWARE=PD%' AND AQ.ID_ANALYSIS=$itemID LIMIT 1");
 		if ($userQuantif) {
 			$hasChildren++;
-			$okReport=0;
+			#$okReport=0;
 		}
 	}
-	($hasAnaQuantifs)=$dbh->selectrow_array("SELECT 1 FROM ANA_QUANTIFICATION A,QUANTIFICATION Q WHERE ID_ANALYSIS=$itemID AND A.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND Q.ID_DESIGN IS NULL"); # internal quantifs only
+	$okReport=0 if ($numValid==2 || $hasChildren);
+	($hasAnaQuantifs)=($hasChildren)? 1 : $dbh->selectrow_array("SELECT 1 FROM ANA_QUANTIFICATION A,QUANTIFICATION Q WHERE ID_ANALYSIS=$itemID AND A.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND Q.ID_DESIGN IS NULL"); # internal quantifs only
 
 	if ($anaDeleteAccess && !$hasChildren) { # Scanning ANALYSIS n/n tables
 		foreach my $table ('GOANA_ANALYSIS','PATHWAYANA_ANALYSIS') { # ok to delete if ANA_COMPARISON, OBSERVATION
-			($hasChildren)=$dbh->selectrow_array("SELECT 1 FROM $table WHERE ID_ANALYSIS=$itemID LIMIT 0,1");
+			($hasChildren)=$dbh->selectrow_array("SELECT 1 FROM $table WHERE ID_ANALYSIS=$itemID LIMIT 1");
 			last if $hasChildren;
 		}
 	}
 }
 else {
 	if ($item eq 'SPOT') { # spot virtual child is analysis (not sample)!
-		($hasChildren)=$dbh->selectrow_array("SELECT 1 FROM ANALYSIS,SAMPLE WHERE ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE AND ID_SPOT=$itemID LIMIT 0,1");
+		($hasChildren)=$dbh->selectrow_array("SELECT 1 FROM ANALYSIS,SAMPLE WHERE ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE AND ID_SPOT=$itemID LIMIT 1");
 	}
 	else {
 		foreach my $childItem (@childItems) {
-			($hasChildren)=$dbh->selectrow_array("SELECT 1 FROM $childItem WHERE ID_$item=$itemID LIMIT 0,1");
+			($hasChildren)=$dbh->selectrow_array("SELECT 1 FROM $childItem WHERE ID_$item=$itemID LIMIT 1");
 			last if $hasChildren;
 		}
 	}
 }
 
 ####>Checking if project contains validated proteins<####
-my ($validProt)=$dbh->selectrow_array("SELECT 1 FROM PROTEIN WHERE ID_PROJECT=$projectID LIMIT 0,1"); # 1 is enough
+my ($validProt)=$dbh->selectrow_array("SELECT 1 FROM PROTEIN WHERE ID_PROJECT=$projectID LIMIT 1"); # 1 is enough
 
 ####>Checking if experiment contains protein quanifications<####
 my $hasProtQuantifs=0;
 if ($experimentID && $validProt) {
-	($hasProtQuantifs)=$dbh->selectrow_array("SELECT 1 FROM SAMPLE S,ANALYSIS A,ANA_QUANTIFICATION AQ,QUANTIFICATION Q WHERE S.ID_SAMPLE=A.ID_SAMPLE AND A.ID_ANALYSIS=AQ.ID_ANALYSIS AND AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND S.ID_EXPERIMENT=$experimentID AND FOCUS='protein' LIMIT 0,1");
+	($hasProtQuantifs)=$dbh->selectrow_array("SELECT 1 FROM SAMPLE S,ANALYSIS A,ANA_QUANTIFICATION AQ,QUANTIFICATION Q WHERE S.ID_SAMPLE=A.ID_SAMPLE AND A.ID_ANALYSIS=AQ.ID_ANALYSIS AND AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND S.ID_EXPERIMENT=$experimentID AND FOCUS='protein' LIMIT 1");
 }
 
 ####>Checking if project contains classifications<####
@@ -245,7 +232,7 @@ print qq
 function selectOption(selectedButton) {
 	if (!selectedButton) { // 1st time this page is loaded
 		selectedButton=document.getElementById(top.promsFrame.selectedAction); // default value is stored in promsFrame;
-		if (!selectedButton) { // button is not defined for current project item => switch to 'summary'
+		if (!selectedButton \|\| selectedButton.id == 'monitor') { // button is not defined for current project item => switch to 'summary'
 			selectedButton=document.getElementById('summary');
 		}
 	}
@@ -371,8 +358,8 @@ function selectOption(selectedButton) {
 	else if (action == 'startExploratoryAnalyses') {
 		top.promsFrame.resultFrame.location="$promsPath{cgi}/startExploratoryAnalysis.cgi?ID=$experimentID";
 	}
-	else if (action == 'DIAImport'){
-		var monitorWindow=window.open("$promsPath{cgi}/monitorDIAProcess.cgi?ACT=import",'Monitor DIA import','width=1000,height=500,scrollbars=yes,resizable=yes');
+	else if (action == 'monitor'){
+		var monitorWindow=window.open("$promsPath{cgi}/monitorJobs.cgi?filterDateNumber=1&filterDateType=DAY&filterStatus=Queued&filterStatus=Running",'monitorJobsWindow','width=1000,height=500,scrollbars=yes,resizable=yes');
 	}
 	//else if (action == 'mergeUniprotIDs') {
 	//	top.promsFrame.resultFrame.location="$promsPath{cgi}/mergeUniprotIDs.cgi?ID=$itemID";
@@ -451,7 +438,7 @@ print "<TR align=center valign=top>\n";
 
 if ($notEditable || $projectAccess eq 'guest') {
 	print "<TD nowrap>",&displayItemButton,"</TD>\n";
-	print "<TD nowrap>",&show2dGelButton,"</TD>\n" if $item eq 'GEL2D';
+	#print "<TD nowrap>",&show2dGelButton,"</TD>\n" if $item eq 'GEL2D';
 	print "</TD>\n";
 	if ($validProt) {
 		print "<TD nowrap>\n",&listProtButton,"<BR>\n",&exportListButton,"</TD>\n";
@@ -478,18 +465,12 @@ elsif ($projectFullAccess) {
 	print "<TD nowrap>";
 	if ($item eq 'EXPERIMENT') {
 		print &delItemButton,"</TD>\n<TD nowrap>" unless $hasChildren;
-		print &addChildButton('SAMPLE',1),"<BR>\n",&addChildButton('GEL2D',0),"</TD>\n";
+		print &addChildButton('SAMPLE',1),"</TD>\n"; #,"<BR>\n",&addChildButton('GEL2D',0)
 		print "<TD nowrap>",&addChildButton('DESIGN',0),"</TD>\n"; # Mulitple samples can be added
 	}
 	else {
 		if ($item eq 'PROJECT') {print &addChildButton('EXPERIMENT',1),"<BR>\n";} # Multiple experiments can be added
-		elsif ($item eq 'GEL2D') {print &show2dGelButton,"<BR>\n";}
-		#elsif ($item eq 'DESIGN') {
-		#	my $isSelectable=($nbExpCond < 1)? ' disabled':'';
-		#	print "<TD nowrap>",&addQuantificationButton($isSelectable),"<BR>\n";
-		#}
-		#elsif ($item eq 'SPOT')  {print &addChildButton('SAMPLE',0),"<BR>\n" unless $hasChildren;} # only 1 sample can be added
-		#elsif ($item eq 'SPOT' || $item eq 'SAMPLE') {print &addChildButton('ANALYSIS',0),"<BR>\n";} # OBSOLETE! Use "Process Analyses" instead (PP 09/08/12)
+		#elsif ($item eq 'GEL2D') {print &show2dGelButton,"<BR>\n";}
 		if ($item eq 'ANALYSIS') {
 			print &validButton,"<BR>\n" if $numUnValid;
 			print &delItemButton if ($anaDeleteAccess && !$hasChildren);
@@ -538,7 +519,7 @@ elsif ($projectFullAccess) {
 	$optionStrg.=&searchButton if $validProt;
 	print "<TD nowrap>$optionStrg</TD>\n" if $optionStrg;
 	print "<TD nowrap>",&projectAccessButton,"</TD>\n" if $item eq 'PROJECT'; # if $projectAccess !~ /user/;	# admin, mass & bioinfo only
-	print "<TD nowrap>",&monitorDIAImportButton,"</TD>\n" if $item eq 'EXPERIMENT';
+	print "<TD nowrap>",&monitorButton,"</TD>\n";
 	#print "<TD nowrap>",&projectAccessButton,"<BR>",&mergeUniprotIDs,"</TD>\n" if $item eq 'PROJECT'; # if $projectAccess !~ /user/;	# admin, mass & bioinfo only
 }
 
@@ -549,16 +530,13 @@ else {
 	print "</TD>\n";
 	print "<TD nowrap>";
 	if ($item eq 'EXPERIMENT') {
-		print "<TD nowrap>",&addChildButton('GEL2D',0),"<BR>\n";
-		print &delItemButton unless $hasChildren;
-		print "</TD>\n";
+		print "<TD nowrap>",&delItemButton,"</TD>\n" unless $hasChildren; #,&addChildButton('GEL2D',0),"<BR>\n";
 		print "<TD nowrap>",&addChildButton('SAMPLE',1),"<BR>\n",&addChildButton('DESIGN',0),"</TD>\n"; # Mulitple samples can be added
 	}
 	else {
 		if ($item eq 'PROJECT') {print &addChildButton('EXPERIMENT',1),"<BR>\n";} # Mulitple experiments can be added
-		elsif ($item eq 'GEL2D') {print &show2dGelButton,"<BR>\n";}
-		#elsif ($item eq 'SPOT')  {print &addChildButton('SAMPLE',0),"<BR>\n" unless $hasChildren;} # only 1 sample can be added
-		elsif ($item eq 'SPOT' || $item eq 'SAMPLE') {print &addChildButton('ANALYSIS',0),"<BR>\n";} # only 1 analysis can be added at once
+		#elsif ($item eq 'GEL2D') {print &show2dGelButton,"<BR>\n";}
+		elsif ($item eq 'SAMPLE') {print &addChildButton('ANALYSIS',0),"<BR>\n";} # only 1 analysis can be added at once    $item eq 'SPOT' || 
 		elsif ($item eq 'ANALYSIS' && $numUnValid && $projectAccess =~ /power/) {print &validButton,"<BR>\n";}
 		print &delItemButton unless $hasChildren;
 		#print &combAnaButton if ($numUnValidDat>=2 && ($item eq 'EXPERIMENT' || $item eq 'SAMPLE'));
@@ -704,10 +682,9 @@ sub processAnalysesButton {
 sub anaQuantifsButton {
 	return "<INPUT type=\"button\" id=\"anaQuantifs\" style=\"width:175px\" value=\"Internal Quantifications\" onclick=\"selectOption(this)\">";
 }
-
-####<DIA import monitoring>####
-sub monitorDIAImportButton {
-	return "<INPUT type=\"button\" id=\"DIAImport\" style=\"width:175px\" value=\"Monitor DIA import\" onclick=\"selectOption(this)\">";
+####<Jobs monitoring>####
+sub monitorButton {
+	return "<INPUT type=\"button\" id=\"monitor\" style=\"width:125px\" value=\"Monitor Jobs\" onclick=\"selectOption(this)\">";
 }
 ####<Compare Quantifications>####
 sub compQuantifsButton {
@@ -766,6 +743,13 @@ sub startExploratoryAnalyses {
 #}
 
 ####>Revision history<####
+# 2.7.3 [CHANGES] Removed support for 2D-gel and spot (PP 21/01/20)
+# 2.7.2 [CHANGES] Set same name for all monitor window so it does not open multiple instances of it (VS 08/01/20)
+# 2.7.1 [CHANGES] Go to summary if monitor button is focused on page changing (VS 08/01/20)
+# 2.7.0 [CHANGES] Use new job monitoring window opening parameters (VS 18/11/19)
+# 2.6.10 [BUGFIX] Removed useless print of undef $hasChildren variable in case of Analysis (PP 13/11/19)
+# 2.6.9 [MODIF] Switch monitoring to monitorJobs script (VS 21/10/19)
+# 2.6.8 [BUGFIX] Removed Delete button for fully validated Analysis with linked Quantifications (PP 04/09/19)
 # 2.6.7 Handles project status=-1 [no auto-end validation] (PP 07/06/18)
 # 2.6.6 Add "Monitor DIA import" button (MLP 09/02/18)
 # 2.6.5 Commented merge identifiers for now & restored 'Project Accessibility' for closed projects (PP 02/08/17)

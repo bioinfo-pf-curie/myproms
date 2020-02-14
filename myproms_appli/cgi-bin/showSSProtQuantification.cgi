@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# showSSProtQuantification.cgi     1.0.1                                       #
+# showSSProtQuantification.cgi     1.0.5                                       #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Displays protein quantification data                                         #
@@ -62,7 +62,7 @@ my $projectAccess; # must be global
 my ($lightColor,$darkColor)=&promsConfig::getRowColors;
 my %labelingName=('FREE'=>'Label-free','SILAC'=>'SILAC','ITRAQ'=>'iTRAQ');
 my %normalizationNames=&promsQuantif::getQuantifNormalizationName;
-my %featureCodes=(sp_count=>['Peptide/spectrum matches','PSMs'],
+my %featureCodes=(sp_count=>['Peptide/spectrum matches','PSMs'],xic=>['Peptide abundance','XICs'],
 				  all_ion=>['All peptide ions','ions'],all_pep=>['All peptides','peptides'],
 				  dist_ion=>['Distinct peptide ions','dist. ions'],dist_pep=>['Distinct peptides','dist. pep.'],dist_seq=>['Distinct peptide sequences','dist. seq.']
 				  );
@@ -267,8 +267,11 @@ foreach my $infoStrg (@labelInfo) {
 }
 my $numStates=scalar @{$labelingInfo{'STATES'}};
 
-if ($action ne 'summary' && !scalar keys %dispSets) { # set default dispSets selection
-	foreach my $setPos (1..$numStates) {@{$dispSets{$setPos}}=();}
+if ($action ne 'summary' && !scalar keys %dispSets) { # set default dispSets selection to single set(s)
+	foreach my $setPos (1..$numStates) {
+		#last if $labelingInfo{'SETS'}[$setPos-1]=~/\+/; # in case some single-sets are not used (used < numStates)
+		@{$dispSets{$setPos}}=();
+	}
 }
 
 ###>Gene ontology annotation
@@ -671,8 +674,9 @@ sub printQuantificationSummary { # GLOBALS: $selQuantifID, $view, $projectID, $d
 
 	#<Peptides (retro-compatibility in case no miss-cut param)
 	my $pepRangeStrg=($refInfo->{PEPTIDES}[0] eq 'all')? 'Non-proteotypic peptides allowed' : ($refInfo->{PEPTIDES}[0] eq 'unique_shared')? 'Shared peptides allowed if exist proteotypic' : 'Proteotypic peptides only';
-	my $pepMissCutStrg=($refInfo->{PEPTIDES}[1])? 'Missed cleavage allowed' : 'Missed cleavage not allowed';
+	my $pepMissCutStrg=($refInfo->{PEPTIDES}[1]==0)? 'Missed cleavage not allowed' : ($refInfo->{PEPTIDES}[1]==-1)? 'Miss-cleaved & cleaved counterparts not allowed' : 'Missed cleavage allowed';
 	my $featureStrg=$featureCodes{$refInfo->{PEPTIDES}[3]}[0] || 'Unknown';
+	my $rescuedStrg=($refInfo->{PEPTIDES}[4] || $refInfo->{PEPTIDES}[3] eq 'sp_count')? 'MBR-rescued not allowed' : 'MBR-rescued allowed'; # spectral count=0 for MBR peptides
 
 	my $pepPtmStrg; #=($refInfo->{PEPTIDES}[$pepIdx]==1)? 'PTMs allowed' : ($refInfo->{PEPTIDES}[$pepIdx]==-1)? 'Exclude sequence if PTM found' : 'PTMs not allowed';
 	my ($ptmAllowed,@selectedPTMs)=split(/[:,]/,$refInfo->{PEPTIDES}[2]);
@@ -765,7 +769,7 @@ sub printQuantificationSummary { # GLOBALS: $selQuantifID, $view, $projectID, $d
 		#}
 		$worksheet1->set_row(++$xlsRow,13*$numPepLines);
 		$worksheet1->write_string($xlsRow,0,'Peptide selection :',$itemFormat{'headerR'});
-		$worksheet1->merge_range($xlsRow,1,$xlsRow,2,"•$pepRangeStrg.\n•$pepMissCutStrg.\n•$pepPtmStrg",$itemFormat{'mergeColText'});
+		$worksheet1->merge_range($xlsRow,1,$xlsRow,2,"•$pepRangeStrg.\n•$pepMissCutStrg.\n•$pepPtmStrg.\n•$rescuedStrg",$itemFormat{'mergeColText'});
 
 		##<Export settings>##
 		$xlsRow++;
@@ -823,6 +827,7 @@ var replicatesLabel={
 	my $replicCount=0;
 	foreach my $repKey (keys %bioRepLabel) {
 		$replicCount++;
+		$bioRepLabel{$repKey}=~s/'/\\'/g;		
 		print "\t'$repKey':'$bioRepLabel{$repKey}'";
 		print ',' if $replicCount < $replicPos;
 		print "\n";
@@ -893,7 +898,7 @@ function getElementPosition(e) {
 	else {
 		print qq
 |function extendSelection(chkBox,selIdx) {
-	for (var i=selIdx+1; i<chkBox.length; i++) {
+	for (let i=selIdx+1; i<chkBox.length; i++) {
 		if (chkBox[i].checked != chkBox[selIdx].checked) {chkBox[i].checked = chkBox[selIdx].checked;}
 		else {break;} // stop propagation if a box is already in selected check status
 	}
@@ -931,7 +936,7 @@ var goAspects=new Object();
 function checkAllProteins(chkStatus) {
 	var checkBoxList=document.protForm.chkProt;
 	if (checkBoxList.length) {
-		for (var i=0; i < checkBoxList.length; i++) {checkBoxList[i].checked=chkStatus;}
+		for (let i=0; i < checkBoxList.length; i++) {checkBoxList[i].checked=chkStatus;}
 	}
 	else {checkBoxList.checked=chkStatus;}
 }
@@ -983,8 +988,8 @@ function ajaxProcessSelectedProteins(action,targetDiv,selectedPoints) {
 	targetDiv.style.display='block';
 	//Parameters (extracting list of proteins)
 	var proteinList=[];
-	for (var gr in selectedPoints) {
-		for (var i=0; i<selectedPoints[gr].length; i++) {
+	for (let gr in selectedPoints) {
+		for (let i=0; i<selectedPoints[gr].length; i++) {
 			proteinList.push(selectedPoints[gr][i]);
 		}
 	}
@@ -998,20 +1003,37 @@ function ajaxProcessSelectedProteins(action,targetDiv,selectedPoints) {
 	XHR.open("POST","$promsPath{cgi}/showSSProtQuantification.cgi",true);
 	//Send the proper header information along with the request
 	XHR.setRequestHeader("Content-type", "application/x-www-form-urlencoded; charset=UTF-8");
-	XHR.setRequestHeader("Content-length", paramStrg.length);
-	XHR.setRequestHeader("Connection", "close");
+	//XHR.setRequestHeader("Content-length", paramStrg.length);
+	//XHR.setRequestHeader("Connection", "close");
 	XHR.onreadystatechange=function() {
 		if (XHR.readyState==4 && XHR.responseText) {
-targetDiv.innerHTML='<INPUT type="hidden" id="listFromGraph" value="1"/>'; // listFromGraph: flag
+			targetDiv.innerHTML='<INPUT type="hidden" id="listFromGraph" value="1"/>'; // listFromGraph: flag
 			if (action=='ajaxDrawProt') {
 				var codeParts=XHR.responseText.split('#==========#');
 				targetDiv.innerHTML+=codeParts[0]; // HTML part
 				eval(codeParts[1]); // javascript part
 			}
 			else {targetDiv.innerHTML+=XHR.responseText;}
+			if (action=='ajaxListProt') {
+				targetDiv.scrollIntoView({block:"start",inline:"nearest",behavior:"smooth"});
+			}
 		}
 	}
 	XHR.send(paramStrg);
+}
+function ajaxSearchConvertIdentifier(graphSearch,graphSearchArgs,searchTextIdx) { // (graph lib search function,array of function arguments,index of search text in array). To be called at end of convertion function
+	var XHR = getXMLHTTP();
+	if (!XHR) {
+		return false;
+	}
+	XHR.open("GET","$promsPath{cgi}/showProtQuantification.cgi?ACT=ajaxConvIdent&projectID=$projectID&quantifList=$selQuantifID&TEXT="+encodeURIComponent(graphSearchArgs[searchTextIdx]),true); //search text
+	XHR.onreadystatechange=function() {
+		if (XHR.readyState==4 && XHR.responseText) {
+			graphSearchArgs[searchTextIdx]=XHR.responseText; // replace old text with converted one
+			graphSearch(...graphSearchArgs); // call graph lib search fuction & convert array to arguments
+		}
+	};
+	XHR.send(null);
 }
 |;
 		}
@@ -1161,7 +1183,7 @@ function ajaxUpdateGoTermList(goIdStrg) {
 	#$ptmQuantifStrg='<BR>&nbsp;&bull;'.$ptmQuantifStrg if $ptmQuantifStrg;
 	print qq
 |<TR><TH align=right nowrap valign=top>&nbsp;Feature counted :</TH><TD nowrap bgcolor="$lightColor" $colspanStrg>&nbsp;$featureStrg&nbsp;</TD></TR>
-<TR><TH align=right nowrap valign=top>&nbsp;Peptide selection :</TH><TD nowrap bgcolor="$lightColor" $colspanStrg>&nbsp;&bull;$pepRangeStrg&nbsp;&nbsp;&nbsp;&bull;$pepMissCutStrg&nbsp;&nbsp;&nbsp;&bull;$pepPtmStrg&nbsp;</TD></TR>
+<TR><TH align=right nowrap valign=top>&nbsp;Peptide selection :</TH><TD nowrap bgcolor="$lightColor" $colspanStrg>&nbsp;&bull;$pepRangeStrg&nbsp;&nbsp;&nbsp;&bull;$pepMissCutStrg&nbsp;&nbsp;&nbsp;&bull;$pepPtmStrg&nbsp;&nbsp;&nbsp;&bull;$rescuedStrg&nbsp;</TD></TR>
 |; # $ptmQuantifStrg
 	if ($action eq 'summary') {
 		my $statusStrg=($quantifStatus==-2)? '<FONT color=#DD0000>Failed</FONT> (Click on "Monitor Quantifications" for more information)' : ($quantifStatus==-1)? 'Not launched yet' : ($quantifStatus==0)? 'On-going' : 'Finished';
@@ -1298,6 +1320,7 @@ window.onload=function() {
 						pointOnclick:proteinLink,
 						pointOnList:[['Draw',ajaxDrawSelectedProteins],['List',ajaxListSelectedProteins]],
 						allowHighlight:$allowHlight,
+						searchable:{text:'Extended search',externalSearch:ajaxSearchConvertIdentifier},
 						convertValue:function(axis,thVal) {if (axis=='X') {return thVal} else {return -1*Math.log(thVal)/2.302585093;}} // -log10
 						});
 	GP.addThreshold({axis:'X',label:'Best delta threshold',value:$dispDelta,color:'#0B0',editable:true});
@@ -1359,7 +1382,7 @@ function showPeptideCount(grID) { // identifier:protID:statePos
 	var grInfo=grID.split(':');
 	var pepStrg='<INPUT type="button" value="Close" class="font11" onclick="document.getElementById(\\'displayDIV\\').style.display=\\'none\\';"><TABLE bgcolor=$darkColor><TR><TH colspan=2>'+grInfo[0]+' in '+statesName[grInfo[2]]+'</TH></TR>';
 	var dataList=peptideCount[grID].split(',');
-	for (var i=0; i<dataList.length; i++) {
+	for (let i=0; i<dataList.length; i++) {
 		var replicInfo=dataList[i].split('='); // replicCode=value
 		pepStrg+='<TR><TH align=right nowrap>&nbsp;'+replicatesLabel[replicInfo[0]]+'</TH><TD bgcolor=$lightColor>&nbsp;'+replicInfo[1]+'</TD></TR>';
 	}
@@ -1381,7 +1404,7 @@ function exportProteinData(format,protDivID,protAlias) { // protDivID,protAlias 
 	if (format=='xls') { // data export
 		/* Serialize peptideCount */
 		var protData='';
-		for (var grID in peptideCount) {
+		for (let grID in peptideCount) {
 			if (protData != '') {protData+=';';}
 			protData+=grID+'>'+peptideCount[grID];
 		}
@@ -1389,14 +1412,14 @@ function exportProteinData(format,protDivID,protAlias) { // protDivID,protAlias 
 		/* Serialize statesName & replicatesLabel (only once!) */
 		if (!document.exportProtDataForm.STATES.value) {
 			var states='';
-			for (var statePos in statesName) {
+			for (let statePos in statesName) {
 				if (states != '') {states+=';';}
 				states+=statePos+'='+statesName[statePos];
 			}
 			document.exportProtDataForm.STATES.value=states;
 
 			var replicLabel='';
-			for (var replic in replicatesLabel) {
+			for (let replic in replicatesLabel) {
 				if (replicLabel != '') {replicLabel+=';';}
 				replicLabel+=replic+'='+replicatesLabel[replic];
 			}
@@ -1994,7 +2017,7 @@ sub ajaxDrawSelectedProteins {
 			}
 		}
 		elsif ($setting eq 'PEPTIDES') {
-			my ($featCode)=$valueStrg=~/([^;]+)$/;
+			my ($featCode)=(split(';',$valueStrg))[3];
 			$featureStrg=$featureCodes{$featCode}[0];
 		}
 	}
@@ -2388,7 +2411,7 @@ next unless $modID; # !!!TEMP!!! PARAGON quantif with no validated protein (PP 3
 	print qq
 |<TABLE><TR>
 <TD nowrap><FONT class="title2">Peptide distribution for <A href="javascript:sequenceView($protID,'$refAnaID')">$proteinAlias</A> in all States:</FONT></TD>
-<TD nowrap>&nbsp;&nbsp;<FONT class="title3">(View:</FONT><SELECT class="title3" onchange="for (var i=1; i<=2; i++) {var pepDiv=document.getElementById('pepPlot'+i+'DIV'); pepDiv.style.display=(pepDiv.style.display=='none')? '' : 'none';}"><OPTION value="1">Normalized counts</OPTION><OPTION value="2">Absolute counts</OPTION></SELECT><FONT class="title2">)</FONT></TD>
+<TD nowrap>&nbsp;&nbsp;<FONT class="title3">(View:</FONT><SELECT class="title3" onchange="for (let i=1; i<=2; i++) {var pepDiv=document.getElementById('pepPlot'+i+'DIV'); pepDiv.style.display=(pepDiv.style.display=='none')? '' : 'none';}"><OPTION value="1">Normalized counts</OPTION><OPTION value="2">Absolute counts</OPTION></SELECT><FONT class="title2">)</FONT></TD>
 <TD nowrap>&nbsp;&nbsp;<INPUT type="button" class="font11" value=" Close " onclick="document.getElementById('displayDIV').style.display='none'; document.getElementById(prevImgID).src='$promsPath{images}/plus.gif'; prevImgID=null;"></TD>
 </TR></TABLE>
 <DIV id="pepPlot1DIV"></DIV>
@@ -2435,6 +2458,10 @@ var PP1=new peptidePlot({div:'pepPlot1DIV',width:$plotWidth,height:$plotHeight,v
 
 # TODO: Export to Excel
 ####>Revision history<####
+# 1.0.5 [FEATURE] Compatible with peptide xic feature (PP 28/02/20)
+# 1.0.4 [FEATURE] Compatible with MBR-peptide filter (PP 22/01/20)
+# 1.0.3 [FEATURE] Added extended search option for graphical view (PP 19/12/19)
+# 1.0.2 [FEATURE] Compatible with option to extend missed cleavage exclusion to overlapping peptides (PP 19/11/19)
 # 1.0.1 Multiple bug fixes (PP 19/01/18)
 # 1.0.0 Tested with SILAC & label-free quantif (PP 01/12/17)
 # 0.9.3 Working beta version. TODO: Export to Excel (PP 16/05/17)

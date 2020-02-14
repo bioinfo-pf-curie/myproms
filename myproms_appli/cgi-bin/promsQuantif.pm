@@ -1,5 +1,5 @@
 ################################################################################
-# promsQuantif.pm           1.3.8                                              #
+# promsQuantif.pm           1.6.2                                              #
 # Authors: P. Poullet, G. Arras, S. Liva (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -51,7 +51,7 @@ use strict;
 use File::Path qw(rmtree); # remove_tree
 
 my $MAX_INF_RATIO_DB=1000;
-my $MIN_INF_RATIO_DB=0.001;
+my $MIN_INF_RATIO_DB=1/$MAX_INF_RATIO_DB; # 0.001;
 my $MAX_INF_RATIO=100; # 1000    ~~~Max ratio allowed before switching to infinite~~~
 my $MIN_INF_RATIO=1/$MAX_INF_RATIO;
 
@@ -64,27 +64,42 @@ sub getProteinQuantifFamilies {
 										'EMPAI'=>['EMPAI'],
 										'SIN'=>['SIN'],
 										'MQ'=>['MQ'],
+										'PROT_RULER'=>['PROT_RULER'],
+										'PROT_ABUNDANCE'=>['PROT_ABUNDANCE']
 									   },
 								'NAME'=>{'RATIO'=>'Protein or site fold-change',
 										 'EMPAI'=>'emPAI',
 										 'SIN'=>'Normalized Spectral Index',
 										 'MQ'=>'MaxQuant intensities',
+										 'PROT_RULER'=>'Absolute quantification with Proteomic Ruler',
+										 'PROT_ABUNDANCE'=>'myProMS intensities'
 										},
-								'MEASURES'=>{
-									'MQ'=>[['MQ_INT','Intensity'],['MQ_IBAQ','iBAQ'],['MQ_LFQ','LFQ'],['MQ_SC','MS/MS count']],
-									'EMPAI'=>[['EMPAI','emPAI'],['EMPAI_MOL','emPAI (Mol %)'],['EMPAI_MR','emPAI (Mr %)']],
-									'SIN'=>[['SIN_SIN','SI<sub>N</sub>']]
+								'MEASURES'=>{ # [code,label,optional]
+									'MQ'=>[['MQ_INT','Intensity',0],['MQ_IBAQ','iBAQ',1],['MQ_LFQ','LFQ',1],['MQ_SC','MS/MS count',0]],
+									'EMPAI'=>[['EMPAI','emPAI',0],['EMPAI_MOL','emPAI (Mol %)',0],['EMPAI_MR','emPAI (Mr %)',0]],
+									'SIN'=>[['SIN_SIN','SI<sub>N</sub>',0]],
+									'PROT_RULER'=>[['COPY_NB', 'Copy nb/cell',1],['CONCENTRATION','Conc. [nM]',1],['MASS_PER_CELL','Mass/cell [pg]',1],['MASS_ABUNDANCE','Mass abund. [*10E-6]',1],['MOL_ABUNDANCE','Mol. abund. [*10E-6]',1],['COPY_RANK','Copy nb rank',1],['REL_COPY_RANK','Rel. copy nb. rank',1]],
+									'PROT_ABUNDANCE'=>[['MEAN_INT','Mean intensity',0],['MEDIAN_INT','Median intensity',0],['SUM_INT','Sum intensity',0],['MY_LFQ','LFQ',1]]
 								}
 								);
 	return %proteinQuantifFamilies;
 }
 
+sub getXicSoftwareList {
+	return ('PD'=>'Proteome Discoverer',
+			'MCQ'=>'MassChroQ',
+			'MAS'=>'Mascot',
+			'PAR'=>'Paragon',
+			'PKV'=>'PeakView',
+			'MQ'=>'MaxQuant',
+			'SKY'=>'Skyline',
+			'OS'=>'OpenSwath',
+			'?'=>'Unknown'
+			);
+}
 sub getXicSoftware { # Only for peptide quantification!!!
 	my ($dbh,$quantifID,$quantifAnnot)=@_; # quantifAnnot is optional
-	my %code2Name=(PD=>'Proteome Discoverer',MCQ=>'MassChroQ',MAS=>'Mascot',PAR=>'Paragon',MQ=>'MaxQuant',
-				   PKV=>'PeakView',OS=>'OpenSWATH',SKY=>'Skyline',
-				   #''=>'Unknown'
-				   );
+	my %code2Name=&getXicSoftwareList;
 	unless ($quantifAnnot) {
 		($quantifAnnot)=$dbh->selectrow_array("SELECT QUANTIF_ANNOT FROM QUANTIFICATION WHERE ID_QUANTIFICATION=$quantifID");
 	}
@@ -97,7 +112,7 @@ sub getXicSoftware { # Only for peptide quantification!!!
 	else {
 		if ($quantifAnnot=~/EXTRACTION_ALGO=/) {$xicSoftCode='MCQ'; $version='2.0.1';}
 		else {
-			my ($fileFormat)=$dbh->selectrow_array("SELECT FILE_FORMAT FROM ANALYSIS A,ANA_QUANTIFICATION Q WHERE A.ID_ANALYSIS=Q.ID_ANALYSIS AND ID_QUANTIFICATION=$quantifID LIMIT 0,1");
+			my ($fileFormat)=$dbh->selectrow_array("SELECT FILE_FORMAT FROM ANALYSIS A,ANA_QUANTIFICATION Q WHERE A.ID_ANALYSIS=Q.ID_ANALYSIS AND ID_QUANTIFICATION=$quantifID LIMIT 1");
 			$xicSoftCode=($fileFormat=~/\.PDM\Z/)? 'PD' : ($fileFormat=~/^MASCOT/)? 'MAS' : ($fileFormat=~/PARAGON/)? 'PAR' : '?';
 		}
 	}
@@ -139,15 +154,17 @@ sub getQuantifNormalizationName {
 ###################################
 sub deleteQuantification {
 
-	my ($dbh,$projectID,$qID)=@_;
+	my ($dbh,$projectID,$qID,$keepHistory)=@_;
 	my %promsPath=&promsConfig::getServerInfo; # WARNING: promsConfig must be declared in calling script!!!
 
 	my ($focus)=$dbh->selectrow_array("SELECT FOCUS FROM QUANTIFICATION,QUANTIFICATION_METHOD WHERE QUANTIFICATION.ID_QUANTIFICATION_METHOD=QUANTIFICATION_METHOD.ID_QUANTIFICATION_METHOD AND ID_QUANTIFICATION=$qID");
-
+	return unless $focus;
+	
 	if ($focus eq 'protein') {
 		###<Delete links to parent quantifs...
 		$dbh->do("DELETE FROM PARENT_QUANTIFICATION WHERE ID_QUANTIFICATION=$qID") || die $dbh->errstr();
-
+		###<Delete links to MULTIMODIF_QUANTIFICATION...
+		$dbh->do("DELETE FROM MULTIMODIF_QUANTIFICATION WHERE ID_QUANTIFICATION=$qID") || die $dbh->errstr();
 		###<Delete PROTEIN_QUANTIFICATION & associated tables: PROTQUANTIF_MODRES & MODIFIED_RESIDUE (with JOIN!!!)
 		$dbh->do("DELETE PQM FROM PROTQUANTIF_MODRES PQM INNER JOIN MODIFIED_RESIDUE R ON PQM.ID_MODIF_RES=R.ID_MODIF_RES WHERE R.ID_QUANTIFICATION=$qID");
 		$dbh->do("DELETE FROM MODIFIED_RESIDUE WHERE ID_QUANTIFICATION=$qID");
@@ -164,12 +181,23 @@ sub deleteQuantification {
 
 	###<Delete EXPCONDITION_QUANTIF information
 	$dbh->do("DELETE FROM EXPCONDITION_QUANTIF WHERE ID_QUANTIFICATION=$qID") || die $dbh->errstr();
-
+	
 	###<Delete the directory and log file if one was created
 	#remove_tree("$promsPath{quantification}/project_$projectID/quanti_$qID") if -e "$promsPath{quantification}/project_$projectID/quanti_$qID";
 	rmtree("$promsPath{quantification}/project_$projectID/quanti_$qID") if -e ("$promsPath{quantification}/project_$projectID" && "$promsPath{quantification}/project_$projectID/quanti_$qID");
 	unlink "$promsPath{logs}/quanti_$qID.log" if -e "$promsPath{logs}/quanti_$qID.log";
 
+	###<Delete JOB_HISTORY information (if any)
+	if(!$keepHistory) {
+		my ($jobID,$jobDir,$jobLogFile,$jobErrorFile)=$dbh->selectrow_array("SELECT ID_JOB,SRC_PATH,LOG_PATH,ERROR_PATH FROM JOB_HISTORY WHERE FEATURES LIKE 'ID_QUANTIFICATION=$qID;%'");
+		if ($jobID) {
+			unlink $jobLogFile if -e $jobLogFile;
+			unlink $jobErrorFile if -e $jobErrorFile;
+			rmtree $jobDir if(-e $jobDir);
+			$dbh->do("DELETE FROM JOB_HISTORY WHERE ID_JOB=$jobID");
+		}
+	}
+	
 	###<Delete the QUANTIFICATION itself
 	$dbh->do("DELETE FROM QUANTIFICATION WHERE ID_QUANTIFICATION=$qID") || die $dbh->errstr();
 
@@ -234,9 +262,13 @@ sub writeQuantifParameterFiles {
 	#<Character
 	my @paramCharList=('normalization.method','pAdj.method','design','residual.variability'); # Super/SimpleRatio & LabelFree
 	push @paramCharList,('quantification.method','bias.correction','name.grp','name.ratio','invRatio','alter','pAdj','typeTest','typeTab','metric','prot.ref'); # Ratio (old algo)
-	push @paramCharList,('Design','normalization.ref.test'); # for algo v2 + 'normalization.method','pAdj.method','pAdj'
+	push @paramCharList,('normalization.ref.test','normalization.only'); # for algo v2 + 'normalization.method','pAdj.method','pAdj'
 	#push @paramCharList,('savegraph','displaygraph','Design','normalization.method','filepath'); # (Super/Simple)Ratio & LabelFree
 	push @paramCharList,('contrasts.matrix','clusters'); # MSstats
+	push @paramCharList, ('input_matrix','protein_acc','intensities','logarithmized','log_base',
+						  'averaging_mode','groups_file','molecular_weights','detectability_correction',
+						  'correction_factor_idx','total_protein_amount','histone_proteomic_ruler',
+						  'custom_proteins','custom_prot_qty','protein_concentration','organism_name','output','out_file'); # Proteomic Ruler
 	my %usedParams;
 	my $matched=0;
 	foreach my $param (@paramCharList) {
@@ -255,7 +287,7 @@ sub writeQuantifParameterFiles {
 	}
 	close PARAM_CHAR if $matched;
 
-	#<Numerical
+	#<Numerical (OBSOLETE old algo)
 	$matched=0;
 	foreach my $param ('sup.var','grp','int.min','int.max','threshold.CV','lim.PERM','alpha','threshold.out','denom','conf.level') { # lim.PERM obsolete
 		next unless $refParams->{$param};
@@ -306,34 +338,35 @@ sub getDistinctQuantifNames { # TODO: test on mixed ratio & non-ratio quantifs!!
 			my (@info,@junctions);
 			if ($targetPos > 0) { # targetPos quantifs
 				if ($labelingInfo{$quantifID}{'RATIOS'}) { # ratio quantifs
-					my ($testStatePos,$refStatePos)=split(/\//,$labelingInfo{$quantifID}{'RATIOS'}[$targetPos-1]);
+					my ($testCondID,$refCondID)=split(/\//,$labelingInfo{$quantifID}{'RATIOS'}[$targetPos-1]);
 					my $normTag='';
-					if ($testStatePos=~/%/) { # Super ratio
+					if ($testCondID=~/%/) { # Super ratio
 						$normTag='°';
-						$testStatePos=~s/%\d+//;
-						$refStatePos=~s/%\d+//;
+						$testCondID=~s/%\d+//;
+						$refCondID=~s/%\d+//;
 					}
 					if ($customKey) {
-						@info=($parentNames{$quantifID},$quantifNames{$quantifID},$stateInfo{$quantifID}{$testStatePos}{NAME}.$normTag,$stateInfo{$quantifID}{$refStatePos}{NAME}.$normTag); # Design,quantif,ratioTest,ratioRef
+						@info=($parentNames{$quantifID},$quantifNames{$quantifID},$stateInfo{$quantifID}{$testCondID}{NAME}.$normTag,$stateInfo{$quantifID}{$refCondID}{NAME}.$normTag); # Design,quantif,ratioTest,ratioRef
 						@junctions=(' > ',' : ','/');
 					}
-					$quantifRatioNames{'FULL'}{$quantif}="$parentNames{$quantifID} > $quantifNames{$quantifID} : $stateInfo{$quantifID}{$testStatePos}{NAME}$normTag/$stateInfo{$quantifID}{$refStatePos}{NAME}$normTag";
-					$quantifRatioNames{'EXTENDED'}{$quantif}="$quantifNames{$quantifID} : $stateInfo{$quantifID}{$testStatePos}{NAME}$normTag/$stateInfo{$quantifID}{$refStatePos}{NAME}$normTag";
-					$quantifRatioNames{'RATIO'}{$quantif}="$stateInfo{$quantifID}{$testStatePos}{NAME}$normTag/$stateInfo{$quantifID}{$refStatePos}{NAME}$normTag";
-					$quantifRatioNames{'TEST'}{$quantif}="$stateInfo{$quantifID}{$testStatePos}{NAME}$normTag~";
+					$quantifRatioNames{'FULL'}{$quantif}="$parentNames{$quantifID} > $quantifNames{$quantifID} : $stateInfo{$quantifID}{$testCondID}{NAME}$normTag/$stateInfo{$quantifID}{$refCondID}{NAME}$normTag";
+					$quantifRatioNames{'EXTENDED'}{$quantif}="$quantifNames{$quantifID} : $stateInfo{$quantifID}{$testCondID}{NAME}$normTag/$stateInfo{$quantifID}{$refCondID}{NAME}$normTag";
+					$quantifRatioNames{'RATIO'}{$quantif}="$stateInfo{$quantifID}{$testCondID}{NAME}$normTag/$stateInfo{$quantifID}{$refCondID}{NAME}$normTag";
+					$quantifRatioNames{'TEST'}{$quantif}="$stateInfo{$quantifID}{$testCondID}{NAME}$normTag~";
 					#$quantifRatioNames{'QUANTIF'}{$quantif}=$quantifNames{$quantifID};
 					#$quantifRatioNames{'PARENT'}{$quantif}=$parentNames{$quantifID};
-					$references{"$stateInfo{$quantifID}{$refStatePos}{NAME}$normTag"}=1; # counts distinct refs
-					$ratios{"$stateInfo{$quantifID}{$testStatePos}{NAME}$normTag/$stateInfo{$quantifID}{$refStatePos}{NAME}$normTag"}=1;
+					$references{"$stateInfo{$quantifID}{$refCondID}{NAME}$normTag"}=1; # counts distinct refs
+					$ratios{"$stateInfo{$quantifID}{$testCondID}{NAME}$normTag/$stateInfo{$quantifID}{$refCondID}{NAME}$normTag"}=1;
 				}
 				else { # intensity quantifs
+					my ($numBioRep,$quantiObsIDs,$condID)=split(',',$labelingInfo{$quantifID}{'STATES'}[$targetPos-1]);
 					if ($customKey) {
-						@info=($parentNames{$quantifID},$quantifNames{$quantifID},$stateInfo{$quantifID}{$targetPos}{NAME}); # Design,quantif,ratioTest
+						@info=($parentNames{$quantifID},$quantifNames{$quantifID},$stateInfo{$quantifID}{$condID}{NAME}); # Design,quantif,ratioTest
 						@junctions=(' > ',' : ');
 					}
-					$quantifRatioNames{'FULL'}{$quantif}="$parentNames{$quantifID} > $quantifNames{$quantifID} : $stateInfo{$quantifID}{$targetPos}{NAME}";
-					$quantifRatioNames{'EXTENDED'}{$quantif}="$quantifNames{$quantifID} : $stateInfo{$quantifID}{$targetPos}{NAME}";
-					$quantifRatioNames{'RATIO'}{$quantif}=$quantifRatioNames{'STATE'}{$quantif}=$quantifRatioNames{'TEST'}{$quantif}=$stateInfo{$quantifID}{$targetPos}{NAME};
+					$quantifRatioNames{'FULL'}{$quantif}="$parentNames{$quantifID} > $quantifNames{$quantifID} : $stateInfo{$quantifID}{$condID}{NAME}";
+					$quantifRatioNames{'EXTENDED'}{$quantif}="$quantifNames{$quantifID} : $stateInfo{$quantifID}{$condID}{NAME}";
+					$quantifRatioNames{'RATIO'}{$quantif}=$quantifRatioNames{'STATE'}{$quantif}=$quantifRatioNames{'TEST'}{$quantif}=$stateInfo{$quantifID}{$condID}{NAME};
 				}
 				$quantifRatioNames{'QUANTIF'}{$quantif}=$quantifNames{$quantifID};
 				$quantifRatioNames{'PARENT'}{$quantif}=$parentNames{$quantifID};
@@ -413,35 +446,40 @@ sub extractQuantificationParameters {
 
 	#my ($labelStrg,@labelInfo)=split('::',$quantifAnnot);
 	my (@labelInfo)=split('::',$quantifAnnot);
+	my $isdesignQuantif=0;
 	foreach my $infoStrg (@labelInfo) {
 		my ($setting,$valueStrg)=split('=',$infoStrg);
+		$isdesignQuantif=1 if ($setting eq 'STATES' && $valueStrg=~/\d,#/); # has id flag
+		$valueStrg=~s/#//g if ($setting eq 'RATIOS' || $setting eq 'STATES'); # remove id flags (for back compatibility with previous code)
 		@{$refLabelingInfo->{$setting}}=split(';',$valueStrg);
 	}
 	my $numStates=0;
-	if ($refLabelingInfo->{'STATES'}[0]=~/\d,#/) { # design quantif
-		my $sthExpCondName=$dbh->prepare("SELECT NAME FROM EXPCONDITION WHERE ID_EXPCONDITION=?");
-		if ($refLabelingInfo->{'RATIOS'}) { # ratio quantif
-			for (my $i=0;$i<=$#{$refLabelingInfo->{'RATIOS'}}; $i++) {
-				$refLabelingInfo->{'RATIOS'}[$i]=~s/#//g; # remove id flags
-				my @ratioConds=split(/\//,$refLabelingInfo->{'RATIOS'}[$i]);
-				foreach my $condID (@ratioConds) {
-					last if $condID=~/%/; # Super ratio
-					$sthExpCondName->execute($condID);
-					($refStateInfo->{$condID}{'NAME'})=$sthExpCondName->fetchrow_array;
-				}
+	if ($isdesignQuantif) {
+		#if ($refLabelingInfo->{'RATIOS'}) { # ratio quantif
+			my @expConds;
+			foreach my $state (@{$refLabelingInfo->{'STATES'}}) {
+				my ($numBioRep,$quantiObsIDs,$condID)=split(',',$state);
+				push @expConds,$condID;
 			}
-		}
-		else { # state quantif (MaxQuant)
-			foreach my $stateData (@{$refLabelingInfo->{STATES}}) { # 1,#1:#1,#1      1,#1:#2,#2
-				$numStates++;
-				$stateData=~s/#//g; # remove id flags
-				my ($numRep,$replicates,$expCondID)=split(',',$stateData);
-				$sthExpCondName->execute($expCondID);
-				my ($expCondName)=$sthExpCondName->fetchrow_array;
-				$refStateInfo->{$numStates}{'NAME'}=$expCondName;
+			my $sthExpCondName=$dbh->prepare("SELECT ID_EXPCONDITION,NAME FROM EXPCONDITION WHERE ID_EXPCONDITION IN (".join(',',@expConds).")");
+			$sthExpCondName->execute;
+			while (my ($condID,$condName)=$sthExpCondName->fetchrow_array) {
+				$refStateInfo->{$condID}{'NAME'}=$condName;
 			}
-		}
-		$sthExpCondName->finish;
+			$sthExpCondName->finish;
+		#}
+		#else { # state quantif (MaxQuant)
+		#	my $sthExpCondName=$dbh->prepare("SELECT NAME FROM EXPCONDITION WHERE ID_EXPCONDITION=?");
+		#	foreach my $stateData (@{$refLabelingInfo->{'STATES'}}) { # 1,#1:#1,#1      1,#1:#2,#2
+		#		$numStates++;
+		#		$stateData=~s/#//g; # remove id flags
+		#		my ($numRep,$replicates,$expCondID)=split(',',$stateData);
+		#		$sthExpCondName->execute($expCondID);
+		#		my ($expCondName)=$sthExpCondName->fetchrow_array;
+		#		$refStateInfo->{$numStates}{'NAME'}=$expCondName;
+		#	}
+		#	$sthExpCondName->finish;
+		#}
 	}
 	else { # internal ratio quantif
 		foreach my $stateData (@{$refLabelingInfo->{'STATES'}}) {
@@ -457,114 +495,197 @@ sub extractQuantificationParameters {
 #######################<Quantification data collection routine>#############################
 ############################################################################################
 sub fetchQuantificationData {
-	my ($dbh,$refParams,$refQuantifInfo,$refQuantifValues,$refProteinInfo,$refSelectedElements,$refExcludedProteins)=@_; # $refExcludedProteins optional
+	my ($dbh,$refParams,$refQuantifInfo,$refQuantifValues,$refDispModifSites,$refProteinInfo,$refSelectedElements,$refExcludedElements)=@_;
+	$refDispModifSites={} unless $refDispModifSites;
 	my $getProtInfo=1;
 	unless ($refProteinInfo) {
 		$refProteinInfo={}; # defined to prevent uninitialized value later on
 		$getProtInfo=0;
 	}
 	my $verbose=$refParams->{VERBOSE} || 0;
-	my @selectedQuantifications=@{$refParams->{QUANTIF_LIST}};
+	if ($verbose) {
+		if ($verbose=~/\D/) { # assume a DIV/SPAN id
+			print qq
+|<SCRIPT type="text/javascript">
+document.getElementById('$verbose').innerHTML='Fetching data...';
+</SCRIPT>
+|;
+		}
+		else {print '.';}
+	}
+	my @selectedQuantifications;
+	foreach my $quantifStrg (@{$refParams->{QUANTIF_LIST}}) { # compatible with (qID1_pos1,qID1_pos2) and (qID1_pos1_pos2)
+		my ($quantifID,$posStrg)=$quantifStrg=~/^(\d+)_(.+)/;
+		foreach my $pos (split('_',$posStrg)) {push @selectedQuantifications,$quantifID.'_'.$pos;}
+	}	
+	my $firstQuantifID=(split('_',$selectedQuantifications[0]))[0];
+	my $projectID=&promsMod::getProjectID($dbh,$firstQuantifID,'QUANTIFICATION');
 	my $selQuantifFamily;
 	if ($refParams->{'QUANTIF_FAMILY'}) {$selQuantifFamily=$refParams->{'QUANTIF_FAMILY'};} # optional
 	else {
-		my ($quantifID)=(split('_',$selectedQuantifications[0]))[0];
-		my ($qMethCode)=$dbh->selectrow_array("SELECT QM.CODE FROM QUANTIFICATION Q,QUANTIFICATION_METHOD QM WHERE Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD AND ID_QUANTIFICATION=$quantifID");
+		my ($qMethCode)=$dbh->selectrow_array("SELECT QM.CODE FROM QUANTIFICATION Q,QUANTIFICATION_METHOD QM WHERE Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD AND ID_QUANTIFICATION=$firstQuantifID");
 		$selQuantifFamily=($qMethCode=~/PROT_RATIO_PEP|TNPQ/)? 'RATIO' : $qMethCode;
 	}
 	($refParams->{MIN_RATIO},$refParams->{MAX_RATIO},$refParams->{MIN_PVALUE})=(1000000,0.000001,1) if $selQuantifFamily eq 'RATIO'; # modified only when RATIO for view = log2,heatmap,explorAna and returned
 	my %quantifParamInfo;
-	my $view=$refParams->{'VIEW'} || 'log2';
+	my $view=$refParams->{'VIEW'} || 'log2'; # log2/volcano/list/export/explorAna (OBSOLETE: heatmap)
+	my $siteDisplayFormat=($refParams->{'SITE_DISPLAY'})? $refParams->{'SITE_DISPLAY'} : ($view eq 'list')? 'html' : ($view eq 'export')? 'export' : 'text'; # WARNING %{$refProteinInfo} is not the same for view=export vs SITE_DISPLAY=export !!!
 
-	my ($protSelection,$isoSelection)=(0,0); # default
-	my ($refSelectedProteins,$refSelectedIsoforms)=({},{});
-	if ($refSelectedElements && keys %{$refSelectedElements}) {
-		#my $key=(keys %{$refSelectedElements})[0];
-		#if ($key && $key=~/\D/) { # isoform
-		#	#<Check if a Protein quantif is used
-		#	my %quantifs;
-		#	foreach my $quantif (@selectedQuantifications) {
-		#		my ($quantifID,$ratioPos)=split('_',$quantif);
-		#		$quantifs{$quantifID}=1;
-		#	}
-		#	my ($existProtQuantif)=$dbh->selectrow_array("SELECT 1 FROM QUANTIFICATION WHERE ID_MODIFICATION IS NULL AND ID_QUANTIFICATION IN (".join(',',keys %quantifs).") LIMIT 1");
-		#	if ($existProtQuantif) {
-		#		$protSelection=1;
-		#		foreach my $modProtID (keys %{$refSelectedElements}) {
-		#			my ($protID)=$modProtID=~/^(\d+)/;
-		#			$refSelectedProteins->{$protID}=1;
-		#		}
-		#		#<Return info
-		#		$refParams->{RETURN}='WARNING: Site restriction list was downgraded to standard protein list';
-		#	}
-		#	else {
-		#		$isoSelection=1;
-		#		$refSelectedIsoforms=$refSelectedElements;
-		#	}
-		#}
-		#else {
-		#	$protSelection=1;
-		#	$refSelectedProteins=$refSelectedElements;
-		#}
+	my ($siteSelection,$restrictStrg)=(0,''); # default $protSelection,
+	#my ($refSelectedProteins,$refSelectedIsoforms)=({},{});
+	my %selectedSites;
+	if ($refSelectedElements && scalar keys %{$refSelectedElements}) {
+		###my $key=(keys %{$refSelectedElements})[0];
+		###if ($key && $key=~/\D/) { # isoform
+		###	#<Check if a Protein quantif is used
+		###	my %quantifs;
+		###	foreach my $quantif (@selectedQuantifications) {
+		###		my ($quantifID,$ratioPos)=split('_',$quantif);
+		###		$quantifs{$quantifID}=1;
+		###	}
+		###	my ($existProtQuantif)=$dbh->selectrow_array("SELECT 1 FROM QUANTIFICATION WHERE ID_MODIFICATION IS NULL AND ID_QUANTIFICATION IN (".join(',',keys %quantifs).") LIMIT 1");
+		###	if ($existProtQuantif) {
+		###		$protSelection=1;
+		###		foreach my $modProtID (keys %{$refSelectedElements}) {
+		###			my ($protID)=$modProtID=~/^(\d+)/;
+		###			$refSelectedProteins->{$protID}=1;
+		###		}
+		###		#<Return info
+		###		$refParams->{RETURN}='WARNING: Site restriction list was downgraded to standard protein list';
+		###	}
+		###	else {
+		###		$siteSelection=1;
+		###		$refSelectedIsoforms=$refSelectedElements;
+		###	}
+		###}
+		###else {
+		###	$protSelection=1;
+		###	$refSelectedProteins=$refSelectedElements;
+		###}
+		#$protSelection=1;
+		my %selectedProteins;
 		foreach my $modProtID (keys %{$refSelectedElements}) {
 			my ($protID,$modCode)=split('-',$modProtID);
-			$protSelection=1;
-			$refSelectedProteins->{$protID}=1;
+			#$refSelectedProteins->{$protID}=1;
+			$selectedProteins{$protID}=1;
 			if ($modCode) {
-				$isoSelection=1;
-				$refSelectedIsoforms->{$modProtID}=1;
+				$siteSelection=1;
+				$selectedSites{$modProtID}=1;
 			}
 		}
+		#$restrictStrg='AND PQ.ID_PROTEIN IN ('.join(',',keys %{$refSelectedProteins}).')';
+		$restrictStrg='AND PQ.ID_PROTEIN IN ('.join(',',keys %selectedProteins).')';
 	}
-	my $restrictStrg=($protSelection && scalar keys %{$refSelectedProteins} <= 25)? 'AND PQ.ID_PROTEIN IN ('.join(',',keys %{$refSelectedProteins}).')' : '';
+	
+	my ($siteExclusion,$excludeStrg)=(0,''); # default $protExclusion,
+	#my ($refExcludedProteins,$refExcludedIsoforms)=({},{});
+	my %excludedSites;
+	if ($refExcludedElements && scalar keys %{$refExcludedElements}) {
+		my %excludedProteins;
+		foreach my $modProtID (keys %{$refExcludedElements}) {
+			my ($protID,$modCode)=split('-',$modProtID);
+			#$refExcludedProteins->{$protID}=1;
+			$excludedProteins{$protID}=1;
+			if ($modCode) {
+				$siteExclusion=1;
+				$excludedSites{$modProtID}=1;
+			}
+		}
+		if ($siteExclusion) {
+			#$refExcludedProteins={}; # clear protein exclusion list because exlusion is at site level!!!
+			%excludedProteins=(); # clear protein exclusion list because exlusion is at site level!!!
+		}
+		else {
+			#$protExclusion=1;
+			#$excludeStrg='AND PQ.ID_PROTEIN NOT IN ('.join(',',keys %{$refExcludedProteins}).')';
+			$excludeStrg='AND PQ.ID_PROTEIN NOT IN ('.join(',',keys %excludedProteins).')';
+		}
+	}
 
-	my $exclusion=($refExcludedProteins && scalar keys %{$refExcludedProteins})? 1 : 0;
 	#my ($quantifMethod)=$dbh->selectrow_array("SELECT CODE FROM QUANTIFICATION_METHOD WHERE ID_QUANTIFICATION_METHOD=$selQuantifMethodID"); # TO BE changed to multi-method label (multiple methods could generate protein ratios)
 
 	####<RATIO|MQ>####
-	if ($selQuantifFamily=~/RATIO|MQ/) {
+	if ($selQuantifFamily=~/^(RATIO|MQ|PROT_ABUNDANCE)$/) { # also RATIO:MEAN
+		my (%promsPath,%modProtIDfromFile,%quantifModifRanks,%peptideData); # only for RATIO:MEAN
+		my $numPepCode=($refParams->{'NUM_PEP_CODE'})? $refParams->{'NUM_PEP_CODE'} : ($selQuantifFamily eq 'MQ')? 'PEPTIDES' : 'NUM_PEP_USED';
 
-		my $numPepCode=$refParams->{'NUM_PEP_CODE'};
-
-		my $sthQinfo=$dbh->prepare("SELECT NAME,QUANTIF_ANNOT,ID_QUANTIFICATION_METHOD,ID_MODIFICATION FROM QUANTIFICATION WHERE ID_QUANTIFICATION=?");
+		##my $sthQinfo=$dbh->prepare("SELECT NAME,QUANTIF_ANNOT,ID_QUANTIFICATION_METHOD,ID_MODIFICATION FROM QUANTIFICATION WHERE ID_QUANTIFICATION=?");
+		my $sthQinfo=$dbh->prepare("SELECT NAME,QUANTIF_ANNOT,ID_QUANTIFICATION_METHOD,Q.ID_MODIFICATION,GROUP_CONCAT(MQ.ID_MODIFICATION ORDER BY MQ.MODIF_RANK SEPARATOR ',')
+										FROM QUANTIFICATION Q
+										LEFT JOIN MULTIMODIF_QUANTIFICATION MQ ON Q.ID_QUANTIFICATION=MQ.ID_QUANTIFICATION
+										WHERE Q.ID_QUANTIFICATION=? GROUP BY Q.ID_QUANTIFICATION");
+		
 		#my $sthAna=$dbh->prepare("SELECT GROUP_CONCAT(ID_ANALYSIS SEPARATOR ',') FROM ANA_QUANTIFICATION WHERE ID_QUANTIFICATION=? GROUP BY ID_QUANTIFICATION"); <-- truncated if too many ana!!!
 		my $sthAna=$dbh->prepare('SELECT ID_ANALYSIS FROM ANA_QUANTIFICATION WHERE ID_QUANTIFICATION=?');
 		my $sthQMP=$dbh->prepare("SELECT ID_QUANTIF_PARAMETER,NAME,CODE FROM QUANTIFICATION_PARAMETER WHERE ID_QUANTIFICATION_METHOD=?");
 		#my $sthProtQ0=$dbh->prepare("SELECT ID_PROTEIN,QUANTIF_VALUE FROM PROTEIN_QUANTIFICATION WHERE ID_QUANTIFICATION=? AND ID_QUANTIF_PARAMETER=?");
-		my $sthProtQ0=$dbh->prepare("SELECT PQ.ID_PROTEIN,GROUP_CONCAT(RESIDUE,POSITION ORDER BY POSITION SEPARATOR '.'),QUANTIF_VALUE
+		my $sthProtQ0=$dbh->prepare("SELECT PQ.ID_PROTEIN,GROUP_CONCAT(COALESCE(MODIF_RANK,''),':',RESIDUE,POSITION ORDER BY MODIF_RANK,POSITION SEPARATOR '.'),QUANTIF_VALUE
 										FROM PROTEIN_QUANTIFICATION PQ
 										LEFT JOIN PROTQUANTIF_MODRES PQMR ON PQ.ID_PROT_QUANTIF=PQMR.ID_PROT_QUANTIF
 										LEFT JOIN MODIFIED_RESIDUE MR ON PQMR.ID_MODIF_RES=MR.ID_MODIF_RES AND MR.ID_QUANTIFICATION=PQ.ID_QUANTIFICATION
-										WHERE PQ.ID_QUANTIFICATION=? AND ID_QUANTIF_PARAMETER=? $restrictStrg GROUP BY PQ.ID_PROT_QUANTIF");
+										WHERE PQ.ID_QUANTIFICATION=? AND ID_QUANTIF_PARAMETER=? $restrictStrg $excludeStrg GROUP BY PQ.ID_PROT_QUANTIF");
 		#my $sthProtQ=$dbh->prepare("SELECT ID_PROTEIN,QUANTIF_VALUE FROM PROTEIN_QUANTIFICATION WHERE ID_QUANTIFICATION=? AND TARGET_POS=? AND ID_QUANTIF_PARAMETER=?");
-		my $sthProtQ=$dbh->prepare("SELECT PQ.ID_PROTEIN,GROUP_CONCAT(RESIDUE,POSITION ORDER BY POSITION SEPARATOR '.'),QUANTIF_VALUE
+		my $sthProtQ=$dbh->prepare("SELECT PQ.ID_PROTEIN,GROUP_CONCAT(COALESCE(MODIF_RANK,''),':',RESIDUE,POSITION ORDER BY MODIF_RANK,POSITION SEPARATOR '.'),QUANTIF_VALUE
 										FROM PROTEIN_QUANTIFICATION PQ
 										LEFT JOIN PROTQUANTIF_MODRES PQMR ON PQ.ID_PROT_QUANTIF=PQMR.ID_PROT_QUANTIF
 										LEFT JOIN MODIFIED_RESIDUE MR ON PQMR.ID_MODIF_RES=MR.ID_MODIF_RES AND MR.ID_QUANTIFICATION=PQ.ID_QUANTIFICATION
-										WHERE PQ.ID_QUANTIFICATION=? AND TARGET_POS=? AND ID_QUANTIF_PARAMETER=? $restrictStrg GROUP BY PQ.ID_PROT_QUANTIF");
-		my $modifPrefixStrg='';	# adds [modifID] before modif site unless $refParams->{SEL_MOD_ID} is set
+										WHERE PQ.ID_QUANTIFICATION=? AND TARGET_POS=? AND ID_QUANTIF_PARAMETER=? $restrictStrg $excludeStrg GROUP BY PQ.ID_PROT_QUANTIF");
+		##my $modifPrefixStrg='';	# adds [modifID] before modif site unless $refParams->{SEL_MOD_ID} is set
+		my $sthMod=$dbh->prepare("SELECT PSI_MS_NAME,INTERIM_NAME,SYNONYMES,DISPLAY_CODE,DISPLAY_COLOR FROM MODIFICATION WHERE ID_MODIFICATION=?");
+					
+		my (%modificationInfo,%quantifModifInfo,%formattedModRes);
 		foreach my $quantif (@selectedQuantifications) {
-			print '.' if $verbose;
+			if ($verbose) {
+				if ($verbose=~/\D/) { # assume a DIV/SPAN id
+					print qq
+|<SCRIPT type="text/javascript">
+document.getElementById('$verbose').innerHTML+='.';
+</SCRIPT>
+|;
+				}
+				else {print '.';}
+			}
+			
 			$refParams->{MINUS_INF}{$quantif}=$refParams->{PLUS_INF}{$quantif}=0; # records existence of +/-inf values
 			my ($quantifID,$ratioPos)=split('_',$quantif);
 			unless ($refQuantifInfo->{$quantifID}) { # Needed only once for a given quantifID
 				$sthQinfo->execute($quantifID);
-				my ($quantifName,$quantifAnnot,$quantifMethID,$modifID)=$sthQinfo->fetchrow_array;
-				$modifID=0 unless $modifID;
-				$modifPrefixStrg=($modifID && (!$refParams->{SEL_MODIF_ID} || $refParams->{SEL_MODIF_ID} != $modifID))? "[$modifID]" : '';
+				my ($quantifName,$quantifAnnot,$quantifMethID,$modifID,$multiModifStrg)=$sthQinfo->fetchrow_array;
+				##$modifID=0 unless $modifID;
+				##$modifPrefixStrg=($modifID && (!$refParams->{SEL_MODIF_ID} || $refParams->{SEL_MODIF_ID} != $modifID))? "[$modifID]" : '';
+				
+				my @quantifModifs=($refParams->{MODIF_DATA})? @{$refParams->{MODIF_DATA}} : ();
+				if ($modifID || $multiModifStrg) {
+					@quantifModifs=($modifID)?  ($modifID) : split(',',$multiModifStrg);
+					my $modifRank=0;
+					foreach my $modID (@quantifModifs) {
+						$modifRank++;
+						unless ($modificationInfo{$modID}) {
+							$sthMod->execute($modID);
+							my ($psiName,$interName,$synName,$displayCode,$displayColor)=$sthMod->fetchrow_array;
+							my $modifName=$psiName || $interName || $synName;
+							$modifName=~s/^##//; $modifName=~s/##.*$//;
+							$modificationInfo{$modID}=[$modID,$displayCode,$displayColor,$modifName];
+						}
+						$quantifModifInfo{$quantifID}{$modifRank}=$modificationInfo{$modID};
+						$quantifModifRanks{$quantifID}{$modID}=$modifRank;
+					}
+				}
+				
 				my (%labelingInfo,%stateInfo);
 				&extractQuantificationParameters($dbh,$quantifAnnot,\%labelingInfo,\%stateInfo);
 				$sthAna->execute($quantifID);
 				my @anaIDList;
 				while (my ($anaID)=$sthAna->fetchrow_array) {push @anaIDList,$anaID;}
 				my @itemInfo=&promsMod::getItemInfo($dbh,'QUANTIFICATION',$quantifID);
-				@{$refQuantifInfo->{$quantifID}}=($quantifName,\%labelingInfo,\%stateInfo,\@itemInfo,$modifID,join(',',@anaIDList)); # no Analysis in itemInfo if quantif is from Design
+				my $refQantifModifs=($quantifModifs[0])? \@quantifModifs : undef;
+				@{$refQuantifInfo->{$quantifID}}=($quantifName,\%labelingInfo,\%stateInfo,\@itemInfo,$refQantifModifs,join(',',@anaIDList)); # no Analysis in itemInfo if quantif is from Design
 				$sthQMP->execute($quantifMethID);
 				while (my ($paramID,$paramName,$paramCode)=$sthQMP->fetchrow_array) {
 					@{$quantifParamInfo{$quantifID}{$paramCode}}=($paramID,$paramName);
 				}
 			}
-			my ($quantifSoftware,$softwareVersion)=('myProMS',1);
+			my ($quantifSoftware,$softwareVersion)=('myProMS',1); # default
 			if ($refQuantifInfo->{$quantifID}[1]->{'SOFTWARE'}) {
 				$quantifSoftware=$refQuantifInfo->{$quantifID}[1]->{'SOFTWARE'}[0];
 				$quantifSoftware='MaxQuant' if $quantifSoftware eq 'MQ';
@@ -576,10 +697,15 @@ sub fetchQuantificationData {
 				@quantifParams=(ref($refParams->{MEASURE}))? @{$refParams->{MEASURE}} : ($refParams->{MEASURE}); # can be array of values or scalar (1 value)
 			}
 			else {
-				@quantifParams=('RATIO'); # Must start with RATIO!
-				my $pvalueCode=($ratioType=~/S\w+Ratio/ || $refQuantifInfo->{$quantifID}[1]->{'FDR_CONTROL'}[0] eq 'TRUE')? 'PVAL_ADJ' : 'PVAL';
-				push @quantifParams,$pvalueCode if $quantifSoftware ne 'MaxQuant';
-				push @quantifParams,'SD_GEO' if ($view eq 'export' && $quantifSoftware eq 'myProMS' && $softwareVersion >= 2);
+				if ($selQuantifFamily eq 'RATIO:MEAN') { # virtual family: to fetch MEAN_STATE from 'RATIO' quantif by myProMS
+					@quantifParams=('MEAN_STATE');
+				}
+				else {
+					@quantifParams=('RATIO'); # Must start with RATIO!
+					my $pvalueCode=($ratioType=~/S\w+Ratio/ || $refQuantifInfo->{$quantifID}[1]->{'FDR_CONTROL'}[0] eq 'TRUE')? 'PVAL_ADJ' : 'PVAL';
+					push @quantifParams,$pvalueCode if $quantifSoftware ne 'MaxQuant';
+					push @quantifParams,'SD_GEO' if ($view eq 'export' && $quantifSoftware eq 'myProMS' && $softwareVersion >= 2);
+				}
 			}
 			#push @quantifParams,'DIST_PEP_USED' if ($numPepCode eq 'DIST_PEP_USED' && $ratioType=~/S\w+Ratio/ && $view ne 'heatmap');
 			my (%filteredProtIDs,%allowedProtIDs);
@@ -588,16 +714,24 @@ sub fetchQuantificationData {
 				my $paramKey=($paramCode=~/PVAL/)? 'P_VALUE' : $paramCode; # don't care if PVAL_ADJ or PVAL
 				if ($view=~/volcano|log2/) { # {quantif}{protID} !!!
 					while (my ($protID,$modResStrg,$qValue)=$sthProtQ->fetchrow_array) {
-						next if ($protSelection && !$refSelectedProteins->{$protID});
-						next if ($exclusion && $refExcludedProteins->{$protID});
-						#my $modProtID=($modResStrg)? $protID.'-'.&decodeModificationSite($modResStrg) : $protID; # quantif of modification
+						#next if ($protSelection && !$refSelectedProteins->{$protID});
+						#next if ($protExclusion && $refExcludedProteins->{$protID});
 						my $modProtID=$protID;
 						if ($modResStrg) {
-							$modProtID.='-'.$modifPrefixStrg.&decodeModificationSite($modResStrg);
-							next if ($isoSelection && !$refSelectedIsoforms->{$modProtID});
+							##$modProtID.='-'.$modifPrefixStrg.&decodeModificationSite($modResStrg);
+							unless ($formattedModRes{$modResStrg}) {
+								@{$formattedModRes{$modResStrg}}=&formatProteinModificationSites($modResStrg,$quantifModifInfo{$quantifID},$siteDisplayFormat);
+							}
+							$modProtID.='-'.$formattedModRes{$modResStrg}[0];
+							next if ($siteSelection && !$selectedSites{$modProtID});
+							next if ($siteExclusion && $excludedSites{$modProtID});
+							$refDispModifSites->{$modProtID}=$formattedModRes{$modResStrg}[1];
+							if ($selQuantifFamily eq 'RATIO:MEAN') {
+								$modProtIDfromFile{ $protID.'-'.&fileEncodeModifPosition($formattedModRes{$modResStrg}[0],$softwareVersion,$quantifModifRanks{$quantifID}) }=$modProtID;
+							}
 						}
 						$allowedProtIDs{$modProtID}=1;
-						#@{$refProteinInfo->{$protID}}=();
+						@{$refProteinInfo->{$protID}}=();
 						if ($paramCode eq 'RATIO') { # recording min/max (!infinite) fold changes
 							if ($qValue < $refParams->{MIN_RATIO}) {
 								if ($qValue<=$MIN_INF_RATIO_DB) {$refParams->{MINUS_INF}{$quantif}=1; $qValue=$MIN_INF_RATIO_DB} else {$refParams->{MIN_RATIO}=$qValue;}
@@ -614,9 +748,8 @@ sub fetchQuantificationData {
 				}
 				else { # heatmap,list,explorAna: {protID}{quantif} !!!
 					while (my ($protID,$modResStrg,$qValue)=$sthProtQ->fetchrow_array) {
-						next if ($protSelection && !$refSelectedProteins->{$protID});
-						next if ($exclusion && $refExcludedProteins->{$protID});
-						#my $modProtID=($modResStrg)? $protID.'-'.&decodeModificationSite($modResStrg) : $protID; # quantif of modification
+						#next if ($protSelection && !$refSelectedProteins->{$protID});
+						#next if ($protExclusion && $refExcludedProteins->{$protID});
 						#if ($refParams->{MOD_SELECT}) { # ajax call on selected set of (modif) proteins
 						#	if ($modResStrg) {next if !$refSelectedProteins->{$modProtID};} # mod vs mod
 						#	else {next if (!$refSelectedProteins->{$protID}) && !map {/^$protID-/} keys %{$refSelectedProteins};} # std quantif called with modProtIDs in refSelect (<- log2 plot)
@@ -624,8 +757,17 @@ sub fetchQuantificationData {
 						#else {next if ($protSelection && !$refSelectedProteins->{$protID});} # classical
 						my $modProtID=$protID;
 						if ($modResStrg) {
-							$modProtID.='-'.$modifPrefixStrg.&decodeModificationSite($modResStrg);
-							next if ($isoSelection && !$refSelectedIsoforms->{$modProtID});
+							##$modProtID.='-'.$modifPrefixStrg.&decodeModificationSite($modResStrg);
+							unless ($formattedModRes{$modResStrg}) {
+								@{$formattedModRes{$modResStrg}}=&formatProteinModificationSites($modResStrg,$quantifModifInfo{$quantifID},$siteDisplayFormat);
+							}
+							$modProtID.='-'.$formattedModRes{$modResStrg}[0];
+							next if ($siteSelection && !$selectedSites{$modProtID});
+							next if ($siteExclusion && $excludedSites{$modProtID});
+							$refDispModifSites->{$modProtID}=$formattedModRes{$modResStrg}[1];
+							if ($selQuantifFamily eq 'RATIO:MEAN') {
+								$modProtIDfromFile{ $protID.'-'.&fileEncodeModifPosition($formattedModRes{$modResStrg}[0],$softwareVersion,$quantifModifRanks{$quantifID}) }=$modProtID;
+							}
 						}
 						if ($refParams->{STRICT_FILTER} && $refParams->{STRICT_FILTER}{$paramCode}) {
 							if ($paramCode eq 'RATIO' && $qValue > $refParams->{STRICT_FILTER}{INV_RATIO} && $qValue < $refParams->{STRICT_FILTER}{RATIO}) {$filteredProtIDs{$modProtID}=1; next;}
@@ -633,7 +775,7 @@ sub fetchQuantificationData {
 							#elsif ($qValue < $refParams->{STRICT_FILTER}{$paramCode}) {$filteredProtIDs{$modProtID}=1; next;}
 						}
 						$allowedProtIDs{$modProtID}=1;
-						#@{$refProteinInfo->{$protID}}=();
+						@{$refProteinInfo->{$protID}}=();
 						if ($paramCode eq 'RATIO') { # recording min/max (!infinite) fold changes
 							#if ($qValue < $minRatio && $qValue != $MIN_INF_RATIO_DB) {$minRatio=$qValue;}
 							#elsif ($qValue > $maxRatio && $qValue != $MAX_INF_RATIO_DB) {$maxRatio=$qValue;}
@@ -651,85 +793,174 @@ sub fetchQuantificationData {
 					}
 				}
 			}
-
-			$numPepCode='RAZ_UNI_PEP' if ($ratioType eq 'None' && $numPepCode eq 'NUM_PEP_USED'); # fall back for compatibility with MaxQuant Intensity quantifs
-			if ($ratioType eq 'Ratio' || $numPepCode=~/^(PEPTIDES|RAZ_UNI_PEP|UNIQUE_PEP)$/) {
-				$sthProtQ0->execute($quantifID,$quantifParamInfo{$quantifID}{$numPepCode}[0]);
-				if ($view=~/volcano|log2/) {
-					while (my ($protID,$modResStrg,$qValue)=$sthProtQ0->fetchrow_array) {
-						my $modProtID=($modResStrg)? $protID.'-'.$modifPrefixStrg.&decodeModificationSite($modResStrg) : $protID; # quantif of modification
-						#next if (!$refQuantifValues->{$quantif}{$modProtID} || !$refQuantifValues->{$quantif}{$modProtID}{'RATIO'}); # in some extreme cases: prevents undef values in volcano plot
-						next unless $allowedProtIDs{$modProtID};
-						$refQuantifValues->{$quantif}{$modProtID}{$numPepCode}=$qValue; # quantif => protID !!!
-						@{$refProteinInfo->{$protID}}=();
+			if ($selQuantifFamily eq 'RATIO:MEAN') {
+				if ($numPepCode) {
+					unless (scalar keys %promsPath) {
+						%promsPath=&promsConfig::getServerInfo('no_user');
+						$numPepCode='NUM_PEP_USED' if $numPepCode !~ /^(NUM|DIST)_PEP_USED$/;
 					}
-				}
-				else {
-					while (my ($protID,$modResStrg,$qValue)=$sthProtQ0->fetchrow_array) {
-						my $modProtID=($modResStrg)? $protID.'-'.$modifPrefixStrg.&decodeModificationSite($modResStrg) : $protID; # quantif of modification
-						next if $filteredProtIDs{$modProtID};
-						if ($refParams->{STRICT_FILTER} && $refParams->{STRICT_FILTER}{$numPepCode} && $qValue < $refParams->{STRICT_FILTER}{$numPepCode}) {
-							$filteredProtIDs{$modProtID}=1;
-							next;
+					my $statePosShift=scalar @{$refQuantifInfo->{$quantifID}[1]{RATIOS}};
+					unless ($peptideData{$quantif}) {
+						my $columnToUse=($numPepCode eq 'DIST_PEP_USED')? 'PEPTIDE' : 'PEPTIDEID'; # uppercase used
+						my $pepFile="$promsPath{quantification}/project_$projectID/quanti_$quantifID/results/resultsPep.txt";
+						open(PEP,$pepFile) || die $!;
+						my %columnIdx;
+						while(<PEP>) {
+							chomp;
+							my @columns=split(/\t/,$_);
+							if ($.==1) { # 1st line of the file
+								my $colIdx=0;
+								foreach my $colName (@columns) {
+									$columnIdx{uc($colName)}=$colIdx;
+									$colIdx++;
+								}
+								next;
+							}
+							next if $columns[$columnIdx{OUT}] ne 'NA';
+							my ($statePos)=($columns[$columnIdx{CONDITION}]=~/State(\d+)/);
+							$statePos+=$statePosShift;
+							my $currentQuantif=$quantifID.'_'.$statePos;
+							next unless map {/^$currentQuantif$/} @selectedQuantifications; # record only matching quantif (multiple at once)
+							my $fileModProtID=$columns[$columnIdx{PROTEINID}];
+							my ($protID)=$fileModProtID=~/^(\d+)/;
+							###next if ($protSelection && !$refSelectedProteins->{$fileModProtID});
+							#next if ($protSelection && !$refSelectedProteins->{$protID});
+							$peptideData{$currentQuantif}{$fileModProtID}{ $columns[$columnIdx{$columnToUse}] }=1;
+							@{$refProteinInfo->{$protID}}=();
 						}
-						next unless $allowedProtIDs{$modProtID};
-						$refQuantifValues->{$modProtID}{$quantif}{$numPepCode}=$qValue; # quantif => protID !!!
-						@{$refProteinInfo->{$protID}}=();
+						close PEP;
 					}
+					foreach my $fileModProtID (keys %{$peptideData{$quantif}}) {
+						my $modProtID=$modProtIDfromFile{$fileModProtID} || $fileModProtID;
+						next unless $modProtID;
+						if ($view=~/volcano|log2/) { # {quantif}{protID} !!!
+							next unless $refQuantifValues->{$quantif}{$modProtID}; # no MEAN_STATE
+							$refQuantifValues->{$quantif}{$modProtID}{$numPepCode}=scalar keys %{$peptideData{$quantif}{$fileModProtID}};
+						}
+						else {
+							next unless $refQuantifValues->{$modProtID}{$quantif}; # no MEAN_STATE
+							$refQuantifValues->{$modProtID}{$quantif}{$numPepCode}=scalar keys %{$peptideData{$quantif}{$fileModProtID}};
+						}
+					}
+					undef %{$peptideData{$quantif}};
+					delete $peptideData{$quantif};
 				}
 			}
-			elsif ($numPepCode=~/(NUM|DIST)_PEP_USED/) { # S(uper/imple)Ratio
-				my @usedRatios=($ratioPos);
-				if ($refQuantifInfo->{$quantifID}[1]->{'RATIOS'} && $refQuantifInfo->{$quantifID}[1]->{'RATIOS'}[$ratioPos-1]=~/%/) { # 2ndary ratio of SuperRatio
-					my ($testStatePos,$refStatePos)=split(/\//,$refQuantifInfo->{$quantifID}[1]->{'RATIOS'}[$ratioPos-1]);
-					$testStatePos=~s/\d+%//; # keep Pos only = TARGET_POS
-					$refStatePos=~s/\d+%//; # keep Pos only = TARGET_POS
-					push @usedRatios,($testStatePos,$refStatePos);
-				}
-				my %usedProtIDs; # Required if numPep is sum of both primary ratios. now min(prim ratios=> immmediate filtering possible)
-				my $numPepInDB=0;
-				R_POS:foreach my $rPos (@usedRatios) {
-					$sthProtQ->execute($quantifID,$rPos,$quantifParamInfo{$quantifID}{$numPepCode}[0]);
+			elsif ($selQuantifFamily ne 'PROT_RULER') {
+				$numPepCode='RAZ_UNI_PEP' if ($selQuantifFamily eq 'MQ' && $numPepCode eq 'NUM_PEP_USED'); # fall back for compatibility with MaxQuant Intensity quantifs
+				if ($ratioType eq 'Ratio' || $quantifSoftware eq 'MaxQuant' || $selQuantifFamily eq 'PROT_ABUNDANCE') { # $numPepCode=~/^(PEPTIDES|RAZ_UNI_PEP|UNIQUE_PEP)$/
+					$sthProtQ0->execute($quantifID,$quantifParamInfo{$quantifID}{$numPepCode}[0]);
 					if ($view=~/volcano|log2/) {
-						while (my ($protID,$modResStrg,$qValue)=$sthProtQ->fetchrow_array) {
-							$numPepInDB=1 if $rPos==$ratioPos;
-							my $modProtID=($modResStrg)? $protID.'-'.$modifPrefixStrg.&decodeModificationSite($modResStrg) : $protID; # quantif of modification
+						while (my ($protID,$modResStrg,$qValue)=$sthProtQ0->fetchrow_array) {
+							#next if ($protSelection && !$refSelectedProteins->{$protID});
+							#next if ($protExclusion && $refExcludedProteins->{$protID});
+							my $modProtID=$protID;
+							if ($modResStrg) {
+								#unless ($formattedModRes{$modResStrg}) {
+								#	@{$formattedModRes{$modResStrg}}=&formatProteinModificationSites($modResStrg,$quantifModifInfo{$quantifID},$siteDisplayFormat);
+								#}
+								$modProtID.='-'.$formattedModRes{$modResStrg}[0];
+								#$refDispModifSites->{$modProtID}=$formattedModRes{$modResStrg}[1];
+							}
+							#next if (!$refQuantifValues->{$quantif}{$modProtID} || !$refQuantifValues->{$quantif}{$modProtID}{'RATIO'}); # in some extreme cases: prevents undef values in volcano plot
 							next unless $allowedProtIDs{$modProtID};
-							#$refQuantifValues->{$quantif}{$modProtID}{$numPepCode}+=$qValue; # SUM!!! used DIST_PEP_USED for more stringent estimation
-							$refQuantifValues->{$quantif}{$modProtID}{$numPepCode}=$qValue if (!$refQuantifValues->{$quantif}{$modProtID}{$numPepCode} || $qValue < $refQuantifValues->{$quantif}{$modProtID}{$numPepCode});
+							$refQuantifValues->{$quantif}{$modProtID}{$numPepCode}=$qValue; # quantif => protID !!!
 							@{$refProteinInfo->{$protID}}=();
 						}
 					}
 					else {
-						while (my ($protID,$modResStrg,$qValue)=$sthProtQ->fetchrow_array) {
-							$numPepInDB=1 if $rPos==$ratioPos;
-							my $modProtID=($modResStrg)? $protID.'-'.$modifPrefixStrg.&decodeModificationSite($modResStrg) : $protID; # quantif of modification
+						while (my ($protID,$modResStrg,$qValue)=$sthProtQ0->fetchrow_array) {
+							#next if ($protSelection && !$refSelectedProteins->{$protID});
+							#next if ($protExclusion && $refExcludedProteins->{$protID});
+							my $modProtID=$protID;
+							if ($modResStrg) {
+								#unless ($formattedModRes{$modResStrg}) {
+								#	@{$formattedModRes{$modResStrg}}=&formatProteinModificationSites($modResStrg,$quantifModifInfo{$quantifID},$siteDisplayFormat);
+								#}
+								$modProtID.='-'.$formattedModRes{$modResStrg}[0];
+								#$refDispModifSites->{$modProtID}=$formattedModRes{$modResStrg}[1];
+							}
 							next if $filteredProtIDs{$modProtID};
+							if ($refParams->{STRICT_FILTER} && $refParams->{STRICT_FILTER}{$numPepCode} && $qValue < $refParams->{STRICT_FILTER}{$numPepCode}) {
+								$filteredProtIDs{$modProtID}=1;
+								next;
+							}
 							next unless $allowedProtIDs{$modProtID};
-							#$refQuantifValues->{$modProtID}{$quantif}{$numPepCode}+=$qValue;
-							$refQuantifValues->{$modProtID}{$quantif}{$numPepCode}=$qValue if (!$refQuantifValues->{$modProtID}{$quantif}{$numPepCode} || $qValue < $refQuantifValues->{$modProtID}{$quantif}{$numPepCode});
-							$usedProtIDs{$modProtID}=$protID;
-				#@{$refProteinInfo->{$protID}}=();
-#print "$quantif:$rPos:$modProtID:$numPepCode=>ref=$refQuantifValues->{$modProtID}{$quantif}{$numPepCode} ($refQuantifValues->{$modProtID}{$quantif}{RATIO})<BR>\n";
+							$refQuantifValues->{$modProtID}{$quantif}{$numPepCode}=$qValue; # quantif => protID !!!
+							@{$refProteinInfo->{$protID}}=();
 						}
 					}
-					last R_POS if $numPepInDB;
 				}
-				# Required if numPep is based on both primary ratios.
-				foreach my $modProtID (keys %usedProtIDs) { # apply filter after compiling both primary ratios num pep
-					if ($refParams->{STRICT_FILTER} && $refParams->{STRICT_FILTER}{$numPepCode} && $refQuantifValues->{$modProtID}{$quantif}{$numPepCode} < $refParams->{STRICT_FILTER}{$numPepCode}) {
-						$filteredProtIDs{$modProtID}=1;
+				elsif ($ratioType =~ /S\w+Ratio/) { # S(uper/imple)Ratio # $numPepCode=~/(NUM|DIST)_PEP_USED/
+					my @usedRatios=($ratioPos);
+					if ($refQuantifInfo->{$quantifID}[1]->{'RATIOS'} && $refQuantifInfo->{$quantifID}[1]->{'RATIOS'}[$ratioPos-1]=~/%/) { # 2ndary ratio of SuperRatio
+						my ($testStatePos,$refStatePos)=split(/\//,$refQuantifInfo->{$quantifID}[1]->{'RATIOS'}[$ratioPos-1]);
+						$testStatePos=~s/\d+%//; # keep Pos only = TARGET_POS
+						$refStatePos=~s/\d+%//; # keep Pos only = TARGET_POS
+						push @usedRatios,($testStatePos,$refStatePos);
 					}
-					else {@{$refProteinInfo->{$usedProtIDs{$modProtID}}}=();}
-				}
-
+					my %usedProtIDs; # Required if numPep is sum of both primary ratios. now min(prim ratios=> immmediate filtering possible)
+					my $numPepInDB=0;
+					R_POS:foreach my $rPos (@usedRatios) {
+						$sthProtQ->execute($quantifID,$rPos,$quantifParamInfo{$quantifID}{$numPepCode}[0]);
+						if ($view=~/volcano|log2/) {
+							while (my ($protID,$modResStrg,$qValue)=$sthProtQ->fetchrow_array) {
+								#next if ($protSelection && !$refSelectedProteins->{$protID});
+								#next if ($protExclusion && $refExcludedProteins->{$protID});
+								$numPepInDB=1 if $rPos==$ratioPos;
+								my $modProtID=$protID;
+								if ($modResStrg) {
+									#unless ($formattedModRes{$modResStrg}) {
+									#	@{$formattedModRes{$modResStrg}}=&formatProteinModificationSites($modResStrg,$quantifModifInfo{$quantifID},$siteDisplayFormat);
+									#}
+									$modProtID.='-'.$formattedModRes{$modResStrg}[0];
+									#$refDispModifSites->{$modProtID}=$formattedModRes{$modResStrg}[1];
+								}
+								next unless $allowedProtIDs{$modProtID};
+								#$refQuantifValues->{$quantif}{$modProtID}{$numPepCode}+=$qValue; # SUM!!! used DIST_PEP_USED for more stringent estimation
+								$refQuantifValues->{$quantif}{$modProtID}{$numPepCode}=$qValue if (!$refQuantifValues->{$quantif}{$modProtID}{$numPepCode} || $qValue < $refQuantifValues->{$quantif}{$modProtID}{$numPepCode});
+								@{$refProteinInfo->{$protID}}=();
+							}
+						}
+						else {
+							while (my ($protID,$modResStrg,$qValue)=$sthProtQ->fetchrow_array) {
+								#next if ($protSelection && !$refSelectedProteins->{$protID});
+								#next if ($protExclusion && $refExcludedProteins->{$protID});
+								$numPepInDB=1 if $rPos==$ratioPos;
+								my $modProtID=$protID;
+								if ($modResStrg) {
+									#unless ($formattedModRes{$modResStrg}) {
+									#	@{$formattedModRes{$modResStrg}}=&formatProteinModificationSites($modResStrg,$quantifModifInfo{$quantifID},$siteDisplayFormat);
+									#}
+									$modProtID.='-'.$formattedModRes{$modResStrg}[0];
+									#$refDispModifSites->{$modProtID}=$formattedModRes{$modResStrg}[1];
+								}
+								next if $filteredProtIDs{$modProtID};
+								next unless $allowedProtIDs{$modProtID};
+								#$refQuantifValues->{$modProtID}{$quantif}{$numPepCode}+=$qValue;
+								$refQuantifValues->{$modProtID}{$quantif}{$numPepCode}=$qValue if (!$refQuantifValues->{$modProtID}{$quantif}{$numPepCode} || $qValue < $refQuantifValues->{$modProtID}{$quantif}{$numPepCode});
+								$usedProtIDs{$modProtID}=$protID;
+				#@{$refProteinInfo->{$protID}}=();
+#print "$quantif:$rPos:$modProtID:$numPepCode=>ref=$refQuantifValues->{$modProtID}{$quantif}{$numPepCode} ($refQuantifValues->{$modProtID}{$quantif}{RATIO})<BR>\n";
+							}
+						}
+						last R_POS if $numPepInDB;
+					}
+					# Required if numPep is based on both primary ratios.
+					foreach my $modProtID (keys %usedProtIDs) { # apply filter after compiling both primary ratios num pep
+						if ($refParams->{STRICT_FILTER} && $refParams->{STRICT_FILTER}{$numPepCode} && $refQuantifValues->{$modProtID}{$quantif}{$numPepCode} < $refParams->{STRICT_FILTER}{$numPepCode}) {
+							$filteredProtIDs{$modProtID}=1;
+						}
+						else {@{$refProteinInfo->{$usedProtIDs{$modProtID}}}=();}
+					}
+	
 ###				}
 ###				else { # primary ratio
 ###					$sthProtQ->execute($quantifID,$ratioPos,$quantifParamInfo{$quantifID}{$numPepCode}[0]);
 ###					if ($view=~/volcano|log2/) {
 ###						while (my ($protID,$modResStrg,$qValue)=$sthProtQ->fetchrow_array) {
 ###							#next if ($protSelection && !$refSelectedProteins->{$protID});
-###							#next if ($exclusion && $refExcludedProteins->{$protID});
+###							#next if ($protExclusion && $refExcludedProteins->{$protID});
 ###							my $modProtID=($modResStrg)? $protID.'-'.$modifPrefixStrg.&decodeModificationSite($modResStrg) : $protID; # quantif of modification
 ###							next unless $allowedProtIDs{$modProtID};
 ###							$refQuantifValues->{$quantif}{$modProtID}{$numPepCode}=$qValue;
@@ -738,7 +969,7 @@ sub fetchQuantificationData {
 ###					else {
 ###						while (my ($protID,$modResStrg,$qValue)=$sthProtQ->fetchrow_array) {
 ###							#next if ($protSelection && !$refSelectedProteins->{$protID});
-###							#next if ($exclusion && $refExcludedProteins->{$protID});
+###							#next if ($protExclusion && $refExcludedProteins->{$protID});
 ###							my $modProtID=($modResStrg)? $protID.'-'.$modifPrefixStrg.&decodeModificationSite($modResStrg) : $protID; # quantif of modification
 ###next if $filteredProtIDs{$modProtID};
 ###if ($refParams->{STRICT_FILTER} && $refParams->{STRICT_FILTER}{$numPepCode} && $qValue < $refParams->{STRICT_FILTER}{$numPepCode}) {
@@ -750,7 +981,8 @@ sub fetchQuantificationData {
 ###						}
 ###					}
 ###				}
-			}
+				}
+			}			
 			foreach my $modProtID (keys %filteredProtIDs) {
 				if ($refQuantifValues->{$modProtID} && $refQuantifValues->{$modProtID}{$quantif}) {
 					delete $refQuantifValues->{$modProtID}{$quantif};
@@ -763,40 +995,41 @@ sub fetchQuantificationData {
 					}
 				}
 			}
-
 		}
 		$sthQinfo->finish;
 		$sthAna->finish;
 		$sthQMP->finish;
 		$sthProtQ0->finish;
 		$sthProtQ->finish;
-
+		$sthMod->finish;
 
 		##>Clean 2ndary Ratios (for Quantifs before bug fix 23/02/15: ratios stored for noSuperRatioProteins)
-		foreach my $quantif (@selectedQuantifications) {
-			my ($quantifID,$ratioPos)=split('_',$quantif);
-			if ($refQuantifInfo->{$quantifID}[1]->{'RATIOS'} && $refQuantifInfo->{$quantifID}[1]->{'RATIOS'}[$ratioPos-1]=~/%/) {
-				if ($view=~/volcano|log2/) {
-					foreach my $modProtID (keys %{$refQuantifValues->{$quantif}}) {
-						unless ($refQuantifValues->{$quantif}{$modProtID}{$numPepCode}) {
-							delete $refQuantifValues->{$quantif}{$modProtID};
-							#my ($protID)=($modProtID=~/^(\d+)/);
-							#delete $refProteinInfo->{$protID} if ($protID eq $modProtID || !map {/^$protID-/} keys %{$refQuantifValues->{$quantif}});
+		if ($selQuantifFamily eq 'RATIO') {
+			foreach my $quantif (@selectedQuantifications) {
+				my ($quantifID,$ratioPos)=split('_',$quantif);
+				if ($refQuantifInfo->{$quantifID}[1]->{'RATIOS'} && $refQuantifInfo->{$quantifID}[1]->{'RATIOS'}[$ratioPos-1]=~/%/) {
+					if ($view=~/volcano|log2/) {
+						foreach my $modProtID (keys %{$refQuantifValues->{$quantif}}) {
+							unless ($refQuantifValues->{$quantif}{$modProtID}{$numPepCode}) {
+								delete $refQuantifValues->{$quantif}{$modProtID};
+								#my ($protID)=($modProtID=~/^(\d+)/);
+								#delete $refProteinInfo->{$protID} if ($protID eq $modProtID || !map {/^$protID-/} keys %{$refQuantifValues->{$quantif}});
+							}
 						}
 					}
-				}
-				else {
-					foreach my $modProtID (keys %{$refQuantifValues}) {
-						next unless $refQuantifValues->{$modProtID}{$quantif};
-						unless ($refQuantifValues->{$modProtID}{$quantif}{$numPepCode}) {
-							delete $refQuantifValues->{$modProtID}{$quantif};
-							if (scalar keys %{$refQuantifValues->{$modProtID}}==0) {
-								delete $refQuantifValues->{$modProtID};
-								#my ($protID)=($modProtID=~/^(\d+)/);
-								#if ($protID eq $modProtID || !map {/^$protID-/} keys %{$refQuantifValues}) {
-								#	delete $refProteinInfo->{$protID};
+					else {
+						foreach my $modProtID (keys %{$refQuantifValues}) {
+							next unless $refQuantifValues->{$modProtID}{$quantif};
+							unless ($refQuantifValues->{$modProtID}{$quantif}{$numPepCode}) {
+								delete $refQuantifValues->{$modProtID}{$quantif};
+								if (scalar keys %{$refQuantifValues->{$modProtID}}==0) {
+									delete $refQuantifValues->{$modProtID};
+									#my ($protID)=($modProtID=~/^(\d+)/);
+									#if ($protID eq $modProtID || !map {/^$protID-/} keys %{$refQuantifValues}) {
+									#	delete $refProteinInfo->{$protID};
 #print "DEL: $protID<BR>\n";
-								#}
+									#}
+								}
 							}
 						}
 					}
@@ -817,19 +1050,28 @@ sub fetchQuantificationData {
 		$sthQMP->finish;
 
 		my $sthQinfo=$dbh->prepare("SELECT NAME,ID_ANALYSIS FROM QUANTIFICATION Q,ANA_QUANTIFICATION AQ WHERE Q.ID_QUANTIFICATION=AQ.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION=? LIMIT 0,1");
-		my $sthProtQ0=$dbh->prepare("SELECT PQ.ID_PROTEIN,ID_QUANTIF_PARAMETER,QUANTIF_VALUE FROM PROTEIN_QUANTIFICATION PQ WHERE ID_QUANTIFICATION=? $restrictStrg");
+		my $sthProtQ0=$dbh->prepare("SELECT PQ.ID_PROTEIN,ID_QUANTIF_PARAMETER,QUANTIF_VALUE FROM PROTEIN_QUANTIFICATION PQ WHERE ID_QUANTIFICATION=? $restrictStrg $excludeStrg");
 		my $sthGetPepNum=$dbh->prepare("SELECT ID_PROTEIN,NUM_PEP FROM ANALYSIS_PROTEIN WHERE ID_ANALYSIS=?");
 		foreach my $quantif (@selectedQuantifications) {
 			my $quantifID=(split('_',$quantif))[0];# ($quantifID)=(split('_',$quantifID))[0]; # <ID_QUANTIFICATION>_0 when called for export option in startExporatoryAnalysis.cgi
-			print '.' if $verbose;
+			if ($verbose) {
+				if ($verbose=~/\D/) { # assume a DIV/SPAN id
+					print qq
+|<SCRIPT type="text/javascript">
+document.getElementById('$verbose').innerHTML+='.';
+</SCRIPT>
+|;
+				}
+				else {print '.';}
+			}
 			$sthQinfo->execute($quantifID);
 			my ($quantifName,$anaID)=$sthQinfo->fetchrow_array;
 			my @itemInfo=&promsMod::getItemInfo($dbh,'QUANTIFICATION',$quantifID);
 			@{$refQuantifInfo->{$quantifID}}=($quantifName,undef,undef,\@itemInfo,undef,$anaID);
 			$sthProtQ0->execute($quantifID);
 			while (my ($protID,$paramID,$qValue)=$sthProtQ0->fetchrow_array) {
-				next if ($protSelection && !$refSelectedProteins->{$protID});
-				next if ($exclusion && $refExcludedProteins->{$protID});
+				#next if ($protSelection && !$refSelectedProteins->{$protID});
+				#next if ($protExclusion && $refExcludedProteins->{$protID});
 				@{$refProteinInfo->{$protID}}=();
 				if ($view =~ /log2/) { # {quantif}{protID} !!!
 					$refQuantifValues->{$quantif}{$protID}{$paramCodes{$paramID}}=$qValue;
@@ -860,39 +1102,71 @@ sub fetchQuantificationData {
 
 	####<Fetching protein info>####
 	if ($getProtInfo) { # not needed for exploratory analysis & GO quantif
-		print '+' if $verbose;
-		my ($extraFieldStrg,$sthGN);
+		if ($verbose) {
+			if ($verbose=~/\D/) { # assume a DIV/SPAN id
+				print qq
+|<SCRIPT type="text/javascript">
+document.getElementById('$verbose').innerHTML+='+';
+</SCRIPT>
+|;
+			}
+			else {print '+';}
+		}
+		my $extraFieldStrg=($view eq 'list')? ',MW,PROT_DES,ORGANISM' : ($view eq 'export')? ',IDENTIFIER,PROT_DES,ORGANISM' : '';
+		my $GNidentID;
 		if ($view=~/list|export/) {
-			$extraFieldStrg=($view eq 'list')? ',MW,PROT_DES,ORGANISM' : ',IDENTIFIER,PROT_DES,ORGANISM';
-			my ($GNidentID)=$dbh->selectrow_array("SELECT ID_IDENTIFIER FROM IDENTIFIER WHERE CODE='GN'");
-			$sthGN=$dbh->prepare("SELECT MI.VALUE FROM PROTEIN P,MASTERPROT_IDENTIFIER MI WHERE P.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN AND MI.ID_IDENTIFIER=$GNidentID AND P.ID_PROTEIN=? ORDER BY MI.RANK");
+			($GNidentID)=$dbh->selectrow_array("SELECT ID_IDENTIFIER FROM IDENTIFIER WHERE CODE='GN'");
 		}
-		else {$extraFieldStrg='';}
-		my $sthProtInfo=$dbh->prepare("SELECT ALIAS$extraFieldStrg,PROT_LENGTH FROM PROTEIN WHERE ID_PROTEIN=?");
-		my $protCount=0;
-		foreach my $protID (keys %{$refProteinInfo}) {
-			$protCount++;
-			if ($protCount==500) {
-				print '.' if $verbose;
-				$protCount=0;
-			}
-			$sthProtInfo->execute($protID);
-			@{$refProteinInfo->{$protID}}=$sthProtInfo->fetchrow_array;
-			$refProteinInfo->{$protID}[0]=~s/ .*//; # Clean protein alias from badly parsed characters in case identifier conversion
-			$refProteinInfo->{$protID}[0]=~s/[,;']/\./g; # Clean MaxQuant crappy contaminant identifiers
-			if ($view=~/list|export/) {
-				$refProteinInfo->{$protID}[1]=sprintf "%.1f",$refProteinInfo->{$protID}[1]/1000 if $view eq 'list'; # MW
+		if (scalar keys %{$refProteinInfo}) {
+			my $protStrg=join(',',keys %{$refProteinInfo});
+			my ($geneQuery1,$geneQuery2)=($view=~/list|export/)? (",GROUP_CONCAT(DISTINCT MI.VALUE ORDER BY RANK SEPARATOR ',')","LEFT JOIN MASTERPROT_IDENTIFIER MI ON P.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN AND MI.ID_IDENTIFIER=$GNidentID") : ('','');
+			my $sthProtInfo=$dbh->prepare("SELECT P.ID_PROTEIN,ALIAS$extraFieldStrg,P.PROT_LENGTH$geneQuery1
+											FROM PROTEIN P
+											$geneQuery2
+											WHERE P.ID_PROTEIN IN ($protStrg) GROUP BY P.ID_PROTEIN");	# P.ID_PROJECT=$projectID
+			$sthProtInfo->execute;
+			while (my ($protID,@info)=$sthProtInfo->fetchrow_array) {
+				next unless $refProteinInfo->{$protID}; # just to be safe
+				$info[0]=~s/ .*//; # Clean protein alias from badly parsed characters in case identifier conversion
+				$info[0]=~s/[,;']/\./g; # Clean MaxQuant crappy contaminant identifiers
 				my @geneList;
-				$sthGN->execute($protID);
-				while (my ($gene)=$sthGN->fetchrow_array) {push @geneList,$gene;}
-				push @{$refProteinInfo->{$protID}},\@geneList;
+				if ($view=~/list|export/) {
+					$info[1]=sprintf "%.1f",$info[1]/1000 if $view eq 'list'; # MW
+					my $geneStrg=pop @info;
+					@geneList=($geneStrg)? split(',',$geneStrg) : ();
+				}
+				@{$refProteinInfo->{$protID}}=@info;
+				push @{$refProteinInfo->{$protID}},\@geneList if $view=~/list|export/;
 			}
+			$sthProtInfo->finish;
 		}
-		$sthProtInfo->finish;
-		$sthGN->finish if $view=~/list|export/;
+	}
+	if ($verbose=~/\D/) { # assume a DIV/SPAN id
+		print qq
+|<SCRIPT type="text/javascript">
+document.getElementById('$verbose').innerHTML+=' Done.';
+</SCRIPT>
+|;
 	}
 }
 
+sub getQuantifModificationInfo {
+	my ($dbh,$refQuantifModifs,$refQuantifModifInfo)=@_;
+	my $sthMod=$dbh->prepare("SELECT PSI_MS_NAME,INTERIM_NAME,SYNONYMES,DISPLAY_CODE,DISPLAY_COLOR FROM MODIFICATION WHERE ID_MODIFICATION=?");
+	my %modificationInfo;
+	my $modifRank=0;
+	foreach my $modID (@{$refQuantifModifs}) {
+		$modifRank++;
+		unless ($refQuantifModifInfo->{$modID}) {
+			$sthMod->execute($modID);
+			my ($psiName,$interName,$synName,$displayCode,$displayColor)=$sthMod->fetchrow_array;
+			$refQuantifModifInfo->{NAME}{$modID}=$psiName || $interName || $synName;
+			$refQuantifModifInfo->{NAME}{$modID}=~s/^##//; $refQuantifModifInfo->{NAME}{$modID}=~s/##.*$//;
+			$refQuantifModifInfo->{$modID}=[$modID,$displayCode,$displayColor,$refQuantifModifInfo->{NAME}{$modID}];
+			$refQuantifModifInfo->{$modifRank}=$refQuantifModifInfo->{$modID};
+		}
+	}
+}
 
 ###########################################################################################
 ######<Matching a bioSample property value to a list of quantifications & ratioPos>######## eg. used in Exploratory Analysis
@@ -910,8 +1184,10 @@ sub getQuantificationsFromPropertyValue {
 
 	my %quantifRatios;
 	foreach my $quantData (split(':',$quantifList)) {
-		my ($quantID,$targetPos)=split('_',$quantData);
-		push @{$quantifRatios{$quantID}},$targetPos;
+		my ($quantifID,@targetPosList)=split('_',$quantData);
+		foreach my $targetPos (@targetPosList) {
+			push @{$quantifRatios{$quantifID}},$targetPos;
+		}
 	}
 
 	#####<Find Obs matching prop value in experiment
@@ -936,7 +1212,7 @@ sub getQuantificationsFromPropertyValue {
 	my $sthNoRatioQ=$dbh->prepare("SELECT 1 FROM OBSERVATION O
 										INNER JOIN BIOSAMPLE_PROPERTY BP ON O.ID_BIOSAMPLE=BP.ID_BIOSAMPLE
 										INNER JOIN ANA_QUANTIFICATION AQ ON O.ID_ANALYSIS=AQ.ID_ANALYSIS
-										WHERE AQ.ID_QUANTIFICATION=? AND BP.ID_PROPERTY=$propID AND BP.PROPERTY_VALUE $queryMatchStrg ? LIMIT 0,1");
+										WHERE AQ.ID_QUANTIFICATION=? AND BP.ID_PROPERTY=$propID AND BP.PROPERTY_VALUE $queryMatchStrg ? LIMIT 1");
 
 	my $sthDesignQ=$dbh->prepare("SELECT 1 FROM OBSERVATION O
 										INNER JOIN BIOSAMPLE_PROPERTY BP ON O.ID_BIOSAMPLE=BP.ID_BIOSAMPLE
@@ -956,15 +1232,33 @@ sub getQuantificationsFromPropertyValue {
 		$sthQType->execute($quantifID);
 		my ($designID,$quantifMethod,$quantifAnnot)=$sthQType->fetchrow_array;
 
-		##<No ratio quantif
-		if ($quantifMethod=~/EMPAI|SIN|MQ/) {
+		if ($quantifMethod=~/^(EMPAI|SIN|MQ)$/) {
 			$sthNoRatioQ->execute($quantifID,$propValue);
 			my ($matchProp)=$sthNoRatioQ->fetchrow_array;
 			if ($matchProp) {
-				$matchedQuantifs{TEST}{$quantifID.'_'.$quantifRatios{$quantifID}[0]}=1; # only 1 tgPos=0
+				$matchedQuantifs{'TEST'}{$quantifID.'_'.$quantifRatios{$quantifID}[0]}=1; # only 1 tgPos=0
 			}
 		}
-		else { # PROT_RATIO_PEP or TNPQ
+		elsif ($quantifMethod=~/^(PROT_ABUNDANCE|PROT_RULER)$/) {
+			my %labelingInfo;
+			my ($labelStrg,@labelInfo)=split('::',$quantifAnnot);
+			foreach my $infoStrg (@labelInfo) {
+				my ($setting,$valueStrg)=split('=',$infoStrg);
+				@{$labelingInfo{$setting}}=split(';',$valueStrg);
+			}
+			foreach my $targetPos (@{$quantifRatios{$quantifID}}) {
+				my $stateData=$labelingInfo{'STATES'}[$targetPos-1];
+				my $currState=(split(',',$stateData))[1]; # numRep,replic,<id/tgPos>
+				$currState=~s/#//g; # remove id flags
+				my ($firstObsID)=($currState=~/^(\d+):/); # Replicate bioSamples should have same properties!!! (no need to loop on all replics)
+				$sthDesignQ->execute($firstObsID,$propValue);
+				my ($matchProp)=$sthDesignQ->fetchrow_array;
+				if ($matchProp) {
+					$matchedQuantifs{'TEST'}{$quantifID.'_'.$targetPos}=1;
+				}
+			}
+		}
+		elsif ($quantifMethod=~/^(PROT_RATIO_PEP|TNPQ)$/) {
 			my (%labelingInfo,%stateInfo);
 			my ($labelStrg,@labelInfo)=split('::',$quantifAnnot);
 			my $labelType=($labelStrg=~/LABEL=(.+)/)? uc($1) : 'FREE';
@@ -1092,56 +1386,109 @@ sub convertTreatmentToText {
 	return $treatmentText;
 }
 
-sub fetchSiteList {
-	my ($dbh,$listID,$refList,$focusModID)=@_; # Optional $focusModID: remove prefix [modID] for this modif
-	my %modifInfo=();
-	my $sthSite=$dbh->prepare("SELECT ID_PROTEIN,GROUP_CONCAT('[',ID_MODIFICATION,']',RESIDUE,POSITION ORDER BY ID_MODIFICATION,POSITION SEPARATOR '.') FROM CATEGORY_PROTEIN CP,MODIFICATION_SITE MS WHERE CP.ID_CATEGORY_PROTEIN=MS.ID_CATEGORY_PROTEIN AND CP.ID_CATEGORY=? GROUP BY CP.ID_CATEGORY_PROTEIN");
-# Formating improvement for ambiguous pos & compatible with multi-modifID sites BUT slower than above
-# Ambiguous: '[9]-1227.+1234:1/6', normal: '[9]S190.S193:/' ... [&<other modif code>]
-#SELECT RES1.P_ID,GROUP_CONCAT('[',RES1.M_ID,']',RES1.POS,':',COALESCE(MS.RESIDUE,''),'/',COALESCE(MS.POSITION,'') SEPARATOR '&') AS MODCODE FROM
-#	(SELECT CP.ID_CATEGORY_PROTEIN AS CP_ID,ID_PROTEIN AS P_ID,ID_MODIFICATION AS M_ID,GROUP_CONCAT(RESIDUE,POSITION ORDER BY ID_MODIFICATION,POSITION SEPARATOR '.') AS POS
-#		FROM CATEGORY_PROTEIN CP,MODIFICATION_SITE MS
-#        WHERE CP.ID_CATEGORY_PROTEIN=MS.ID_CATEGORY_PROTEIN AND CP.ID_CATEGORY=171 AND RESIDUE NOT REGEXP '[0-9]'
-#        GROUP BY CP.ID_CATEGORY_PROTEIN,ID_PROTEIN)
-#	AS RES1
-#LEFT JOIN MODIFICATION_SITE MS ON RES1.CP_ID=MS.ID_CATEGORY_PROTEIN AND RES1.M_ID=MS.ID_MODIFICATION AND MS.RESIDUE REGEXP '[0-9]'
-#GROUP BY RES1.CP_ID
-	$sthSite->execute($listID);
-	while (my ($protID,$modCode)=$sthSite->fetchrow_array) {
-		if ($modCode=~/\]\d/) { # (occurence) => ambiguous
-			$modCode=~s/(\[\d+\]\d+)\.(.+)/$2\.$1/; # Occurence is likely first when ORDER BY POSITION => send at the end. WARNING: Won't work for multi-modif site
+sub fetchCustomList {
+	my ($dbh,$listID,$refList,$noSites)=@_;
+	my $sthCP=($noSites)? $dbh->prepare("SELECT DISTINCT ID_PROTEIN,ID_CATEGORY_PROTEIN FROM CATEGORY_PROTEIN WHERE ID_CATEGORY=?")
+						: $dbh->prepare("SELECT ID_PROTEIN,CP.ID_CATEGORY_PROTEIN,GROUP_CONCAT(ID_MODIFICATION,':',RESIDUE,POSITION ORDER BY ID_MODIFICATION,POSITION SEPARATOR '.') FROM CATEGORY_PROTEIN CP
+											LEFT JOIN MODIFICATION_SITE MS ON CP.ID_CATEGORY_PROTEIN=MS.ID_CATEGORY_PROTEIN 
+											WHERE CP.ID_CATEGORY=? GROUP BY CP.ID_CATEGORY_PROTEIN");
+	$sthCP->execute($listID);
+	my $numPTMs=0;
+	while (my ($protID,$catProtID,$modResStrg)=$sthCP->fetchrow_array) {
+		if ($modResStrg) {
+			my ($modCode)=&formatProteinModificationSites($modResStrg);
+			$refList->{"$protID-$modCode"}=$catProtID; # record $catProtID in case needed
+			$numPTMs++;
 		}
-		$modCode=~s/(.)\[\d+\]/$1/g; # remove all [modID] except first. WARNING: Won't be correct for multi-modif site
-		$modCode=~s/^\[$focusModID\]// if $focusModID; # [\d+] will is kept if different from [$noPrefixModID]!!! wanted to distinguish from another modif. WARNING: Won't be correct for multi-modif site
-		$refList->{"$protID-$modCode"}=1;
+		else {$refList->{$protID}=$catProtID;} # record $catProtID in case needed
 	}
-	$sthSite->finish;
+	$sthCP->finish;
+	return $numPTMs;
 }
+
+#sub fetchSiteList { # OBSOLETE: use fetchCustomList
+#	my ($dbh,$listID,$refList,$focusModID)=@_; # Optional $focusModID: remove prefix [modID] for this modif
+#	my %modifInfo=();
+#	my $sthSite=$dbh->prepare("SELECT ID_PROTEIN,GROUP_CONCAT('[',ID_MODIFICATION,']',RESIDUE,POSITION ORDER BY ID_MODIFICATION,POSITION SEPARATOR '.') FROM CATEGORY_PROTEIN CP,MODIFICATION_SITE MS WHERE CP.ID_CATEGORY_PROTEIN=MS.ID_CATEGORY_PROTEIN AND CP.ID_CATEGORY=? GROUP BY CP.ID_CATEGORY_PROTEIN");
+## Formating improvement for ambiguous pos & compatible with multi-modifID sites BUT slower than above
+## Ambiguous: '[9]-1227.+1234:1/6', normal: '[9]S190.S193:/' ... [&<other modif code>]
+##SELECT RES1.P_ID,GROUP_CONCAT('[',RES1.M_ID,']',RES1.POS,':',COALESCE(MS.RESIDUE,''),'/',COALESCE(MS.POSITION,'') SEPARATOR '&') AS MODCODE FROM
+##	(SELECT CP.ID_CATEGORY_PROTEIN AS CP_ID,ID_PROTEIN AS P_ID,ID_MODIFICATION AS M_ID,GROUP_CONCAT(RESIDUE,POSITION ORDER BY ID_MODIFICATION,POSITION SEPARATOR '.') AS POS
+##		FROM CATEGORY_PROTEIN CP,MODIFICATION_SITE MS
+##        WHERE CP.ID_CATEGORY_PROTEIN=MS.ID_CATEGORY_PROTEIN AND CP.ID_CATEGORY=171 AND RESIDUE NOT REGEXP '[0-9]'
+##        GROUP BY CP.ID_CATEGORY_PROTEIN,ID_PROTEIN)
+##	AS RES1
+##LEFT JOIN MODIFICATION_SITE MS ON RES1.CP_ID=MS.ID_CATEGORY_PROTEIN AND RES1.M_ID=MS.ID_MODIFICATION AND MS.RESIDUE REGEXP '[0-9]'
+##GROUP BY RES1.CP_ID
+#	$sthSite->execute($listID);
+#	while (my ($protID,$modCode)=$sthSite->fetchrow_array) {
+#		if ($modCode=~/\]\d/) { # (occurence) => ambiguous
+#			$modCode=~s/(\[\d+\]\d+)\.(.+)/$2\.$1/; # Occurence is likely first when ORDER BY POSITION => send at the end. WARNING: Won't work for multi-modif site
+#		}
+#		$modCode=~s/(.)\[\d+\]/$1/g; # remove all [modID] except first. WARNING: Won't be correct for multi-modif site
+#		$modCode=~s/^\[$focusModID\]// if $focusModID; # [\d+] will is kept if different from [$noPrefixModID]!!! wanted to distinguish from another modif. WARNING: Won't be correct for multi-modif site
+#		$refList->{"$protID-$modCode"}=1;
+#	}
+#	$sthSite->finish;
+#}
 
 #--------- For insertion of quantified modification sites by run(XIC/SWATH)ProtQuantification.pl --------------
 sub insertModifiedResidues {
 	my ($protID,$refModResList,$refModResiduesID,$dbh,$sthInsModRes)=@_;
-	my @newList;
-	if ($refModResList->[0]=~/~/) {&encodeModifPosAmbiguity($refModResList,\@newList)} else {@newList=@{$refModResList};} # $refModResList must not be overwritten!
-#print DEBUG "\tMODRES_ID='@newList'\n"; # unless $refModResiduesID->{$modRes};
-	foreach my $modRes (@newList) {
-		if (!$refModResiduesID->{$protID} || !$refModResiduesID->{$protID}{$modRes}) {
-			my ($res,$pos)=($modRes=~/^(.)(.+)/); # Y180 -> (Y,180)
-			$sthInsModRes->execute($res,$pos);
+	foreach my $modResStrg (@{$refModResList}) {
+		#next if ($refModResiduesID->{$protID} && $refModResiduesID->{$protID}{$modResStrg});
+		my @encodedModRes=($modResStrg=~/~/)? &encodeModifPosAmbiguity($modResStrg) : ($modResStrg);
+		foreach my $modRes (@encodedModRes) {
+			next if ($refModResiduesID->{$protID} && $refModResiduesID->{$protID}{$modRes});
+			if ($modRes=~/^\d+#/) { # multi-modifs quantif
+				my ($modifRank,$res,$pos)=($modRes=~/^(\d+)#(.)(.+)/);
+				$sthInsModRes->execute($res,$pos,$modifRank);
+			}
+			else { # single-modif quantif (MODIF_RANK is null)
+				my ($res,$pos)=($modRes=~/^(.)(.+)/); # Y180 -> (Y,180)
+				$sthInsModRes->execute($res,$pos);
+			}
 			$refModResiduesID->{$protID}{$modRes}=$dbh->last_insert_id(undef,undef,'MODIFIED_RESIDUE','ID_MODIF_RES');
 		}
 	}
 }
 sub insertProteinModResidues {
 	my ($refModResList,$sthInsProtRes,$refModResiduesID,$protQuantifID)=@_;
-	my @newList;
-	if ($refModResList->[0]=~/~/) {&encodeModifPosAmbiguity($refModResList,\@newList)} else {@newList=@{$refModResList};} # $refModResList must not be overwritten!
-#print DEBUG "\tLIST='@newList'\n"; # unless $refModResiduesID->{$modRes};
-	foreach my $modRes (@newList) {
-		$sthInsProtRes->execute($refModResiduesID->{$modRes},$protQuantifID);
+	foreach my $modResStrg (@{$refModResList}) {
+		my @encodedModRes=($modResStrg=~/~/)? &encodeModifPosAmbiguity($modResStrg) : ($modResStrg);
+		foreach my $modRes (@encodedModRes) {
+			$sthInsProtRes->execute($refModResiduesID->{$modRes},$protQuantifID);
+		}
 	}
 }
-sub encodeModifPosAmbiguity { # (PP 2017/06/22)
+sub encodeModifPosAmbiguity { # (PP 27/06/19)
+	# ex1 (res~res): 123~135:2/3@<rt> --> (-123,+135,@<rt>,23) WARNING: in x/y x,y must be between [1..9]
+	# ex2 (Nter~res): n0~7:2/3 --> (=0,+7,23)  "-" becomes "=" to indicate N-term (n0: 0 indicates Protein N-term)
+	# ex3 (res~Cter): 251~c0:2/3 --> (-251,*0,23)  "+" becomes "*" to indicate C-term (c0: 0 indicates Protein C-term)
+	# ex4 (Nter~Cter): n78~c85:2/3 --> (=78,*85,23)
+	my ($modResStrg)=@_;
+	my @modRes=split('[~:@/]',$modResStrg);
+	my @encodedModRes;
+	# Checking for multi-modif quantif:
+	my $modifRankStrg='';
+	if ($modRes[0]=~/^(\d+#)(.+)/) {
+		$modifRankStrg=$1;
+		$modRes[0]=$2;
+	}
+	# Starting pos
+	if ($modRes[0]=~/^n(\d+)/) {@encodedModRes=($modifRankStrg.'='.$1);} # N-ter
+	else {@encodedModRes=($modifRankStrg.'-'.$modRes[0]);} # res
+	# Ending pos
+	if ($modRes[1]=~/^c(\d+)/) {push @encodedModRes,$modifRankStrg.'*'.$1;} # C-ter
+	else {push @encodedModRes,$modifRankStrg.'+'.$modRes[1];} # res
+	# RT
+	push @encodedModRes,$modifRankStrg.'@'.$modRes[2] if $modRes[4]; # has RT data (optional)
+	# Matched & Available pos
+	push @encodedModRes,$modifRankStrg.$modRes[-2].$modRes[-1];
+	
+	return @encodedModRes;
+}
+sub encodeModifPosAmbiguity_old { # (PP 2017/06/22)
 	# ex1 (res~res): 123~135:2/3@<rt> --> (-123,+135,@<rt>,23) WARNING: in x/y x,y must be between [1..9]
 	# ex2 (Nter~res): n0~7:2/3 --> (=0,+7,23)  "-" becomes "=" to indicate N-term (n0: 0 indicates Protein N-term)
 	# ex3 (res~Cter): 251~c0:2/3 --> (-251,*0,23)  "+" becomes "*" to indicate C-term (c0: 0 indicates Protein C-term)
@@ -1151,16 +1498,22 @@ sub encodeModifPosAmbiguity { # (PP 2017/06/22)
 	#@{$refCodedModResList}=('-'.$modRes[0],'+'.$modRes[1]);
 	#push @{$refCodedModResList},'@'.$modRes[2] if $modRes[4]; # has RT data (optional)
 	#push @{$refCodedModResList},$modRes[-2].$modRes[-1];
+	# Checking for multi-modif quantif:
+	my $modifRankStrg='';
+	if ($modRes[0]=~/^(\d+#)(.+)/) {
+		$modifRankStrg=$1;
+		$modRes[0]=$2;
+	}
 	# Starting pos
-	if ($modRes[0]=~/^n(\d+)/) {@{$refCodedModResList}=('='.$1);} # N-ter
-	else {@{$refCodedModResList}=('-'.$modRes[0]);} # res
+	if ($modRes[0]=~/^n(\d+)/) {@{$refCodedModResList}=($modifRankStrg.'='.$1);} # N-ter
+	else {@{$refCodedModResList}=($modifRankStrg.'-'.$modRes[0]);} # res
 	# Ending pos
-	if ($modRes[1]=~/^c(\d+)/) {push @{$refCodedModResList},'*'.$1;} # C-ter
-	else {push @{$refCodedModResList},'+'.$modRes[1];} # res
+	if ($modRes[1]=~/^c(\d+)/) {push @{$refCodedModResList},$modifRankStrg.'*'.$1;} # C-ter
+	else {push @{$refCodedModResList},$modifRankStrg.'+'.$modRes[1];} # res
 	# RT
-	push @{$refCodedModResList},'@'.$modRes[2] if $modRes[4]; # has RT data (optional)
+	push @{$refCodedModResList},$modifRankStrg.'@'.$modRes[2] if $modRes[4]; # has RT data (optional)
 	# Matched & Available pos
-	push @{$refCodedModResList},$modRes[-2].$modRes[-1];
+	push @{$refCodedModResList},$modifRankStrg.$modRes[-2].$modRes[-1];
 }
 #-----------------------------------------------------------------------------------
 
@@ -1200,7 +1553,95 @@ sub encodeModifPosAmbiguity { # (PP 2017/06/22)
 #	$sthSite->finish;
 #}
 
-sub decodeModificationSite { # modCode[,any text prefix eg; name of modification]
+sub formatProteinModificationSites { # modCode,ref of a hash for modif rank convertion (opt),display format(opt)]
+#print '*',join('*',@_),"*<BR>\n";
+	# Former decodeModificationSite
+	# modifRank must be modifID itself when $_[1] is undef
+	# Format1 of modCode (from SQL query): <modRank1|modID1>:<Res1><Pos1>.<modRank1|imodID1>:<Res2><Pos2>.<modRank2|imodID2>:<Res3><Pos3>.(...) <= [modRank|modID] is repeted if multi-site of same modif
+	# Format2 of modCode (from files other than quantif): <modRank1|modID1>:<Res1><Pos1>.<Res2><Pos2>.<modRank2|imodID2>:<Res3><Pos3>.(...) <= [modRank|modID] is NOT repeted if multi-site of same modif
+	my $startModCode=$_[0]; # IMPORTANT: all pos should be in good order for each modID (done by SQL query)!!!
+	return ('','') unless $startModCode;
+	my ($refModConv,$dispFormat)=({},''); # default
+	if ($_[1]) {
+		$refModConv=$_[1];
+		$dispFormat=(defined($_[2]))? $_[2] : 'text';
+	}
+
+##	#<Handle [modID] if any (ONLY for single-modif quantif)
+##	my ($modID)=($startModCode=~/\[(\d+)\]/); # in case [modID] is/are left
+##	$startModCode=~s/\[\d+\]//g; # remove all to allow proper parsing...
+##$prefix.='['.$modID.']' if $modID; # ... and add 1st again after parsing
+
+	#<Split multi-modif varmod
+	my (%newModCodes,%firstPos);
+	if ($startModCode=~/^:/) { # single-modif quantif (rank<=>1)
+		$startModCode=~s/://g; # remove all # (pos in good order due to SQL query)
+		my $mRk=(keys %{$refModConv})[0] || 1; # only 1 key expected. Can be rank of modifID
+		$newModCodes{$mRk}=$startModCode;
+		$firstPos{$mRk}=1;
+		$refModConv->{$mRk}=[0] unless $refModConv->{$mRk}; # just to be safe: $refModConv->{1}[0] should always be defined for single modif!!!!
+	}
+	else { # list or multi-modif varmod (format2)
+		my $mRk=1; # default
+		foreach my $fullModRes (split(/\./,$startModCode)) {
+			#my ($mRk,$modRes,$pos)=$fullModRes=~/^(\d+):(\D*(\d+))/;
+			my ($modRes,$pos);
+			if ($fullModRes=~/^(\d+):(\D+(\d+))/) {($mRk,$modRes,$pos)=($1,$2,$3);} # format2
+			elsif ($fullModRes=~/^(\d+):((\d+)~.+)/) {($mRk,$modRes,$pos)=($1,$2,$3);} # ambiguous format2 
+			elsif ($fullModRes=~/^(\d+):((\d)\d)/) {($mRk,$modRes,$pos)=($1,$2,$3);} # ambiguous format from list (num sites used/num sites max)
+			elsif ($fullModRes=~/^(\d+):(([\-\+])(\d+))/) {($mRk,$modRes,$pos)=($1,$2,$3);} # ambiguous format from list (beg/end range)
+			else {($modRes,$pos)=$fullModRes=~/^(\D+(\d+))/;} # format2 extra site of same modif: use rank/modifID of 1st site
+			$newModCodes{$mRk}.='.' if $newModCodes{$mRk};
+			$newModCodes{$mRk}.=$modRes;
+			$firstPos{$mRk}=$pos unless $firstPos{$mRk};
+			$refModConv->{$mRk}=[$mRk] unless $refModConv->{$mRk}; # $mRk is modID (called with eg custom list of sites)
+		}
+	}
+	
+	#<Parse cleaned modCode
+	my $modCodeID='';
+	my $dispModCode='';
+	foreach my $mRk (sort{$firstPos{$a}<=>$firstPos{$b} || $refModConv->{$a}[0]<=>$refModConv->{$b}[0]} keys %newModCodes) { # 1rst modified res then rank (rank sort useless since res modified by only 1 PTM)
+		if ($modCodeID) {
+			$modCodeID.='+';
+			$dispModCode.='+' if $dispFormat;
+		}
+		$modCodeID.=$refModConv->{$mRk}[0].':' if $refModConv->{$mRk}[0]; # modifID:
+		if ($dispFormat) {
+			$dispModCode.=($dispFormat eq 'export')? $refModConv->{$mRk}[3].':' : ($dispFormat eq 'html')? "<FONT color='#".$refModConv->{$mRk}[2]."'>".$refModConv->{$mRk}[1].":</FONT>" : $refModConv->{$mRk}[1].':';
+		}
+		my ($begStrg,$endStrg,$rtStrg,$siteStrg)=('','','','');
+		my $modCode=$newModCodes{$mRk};
+		if ($modCode=~/[\-=\+\*]/) { # Ambiguity format WARNING: != classical terminal modif codes!!!
+								  # - begins with normal res, + ends with normal res
+								  # = begins with (prot/pep)N-term, * ends with (prot/pep)C-term
+								  # n/c (lower case) non-ambiguous (prot/pep)(N/C)-term
+			foreach my $resPos (split(/\./,$modCode)) {
+				my ($res,$pos)=($resPos=~/^(.)(.+)/);
+				if ($res eq '=') {$begStrg=($pos<=1)? 'ProtNt' : 'PepNt'.$pos;} # Nter beg
+				elsif ($res eq '-') {$begStrg=$pos;} # res beg
+				elsif ($res eq '*') {$endStrg=($pos==0)? 'ProtCt' : 'PepCt'.$pos;} # Cter end
+				elsif ($res eq '+') {$endStrg=$pos;} # res end
+				elsif ($res eq '@') {$rtStrg=$resPos;} # rt
+				elsif ($res=~/^\d/) {$siteStrg=$res.'/'.$pos;} # sites
+			}
+			$modCodeID.=$begStrg.'~'.$endStrg.$rtStrg.':'.$siteStrg; # should this be converted???? (PP 02/07/19)
+			$dispModCode.=$begStrg.'~'.$endStrg.$rtStrg.':'.$siteStrg if $dispFormat;
+		}
+		else {
+			$modCode=~s/n(0|1)(\.|\Z)/ProtNt$2/;
+			$modCode=~s/n(\d+)/PepNt$1/;
+			$modCode=~s/c0(\.|\Z)/ProtCt$2/;
+			$modCode=~s/c(\d+)/PepCt$1/;
+			$modCodeID.=$modCode;
+			$dispModCode.=$modCode if $dispFormat;
+		}
+	}
+	$dispModCode=$modCodeID unless $dispFormat; # no display formatting
+	return ($modCodeID,$dispModCode); #$prefix.$modCodeID,$prefix.$dispModCode
+}
+
+sub decodeModificationSite { # modCode[,any text prefix eg; name of modification] OBSOLETE use formatProteinModificationSites (...site's'!)
 	# Former decodeModifPosAmbiguity
 	my $modCode=$_[0];
 	my $prefix=$_[1] || '';
@@ -1236,6 +1677,33 @@ sub decodeModificationSite { # modCode[,any text prefix eg; name of modification
 	}
 }
 
+sub quantifFileEncodeModifSite {
+	# From modProteinID format modCode to quantification file format
+	# SINGLE: "9:Y33.45" => "Y33.45", Multi: "9:Y33.45+2:68" => "9#Y33.45&2#68"
+	my ($fullModStrg,$isMultiModif,$refModRanks)=@_;
+	return '' unless $fullModStrg;
+	my $fileModStrg='';
+	if ($isMultiModif) { # mutli-modif quantif format
+		my %rankModStrg;
+		foreach my $modStrg (split('\+',$fullModStrg)) {
+			my ($modID,$resStrg)=$modStrg=~/^(\d+):(.+)/;
+			my $modifRank=$refModRanks->{$modID};
+			$rankModStrg{$modifRank}=$modifRank.'#'.$resStrg;
+		}
+		foreach my $modifRank (sort{$a<=>$b} keys %rankModStrg) {
+			$fileModStrg.='&' if $fileModStrg;
+			$fileModStrg.=$rankModStrg{$modifRank};
+		}
+	}
+	else { # single-modif quantif format
+		$fileModStrg=$fullModStrg;
+		$fileModStrg=~s/^\d+://;
+	}
+
+	return $fileModStrg;
+}
+
+
 #sub displayModificationSite { # convert starting [modifID] into (name|code|code_html):
 #	my ($modProtID,$refModifInfo)=@_;
 #	$modProtID=~s/\[(\d+)\]/$refModifInfo->{$1}:/;
@@ -1245,9 +1713,23 @@ sub decodeModificationSite { # modCode[,any text prefix eg; name of modification
 1;
 
 ####>Revision history
-# 1.3.8 [Fix] minor bug in &etchQuantificationData when using mixed protein/site selection list (PP 22/05/19)
+# 1.6.2 [FEATURE] in &getQuantificationsFromPropertyValue handles myProMS Protein Abundance (PP 21/01/20)
+# 1.6.1 [BUGFIX] in &fetchQuantificationData for RATIO class quantif family (PP 16/01/20)
+# 1.6.0 [FEATURE] &fetchQuantificationData handles myProMS Protein Abundance (PP 10/01/20)
+# 1.5.6 [BUGFIX] in &fetchQuantificationData for PTM-quantif with list filtering & in &formatProteinModificationSites for ambigous sites from List (PP 30/11/19)
+# 1.5.5 [BUGFIX] in &getQuantificationsFromPropertyValue for proper handling of multi-targetPos quantif: quanitfID_tgtposX_tgtpsoY (PP 27/11/19) 
+# 1.5.4 [ENHANCEMENT] in PTM-site management functions (PP 21/11/19)
+# 1.5.3 [MINOR] Double check if quantification exists before deletion (VS 19/11/19)
+# 1.5.2 [ENHANCEMENT] Add possibility to keep quantification in job history after deletion (VS 19/11/19)
+# 1.5.1 [ENHANCEMENT] &deleteQuantification removes JOB_HISTORY entree and related files if any (PP 06/11/19)
+# 1.5.0 [ENHANCEMENT] Major updates in subs handling modification sites (PP 31/10/19)
+# 1.4.2 [FEATURE] &fetchQuantificationData can retrieve MEAN_STATE & (NUM/DIST)_PEP_USED values from myProMS v3+ Label-free Ratio quantifs (PP 04/09/19)
+# 1.4.1 [ENHANCEMENT] added &getXicSoftwareList and modif in &getXicSoftware (PP 28/08/19)
+# 1.4.0 [FEATURE] &insertModifiedResidues, &fetchQuantificationData and &deleteQuantification handle multi-modif quantifications & &decodeModificationSite replaced by &formatProteinModificationSites (PP 12/07/19)
+# 1.3.9 Add modifications for Proteomic Ruler in &writeQuantifParameterFiles and &getProteinQuantifFamilies (VL 26/07/19)
+# 1.3.8 [Fix] minor bug in &fetchQuantificationData when using mixed protein/site selection list (PP 22/05/19)
 # 1.3.7 Multiple improvements (SD_GEO,...) and bug fixes (emPAI PEPTIDE,...) in &fetchQuantificationData (PP 27/03/19)
-# 1.3.6 Add SD_GEO in &etchQuantificationData (SL 15/01/19)
+# 1.3.6 Add SD_GEO in &fetchQuantificationData (SL 15/01/19)
 # 1.3.5 Added normalization.ref.test in &writeQuantifParameterFiles & minor fix in &fetchQuantificationData for EMPAI/SIN (PP 19/12/18)
 # 1.3.4 view=export handled in &fetchQuantificationData (PP 26/09/18)
 # 1.3.3 Added subs for insertion of quantified modification sites by run(XIC/SWATH)ProtQuantification.pl (PP 19/07/18)

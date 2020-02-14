@@ -1,6 +1,6 @@
 /*
 ################################################################################
-# volcanoPlot2.js      1.1.7                                                   #
+# volcanoPlot2.js      1.1.8                                                   #
 # Authors: P. Poullet                                                          #
 # Contact: patrick.poullet@curie.fr                                            #
 ################################################################################
@@ -50,19 +50,19 @@ function vpDataPoint(set,data) {
     this.label=data[0];
     this.externalID=(data[1])? data[1] : data[0];
 	if (data[2]=='-') {
-		this.subChart=set.params.chart.subChart['minusInf'];
+		this.subChart=set.params.chart.subChart.minusInf;
 		this.foldChange=data[2];
 		this.pepFreq=data[3];
 		this.x=Math.random();
 	}
 	else if (data[2]=='+') {
-		this.subChart=set.params.chart.subChart['plusInf'];
+		this.subChart=set.params.chart.subChart.plusInf;
 		this.foldChange=data[2];
 		this.pepFreq=data[3];
 		this.x=Math.random();
 	}
 	else {
-		this.subChart=set.params.chart.subChart['volcano'];
+		this.subChart=set.params.chart.subChart.volcano;
 		this.foldChange=(data[2] >= 1)? (data[2]*1).toFixed(2) : '1/'+(1/data[2]).toFixed(2);
 		this.pvalue=(data[3] < 1e-300)? 1e-300 : data[3];
 		this.log2fc=set.params.chart.subChart.volcano.convertValue('X',data[2]);
@@ -70,7 +70,7 @@ function vpDataPoint(set,data) {
 	}
     this.size=(data[4])? data[4] : 3;
     this.point=null; // ref to the svg element
-	this.highlightNames=[]; // new Array()
+	this.highlightNames=[];
 }
 vpDataPoint.prototype = {
     info: function(type) {
@@ -113,7 +113,7 @@ function volcanoPlot(volcano) {
 	/* Graphic & form DIVs */
 	var canvasDivID=this.divID+'_canvas';
 	var formDivID=this.divID+'_form';
-	this.getDivID=function(){return canvasDivID;}
+	this.getDivID=function(){return canvasDivID;};
 	this.exportAsImage=volcano.exportAsImage; // null or array [button name, image file name, action script path]
 
     /******** Chart variables & objects ********/
@@ -128,8 +128,8 @@ function volcanoPlot(volcano) {
 	this.pointOpacity=(volcano.pointOpacity)? volcano.pointOpacity : 0.7; // point opacity
 	//var colorList=['#000000','#4AA02C','#F660AB','#FBB917','#0000FF','#8AFB17','#9A9A9A','#7E2217','#95B9C7','#E18B6B'];
 	var colorList=['#0000FF','#4AA02C','#000000','#F660AB','#FBB917','#8AFB17','#9A9A9A','#7E2217','#95B9C7','#E18B6B'];
-this.subChart={volcano:{},minusInf:{},plusInf:{}};
-this.activeCharts=[];
+	this.subChart={volcano:{},minusInf:{},plusInf:{}};
+	this.activeCharts=[];
 	var charts=this.subChart;
 	var vp=charts.volcano;
 	var mi=charts.minusInf;
@@ -141,30 +141,30 @@ this.activeCharts=[];
 	/* Axes */
 	vp.axisXtext='Log2(fold change B/A)'; //,minusInf:null,plusInf:null
 	vp.axisYtext='-Log10(p-value)';
-mi.axisXtext=pi.axisXtext='';
+	mi.axisXtext=pi.axisXtext='';
 	mi.axisYtext=pi.axisYtext='#Peptides/100 aa';
 	vp.forceXto0=mi.forceXto0=pi.forceXto0=0;
 	mi.forceYto0=pi.forceYto0=1; // 0 or null: auto, 1: 0, 2: ~0
 	vp.forceYto0=2;
-	mi.noTicksX='Only in A'; // '-∞'; // any text or true for nothing
-	pi.noTicksX='Only in B'; //'+∞';
+	mi.noTicksX='Only in A';
+	pi.noTicksX='Only in B';
 	vp.convertValue=function(axis,startValue) {
 		var convertedValue=(axis=='X')? Math.log(startValue)/0.693147181 : -Math.log(startValue)/2.302585093; //LOG2 LOG10
 		return convertedValue;
-	}
+	};
     //this.minValueX,this.maxValueX,this.minValueY,this.maxValueY;
 	for (var c in charts) {
 		if (charts.hasOwnProperty(c)) {
 			charts[c].mainChart=VP;
 			charts[c].chartSettings={reference:{},current:{}};
 			charts[c].axisClosure=false; // draw 2 axes only
-			charts[c].chartMarks=new Array();
-			charts[c].plotArea;
-			charts[c].dragArea;
+			charts[c].chartMarks=[];
+			charts[c].plotArea=null;
+			charts[c].dragArea=null;
 			charts[c].dragContext='area';
 			if (c=='volcano') {
 				charts[c].zoomable=true;
-				charts[c].zoomText;
+				charts[c].zoomText=null;
 				charts[c].panProcess={x:0,y:0,dx:0,dy:0}; //new Object();
 			}
 		}
@@ -172,11 +172,11 @@ mi.axisXtext=pi.axisXtext='';
 	this.pointOnclick=volcano.pointOnclick;
 	this.pointOnList=volcano.pointOnList;
 	this.selectable=true;
-	this.searchable=true;
+	this.searchable=volcano.searchable || true; // always searchable
 
 	/***** Threshold lines *****/
 	this.editThreshold=true;
-	this.thresholdLines=new Array();
+	this.thresholdLines=[];
 	var minThresFC=(volcano.minFoldChange)? volcano.minFoldChange : (volcano.foldChange)? 1/volcano.foldChange : null;
 	if (minThresFC) {
 		this.thresholdLines.push(new thresholdLine(vp,'X','min. fold change',minThresFC,'#00A000','',1,1,true));
@@ -316,7 +316,7 @@ vp.thresholdLines=this.thresholdLines;
 			for (var i=0; i < this.dataSets.length; i++) {
 				for (var j=0; j < this.dataSets[i].data.length; j++) {
 					var dataPointID=this.dataSets[i].data[j].externalID;
-					if (!this.dataSetLinks[dataPointID]) {this.dataSetLinks[dataPointID]=new Array();}
+					if (!this.dataSetLinks[dataPointID]) {this.dataSetLinks[dataPointID]=[];}
 					this.dataSetLinks[dataPointID].push(this.dataSets[i].data[j]);
 				}
 			}
@@ -332,6 +332,7 @@ vp.thresholdLines=this.thresholdLines;
 
 /*
 ####>Revision history<####
+# 1.1.8 [FEATURE] Optional external pre-search function (PP 04/10/19)
 # 1.1.7 "+/-∞" replaced by "Only in A/B" (PP 31/05/19)
 # 1.1.6 Uses chart registering for dynamic html calls (PP 20/02/16)
 # 1.1.5 Renamed dataPoint object to vpDataPoint for compatiblity with genericPlot library (PP 28/10/15)

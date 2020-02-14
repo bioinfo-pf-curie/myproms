@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# storeProjectItem.cgi         3.0.7                                           #
+# storeProjectItem.cgi         3.1.0                                           #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Stores/updates project items                                                 #
@@ -398,7 +398,17 @@ else { # action = edit or reval
 		my $externalID=(param('externalID')=~/.+/)? $dbh->quote(param('externalID')) : 'NULL'; # any or NULL
 		push @colName,('ISOELECTRIC_POINT','MOLECULAR_WEIGHT','INTENSITY','EXTERNAL_ID');
 		push @colValue,($isoPoint,$molWeight,$intensity,$externalID);
+	} elsif ($item eq 'EXPERIMENT') {
+		my @lockUsers = (param('lockUsers'));
+		my $lockMsg = param('lockMsg');
+		
+		$dbh->do("DELETE FROM USER_EXPERIMENT_LOCK WHERE ID_EXPERIMENT=$itemID") || die $dbh->errstr();
+		$dbh->commit;
+		foreach my $lockUser (@lockUsers) {
+			$dbh->do("INSERT INTO USER_EXPERIMENT_LOCK VALUES ($itemID, '$lockUser', '$lockMsg')") || die $dbh->errstr();
+		}
 	}
+	
 	my $updateString;
 	for (my $c=0;$c<=$#colName;$c++) { # looping through all conditions
 		$updateString.="$colName[$c]=$colValue[$c]";
@@ -609,6 +619,7 @@ sub processMetadata {
 	if($annotType eq 'file' || $annotType eq 'image') {
         my $tmpFilePath = tmpFileName($annotValue);
 		system("mkdir -p $promsPath{metadata}/$finalFilePath");
+		$annotValue =~ s/\s/_/g;
         move($tmpFilePath, $promsPath{"metadata"}."/$finalFilePath".$annotValue);
 	}
 	
@@ -618,9 +629,9 @@ sub processMetadata {
 	$annotValue = ($annotValue) ? $dbh->quote($annotValue) : "''";
 	
 	if($action eq 'edit') {
-		# Remove former file if any
+		# Remove former file
 		my ($annotFormerType, $annotFormerValue) = $dbh->selectrow_array("SELECT ANNOT_TYPE, ANNOT_VALUE FROM ANNOTATION_ITEM WHERE ID_ANNOTATION_ITEM=$itemID");
-		if($annotFormerType eq 'file' || $annotFormerType eq 'image') {
+		if($annotFormerType eq 'file' || $annotFormerType eq 'image' && $annotFormerValue) {
 			system("rm -f $promsPath{metadata}/$finalFilePath".$annotFormerValue);
 		}
 		
@@ -685,6 +696,9 @@ sub goBack {
 }
 
 ####>Revision history<####
+# 3.1.0 [BUGFIX] Validating a metadata without value in edition mode deleted all files (VS 15/11/19)
+# 3.0.9 [BUGFIX] Handles spaces in file annotation items (VS 30/10/19)
+# 3.0.8 [FEATURE] Handles lock system for experiments (VS 08/08/19)
 # 3.0.7 Change project data path for metadata path (VS 11/06/19)
 # 3.0.6 Add Image type to metadata (VS 06/06/19)
 # 3.0.5 Metadata add/modification handling (VS 06/06/19)

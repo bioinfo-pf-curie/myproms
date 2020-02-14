@@ -37,10 +37,11 @@ sed -i "s@HTTP_PROXY@${HTTP_PROXY}@g" ${APPLI_DIR}/cgi-bin/promsConfig.pm
 
 ### Mascot server
 if [ -n "${MASCOT_SERVER_NAME}" ]; then
-    sed -i "s@#'MASCOT_SERVER_NAME'@'${MASCOT_SERVER_NAME}'@g" ${APPLI_DIR}/cgi-bin/promsConfig.pm
+    sed -i "s!#'MASCOT_SERVER_NAME'!'${MASCOT_SERVER_NAME}'!g" ${APPLI_DIR}/cgi-bin/promsConfig.pm
     sed -i "s@MASCOT_SERVER_URL@${MASCOT_SERVER_URL}@g" ${APPLI_DIR}/cgi-bin/promsConfig.pm
     sed -i "s@MASCOT_SERVER_PROXY@${MASCOT_SERVER_PROXY}@g" ${APPLI_DIR}/cgi-bin/promsConfig.pm
-    sed -i "s@MASCOT_DIR@${MASCOT_DIR}@g" ${APPLI_DIR}/cgi-bin/promsConfig.pm
+    sed -i "s@MASCOT_DATA_DIR@${MASCOT_DATA_DIR}@g" ${APPLI_DIR}/cgi-bin/promsConfig.pm
+    sed -i "s@MASCOT_SEQUENCE_DIR@${MASCOT_SEQUENCE_DIR}@g" ${APPLI_DIR}/cgi-bin/promsConfig.pm
     sed -i "s@MASCOT_LINK_FILES_FLAG@${MASCOT_LINK_FILES_FLAG}@g" ${APPLI_DIR}/cgi-bin/promsConfig.pm
 fi
 
@@ -48,6 +49,7 @@ fi
 cat << EOF > /etc/apache2/sites-enabled/000-default.conf
 <VirtualHost *:80>
 
+        ServerAdmin ${SERVER_ADMIN}
         ErrorLog ${DATA_DIR}/logs/error.log
         CustomLog ${DATA_DIR}/logs/access.log combined
 

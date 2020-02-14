@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# editSwathLibrary.cgi         1.8.6	                                       #
+# editSwathLibrary.cgi         1.8.9	                                       #
 # Authors: M. Le Picard, V. Sabatet (Institut Curie)                           #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -51,7 +51,6 @@ use File::Copy;
 use File::Basename;
 use XML::Simple;
 use POSIX qw(strftime); # to get the time
-use File::Path qw(rmtree); # remove_tree
 use XML::SAX::ParserFactory;
 use List::Util "first";
 use File::Spec::Functions qw(splitpath); # Core module
@@ -61,12 +60,11 @@ use File::Spec::Functions qw(splitpath); # Core module
 #######################
 print header(-'content-encoding'=>'no',-charset=>'UTF-8'); warningsToBrowser(1);
 
-
-
 my %promsPath=&promsConfig::getServerInfo;
 my %clusterInfo=&promsConfig::getClusterInfo;#('debian'); # default is 'centos'
 my $tppPath=($clusterInfo{'on'}) ? $clusterInfo{'path'}{'tpp'} : $promsPath{'tpp'};
 my $pythonPath=($clusterInfo{'on'})? $clusterInfo{'path'}{'python'} : $promsPath{'python'};
+my $MAX_NB_THREAD = 4; # Number of threads to use when parallelization is available
 		
 my ($lightColor,$darkColor)=&promsConfig::getRowColors;
 my $userID=$ENV{'REMOTE_USER'};
@@ -76,7 +74,6 @@ my $userID=$ENV{'REMOTE_USER'};
 ##########################
 my $dbh=&promsConfig::dbConnect;
 
-
 #############################
 ####>Fetching parameters<####
 #############################
@@ -84,7 +81,7 @@ my $action=(param('ACT'))? param('ACT') : "" ;
 my $libraryID=(param('ID'))? param('ID') : 0; # 0 if ACT=add
 if ($action eq 'delete') {&deleteSwathLib;exit;}
 if ($action eq 'archive') {&archiveSwathLib;exit;}
-my $projectID=(param('projectID'))? param('projectID') : 0;
+my $projectID=(param('projectID'))? param('projectID') : 'NULL';
 my $experimentID=(param('experimentID'))? param('experimentID') : 0;
 if ($action eq 'ajaxSelectExperiment') {&ajaxSelectExperiment; exit;}
 if ($action eq 'ajaxSelectSample') {&ajaxSelectSample; exit;}
@@ -97,7 +94,6 @@ if ($action eq 'selectDBMergeLib') {&selectDBMergeLib; exit;}
 if ($action eq 'ajaxSelectSpecieDB') {&ajaxSelectSpecieDB; exit;}
 if ($action eq 'restore') {&restorePreviousVersion;}
 	
-
 
 mkdir $promsPath{'data'} unless -e $promsPath{'data'};
 mkdir "$promsPath{data}/tmp" unless -e "$promsPath{data}/tmp";
@@ -355,7 +351,7 @@ sub restorePreviousVersion{
 		system "rm $libPath/$dbInfoFile" if -e "$libPath/$dbInfoFile";
 	}
 	else{		
-		system "rm $libPath/$libraryName.sptxt; rm $libPath/$libraryName.spidx; rm $libPath/$libraryName.splib; rm $libPath/$libraryName.pepidx; rm $libPath/sortie.txt; rm $libPath/script.sh"; 
+		system "rm -f $libPath/$libraryName.sptxt $libPath/$libraryName.spidx $libPath/$libraryName.splib $libPath/$libraryName.pepidx $libPath/$libraryName.mrm $libPath/sortie.txt $libPath/script.sh"; 
 		print "<BR><BR> Fetching associated files ...";
 		opendir (DIR,$libPath);
 		my $count=0;
@@ -410,6 +406,7 @@ sub restorePreviousVersion{
 		move ("$libPath/SpecLib_cons.splib","$libPath/$libraryName.splib");
 		move ("$libPath/SpecLib_cons.pepidx","$libPath/$libraryName.pepidx");
 		move ("$libPath/SpecLib_cons.spidx","$libPath/$libraryName.spidx");
+		move ("$libPath/SpecLib_cons.mrm","$libPath/$libraryName.mrm") if(-s "$libPath/SpecLib_cons.spidx");
 		system "cd $libPath;rm SpecLib_*; rm $outputFile; rm spectrast.log;";
 		print "</CENTER></BODY></HTML>";
 		
@@ -883,10 +880,33 @@ if ($submit eq "") {
 			</DIV><BR>
 			</TD>
 		</TR>	
+        <TR><TH align="right">PTMProphet : </TH>
+			<TD bgcolor="$lightColor">
+				<label> <input type="checkbox" onclick="document.getElementById('PTMProphetOptions').style.display = (this.checked) ? '' : 'none';" name="PTMProphet" value="1" /> Use PTMs localization improvement (PTMProphet)</label><br/>
+				<FIELDSET id="PTMProphetOptions" style='display:none; margin-top: 10px;'>
+					<LEGEND><B>Options:</B></LEGEND>
+					<label> Model to apply :&nbsp;
+						<SELECT name ="PTMProphetEMModel" required>
+							<option value="">-= Select fragmentation type =-</option>
+							<option value="0">No EM Model</option>
+							<option value="1">Intensity EM Model</option>
+							<option value="2" selected>Intensity and matched peaks EM Model</option>
+						</SELECT>
+					</label><br/>
+					<label> Min probability to evaluate peptide : <input type='text' name='PTMProphetMinProb' value='0.9' size='3' /></label></br>
+					<label> MS1 PPM tolerance : <input stype='text' name='PTMProphetPPMTol' value='1' size='3' /></label><br/>
+					<label> Fragments PPM tolerance : <input type='text' name='PTMProphetFragPPMTol' value='10' size='3' /></label><br/>
+					Modifications to process :
+							<label><input type='checkbox' name='PTMProphetModifs' value='STY:79.9663' />Phospho (S,T,Y)&nbsp;&nbsp;</label>
+							<label><input type='checkbox' name='PTMProphetModifs' value='M:15.9949' />Oxydation (M)&nbsp;&nbsp;</label>
+							<label><input type='checkbox' name='PTMProphetModifs' value='C:57.0214' />Carbamidomethyl (C)&nbsp;&nbsp;</label>
+				</FIELDSET>
+            </TD>
+		</TR>
         <TR><TH align="right">Fragmentation type : </TH>
             <TD bgcolor="$lightColor">
             &nbsp;<SELECT name ="fragmentation" required>
-                <option value="">-= Select fragmentation type =-</option>
+			<option value="">-= Select fragmentation type =-</option>
 				<option value="CID-QTOF">CID-QTOF</option>
 				<option value="HCD">HCD</option>
 				<option value="ETD">ETD</option>
@@ -1119,7 +1139,7 @@ if ($submit eq "") {
     }
 }
 else{
-	if ($action eq 'edit'){
+	if ($action eq 'edit') {
 		print "<BR><BR><IMG src='$promsPath{images}/engrenage.gif'><BR><BR>";
 		my ($libNewName,$des)=&promsMod::cleanParameters(param('libname'),param('descript'));
 		
@@ -1132,6 +1152,7 @@ else{
 			system "mv $promsPath{swath_lib}/SwLib_$libraryID/$libName.splib $promsPath{swath_lib}/SwLib_$libraryID/$libNewName.splib";
 			system "mv $promsPath{swath_lib}/SwLib_$libraryID/$libName.spidx $promsPath{swath_lib}/SwLib_$libraryID/$libNewName.spidx";
 			system "mv $promsPath{swath_lib}/SwLib_$libraryID/$libName.pepidx $promsPath{swath_lib}/SwLib_$libraryID/$libNewName.pepidx";
+			system "mv $promsPath{swath_lib}/SwLib_$libraryID/$libName.mrm $promsPath{swath_lib}/SwLib_$libraryID/$libNewName.mrm" if(-s "$promsPath{swath_lib}/SwLib_$libraryID/$libName.mrm");
 		}
 		elsif($split==1){
 			system "mv $promsPath{swath_lib}/SwLib_$libraryID/$libName.sptxt $promsPath{swath_lib}/SwLib_$libraryID/$libNewName.sptxt";
@@ -1225,7 +1246,6 @@ else{
 		$dbDir="$promsPath{data}/banks/db_$dbID[0]";
 		$dbFile="$dbDir/$fastaDBFile";
 		
-		
 		#$dbFileID2=$dbFileID;
 		open(FASTA,"<",$dbFile) or die ("open :$!");
 		my ($irtFastaSeq,$match);
@@ -1289,7 +1309,7 @@ else{
 						my $NewFileDir="$workDir/$name";
 						
 						##>move them in work directory
-						move($newFile,$NewFileDir);
+						copy($newFile,$NewFileDir);
 						
 						push @inputFiles,$name unless $name=~/\.xml$/ && $name!~/\.tandem\.pep\.xml$/ && $name!~/\.pep\.xml$/; 
 						my $taille=`stat -c "%s" $workDir/$name`;
@@ -1321,7 +1341,7 @@ else{
 					my $NewFileDir="$workDir/$name";
 					
 					##>move them in work directory
-					move ("$serverDir/$name",$NewFileDir);
+					copy("$serverDir/$name",$NewFileDir);
 					
 					push @inputFiles,$name unless $name=~/\.xml$/ && $name!~/\.tandem\.pep\.xml$/ && $name!~/\.pep\.xml$/; 
 					my $taille=`stat -c "%s" $workDir/$name`;
@@ -1354,7 +1374,7 @@ else{
 				###> extracting files from archive
 				my $uplFile=(split(/[\\\/]/,param('archfiles')))[-1]; 
 				my $newFile="$workDir/$uplFile";
-				move(tmpFileName(upload("archfiles")),$newFile);
+				copy(tmpFileName(upload("archfiles")),$newFile);
 				###>Inflating file
 				if ($newFile =~/\.(gz|zip)\Z/) {
 					print "<BR>Extracting files...<BR>";
@@ -1484,7 +1504,7 @@ else{
 					
 					##>move shared file in work directory
 					my $NewFileDir="$workDir/$fileName";
-					move("$promsPath{shared}/$sharedFile",$NewFileDir);
+					copy("$promsPath{shared}/$sharedFile",$NewFileDir);
 					
 					my $taille=`stat -c "%s" $NewFileDir`;
 					if ($taille == 0 ) {
@@ -1762,6 +1782,16 @@ else{
 	
 	my $fileError="$workDir/status_$libID\_error.out";
 
+	# Create new job to monitor
+	$dbh->do("INSERT INTO JOB_HISTORY (ID_JOB, ID_USER, ID_PROJECT, TYPE, STATUS, FEATURES, SRC_PATH, LOG_PATH, ERROR_PATH, STARTED) VALUES('$time', '$userID', $projectID, 'Import [TPP]', 'Queued', 'SOFTWARE=TPP;ID_LIBRARY=$libID;ACTION=$action', '$workDir', '$fileStat', '$fileError', NOW())");
+	$dbh->commit;
+	
+	print qq |
+		<SCRIPT type="text/javascript">
+			var monitorJobsWin=window.open("$promsPath{cgi}/monitorJobs.cgi?filterType=Import [TPP]&filterDateNumber=1&filterDateType=DAY&filterStatus=Queued&filterStatus=Running",'monitorJobsWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
+			monitorJobsWin.focus();
+		</SCRIPT>
+	|;
 	
 	my $childConvert=fork;
 	unless($childConvert){
@@ -1769,6 +1799,11 @@ else{
 		open STDOUT, '>/dev/null' or die "Can't open /dev/null: $!";
 		open STDIN, '</dev/null' or die "Can't open /dev/null: $!";
 		open STDERR, '>/dev/null' or die "Can't open /dev/null: $!";
+		
+		# Add process PID to current job in DB
+		my $dbh = &promsConfig::dbConnect('no_user');
+		$dbh->do("UPDATE JOB_HISTORY SET ID_JOB_CLUSTER='L$$' WHERE ID_JOB='$time'");
+		$dbh->commit;
 		
 		if ($action eq "add" || $action eq "update" || $action eq "addDB2") {
 			open(FILESTAT,">>$fileStat");
@@ -1903,9 +1938,11 @@ $clusterCommandString
 					
 					###> Execute bash file
 					system "chmod 775 $dir/$datBashName";
-					system "chmod 775 $dir/$bashFile";
 					
-					$clusterInfo{'sendToCluster'}->($bashFile);
+					my ($jobClusterID) = $clusterInfo{'sendToCluster'}->($bashFile);
+					
+					$dbh->do("UPDATE JOB_HISTORY SET ID_JOB_CLUSTER = CONCAT(ID_JOB_CLUSTER, ';C$jobClusterID') WHERE ID_JOB='$time'");
+					$dbh->commit;
 				}
 				else{
 					my $outFile=$workDir.'/sortie'.$nbDat.'.txt';
@@ -2042,7 +2079,10 @@ echo END_Tandem_modification_$nbTandem
 					
 					###> Execute bash file
 					system "chmod 775 $dir/$tandemBashName";
-					$clusterInfo{'sendToCluster'}->($bashFile);
+					my ($jobClusterID) = $clusterInfo{'sendToCluster'}->($bashFile);
+					
+					$dbh->do("UPDATE JOB_HISTORY SET ID_JOB_CLUSTER = CONCAT(ID_JOB_CLUSTER, ';C$jobClusterID') WHERE ID_JOB='$time'");
+					$dbh->commit;
 				}
 				else{
 					system "bash $dir/$tandemBashName";
@@ -2132,7 +2172,7 @@ echo END_Tandem_modification_$nbTandem
 |nbmascot=\`find $workDir/interact.mascot.pep* -type f \| wc -l\`;
 nbtandem=\`find $workDir/interact.tandem.pep* -type f \| wc -l\`;
 nbsequest=\`find $workDir/interact.sequest.pep* -type f \| wc -l\`;
-if [ -e $workDir/interact.mascot.pep.xml ] && [ -e $workDir/interact.tandem.pep.xml ] && [ -e $workDir/interact.sequest.pep.xml ] && [ "\$nbtandem" -gt "5" ] && [ "\$nbmascot" -gt "5" ] && [ "\$nbsequest" -gt "5" ]
+if [ -e $workDir/interact.mascot.pep.xml ] && [ -e $workDir/interact.tandem.pep.xml ] && [ -e $workDir/interact.sequest.pep.xml ] && [ "\$nbtandem" -gt "4" ] && [ "\$nbmascot" -gt "4" ] && [ "\$nbsequest" -gt "4" ]
 then
 	echo "iProphet on X! TANDEM, MASCOT and SEQUEST files." >>$fileStat;
 	$tppPath/InterProphetParser DECOY=$decoyTag $workDir/interact.tandem.pep.xml $workDir/interact.mascot.pep.xml $workDir/interact.sequest.pep.xml $workDir/iProphet.pep.xml >>$outputFile  2>&1;
@@ -2142,12 +2182,15 @@ else
 		if [ -e $workDir/interact.tandem.pep.xml ]
 		then 
 			echo "Xinteract on SEQUEST files did not work." >>$workDir/ERROR.txt;
+			exit -1;
 		else
 			if [ -e $workDir/interact.sequest.pep.xml ]
 			then
 				echo "Xinteract on X! TANDEM files did not work." >>$workDir/ERROR.txt;
+				exit -1;
 			else
 				echo "Xinteract on X! TANDEM and SEQUEST files did not work." >>$workDir/ERROR.txt;
+				exit -1;
 			fi
 		fi
 	else
@@ -2156,15 +2199,19 @@ else
 			if [ -e $workDir/interact.sequest.pep.xml ]
 			then
 				echo "Xinteract on MASCOT files did not work." >>$workDir/ERROR.txt;
+				exit -1;
 			else
 				echo "Xinteract on MASCOT and SEQUEST files did not work." >>$workDir/ERROR.txt;
+				exit -1;
 			fi
 		else
 			if [ -e $workDir/interact.sequest.pep.xml ]
 			then
 				echo "Xinteract on MASCOT and X! TANDEM files did not work." >>$workDir/ERROR.txt;
+				exit -1;
 			else
 				echo "Xinteract on MASCOT, X! TANDEM and SEQUEST files did not work." >>$workDir/ERROR.txt;
+				exit -1;
 			fi
 		fi
 	fi
@@ -2175,7 +2222,7 @@ fi
 						print BASH qq 
 |nbmascot=\`find $workDir/interact.mascot.pep* -type f \| wc -l\`;
 nbtandem=\`find $workDir/interact.tandem.pep* -type f \| wc -l\`;
-if [ -e $workDir/interact.mascot.pep.xml ] && [ -e $workDir/interact.tandem.pep.xml ] && [ "\$nbtandem" -gt "5" ] && [ "\$nbmascot" -gt "5" ]
+if [ -e $workDir/interact.mascot.pep.xml ] && [ -e $workDir/interact.tandem.pep.xml ] && [ "\$nbtandem" -gt "4" ] && [ "\$nbmascot" -gt "4" ]
 then
 	echo "iProphet on X! TANDEM and MASCOT files." >>$fileStat;
 	$tppPath/InterProphetParser DECOY=$decoyTag $workDir/interact.tandem.pep.xml $workDir/interact.mascot.pep.xml $workDir/iProphet.pep.xml >>$outputFile  2>&1;
@@ -2183,12 +2230,15 @@ else
 	if [ -e $workDir/interact.mascot.pep.xml ]
 	then
 		echo "Xinteract on X! TANDEM files did not work." >>$workDir/ERROR.txt;
+		exit -1;
 	else
 		if [ -e $workDir/interact.tandem.pep.xml ]
 		then
 			echo "Xinteract on MASCOT files did not work." >>$workDir/ERROR.txt;
+			exit -1;
 		else
 			echo "Xinteract on MASCOT and X! TANDEM files did not work." >>$workDir/ERROR.txt;
+			exit -1;
 		fi
 	fi
 fi
@@ -2199,7 +2249,7 @@ fi
 					print BASH qq
 |nbsequest=\`find $workDir/interact.sequest.pep* -type f \| wc -l\`;
 nbtandem=\`find $workDir/interact.tandem.pep* -type f \| wc -l\`;
-if [ -e $workDir/interact.sequest.pep.xml ] && [ -e $workDir/interact.tandem.pep.xml ] && [ "\$nbtandem" -gt "5" ] && [ "\$nbsequest" -gt "5" ]
+if [ -e $workDir/interact.sequest.pep.xml ] && [ -e $workDir/interact.tandem.pep.xml ] && [ "\$nbtandem" -gt "4" ] && [ "\$nbsequest" -gt "4" ]
 then
 	echo "iProphet on X! TANDEM and SEQUEST files." >>$fileStat;
 	$tppPath/InterProphetParser DECOY=$decoyTag $workDir/interact.tandem.pep.xml $workDir/interact.sequest.pep.xml $workDir/iProphet.pep.xml >>$outputFile  2>&1;
@@ -2207,12 +2257,15 @@ else
 	if [ -e $workDir/interact.sequest.pep.xml ]
 	then
 		echo "Xinteract on X! TANDEM files did not work." >>$workDir/ERROR.txt;
+		exit -1;
 	else
 		if [ -e $workDir/interact.tandem.pep.xml ]
 		then
 			echo "Xinteract on SEQUEST files did not work." >>$workDir/ERROR.txt;
+			exit -1;
 		else
 			echo "Xinteract on SEQUEST and X! TANDEM files did not work." >>$workDir/ERROR.txt;
+			exit -1;
 		fi
 	fi
 fi
@@ -2221,12 +2274,13 @@ fi
 				else{							## Tandem Files
 					print BASH qq
 |nbtandem=\`find $workDir/interact.tandem.pep* -type f \| wc -l\`;
-if [ -e $workDir/interact.tandem.pep.xml ] && [ "\$nbtandem" -gt "5" ]
+if [ -e $workDir/interact.tandem.pep.xml ] && [ "\$nbtandem" -gt "4" ]
 then
 	echo "iProphet on X! TANDEM files." >>$fileStat;
 	$tppPath/InterProphetParser DECOY=$decoyTag $workDir/interact.tandem.pep.xml $workDir/iProphet.pep.xml >>$outputFile  2>&1;
 else
 	echo "Xinteract on X! TANDEM files did not work." >>$workDir/ERROR.txt;
+	exit -1;
 fi
 |;
 				}
@@ -2236,7 +2290,7 @@ fi
 					print BASH qq
 |nbsequest=\`find $workDir/interact.sequest.pep* -type f \| wc -l\`;
 nbmascot=\`find $workDir/interact.mascot.pep* -type f \| wc -l\`;
-if [ -e $workDir/interact.sequest.pep.xml ] && [ -e $workDir/interact.mascot.pep.xml ] && [ "\$nbmascot" -gt "5" ] && [ "\$nbsequest" -gt "5" ]
+if [ -e $workDir/interact.sequest.pep.xml ] && [ -e $workDir/interact.mascot.pep.xml ] && [ "\$nbmascot" -gt "4" ] && [ "\$nbsequest" -gt "4" ]
 then
 	echo "iProphet on MASCOT and SEQUEST files." >>$fileStat;
 	$tppPath/InterProphetParser DECOY=$decoyTag $workDir/interact.mascot.pep.xml $workDir/interact.sequest.pep.xml iProphet.pep.xml >>$outputFile  2>&1;
@@ -2244,12 +2298,15 @@ else
 	if [ -e $workDir/interact.sequest.pep.xml ]
 	then
 		echo "Xinteract on MASCOT files did not work." >>$workDir/ERROR.txt;
+		exit -1;
 	else
 		if [ -e $workDir/interact.mascot.pep.xml ]
 		then
 			echo "Xinteract on SEQUEST files did not work." >>$workDir/ERROR.txt;
+			exit -1;
 		else
 			echo "Xinteract on SEQUEST and MASCOT files did not work." >>$workDir/ERROR.txt;
+			exit -1;
 		fi
 	fi
 fi
@@ -2258,12 +2315,13 @@ fi
 				else{							## Mascot Files
 					print BASH qq
 |nbmascot=\`find $workDir/interact.mascot.pep* -type f \| wc -l\`;
-if [ -e $workDir/interact.mascot.pep.xml ] && [ "\$nbmascot" -gt "5" ]
+if [ -e $workDir/interact.mascot.pep.xml ] && [ "\$nbmascot" -gt "4" ]
 then
 	echo "iProphet on MASCOT files." >>$fileStat;
 	$tppPath/InterProphetParser DECOY=$decoyTag $workDir/interact.mascot.pep.xml $workDir/iProphet.pep.xml >>$outputFile  2>&1;
 else
 	echo "Xinteract on MASCOT files did not work." >>$workDir/ERROR.txt;
+	exit -1;
 fi
 |;
 				}
@@ -2271,15 +2329,42 @@ fi
 			else{								## Sequest Files
 				print BASH qq
 |nbsequest=\`find $workDir/interact.sequest.pep* -type f \| wc -l\`;
-if [ -e $workDir/interact.sequest.pep.xml ] && [ "\$nbsequest" -gt "5" ]
+if [ -e $workDir/interact.sequest.pep.xml ] && [ "\$nbsequest" -gt "4" ]
 then
 	echo "iProphet on SEQUEST files." >>$fileStat;
 	$tppPath/InterProphetParser DECOY=$decoyTag $workDir/interact.sequest.pep.xml $workDir/iProphet.pep.xml >>$outputFile  2>&1;
 else
 	echo "Xinteract on SEQUEST files did not work." >>$workDir/ERROR.txt;
+	exit -1;
 fi
 |;
 			}
+
+			
+if(param("PTMProphet")) {
+	my $modifications = (param("PTMProphetModifs")) ? join(',', promsMod::cleanParameters(param("PTMProphetModifs"))) : "STY:79.9663,M:15.9949,C:57.0214";
+	my $nIons = ($fragmentation eq 'ETD') ? 'c' : 'b';
+	my $cIons = ($fragmentation eq 'ETD') ? 'z' : 'y';
+	my $ms1PPMTol = (param('PTMProphetPPMTol')) ? (param('PTMProphetPPMTol')) : 1;
+	my $fragPPMTol = (param('PTMProphetFragPPMTol')) ? (param('PTMProphetFragPPMTol')) : 10;
+	my $EMmodel = (param('PTMProphetEMModel')) ? param('PTMProphetEMModel') : 2;
+	my $minProb = (param('PTMProphetMinProb')) ? param('PTMProphetMinProb') : 0.9;
+	
+ 			##########################
+			###> PTMProphetParser <###
+			##########################
+			print BASH qq
+|if [ -e $workDir/iProphet.pep.xml ]
+then
+	echo "PTMProphetParser: on iProphet file." >>$fileStat;
+	cd $workDir;
+	$tppPath/PTMProphetParser VERBOSE EM=$EMmodel MINPROB=$minProb PPMTOL=$ms1PPMTol FRAGPPMTOL=$fragPPMTol MAXTHREADS=$MAX_NB_THREAD NIONS=$nIons CIONS=$cIons $modifications $workDir/iProphet.pep.xml >> $outputFile  2>&1;
+else
+	echo "PTMProphetParser did not work." >>$workDir/ERROR.txt;
+	exit -1;
+fi
+|;
+}
 	
 			
 			##############
@@ -2293,6 +2378,7 @@ then
 	$tppPath/Mayu.pl -A $workDir/iProphet.pep.xml -C $dbFile -E $decoyTag -G 0.01 -H 51 -I $missedCleavage -P $fdrType=$fdr:t >>$outputFile  2>&1;
 else
 	echo "InterProphetParser did not work." >>$workDir/ERROR.txt;
+	exit -1;
 fi
 |;
 			
@@ -2311,7 +2397,7 @@ then
 		echo "The minimum score is : \$fdrMin." >>$fileStat;
 	else
 		echo "%Mayu : Not enough input files.\n" >>$workDir/ERROR.txt;
-		exit;
+		exit -1;
 	fi
 |;
 	
@@ -2355,6 +2441,7 @@ then
 			print BASH qq
 |else
 	echo "Mayu did not work, missing file : FDR0.01_t_1.07.csv." >>$workDir/ERROR.txt;
+	exit -1;
 fi
 echo "END" >>$workDir/END.txt;
 |;
@@ -2397,8 +2484,11 @@ echo "END" >>$workDir/END.txt;
 				
 				system "chmod 775 $workDir/script.sh";
 				###> Execute bash file
-				$clusterInfo{'sendToCluster'}->($bashFile);
+				my ($jobClusterID) = $clusterInfo{'sendToCluster'}->($bashFile);
 				
+				# Add to DB
+				$dbh->do("UPDATE JOB_HISTORY SET ID_JOB_CLUSTER = CONCAT(ID_JOB_CLUSTER, ';C$jobClusterID') WHERE ID_JOB='$time'");
+				$dbh->commit;
 				
 				###>Waiting for job to run
 				my $pbsError;
@@ -2604,7 +2694,12 @@ echo "END" >>$workDir/END.txt;
 			
 			###> Execute bash 
 			if ($clusterInfo{'on'}) {
-				$clusterInfo{'sendToCluster'}->($bashFile);
+				my ($jobClusterID) = $clusterInfo{'sendToCluster'}->($bashFile);
+				
+				# Add job to DB
+				$dbh->do("UPDATE JOB_HISTORY SET ID_JOB_CLUSTER = CONCAT(ID_JOB_CLUSTER, ';C$jobClusterID') WHERE ID_JOB='$time'");
+				$dbh->commit;
+				
 				###>Waiting for job to run
 				my $pbsError;
 				my $nbWhile=0;
@@ -2965,7 +3060,7 @@ echo "END" >>$workDir/END.txt;
 	
 			###>Insertion into SWATH_LIB_MODIFICATION
 			foreach my $keys (keys(%swathModifications)){
-				my $residuesList=join('',keys($swathModifications{$keys}));
+				my $residuesList=join('',keys(%{$swathModifications{$keys}}));
 				my $modID=&promsMod::getModificationIDfromString($dbh,$keys,$residuesList);
 				my $sthLibMod;
 				if ($action eq 'update') {
@@ -3012,6 +3107,7 @@ echo "END" >>$workDir/END.txt;
 				rename ("$workDir/SpecLib.splib","$workDir/SpecLib_Lib$libID\_v$version.splib");
 				rename ("$workDir/SpecLib.pepidx","$workDir/SpecLib_Lib$libID\_v$version.pepidx");
 				rename ("$workDir/SpecLib.spidx","$workDir/SpecLib_Lib$libID\_v$version.spidx");
+				rename ("$workDir/SpecLib.mrm","$workDir/SpecLib_Lib$libID\_v$version.mrm") if(-s "$workDir/SpecLib.mrm");
 				if ($libCons eq 'mergelib'){
 					system "cd $workDir; tar -czf $versionDir.tar.gz SpecLib_Lib*";
 				}
@@ -3020,6 +3116,7 @@ echo "END" >>$workDir/END.txt;
 					system "cd $workDir; tar -rf $versionDir.tar SpecLib_Lib$libID\_v$version.splib";
 					system "cd $workDir; tar -rf $versionDir.tar SpecLib_Lib$libID\_v$version.pepidx";
 					system "cd $workDir; tar -rf $versionDir.tar SpecLib_Lib$libID\_v$version.spidx";
+					system "cd $workDir; tar -rf $versionDir.tar SpecLib_Lib$libID\_v$version.mrm" if(-s "SpecLib_Lib$libID\_v$version.mrm");
 					system "cd $workDir; gzip $versionDir.tar";
 				}
 			}
@@ -3040,13 +3137,13 @@ echo "END" >>$workDir/END.txt;
 				system "mv $workDir/SpecLib_cons.splib $finalDir/$nameFinalFiles.splib";
 				system "mv $workDir/SpecLib_cons.pepidx $finalDir/$nameFinalFiles.pepidx";
 				system "mv $workDir/SpecLib_cons.spidx $finalDir/$nameFinalFiles.spidx";
-				system "mv $workDir/SpecLib_cons.mrm $finalDir/$nameFinalFiles.mrm" if -s "$workDir/SpecLib_cons.mrm";
+				system "mv $workDir/SpecLib_cons.mrm $finalDir/$nameFinalFiles.mrm" if(-s "$workDir/SpecLib_cons.mrm");
 			}
 			system "cp $workDir/sortie.txt $finalDir";
 			system "cp $workDir/script.sh $finalDir" if (-e "$workDir/script.sh");
 	
 			open(FILESTAT,">>$fileStat");
-			print FILESTAT "Done";
+			print FILESTAT "Ended";
 			close(FILESTAT);
 		}
 		else{
@@ -3055,15 +3152,7 @@ echo "END" >>$workDir/END.txt;
 			close(FILEERROR);
 			exit;
 		}
-		system "rm $fileStat" if -e $fileStat;
 	}
-	print qq |
-<SCRIPT LANGUAGE="JavaScript">
-var monitorWindow=window.open("$promsPath{cgi}/monitorDIAProcess.cgi?ACT=library",'Monitoring libraries creation','width=1000,height=500,scrollbars=yes,resizable=yes');
-monitorWindow.focus();
-window.location="$promsPath{cgi}/listSwathLibraries.cgi";
-</SCRIPT>
-	|;
 }
 print "</CENTER></BODY></HTML>";
 
@@ -3265,6 +3354,9 @@ $dbh->disconnect;
 
 
 ####>Revision history<#####
+# 1.8.9 [FIX] Fix output and error path of child processes (VS 08/01/20)
+# 1.8.8 [ENHANCEMENT] Add PTMProphet to spectral library building (VS 18/11/19)
+# 1.8.7 Handles new job monitoring system (VS 10/05/19)
 # 1.8.6 Generalize SQL Queries to avoid specific iRT and Decoy filtering (VS 10/05/19)
 # 1.8.5 Add acetylation recovering on importation (VS 22/10/2018) 
 # 1.8.4 Add option to create .mrm library final file (MLP 19/17/18)

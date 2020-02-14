@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 #############################################################################
-# displayGOQuantiAnalysis.cgi    1.2.1                                      #
+# displayGOQuantiAnalysis.cgi    1.2.3                                      #
 # Authors: P. Poullet, G. Arras ,F. Yvon & S. Liva (Institut Curie)         #
 # Contact: myproms@curie.fr                                                 #
 # Display heatmap of quantitative GO analyses                               #
@@ -64,12 +64,14 @@ $sthMaster->execute($goAnaID);
 my ($goName,$projectID,$aspect,$paramStrg) = $sthMaster->fetchrow_array;
 $sthMaster->finish;
 
-my $sthQG = $dbh->prepare("SELECT Q.ID_QUANTIFICATION,RATIO,ID_MODIFICATION,QUANTIF_ANNOT,ID_DESIGN
-			  FROM GOANA_QUANTIFICATION GQ, QUANTIFICATION Q
-			  WHERE ID_GOANALYSIS=?
-			  AND Q.ID_QUANTIFICATION=GQ.ID_QUANTIFICATION");
+my $sthQG = $dbh->prepare("SELECT Q.ID_QUANTIFICATION,RATIO,Q.ID_MODIFICATION,GROUP_CONCAT(MQ.ID_MODIFICATION ORDER BY MQ.MODIF_RANK SEPARATOR ','),QUANTIF_ANNOT,ID_DESIGN
+			  FROM GOANA_QUANTIFICATION GQ
+              INNER JOIN QUANTIFICATION Q ON Q.ID_QUANTIFICATION=GQ.ID_QUANTIFICATION
+              LEFT JOIN MULTIMODIF_QUANTIFICATION MQ ON Q.ID_QUANTIFICATION=MQ.ID_QUANTIFICATION
+			  WHERE ID_GOANALYSIS=? GROUP BY Q.ID_QUANTIFICATION");
 $sthQG->execute($goAnaID);
-my ($quantiID, $ratioPos,$quantifModID,$annot,$designID) = $sthQG->fetchrow_array;
+my ($quantiID, $ratioPos,$quantifModID,$multiModifStrg,$annot,$designID) = $sthQG->fetchrow_array;
+my $modifQuantifStrg=$quantifModID || $multiModifStrg || '';
 $sthQG->finish;
 
 my @userInfo=&promsMod::getUserInfo($dbh,$userID,$projectID);
@@ -338,7 +340,7 @@ function ajaxGetProteins(rowID,colID,protTable) {
 	XHR.onreadystatechange=function() {
 		if (XHR.readyState==4 && XHR.responseText){
 			protTable.innerHTML = XHR.responseText;
-			protTable.scrollIntoView();
+			protTable.scrollIntoView({block:"start",inline:"nearest",behavior:"smooth"});
 		}
 	}
 	XHR.send(null);
@@ -491,29 +493,45 @@ sub getProtList{
 	    }
     }
     close RES;
-
+    
+	my $isoformName='';
+    #my  @quantifModifs;
+	if ($modifQuantifStrg) {
+		my @quantifModifs=split(',',$modifQuantifStrg);
+		my $sthMod=$dbh->prepare("SELECT PSI_MS_NAME,INTERIM_NAME,SYNONYMES,DISPLAY_CODE,DISPLAY_COLOR FROM MODIFICATION WHERE ID_MODIFICATION=?");
+		#my $modifRank=0;
+        foreach my $modID (@quantifModifs) {
+            #$modifRank++;
+            #unless ($modificationInfo{$modID}) {
+                $sthMod->execute($modID);
+                my ($psiName,$interName,$synName,$displayCode,$displayColor)=$sthMod->fetchrow_array;
+            #    my $modifName=$psiName || $interName || $synName;
+            #    $modifName=~s/^##//; $modifName=~s/##.*$//;
+            #    $modificationInfo{$modID}=[$modID,$displayCode,$displayColor,$modifName];
+            #}
+            $isoformName.='/' if $isoformName;
+            $isoformName.="<FONT color='#$displayColor'>$displayCode</FONT>";
+        }
+        #$isoformName=$modifName.'-sites';
+		$isoformName.='-sites';
+	}
+    
 	my $numPepCode='NUM_PEP_USED';
 	my $quantif=$quantiID.'_'.$ratioPos;
-	my (%quantifValues,%quantifInfo,%proteinInfo);
+	my (%quantifValues,%quantifInfo,%proteinInfo,%dispModifSites);
 	if ($countGOProt) {
-		my %parameters=(QUANTIF_FAMILY=>'RATIO',VIEW=>'list',NUM_PEP_CODE=>$numPepCode,QUANTIF_LIST=>[$quantif],SEL_MODIF_ID=>$quantifModID);
+		my %parameters=(QUANTIF_FAMILY=>'RATIO',VIEW=>'list',NUM_PEP_CODE=>$numPepCode,QUANTIF_LIST=>[$quantif]);
 		my ($numPepThr) = ($paramStrg =~ /minPep=([^;]+)/);
 		$parameters{STRICT_FILTER}{$numPepCode}=$numPepThr if ($numPepThr && $numPepThr > 1);
 		my ($pValueThr) = ($paramStrg =~ /ratioPvalue=([^;]+)/);
 		$parameters{STRICT_FILTER}{P_VALUE}=$pValueThr if ($pValueThr && $pValueThr > 1);
-		&promsQuantif::fetchQuantificationData($dbh,\%parameters,\%quantifInfo,\%quantifValues,\%proteinInfo,\%proteinsMatched);
-	}
-
-	my $isoformName='';
-	if ($quantifModID) {
-		my ($modifName)=$dbh->selectrow_array("SELECT PSI_MS_NAME FROM MODIFICATION WHERE ID_MODIFICATION=$quantifModID");
-		$isoformName=$modifName.'-forms';
+		&promsQuantif::fetchQuantificationData($dbh,\%parameters,\%quantifInfo,\%quantifValues,\%dispModifSites,\%proteinInfo,\%proteinsMatched);
 	}
 
 	$dbh->disconnect;
 
 	##>Remove PTM-ratios outside bin range:  ]bin ratio range]
-	if ($quantifModID) {
+	if ($modifQuantifStrg) {
 		my ($logRatios) = ($paramStrg =~ /logRatios=([^;]+)/);
 		my @thrLogRatios = split(/,/,$logRatios);
 		my $maxRatio=2**$thrLogRatios[$bin-1] if $bin < 5;
@@ -534,7 +552,7 @@ sub getProtList{
 
 
     ####>HTML<####
-    print header( -'content-encoding' => 'none');
+    print header(-type=>'text/plain',-charset => 'utf-8');
     warningsToBrowser(1);
 
     unless ($countGOProt) {
@@ -563,12 +581,12 @@ sub getProtList{
 <INPUT type="button" value="Uncheck all" onclick="checkAllProteins(false)"/>
 <INPUT type="button" id="saveFormBUTTON" value="Save proteins..." onclick="ajaxManageSaveProteins('getThemes','PROT')"$disabSave/>
 |;
-	print "<INPUT type=\"button\" id=\"saveSiteFormBUTTON\" value=\"Save sites...\" onclick=\"ajaxManageSaveProteins('getThemes','SITE',$quantifModID)\"$disabSave/>\n" if $quantifModID;
+	print "<INPUT type=\"button\" id=\"saveSiteFormBUTTON\" value=\"Save sites...\" onclick=\"ajaxManageSaveProteins('getThemes','SITE','$modifQuantifStrg')\"$disabSave/>\n" if $modifQuantifStrg;
 	print qq
 |</TD></TR>
 |;
 	my $itemHeaderStrg='';
-	if ($quantifModID) {
+	if ($modifQuantifStrg) {
 		my ($totIsoforms) = ($paramStrg =~ /numSiteSel=([^;]+)/);
 		$itemHeaderStrg="&nbsp;".(scalar keys %quantifValues)."/$totIsoforms $isoformName&nbsp;<BR>";
 	}
@@ -581,13 +599,14 @@ sub getProtList{
 |;
     my ($minFoldChange,$maxFoldChange,$maxPvalue)=(0.5,2,0.05);
     my $numDispItems=0;
-    foreach my $protID0 (sort{$quantifValues{$b}{$quantif}{$numPepCode} <=> $quantifValues{$a}{$quantif}{$numPepCode}} keys %quantifValues) {
+    foreach my $modProtID (sort{$quantifValues{$b}{$quantif}{$numPepCode} <=> $quantifValues{$a}{$quantif}{$numPepCode}} keys %quantifValues) {
 	    $numDispItems++;
-		my ($protID,$modStrg)=($protID0=~/^(\d+)(.*)/); $modStrg='' unless $modStrg;
+		my ($protID,$modStrg)=($modProtID=~/^(\d+)(.*)/); # $modStrg='' unless $modStrg;
+        $modStrg=($modStrg)? '-'.$dispModifSites{$modProtID} : '';
 		my $trClass='list row_'.($numDispItems % 2);
 		print "<TR class=\"$trClass\">\n";
 		# Protein/Isoform
-		print "<TD class=\"TH\"><INPUT type=\"checkbox\" name=\"chkProt\" value=\"$protID0\"/><A href=\"javascript:sequenceView($protID,'$anaString')\">$proteinInfo{$protID}[0]$modStrg</A>&nbsp;</TD>\n";
+		print "<TD class=\"TH\"><INPUT type=\"checkbox\" name=\"chkProt\" value=\"$modProtID\"/><A href=\"javascript:sequenceView($protID,'$anaString')\">$proteinInfo{$protID}[0]$modStrg</A>&nbsp;</TD>\n";
 	    # gene
 		print "<TH>&nbsp;";
 		if (scalar @{$proteinInfo{$protID}[5]} > 1) { # gene
@@ -597,7 +616,7 @@ sub getProtList{
 		else {print '-';} # no gene mapped
 		print '</TH>';
 		# Ratio
-	    my $ratio=$quantifValues{$protID0}{$quantif}{RATIO};
+	    my $ratio=$quantifValues{$modProtID}{$quantif}{RATIO};
 	    my ($absRatio,$arrowDir)=($ratio >= 1)? ($ratio,'up_') : (1/$ratio,'down_');
 	    my $ratioStrg=sprintf "%.2f",$absRatio; $ratioStrg*=1;
 		if ($ratio>=1000) {$ratioStrg='&infin;';}
@@ -606,17 +625,17 @@ sub getProtList{
 	    # Arrow flag
 	    my $arrowStrg='';
 	    my $okRatio=($ratio <= $minFoldChange || $ratio >= $maxFoldChange)? 1 : 0;
-	    my $okPvalue=($quantifValues{$protID0}{$quantif}{P_VALUE} && $quantifValues{$protID0}{$quantif}{P_VALUE} <= $maxPvalue)? 1 : 0;
+	    my $okPvalue=($quantifValues{$modProtID}{$quantif}{P_VALUE} && $quantifValues{$modProtID}{$quantif}{P_VALUE} <= $maxPvalue)? 1 : 0;
 	    if ($okRatio || $okPvalue) {
 		    my $arrowColor=(!$okRatio || !$okPvalue)? 'gray' : ($ratio >= 1)? 'red' : 'green';
-		    $arrowStrg="<IMG class=\"LINK\" src=\"$promsPath{images}/$arrowDir$arrowColor.png\" onclick=\"ajaxProteinData(event,'$protID0',$ratioPos,'ajaxPepRatio')\">";
+		    $arrowStrg="<IMG class=\"LINK\" src=\"$promsPath{images}/$arrowDir$arrowColor.png\" onclick=\"ajaxProteinData(event,'$modProtID',$ratioPos,'ajaxPepRatio')\">";
 	    }
-	    print "<TH nowrap align=right valign=top>&nbsp;<A href=\"javascript:void(null)\" onclick=\"ajaxProteinData(event,'$protID0',$ratioPos,'ajaxPepRatio')\"/>$ratioStrg</A></TH><TD valign=top>$arrowStrg&nbsp;</TD>";
+	    print "<TH nowrap align=right valign=top>&nbsp;<A href=\"javascript:void(null)\" onclick=\"ajaxProteinData(event,'$modProtID',$ratioPos,'ajaxPepRatio')\"/>$ratioStrg</A></TH><TD valign=top>$arrowStrg&nbsp;</TD>";
 	    # p-value
-	    my $pValueStrg=(!defined $quantifValues{$protID0}{$quantif}{P_VALUE})? '-' : ($quantifValues{$protID0}{$quantif}{P_VALUE} >= 0.01)? sprintf "%.2f",$quantifValues{$protID0}{$quantif}{P_VALUE} : sprintf "%.1e",$quantifValues{$protID0}{$quantif}{P_VALUE};
-		print "<TH nowrap valign=top>&nbsp;<A href=\"javascript:void(null)\" onclick=\"ajaxProteinData(event,'$protID0',$ratioPos,'ajaxProtStat')\">$pValueStrg</A>&nbsp;</TH>";
+	    my $pValueStrg=(!defined $quantifValues{$modProtID}{$quantif}{P_VALUE})? '-' : ($quantifValues{$modProtID}{$quantif}{P_VALUE} >= 0.01)? sprintf "%.2f",$quantifValues{$modProtID}{$quantif}{P_VALUE} : sprintf "%.1e",$quantifValues{$modProtID}{$quantif}{P_VALUE};
+		print "<TH nowrap valign=top>&nbsp;<A href=\"javascript:void(null)\" onclick=\"ajaxProteinData(event,'$modProtID',$ratioPos,'ajaxProtStat')\">$pValueStrg</A>&nbsp;</TH>";
 		# peptides
-		print "<TH valign=top>&nbsp;$quantifValues{$protID0}{$quantif}{$numPepCode}&nbsp;</TH>";
+		print "<TH valign=top>&nbsp;$quantifValues{$modProtID}{$quantif}{$numPepCode}&nbsp;</TH>";
 		# mass, description, species
 		my $mass=(!$proteinInfo{$protID}[1])? '-' : $proteinInfo{$protID}[1];
 	    print "<TD class=\"TH\" align=right>$mass&nbsp;</TD><TD>$proteinInfo{$protID}[2] <U><I>$proteinInfo{$protID}[3]</I></U></TD>";
@@ -629,6 +648,8 @@ sub getProtList{
 }
 
 ####>Revision history
+# 1.2.3 [BUGFIX] Fixed incomplete compatibility with multi-modif quantifications (PP 30/11/19)
+# 1.2.2 [FEATURE] Compatible with multi-modif quantifications (PP 15/07/19)
 # 1.2.1 [Fix] undef bin values when no term found for a bin (PP 11/12/18)
 # 1.2.0 Handles PTM-based GO-quantification, merge.txt no longer used & updated list management (PP 31/08/18)
 # 1.1.3 [Fix] Now uses /usr/local/bin/perl instead of /usr/bin/perl (PP 19/09/17)

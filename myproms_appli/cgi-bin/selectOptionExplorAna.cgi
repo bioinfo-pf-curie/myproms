@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# selectOptionExplorAna.cgi    1.0.5                                           #
+# selectOptionExplorAna.cgi    1.0.6                                          #
 # Authors: P. Poullet, S.Liva (Institut Curie)                                 #
 # Contact: myproms@curie.fr                                                    #
 # Generates list of options available to user                                  #
@@ -42,6 +42,7 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 #-------------------------------------------------------------------------------
+
 $| = 1;
 use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI ':standard';
@@ -134,6 +135,9 @@ function selectOption(selectedButton) {
 	else if (action == 'displayPCA' \|\| action == 'displayClustering') {
 		top.promsFrame.resultFrame.location="$promsPath{cgi}/"+action+".cgi?&explorID=$itemID&experimentID=$expID&PROJECT_ID=$projectID";
 	}
+	else if (action == 'displayPCAPeptide' \|\| action == 'displayClusteringPeptide') {
+		top.promsFrame.resultFrame.location="$promsPath{cgi}/"+action+".cgi?&explorID=$itemID&experimentID=$expID&PROJECT_ID=$projectID";
+	}
 	else {alert('Unrecognized option');}
 }
 function autoSelectButton(buttonId) { // an action was cancelled or selected from resultFrame
@@ -196,7 +200,7 @@ else { # ($projectAccess eq 'guest')
 }
 
 ####>All Users<####
-if ($anaType eq 'PCA') {print "<TD nowrap>",&displayPCAButton,"</TD>\n";}
+if ($anaType eq ('PCA') || $anaType eq ('PCAPEP')) {print "<TD nowrap>",&displayPCAButton,"</TD>\n";}
 else {print "<TD nowrap>",&displayClusterButton,"</TD>\n";} # if $anaType eq 'cluster';
 
 print qq
@@ -224,17 +228,22 @@ sub delItemButton {
 
 sub displayPCAButton {
 	my $disabledString = ($status != 1)? ' disabled' : '';
-	return "<INPUT type=\"button\" id=\"displayPCA\" style=\"width:120px\" value=\"Display PCA\" onclick=\"selectOption(this)\"$disabledString>";
+	my $strgPcaID=($anaType eq 'PCA')? "displayPCA" : "displayPCAPeptide";
+	#return "<INPUT type=\"button\" id=\"displayPCA\" style=\"width:120px\" value=\"Display PCA\" onclick=\"selectOption(this)\"$disabledString>";
+	return "<INPUT type=\"button\" id=\"$strgPcaID\" style=\"width:120px\" value=\"Display PCA\" onclick=\"selectOption(this)\"$disabledString>";
 
 }
 
 sub displayClusterButton {
 	my $disabledString = ($status != 1)? ' disabled' : '';
-	return "<INPUT type=\"button\" id=\"displayClustering\" style=\"width:140px\" value=\"Display Clustering\" onclick=\"selectOption(this)\"$disabledString>";
+	my $strgClusterID=($anaType eq 'cluster')? "displayClustering" : "displayClusteringPeptide";
+	#return "<INPUT type=\"button\" id=\"displayClustering\" style=\"width:140px\" value=\"Display Clustering\" onclick=\"selectOption(this)\"$disabledString>";
+	return "<INPUT type=\"button\" id=\"$strgClusterID\" style=\"width:140px\" value=\"Display Clustering\" onclick=\"selectOption(this)\"$disabledString>";
 }
 
 
 ####>Revision history<####
+# 1.0.6 Compatible with Petide exploratory analyses (SL ../11/17)
 # 1.0.5 CSS style for active button (PP 15/03/16)
 # 1.0.4 Left border color code to help navigation (PP 19/10/15)
 # 1.0.3 Allow guest to display Analysis (PP 16/09/14)

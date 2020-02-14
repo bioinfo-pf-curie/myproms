@@ -53,15 +53,15 @@ def checkArguments(argv):
 	try:
 		opts, args = getopt.getopt(argv,"hf:s:",["help","file=","sheets="])
 		if len(opts) == 0:
-			print argMsg
+			print(argMsg)
 			sys.exit()
 	except getopt.GetoptError:
-		print argMsg
+		print(argMsg)
 		sys.exit()
 
 	for opt, arg in opts:
 		if opt == '-h' or opt == '--help':
-			print argMsg
+			print(argMsg)
 			sys.exit()
 		elif opt in ("-f", "--file"):
 			inputFile = arg
@@ -79,7 +79,7 @@ inFileRootName=re.sub(r'\.xlsx$','',inFile)
 try:
 	wb = load_workbook(filename=inFile, read_only=True)
 except IOError:
-	print 'ERROR: Could not load file "'+inFile+'"!'
+	print('ERROR: Could not load file "'+inFile+'"!')
 	sys.exit()
 
 sh=open(inFileRootName + '_SheetNames.info','w')

@@ -1,5 +1,5 @@
 #############################################################################
-# goAnalysis.pm               1.1.6                                         #
+# goAnalysis.pm               1.1.8                                         #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                   #
 # Contact: myproms@curie.fr                                                 #
 # Performs term enrichment analysis on a protein set using GO::TermFinder,  #
@@ -585,8 +585,8 @@ sub getAspectName{
     my %aspectName = ( 'P' => 'Biological Process',
                       'C' => 'Cellular Component',
                       'F' => 'Molecular Function');
-
-    return $aspectName{$aspectChar} or die 'Invalid aspect';
+    die "Invalid aspect: '$aspectChar'" unless $aspectName{$aspectChar};
+    return $aspectName{$aspectChar};
 }
 
 sub getRootID{
@@ -737,6 +737,8 @@ sub getProteinIds{
 1;
 
 ####>Revision history<####
+# 1.1.8 [BUGFIX] Removed duplicate unless in getAspectName (PP 29/01/20)
+# 1.1.7 [ENHANCEMENT] Modification in &getAspectName to prevent warning at return line (PP 20/01/20) 
 # 1.1.6 Uses dirmove instead on move (PP12/10/18)
 # 1.1.5 More print to keep server connection (PP 20/08/15)
 # 1.1.4 Minor code cleaning (PP 12/11/14)

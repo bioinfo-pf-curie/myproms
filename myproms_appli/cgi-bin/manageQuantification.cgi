@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# manageQuantification.cgi               1.2.1                                 #
+# manageQuantification.cgi               1.2.7                                 #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -60,71 +60,184 @@ my $userID=$ENV{'REMOTE_USER'};
 #################################
 ####>Fetching Parameters... <####
 #################################
-my $action=(param ('ACT'))? param ('ACT') : 'edit'; # edit, update, delete, (summary of peptide quantif only) (summary of design quantifs moved to showProtQuantification.cgi)
-my $quantifID=param('ID') ? param('ID') : param('itemID') ;
-my $projectID=param('PROJECT_ID');
-my $branchID=param('branchID');
+my $action = param('ACT') || 'edit'; # edit, update, delete, (summary of quantifs moved to show[Pep/Prot]Quantification.cgi)
+my $itemID = param('ID') || param('itemID') ;
+my $projectID = param('PROJECT_ID');
+my $branchID = param('branchID');
 
 
 ##########################
 ####>Connecting to DB<####
 ##########################
 my $dbh=&promsConfig::dbConnect;
+my @userInfo=&promsMod::getUserInfo($dbh,$userID,$projectID);
 
 ################
 ####>Delete<####
 ################
-if ($action eq 'delete') {
-	my @quantifIdList=param('quantifIdList') || ($quantifID);
-	my ($experimentID)=$dbh->selectrow_array("SELECT DISTINCT(ID_EXPERIMENT) FROM SAMPLE S, ANALYSIS A, ANA_QUANTIFICATION AQ WHERE S.ID_SAMPLE=A.ID_SAMPLE AND A.ID_ANALYSIS=AQ.ID_ANALYSIS AND AQ.ID_QUANTIFICATION=$quantifIdList[0]");
-
+if ($action =~ /delete/) {
+	my @quantifIdList = (param('quantifIdList')) ? param('quantifIdList') : ($itemID);
+	my $title = ($action eq 'delete') ? 'Deleting ' : 'Delete ';
+	$title .= ($action eq 'deleteMulti' || scalar @quantifIdList > 1) ? 'Quantifications' : 'Quantification';
+	
 	print header(-'content-encoding'=>'no',-charset=>'utf-8'); warningsToBrowser(1);
 	print qq
-|<HEAD>
-<TITLE>Deleting Quantification</TITLE>
+|<HTML>
+<HEAD>
+<TITLE>$title</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
+<style>
+#quantiTable tr {
+	height: 25px;
+}
+
+#quantiTable td, #quantiTable th {
+	padding: 0 10px 0 10px;
+}
+</style>
+<script>
+function checkall(checkStatus){
+	var quantiBox = document.selQuantiForm.quantifIdList;
+	if (!quantiBox) return; // no selectable quantifications
+	if (quantiBox.length) { // more than 1 checkboxes
+		for (let i=0; i < quantiBox.length; i++){
+			if (quantiBox[i].disabled == false) {
+				quantiBox[i].checked=checkStatus;
+			}
+		}
+	}
+	else {quantiBox.checked=checkStatus;} // Only 1 checkbox
+}
+function checkForm(myForm) {
+	var quantiBox = myForm.quantifIdList;
+	var okChecked=false;
+	if (quantiBox.length) { // more than 1 checkboxes
+		for (let i=0; i < quantiBox.length; i++){
+			if (quantiBox[i].disabled == false){
+				okChecked=quantiBox[i].checked;
+				if (okChecked) break;
+			}
+		}
+	}
+	else {okChecked=quantiBox.checked;} // Only 1 checkbox
+	if (okChecked==false) {
+		alert("ERROR: No quantification selected!");
+	}
+	return okChecked;
+}
+</script>
 </HEAD>
 <BODY background="$promsPath{images}/bgProMS.gif" >
-<CENTER><FONT class="title">Deleting Quantifications</FONT></CENTER>
+<center><FONT class="title">$title</FONT>
 <BR><BR><BR>
-<FONT class="title2">
 |;
-	my $designID;
-	my $sthQ=$dbh->prepare("SELECT ID_DESIGN,NAME FROM QUANTIFICATION WHERE ID_QUANTIFICATION=?");
-	foreach my $qID (@quantifIdList) {
-		$sthQ->execute($qID);
-		($designID,my $qName)=$sthQ->fetchrow_array;
-		print "&nbsp;-Deleting '$qName'...";
-		&promsQuantif::deleteQuantification($dbh,$projectID,$qID);
-		$dbh->commit;
-		print " Done.<BR>\n";
-	}
-	$sthQ->finish;
-	$dbh->disconnect;
-	print "</FONT>\n";
-	sleep 2;
-	my $branchIDStg=($designID)? "&DESIGN=DESIGN:$designID&branchID=design:$designID" : "&branchID=experiment:$experimentID";
-	print qq
-|<SCRIPT LANGUAGE="JavaScript">
-top.promsFrame.selectedAction='summary';
-parent.itemFrame.location="$promsPath{cgi}/openProject.cgi?ID=$projectID$branchIDStg&ACT=experiment&EXPERIMENT=EXPERIMENT:$experimentID&ISNAVFRAME=0&VIEW=quanti";
+	
+	if ($action eq 'delete') {
+		my ($experimentID)=$dbh->selectrow_array("SELECT DISTINCT(ID_EXPERIMENT) FROM SAMPLE S, ANALYSIS A, ANA_QUANTIFICATION AQ WHERE S.ID_SAMPLE=A.ID_SAMPLE AND A.ID_ANALYSIS=AQ.ID_ANALYSIS AND AQ.ID_QUANTIFICATION=$quantifIdList[0]");
+		print('<FONT class="title2">');
+		my $designID;
+		my $sthQ = $dbh->prepare("SELECT ID_DESIGN,NAME FROM QUANTIFICATION WHERE ID_QUANTIFICATION=?");
+		
+		foreach my $qID (@quantifIdList) {
+			$sthQ->execute($qID);
+			($designID,my $qName)=$sthQ->fetchrow_array;
+			print "&nbsp;-Deleting '$qName'...";
+			&promsQuantif::deleteQuantification($dbh,$projectID,$qID);
+			$dbh->commit;
+			print " Done.<BR>\n";
+		}
+		$sthQ->finish;
+		$dbh->disconnect;
+		sleep 2;
+		
+		my $branchIDStg=($designID)? "&DESIGN=DESIGN:$designID&branchID=design:$designID" : "&branchID=experiment:$experimentID";
+		print qq
+|</FONT>
+<SCRIPT type="text/javascript">
+	top.promsFrame.selectedAction='summary';
+	parent.itemFrame.location="$promsPath{cgi}/openProject.cgi?ID=$projectID$branchIDStg&ACT=experiment&EXPERIMENT=EXPERIMENT:$experimentID&ISNAVFRAME=0&VIEW=quanti";
 </SCRIPT>
 </BODY>
 </HTML>
 |;
-	exit;
+		exit;	
+	}
+	elsif($action eq 'deleteMulti') {
+		print qq
+|<form name="selQuantiForm" action="./manageQuantification.cgi" method="post" onsubmit="return (checkForm(this));" style=''>
+<input type='hidden' name='PROJECT_ID' value='$projectID' />
+<input type='hidden' name='ACT' value='delete' />
+<input type='hidden' name='branchID' value='$branchID' />
+
+<table id='quantiTable' border=0 cellspacing=0 cellpadding=0>
+|;
+
+		my $visFilterStrg=($userInfo[1] eq 'bioinfo')? '' : ($userInfo[1] eq 'mass')? 'AND Q.STATUS <= 2' : 'AND Q.STATUS <= 1'; # 3: hidden to mass &  bio, 2: hidden to biologists
+		my $sthQ = $dbh->prepare("SELECT Q.ID_QUANTIFICATION, Q.NAME, Q.STATUS, QM.NAME, QM.DES FROM QUANTIFICATION Q INNER JOIN QUANTIFICATION_METHOD QM ON Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD WHERE Q.ID_DESIGN=$itemID $visFilterStrg");
+        my @sthChild=(
+					  $dbh->prepare("SELECT 1 FROM GOANA_QUANTIFICATION WHERE ID_QUANTIFICATION=? LIMIT 1"),
+					  $dbh->prepare("SELECT 1 FROM EXPLORANA_QUANTIF WHERE ID_QUANTIFICATION=? LIMIT 1"),
+					  $dbh->prepare("SELECT 1 FROM PATHWAYANA_QUANTIFICATION WHERE ID_QUANTIFICATION=? LIMIT 1"),
+					  $dbh->prepare("SELECT 1 FROM PARENT_QUANTIFICATION WHERE ID_PARENT_QUANTIFICATION=? LIMIT 1")
+					 );
+		$sthQ->execute;
+		my ($lightColor, $darkColor)=&promsConfig::getRowColors;
+		my $rowColor = $lightColor;
+		print qq
+|<tr bgcolor="$darkColor">
+	<th class="rbBorder" nowrap align=left><input id="checkAllQuantis" type="checkbox" onclick="checkall(this.checked)" />&nbsp;Name</th>
+	<th class="bBorder" nowrap>Method</th>
+</tr>
+|;
+        while (my ($qID, $qName, $qStatus, $qmName, $qmDes) = $sthQ->fetchrow_array) {
+			my $hasChildren=0;
+			if ($qStatus < 1) {
+				my $statusStrg=($qStatus == -2)? 'Failed' : ($qStatus == -1)? 'On-going' : 'Not completed';
+				$qName = "$qName <span style='color:red;font-weight:bold'>($statusStrg !)</span>";
+			}
+			else {
+				foreach my $sth (@sthChild) {
+					$sth->execute($qID);
+					($hasChildren)=$sth->fetchrow_array;
+					last if $hasChildren;
+				}
+			}
+			my ($visStrg,$disabStatus)=($hasChildren)? ('style="visibility:hidden"','disabled') : ('','');
+			print qq
+|<tr bgcolor="$rowColor">
+	<th align="left"><input name="quantifIdList" value='$qID' type="checkbox" $visStrg $disabStatus/>&nbsp;$qName</th>
+	<td style='text-align:left'>$qmName ($qmDes)</td>
+</tr>
+|;
+			$rowColor = ($rowColor eq $darkColor) ? $lightColor : $darkColor;
+		}
+		print qq
+|</table><br/>
+<input type="submit" name="Submit" value="Delete" class="title3">
+</form>
+</center>
+</BODY>
+</HTML>
+|;
+		$sthQ->finish;
+		foreach my $sth (@sthChild) {$sth->finish;}
+		$dbh->disconnect;
+		
+		exit;
+	}
 }
 #####################
 ####>Update Name<#### (following 'edit')
 #####################
 elsif ($action eq 'update') {
 	my $name=param('quantiName');
-	my $sthUp=$dbh->prepare("UPDATE QUANTIFICATION SET NAME=? WHERE ID_QUANTIFICATION=$quantifID");
-	$sthUp->execute($name);
+	my $status=param('quantiStatus');
+	my $sthUp=$dbh->prepare("UPDATE QUANTIFICATION SET NAME=?,STATUS=? WHERE ID_QUANTIFICATION=$itemID");
+	$sthUp->execute($name,$status);
 	$sthUp->finish;
 	$dbh->commit;
 
-	my ($experimentID)=$dbh->selectrow_array("SELECT DISTINCT(ID_EXPERIMENT) FROM SAMPLE S, ANALYSIS A, ANA_QUANTIFICATION AQ WHERE S.ID_SAMPLE=A.ID_SAMPLE AND A.ID_ANALYSIS=AQ.ID_ANALYSIS AND AQ.ID_QUANTIFICATION=$quantifID");
+	my ($experimentID)=$dbh->selectrow_array("SELECT DISTINCT(ID_EXPERIMENT) FROM SAMPLE S, ANALYSIS A, ANA_QUANTIFICATION AQ WHERE S.ID_SAMPLE=A.ID_SAMPLE AND A.ID_ANALYSIS=AQ.ID_ANALYSIS AND AQ.ID_QUANTIFICATION=$itemID");
 	my ($item,$parentID,$childID)=split(':',$branchID);# For XIC extractions linked to a TnPQ or Pep-Ratio quantification
 	$childID=$parentID unless $childID;
 	my ($designID)=$dbh->selectrow_array("SELECT ID_DESIGN FROM QUANTIFICATION WHERE ID_QUANTIFICATION=$childID");
@@ -134,35 +247,40 @@ elsif ($action eq 'update') {
 	my $branchIDStg=($designID)? "&DESIGN=DESIGN:$designID&branchID=quantification:$childID" : "&branchID=experiment:$experimentID";
 	print header(-charset=>'utf-8'); warningsToBrowser(1);
 	print qq
-|<HEAD>
-<SCRIPT LANGUAGE="JavaScript">
-top.promsFrame.selectedAction='summary';
-parent.itemFrame.location="$promsPath{cgi}/openProject.cgi?ID=$projectID$branchIDStg&ACT=experiment&EXPERIMENT=EXPERIMENT:$experimentID&ISNAVFRAME=0&VIEW=quanti";
+|<HTML>
+<HEAD>
+<SCRIPT type="text/javascript">
+	top.promsFrame.selectedAction='summary';
+	parent.itemFrame.location="$promsPath{cgi}/openProject.cgi?ID=$projectID$branchIDStg&ACT=experiment&EXPERIMENT=EXPERIMENT:$experimentID&ISNAVFRAME=0&VIEW=quanti";
 </SCRIPT>
 </HEAD>
 </HTML>
 |;
 	exit;
+	
 }
-
-
-##############################
-####>Summary or Edit form<####
-##############################
-my ($quantifName,$focus,$quantifStatus,$quantifMethodName,$quantifMethodDes)=$dbh->selectrow_array("SELECT Q.NAME,Q.FOCUS,Q.STATUS,QM.NAME,QM.DES FROM QUANTIFICATION Q,QUANTIFICATION_METHOD QM WHERE Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD AND Q.ID_QUANTIFICATION=$quantifID");
-
-$dbh->disconnect;
-
-#######################
-####>Starting HTML<####
-#######################
-my ($lightColor,$darkColor)=&promsConfig::getRowColors;
-my $bgColor=$lightColor;
-my %itemIcones=&promsConfig::getItemIcones;
-
-print header(-charset=>'utf-8'); warningsToBrowser(1);
-print qq
-|<HEAD>
+else {
+	###################
+	####>Edit form<#### No longer handles summary for peptide quantif
+	###################
+	my ($quantifName,$focus,$quantifStatus,$quantifMethodName,$quantifMethodDes)=$dbh->selectrow_array("SELECT Q.NAME,Q.FOCUS,Q.STATUS,QM.NAME,QM.DES FROM QUANTIFICATION Q,QUANTIFICATION_METHOD QM WHERE Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD AND Q.ID_QUANTIFICATION=$itemID");
+	my $quantifString = ($quantifStatus==-2)? '<FONT color="#DD0000">Failed</FONT> (Click on "Monitor Quantification(s)" for more information)' : ($quantifStatus==-1)? 'Not launched yet' : ($quantifStatus==0)? 'On-going' : 'Finished';
+	$focus=ucfirst($focus).'s';
+	$focus.=' and fragment ions' if $quantifMethodName=~/Swath/i;
+	
+	$dbh->disconnect;
+	
+	#######################
+	####>Starting HTML<####
+	#######################
+	my ($lightColor,$darkColor)=&promsConfig::getRowColors;
+	my $bgColor=$lightColor;
+	my %itemIcones=&promsConfig::getItemIcones;
+	
+	print header(-charset=>'utf-8'); warningsToBrowser(1);
+	print qq
+|<HTML>
+<HEAD>
 <TITLE>Quantification</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
 <SCRIPT LANGUAGE="JavaScript">
@@ -174,73 +292,44 @@ function cancelAction() {
 </HEAD>
 <BODY background="$promsPath{images}/bgProMS.gif" >
 <CENTER>
-<FONT class="title">Quantification <FONT color="#DD0000">$quantifName</FONT></FONT><BR><BR>
-|;
-
-my $quantifString = ($quantifStatus==-2)? '<FONT color="#DD0000">Failed</FONT> (Click on "Monitor Quantification(s)" for more information)' : ($quantifStatus==-1)? 'Not launched yet' : ($quantifStatus==0)? 'On-going' : 'Finished';
-my $nameString;
-if ($action eq 'edit') {
-	$nameString="<INPUT type=\"text\" name=\"quantiName\" value=\"$quantifName\" size=50/>";
-	print qq
-|<FORM name="exportForm" method="post">
-<INPUT type="hidden" name="itemID" value="$quantifID">
+<FONT class="title">Editing Quantification <FONT color="#DD0000">$quantifName</FONT><BR><BR>
+<FORM name="exportForm" method="post">
+<INPUT type="hidden" name="itemID" value="$itemID">
 <INPUT type="hidden" name="branchID" value="$branchID">
 <INPUT type="hidden" name="PROJECT_ID" value="$projectID">
 <INPUT type="hidden" name="ACT" value="update">
-|;
-}
-else {$nameString='&nbsp;'.$quantifName;}
-$focus=ucfirst($focus).'s';
-$focus.=' and fragment ions' if $quantifMethodName=~/Swath/i;
-print qq
-|<TABLE bgcolor=$darkColor cellpadding=2 width=800>
-<TR><TH align=right valign=top>&nbsp;Name :</TH><TD bgcolor="$lightColor">$nameString</TD></TR>
-<TR><TH align=right valign=top>&nbsp;Method :</TH><TD bgcolor="$lightColor">&nbsp;$quantifMethodName ($quantifMethodDes)</TD></TR>
-<TR><TH align=right valign=top>&nbsp;Focus :</TH><TD bgcolor="$lightColor">&nbsp;$focus</TD></TR>
-<TR><TH align=right valign=top width=170>&nbsp;Status :</TH><TD align=left bgcolor="$lightColor">&nbsp;$quantifString</TD></TR>
-|;
 
-#	print qq
-#|<TR><TH align=right valign=top nowrap>&nbsp;Quantifications involved</TH><TD bgcolor="$lightColor"><TABLE cellpadding=0 cellspacing=0>
-#|;
-#	###> Print the number of expCondition
-#	#if(uc($quantiStyle) =~ /(TNPQ|PROT)/) {
-#	my $sthgetQuantiInfo=$dbh->prepare("SELECT NAME FROM QUANTIFICATION Q,PARENT_QUANTIFICATION PQ WHERE PQ.ID_PARENT_QUANTIFICATION=Q.ID_QUANTIFICATION AND PQ.ID_QUANTIFICATION=$quantifID ORDER BY PAR_FUNCTION ASC");
-#	$sthgetQuantiInfo->execute;
-#	while (my ($parentName)=$sthgetQuantiInfo->fetchrow_array) {
-#		#print "<TR><TD nowrap><TH align=right><IMG src=\"$promsPath{images}/$itemIcones{quantification}\">&nbsp;$parentName</TH></TD>";
-#		print "<TR><TD nowrap><TH align=left><IMG src=\"$promsPath{images}/$itemIcones{quantification}\">&nbsp;$parentName</TH></TD>";
-#		print "</TR>\n";
-#	}
-#	$sthgetQuantiInfo->finish;
-#	#}else{
-#	#	my $sthgetExpCondInfo=$dbh->prepare("SELECT NAME,EXPCONDITION_QUANTIF.QUANTIF_ELEMENT FROM EXPCONDITION_QUANTIF,EXPCONDITION WHERE EXPCONDITION_QUANTIF.ID_EXPCONDITION=EXPCONDITION.ID_EXPCONDITION AND EXPCONDITION_QUANTIF.ID_QUANTIFICATION=$quantifID ORDER BY QUANTIF_ELEMENT ASC");
-#	#	$sthgetExpCondInfo->execute;
-#	#	while (my ($expCondName,$quantifElement) = $sthgetExpCondInfo->fetchrow_array) {
-#	#		print "<TR><TD nowrap><TH align=right><IMG src=\"$promsPath{images}/$itemIcones{expcondition}\">&nbsp;$expCondName</TH></TD>";
-#	#		print "<TH align=left>&nbsp;&nbsp;&nbsp;&nbsp;&rarr;&nbsp;&nbsp;&nbsp;&nbsp;$quantifElement</TH>" if $quantifElement;
-#	#		print "</TR>\n";
-#	#	}
-#	#	$sthgetExpCondInfo->finish;
-#	#}
-#	#print "\n";
-#
-#	print qq
-#|</TABLE></TD></TR>|;
-
-if ($action eq 'edit') {
-	print "<TR><TH colspan=2><INPUT type=\"submit\" name=\"save\" value=\" Save \">&nbsp;&nbsp;<INPUT type=\"button\" value=\" Cancel \" onclick=\"cancelAction()\"></TD></TR>\n";
-}
-print "</TABLE>\n";
-print "</FORM>\n" if $action eq 'edit';
-print qq
-|<BR><BR>
+<TABLE bgcolor=$darkColor cellpadding=2 width=800>
+	<TR><TH align=right valign=top>&nbsp;Name :</TH><TD bgcolor="$lightColor"><INPUT type="text" name="quantiName" value="$quantifName" size=50/></TD></TR>
+	<TR><TH align=right valign=top>&nbsp;Method :</TH><TD bgcolor="$lightColor">&nbsp;$quantifMethodName ($quantifMethodDes)</TD></TR>
+	<TR><TH align=right valign=top>&nbsp;Focus :</TH><TD bgcolor="$lightColor">&nbsp;$focus</TD></TR>
+	<TR><TH align=right valign=top width=170>&nbsp;Status :</TH><TD align=left bgcolor="$lightColor">&nbsp;$quantifString</TD></TR>
+	
+|;
+	if ($quantifStatus >= 1 && $userInfo[1]=~/bioinfo|mass/) {
+		my ($selOpt2,$selOpt3)=($quantifStatus==2)? (' selected','') : ($quantifStatus==3)? ('',' selected') : ('','');
+		print "<TR><TH align=right valign=top>&nbsp;Visibility :</TH><TD align=left bgcolor=\"$lightColor\"><SELECT name=\"quantiStatus\"><OPTION value=\"1\">Public</OPTION><OPTION value=\"2\"$selOpt2>Hide from collaborators</OPTION>";
+		print "<OPTION value=\"3\"$selOpt3>For bioinformaticians only</OPTION>" if $userInfo[1] eq 'bioinfo';
+		print "</SELECT></TD></TR>\n";
+	}
+	
+	print qq
+|	<TR><TH colspan=2><INPUT type="submit" name="save" value=" Save ">&nbsp;&nbsp;<INPUT type="button" value=" Cancel " onclick="cancelAction()"></TD></TR>
+</TABLE>
+</FORM>
+<BR><BR>
 </BODY>
 </HTML>
 |;
-#$dbh->disconnect;
+}
 
 ####>Revision history<####
+# 1.2.7 [BUGFIX] Restrict deletability to quantifications without children (PP 12/11/19)
+# 1.2.6 [ENHANCEMENT] Add form check for multiple quantifications deletion (PP 09/11/19)
+# 1.2.5 [ENHANCEMENT] Allow deletion of on-going quantifications (VS 21/10/19)
+# 1.2.4 [FEATURE] Allow multiple quantifications deletion (VS 04/10/19)
+# 1.2.3 [FEATURE] Editabble quantification visibility (PP 26/09/19)
+# 1.2.2 [FEATURE] Removed peptide quantification summary (PP 29/08/19)
 # 1.2.1 Compatible with deletion of multiple quantifications at once (PP 05/09/18)
 # 1.2.0 Major code update and cleaning. 'summary' of design-quantif moved to showProtQuantification.cgi (PP 25/07/16)
 # 1.1.5 Delete action updated for new BD tables used by modification quantification (PP 06/11/14)

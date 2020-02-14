@@ -1,6 +1,6 @@
 <!--
 ################################################################################
-# index.html          2.2.13D                                                   #
+# index.html          2.2.16D                                                   #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -57,9 +57,10 @@
 	A {color: black; font-weight: bold; text-decoration:none}
 	A:hover {text-decoration:underline;}
 </STYLE>
-	<SCRIPT type="text/JavaScript">
+<SCRIPT type="text/JavaScript">
+var sessionWindow=null;
 function startSession() {
-	if (sessionWindow != null && !sessionWindow.closed) {sessionWindow.close();}
+	if (sessionWindow !== null && !sessionWindow.closed) {sessionWindow.close();}
 	var x=(screen.availWidth/2)-200;
 	var y=(screen.availHeight/2)-100;
 	//Path to cgi-bin directory
@@ -96,12 +97,12 @@ var sessionWindow;
 
 <BR><BR><BR><BR><BR>
 
-<FONT class="title" color=#CC0000>Version <!--version tag-->3.8.0</FONT>
+<FONT class="title" color=#CC0000>Version <!--version tag-->3.9.1</FONT>
 <FONT style="font-size:9px"><BR></FONT>
-<B>(Updated on 24/06/2019)</B>
+<B>(Updated on 10/01/2020)</B>
 <BR><BR><BR>
 
-<INPUT type="button" value="Start Session" class="title2" style="width:160px;" onclick="startSession()" />
+<INPUT type="button" value="Start Session" class="title2" style="width:160px" onclick="startSession();" />
 
 <BR><BR><BR><BR><BR>
 <TABLE border=0 width=80%>
@@ -172,7 +173,10 @@ Bioinformatics and Computational Systems Biology of Cancer<BR> -->
 
 <!--
 ####>Revision history<####
-# 2.2.13D EMAIL_CONTACT variable to be updated by start.sh (PP 24/06/19)
+# 2.2.16D EMAIL_CONTACT variable to be updated by start.sh (PP 14/01/20)
+# 2.2.16 [BUGFIX] Minor JS bug correction (PP 14/01/20)
+# 2.2.15 v3.9.1 (PP 10/01/20)
+# 2.2.14 v3.9.0 (PP 26/08/19)
 # 2.2.13 v3.8.0, link to ReadTheDocs-version of the user's guide & update of developers' list (PP 24/06/19)
 # 2.2.12 v3.7.0 (PP 19/12/18) 
 # 2.2.11 Changed number to customable line number in comment due to CeCILL license (PP 26/09/18) 

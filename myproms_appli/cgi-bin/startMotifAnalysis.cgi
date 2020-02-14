@@ -1,6 +1,6 @@
 #!/usr/local/bin/perl -w
 ################################################################################
-# startMotifAnalysis.cgi       1.1.0                                           #
+# startMotifAnalysis.cgi       1.1.1                                           #
 # Authors: P. Poullet, S.Liva  (Institut Curie)         					   #
 # Contact: myproms@curie.fr                                                    #
 # Fetch and provide proteins and parameters for Motif enrichment analysis      #
@@ -121,7 +121,7 @@ if (param('submitted')) {
 		$dbh->commit;
 	}
 
-	my (@selectedQuantifications, %quantifValues, %quantifInfo, %proteinInfo, %proteinForeground, %proteinBackground, %proteinSequence, $minRatio, $maxRatio, $nbTotAA);
+	my (@selectedQuantifications, %quantifValues, %quantifInfo, %proteinForeground, %proteinBackground, %proteinSequence, $minRatio, $maxRatio, $nbTotAA);
 	my %compAA=("G"=>1,"A"=>1,"S"=>1,"P"=>1,"V"=>1,"T"=>1,"C"=>1,"L"=>1,"I"=>1,"N"=>1,"D"=>1,"Q"=>1,"K"=>1,"E"=>1,"M"=>1,"H"=>1,"F"=>1,"R"=>1,"Y"=>1,"W"=>1);#for random sequence
 
 	my $sthGetSequence=$dbh->prepare("SELECT ID_MASTER_PROTEIN, PROT_SEQ FROM PROTEIN WHERE ID_PROTEIN=? and ID_PROJECT=$projectID");
@@ -158,7 +158,7 @@ if (param('submitted')) {
 	if ($bgValue eq "quanti" || ($quantification && $bgValue eq "random")) {##for foreground or background quantification
 		push @selectedQuantifications, $quantification;
 		my %parameters=(QUANTIF_FAMILY=>'RATIO',SEL_MODIF_ID=>$idModification,VIEW=>'list',NUM_PEP_CODE=>'NUM_PEP_USED',QUANTIF_LIST=>\@selectedQuantifications,VERBOSE=>1);
-		&promsQuantif::fetchQuantificationData($dbh,\%parameters,\%quantifInfo,\%quantifValues,\%proteinInfo);
+		&promsQuantif::fetchQuantificationData($dbh,\%parameters,\%quantifInfo,\%quantifValues);
 		$minRatio=$parameters{MIN_RATIO};
 		$maxRatio=$parameters{MAX_RATIO};
 
@@ -836,6 +836,7 @@ sub fetchProtMod {
 
 
 ####>Revision history<####
+# 1.1.1 [ENHANCEMENT] Removed useless data ref in &promsQuantif::fetchQuantificationData (PP 15/07/19)
 # 1.1.0 Improved check of form submission and code (PP 04/04/19)
 # 1.0.2 change character -> residue (SL 14/03/18)
 # 1.0.1 improve script, add 2 functions fetchSequence, fetchProtMod and available for protein list (24/07/17)

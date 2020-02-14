@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# promsImportDataManager.pm         1.0.2                                      #
+# promsImportDataManager.pm         1.0.8                                      #
 # Authors: M. Le Picard, V. Sabatet (Institut Curie)                           #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -111,7 +111,7 @@ sub setPeptidesInformation {
     $self->{_fragmentsInfos} = $fragmentsInfosRef;
     $self->{_modifIDs} = $modifIDsRef;
     $self->{_assosProtPeptide} = $assosProtPeptideRef;
-    $self->{_dbRankProtRef} = $dbRankProtRef;
+    $self->{_dbRankProt} = $dbRankProtRef;
 }
 
 sub setDIAInfos {
@@ -154,7 +154,7 @@ sub importData {
     $self->{_fragmentsInfos} = $fragmentsInfosRef;
     $self->{_modifIDs} = $modifIDsRef;
     $self->{_assosProtPeptide} = $assosProtPeptideRef;
-    $self->{_dbRankProtRef} = $dbRankProtRef;
+    $self->{_dbRankProt} = $dbRankProtRef;
     
     $self->_fetchProjectProteins;
     
@@ -206,7 +206,7 @@ sub importData {
         my $topPepNbDecoy = ($self->{_decoyNb}{$analysis}) ? $self->{_decoyNb}{$analysis} : 0;
         my $topPepNbTarget = ($self->{_targetNb}{$analysis}) ? $self->{_targetNb}{$analysis} : 0;
 
-        my $fileFormat=($self->{_format} eq 'pkv')? 'SWATH.PKV': ($self->{_format} eq 'prm')?  'SKYLINE.CSV' : ($self->{_format} eq 'openswath')? 'OPENSWATH.TSV' : 'SPECTRONAUT.XLS';
+        my $fileFormat=($self->{_format} eq 'pkv')? 'SWATH.PKV': ($self->{_format} eq 'prm')?  'SKYLINE.SKY' : ($self->{_format} eq 'openswath')? 'OPENSWATH.TSV' : 'SPECTRONAUT.XLS';
         my $msType=($self->{_format} eq 'pkv')? 'SWATH': ($self->{_format} eq 'prm')? 'TDA' : 'DIA';
         my $decoy=($self->{_format} eq 'pkv') ? "INT:SEARCH,FDR=".$self->{_fdr}.":precomputed" : '';
 
@@ -327,7 +327,7 @@ sub importData {
     my $sthAnaProt = $dbh->prepare("INSERT INTO ANALYSIS_PROTEIN (ID_ANALYSIS,ID_PROTEIN,DB_RANK,CONF_LEVEL,SCORE,NUM_PEP,NUM_MATCH,PEP_COVERAGE,MATCH_GROUP,PEP_SPECIFICITY,VISIBILITY) VALUES (?,?,?,?,?,?,?,?,?,?,?)");
     
     my $nb = scalar keys %{$self->{analysisID}};
-    print("Nb analysis : $nb<br/>");
+    my $currentAnaIndex = 1;
     
     ## Fetching protein score, pep number and protein specificity
     foreach my $analysis (sort {$a cmp $b } keys %{$self->{analysisID}}) {
@@ -336,8 +336,9 @@ sub importData {
         my $protScore;
         
         foreach my $protein (keys %{$self->{_assosProtPeptide}{$analysis}}) {
-            $protScore = 0;
             my $pepSpecificity = 0;
+            $protScore = 0;
+            
             foreach my $peptide (keys %{$self->{_assosProtPeptide}{$analysis}{$protein}}) {
                 $matchList{$protein}{$peptide} = 1;
                 
@@ -353,11 +354,12 @@ sub importData {
 
         
         ### Finding number of times proteins are at top of match group hierarchy
-        $self->appendLog("Analysis $analysis : Computing proteins visibility.");
-        my (%numProtTop, %bestProtVis, %numProtPeptides, %proteinPepDens);
+        $self->appendLog("Analysis $analysis : Computing proteins visibility ($currentAnaIndex/$nb)");
+        my (%numProtTop, %bestProtVis, %proteinPepDens);
         
         foreach my $protein (keys %matchList) {
             my $protID = $proteinID{$protein};
+            
             if ($projectProt{$protein}) { # proteins are already in project
                 $sthTopProt->execute($protID);
                 ($numProtTop{$protein}) = $sthTopProt->fetchrow_array;
@@ -365,60 +367,31 @@ sub importData {
                     $sthBestVis->execute($protID);
                     $bestProtVis{$protein} = $sthBestVis->fetchrow_array;
                 }
-            }
-            else { #### Proteins are new in project
+            } else { #### Proteins are new in project
                 $numProtTop{$protein} = 0;
                 $projectProt{$protein} = $protID; # add protein to project list
             }
             
             ### Peptide density
             $proteinPepDens{$protein} = $protLength{$protein}/(scalar (keys %{$self->{_assosProtPeptide}{$analysis}{$protein}}));
-
         }
         $sthTopProt->finish;
         $sthBestVis->finish;
 
 
         ### Finding match groups and protein visibility
-        $self->appendLog("Analysis $analysis : Building match groups.");
+        $self->appendLog("Analysis $analysis : Building match groups ($currentAnaIndex/$nb)");
         my (%visibility, %matchGroup, @sortedProt);
         if(%proteinScore) {
             @sortedProt = sort{scalar (keys %{$self->{_assosProtPeptide}{$analysis}{$b}})<=>scalar (keys %{$self->{_assosProtPeptide}{$analysis}{$a}}) || $numProtTop{$b}<=>$numProtTop{$a} || $proteinScore{$b}<=>$proteinScore{$a} || &deltaLength($protLength{$a},$protLength{$b},$proteinPepDens{$a},$proteinPepDens{$b})  || $protLength{$a}<=>$protLength{$b} } keys %matchList;
         } else {
             @sortedProt = sort{scalar (keys %{$self->{_assosProtPeptide}{$analysis}{$b}})<=>scalar (keys %{$self->{_assosProtPeptide}{$analysis}{$a}}) || $numProtTop{$b}<=>$numProtTop{$a} || &deltaLength($protLength{$a},$protLength{$b},$proteinPepDens{$a},$proteinPepDens{$b})  || $protLength{$a}<=>$protLength{$b} } keys %matchList;
         }
-        
-        print("<br/>Analysing $analysis<br/>");
-        
-        my $numGroup=0;
-        foreach my $i (0..$#sortedProt) {
-            #print("Running prot $i / $#sortedProt<br/>");
-            my $prot1 = $sortedProt[$i];
-            next if $matchGroup{$prot1}; # already assigned to a match group
-            $matchGroup{$prot1} = ++$numGroup;
-            $visibility{$prot1} = 2;
-            foreach my $j ($i+1..$#sortedProt) {
-                my $prot2 = $sortedProt[$j];
-                next if $matchGroup{$prot2};    # already assigned to a match group
-                my $matchList=1;
-                
-                ## Comparing peptide contents of prot1 and prot2<##
-                foreach my $pep (keys %{$matchList{$prot2}}) {
-                    if (!$matchList{$prot1}{$pep}) {
-                        delete $matchList{$prot1}{$pep}; # to be safe
-                        $matchList = 0;
-                        last;
-                    }
-                }
-                if ($matchList) {
-                    $matchGroup{$prot2} = $matchGroup{$prot1};
-                    $visibility{$prot2} = ($self->{_protVisibility} && defined($bestProtVis{$prot2}) && ($bestProtVis{$prot2}==2 || ($self->{_protVisibility}==2 && $bestProtVis{$prot2}))) ? 1 : 0; # visible or hidden
-                }
-            }
-        }
+        &promsMod::createMatchGroups(\%matchList, \%matchGroup, \@sortedProt, \%visibility, \%bestProtVis, $self->{_protVisibility}, 0);
         
         ## Inserting data into table ANALYSIS_PROTEIN
-        foreach my $protein (keys %{$protCoverage{$analysis}}) {
+        #foreach my $protein (keys %{$protCoverage{$analysis}}) {  # Replaced because there is no insertion in table at all if the protein was not recognized and it was not inserted in protCoverage (VL 04/09/19)
+        foreach my $protein (keys %proteinID) {
             my $dbRank = $self->{_dbRankProt}{$protein};
             my $coverage = $protCoverage{$analysis}{$protein};
             my $proteinID = $proteinID{$protein};
@@ -429,9 +402,9 @@ sub importData {
             my $pepSpecificity = $bestPepSpecificity{$protein};
             my $visibility = $visibility{$protein};
             $sthAnaProt->execute($analysisID, $proteinID, $dbRank, 2, $protScore, $numPep, $numMatch, $coverage, $matchGroup, $pepSpecificity, $visibility);
-
         }
         $sthAnaProt->finish;
+        $currentAnaIndex++;
     }
     $dbh->commit;
 
@@ -445,6 +418,7 @@ sub importData {
     ###############################################################
     $self->appendLog("Storing peptides data into database.");
     my $nbPepProcessed = 0;
+    
     foreach my $analysis (keys %{$self->{analysisID}}) {
         my $analysisID = $self->{analysisID}{$analysis};
         foreach my $peptide (keys %{$self->{_peptideList}{$analysis}}) {
@@ -490,7 +464,7 @@ sub importData {
                 ###>Insertion into PEPTIDE
                 $sthPeptide->execute($analysisID, $pepSequence, $pepLength, $queryNum, $rank, $rank, $pepScore, $missCut, $mrExp, $mrObs, $pepCharge, $elutionTime, $validStatus, 1);
                 my $peptideID = $dbh->last_insert_id(undef, undef, 'PEPTIDE', 'ID_PEPTIDE');
-                push @{$self->{peptidesID}{$analysis}{$peptide}}, $peptideID;
+                push(@{$self->{peptidesID}{$analysis}{$peptide}{$rt}}, $peptideID);
                 
                 ###>Insertion into PEPTIDE_MODIFICATION
                 my %varMods;
@@ -528,23 +502,24 @@ sub importData {
             my $proteinID = $proteinID{$protein};
             foreach my $peptide (keys %{$self->{_assosProtPeptide}{$analysis}{$protein}}) {
                 my $ghostPep = 0;
-
-                foreach my $peptideID (@{$self->{peptidesID}{$analysis}{$peptide}}) {
-                    ### Max peptide specificity
-                    my $specificity;
-                    $specificity = ($self->{_peptideInfo}{$peptide}[2] && $self->{_peptideInfo}{$peptide}[2]==100) ? 1 : 0;
-
-                    ### Peptide position on protein
-                    foreach my $begPepInfo (keys %{$self->{_peptidePosition}{$analysis}{$protein}{$peptide}}) {
-                        my @begPeptideInfo = split(/_/,$begPepInfo);
-                        my $pepBeg = ($ghostPep) ? "-$begPeptideInfo[0]" : $begPeptideInfo[0];
-                        my $endPepInfo = $self->{_peptidePosition}{$analysis}{$protein}{$peptide}{$begPepInfo};
-                        my @endPeptideInfo = split(/_/,$self->{_peptidePosition}{$analysis}{$protein}{$peptide}{$begPepInfo});
-                        my $pepEnd = ($ghostPep) ? "-$endPeptideInfo[0]" : $endPeptideInfo[0];
-                        my $flanking = "$begPeptideInfo[1]$endPeptideInfo[1]";
-                        $sthAttrib->execute($proteinID,$peptideID,$analysisID,$pepBeg,$pepEnd,$flanking,$specificity);
+                foreach my $rt (keys %{$self->{peptidesID}{$analysis}{$peptide}}) {
+                    foreach my $peptideID (@{$self->{peptidesID}{$analysis}{$peptide}{$rt}}) {
+                        ### Max peptide specificity
+                        my $specificity;
+                        $specificity = ($self->{_peptideInfo}{$peptide}[2] && $self->{_peptideInfo}{$peptide}[2]==100) ? 1 : 0;
+    
+                        ### Peptide position on protein
+                        foreach my $begPepInfo (keys %{$self->{_peptidePosition}{$analysis}{$protein}{$peptide}}) {
+                            my @begPeptideInfo = split(/_/,$begPepInfo);
+                            my $pepBeg = ($ghostPep) ? "-$begPeptideInfo[0]" : $begPeptideInfo[0];
+                            my $endPepInfo = $self->{_peptidePosition}{$analysis}{$protein}{$peptide}{$begPepInfo};
+                            my @endPeptideInfo = split(/_/,$self->{_peptidePosition}{$analysis}{$protein}{$peptide}{$begPepInfo});
+                            my $pepEnd = ($ghostPep) ? "-$endPeptideInfo[0]" : $endPeptideInfo[0];
+                            my $flanking = "$begPeptideInfo[1]$endPeptideInfo[1]";
+                            $sthAttrib->execute($proteinID,$peptideID,$analysisID,$pepBeg,$pepEnd,$flanking,$specificity);
+                        }
+                        $ghostPep = 1;
                     }
-                    $ghostPep = 1;
                 }
             }
         }
@@ -572,6 +547,27 @@ sub importData {
     }
     $sthAnaQuanti->finish;
     
+    
+    ############################
+    ## UPDATE ANALYSIS STATUS ##
+    ############################
+    my $sthUpdateAnalysis = $dbh->prepare("UPDATE ANALYSIS SET VALID_STATUS=2 WHERE ID_ANALYSIS=?");
+    foreach my $analysis (sort {$a cmp $b} keys %{$self->{analysisID}}) {
+        my $analysisID = $self->{analysisID}{$analysis};
+        $sthUpdateAnalysis->execute($analysisID);
+    }
+    
+    ######################
+    ## MAP NEW PROTEINS ##
+    ######################
+    my $allAnaId = '';
+    foreach my $analysis (sort {$a cmp $b} keys %{$self->{analysisID}}) {
+        $allAnaId .= ',' if($allAnaId);
+        $allAnaId .= $self->{analysisID}{$analysis};
+    }
+    
+    system "./mapProteinIdentifiers.pl ".$self->{_userID}." $allAnaId";
+        
     $dbh->commit;
     $dbh->disconnect;
 }
@@ -714,6 +710,12 @@ sub _fetchProteinFromTDAFile {
 1;
 
 ####>Revision history<####
-# 1.0.2 Stabilize DIA data import (11/06/19)
-# 1.0.1 Added RT mean computation for TDA MS2 peptides (27/11/18)
+# 1.0.8 [MODIF] Minor modif on skyline fileFormat to be consistent with handling of .sky files (VL 20/11/19)
+# 1.0.7 [BUGFIX] Loop over proteinID keys instead of dbRankProt (dbRankProt misses keys in DIA) (VS 16/10/19) 
+# 1.0.6 [MODIF] Fix unused name dbRankProtRef to dbRankProt and loop over its keys in importData to insert proteins in ANALYSIS_PROTEIN (VL 04/09/19) 
+# 1.0.5 [MODIF] Changed createMatchGroup to fit with promsMod.pm prototype (VS 03/07/19)
+# 1.0.4 [MODIF] Add RT to peptideID list returned after insertion (VS 02/07/19)
+# 1.0.3 [MODIF] Add protein mapping after creation (VS 01/07/19)
+# 1.0.2 [BUGFIX] Stabilize DIA data import (VS 11/06/19)
+# 1.0.1 Added RT mean computation for TDA MS2 peptides (VS 27/11/18)
 # 1.0.0 Creation (VS 12/11/18)

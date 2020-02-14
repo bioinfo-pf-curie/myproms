@@ -1,6 +1,6 @@
 /*
 ################################################################################
-# genericPlot.js    1.0.7                                                      #
+# genericPlot.js    1.0.8                                                      #
 # Authors: P. Poullet                                                          #
 # Contact: patrick.poullet@curie.fr                                            #
 ################################################################################
@@ -49,10 +49,10 @@ function gpDataPoint(set,data) {
     this.dataSet=set;
     this.label=data[0];
     this.externalID=(data[1])? data[1] : data[0];
-    this.x;
-    this.y;
+    this.x=null;
+    this.y=null;
     this.valueList={};
-    this.pointList; // ref to list svg elements
+    this.pointList=null; // ref to list svg elements
     this.computeMean('x',data[2]);
     this.computeMean('y',data[3]);
     this.size=(data[4])? data[4] : 10;
@@ -68,7 +68,7 @@ gpDataPoint.prototype = {
 		this[axis]=Math.round(100*mean/values.length)/100;
 		if (values.length > 1) {this.valueList[axis]=values;}
     },
-	ascNumSort: function(a,b) {return a-b},
+	ascNumSort: function(a,b) {return a-b;},
     getMinValue: function (axis) {
 		return (this.valueList && this.valueList[axis])? this.valueList[axis][0] : this[axis];
     },
@@ -105,7 +105,7 @@ function genericPlot(plotData) {
     this.div=document.getElementById(this.divID);
 	var canvasDivID=this.divID+'_canvas';
 	var formDivID=this.divID+'_form';
-	this.getDivID=function(){return canvasDivID;}
+	this.getDivID=function(){return canvasDivID;};
 	this.exportAsImage=plotData.exportAsImage; // null or array [button name, image file name, action script path]
 
 	var colorList=['#0000FF','#4AA02C','#000000','#F660AB','#FBB917','#8AFB17','#9A9A9A','#7E2217','#95B9C7','#E18B6B'];
@@ -113,32 +113,32 @@ function genericPlot(plotData) {
     /******** Chart variables & objects ********/
     this.dataSets=[];
 	this.dataSetLinks={}; // List of links between dataPoint with same id in different dataSets
-this.selectAllDataSets=false;
+	this.selectAllDataSets=false;
 	this.thresholdLines=[];
 	this.editThreshold=plotData.editThreshold; // if true: all th are editable
-	this.existEditableThreshold; // default (al least 1 editable th)
+	this.existEditableThreshold=false; // default (al least 1 editable th)
 	this.allowHighlight=plotData.allowHighlight; // flag to allow or not highlighting
 	this.updateHighlight=plotData.updateHighlight; // object {callback:callback function in case delete/edit,editable:true/false (hl name edition flag)}
 	this.highlightedPoints={}; // List of different user-defined labeled set of points
 	this.pointOnclick=plotData.pointOnclick;
 	this.pointOnList=plotData.pointOnList;
-    var pointDefaultSize=(plotData.pointDefaultSize)? plotData.pointDefaultSize : 10;
+    //var pointDefaultSize=(plotData.pointDefaultSize)? plotData.pointDefaultSize : 10;
 	this.pointOpacity=(plotData.pointOpacity)? plotData.pointOpacity : 1; // point opacity
 	this.zoomable=plotData.zoomable;
 	this.showDataSets=(plotData.hideDataSets)? false : undefined;
-	this.searchable=(plotData.noSearch)? false : true;
+	this.searchable=(plotData.searchable)? plotData.searchable : (plotData.noSearch)? false : true;
 	this.selectable=(plotData.noSelect)? false : true;
 	this.customPointLabel=(plotData.pointLabel)? plotData.pointLabel : null;
-this.connectPoints=plotData.connectpoint; // undef or line or curve
-this.onPointExclusion=(plotData.onPointExclusion)? plotData.onPointExclusion : null;
-	this.convertValue=(plotData.convertValue)? plotData.convertValue : function(axis,value) {return value;}
+	this.connectPoints=plotData.connectpoint; // undef or line or curve
+	this.onPointExclusion=(plotData.onPointExclusion)? plotData.onPointExclusion : null;
+	this.convertValue=(plotData.convertValue)? plotData.convertValue : function(axis,value) {return value;};
 	this.sameScale=(plotData.sameScale)? true : false;
 	this.chartSettings={reference:{},current:{}};
 	this.chartMarks=[];
-	this.plotArea;
-	this.dragArea;
+	this.plotArea=null;
+	this.dragArea=null;
 	this.dragContext='area';
-	this.zoomText;
+	this.zoomText=null;
 	this.panProcess={x:0,y:0,dx:0,dy:0}; //new Object();
 
 	/***** Chart axes parameters *****/
@@ -197,12 +197,12 @@ this.onPointExclusion=(plotData.onPointExclusion)? plotData.onPointExclusion : n
 		}
 		var TH=new thresholdLine(GP,th.axis,th.label,th.value,th.color,th.pattern,th.keepAbove1,th.roundValue,editable);
 		this.thresholdLines.push(TH);
-		if (this['minValue'+TH.axis]==null) {this['minValue'+th.axis]=this['maxValue'+TH.axis]=TH.value;}
+		if (this['minValue'+TH.axis]===null) {this['minValue'+th.axis]=this['maxValue'+TH.axis]=TH.value;}
 		else {
 			this['minValue'+TH.axis]=Math.min(this['minValue'+TH.axis],TH.value);
 			this['maxValue'+TH.axis]=Math.max(this['maxValue'+TH.axis],TH.value);
 		}
-	}
+	};
 
     /***** Datasets *****/
     this.addDataSet=function(dsIdx,set) {
@@ -220,7 +220,7 @@ this.onPointExclusion=(plotData.onPointExclusion)? plotData.onPointExclusion : n
 		this.dataSets[dsIdx].params.visible=true;
 		this.dataSets[dsIdx].data=[];
 		this.dataSets[dsIdx].line=null; // SVG path object
-    }
+    };
 
     /***** Data points *****/
 	this.addDataAsString=function(dsIdx,dataStrg) {
@@ -254,7 +254,7 @@ this.onPointExclusion=(plotData.onPointExclusion)? plotData.onPointExclusion : n
 				this[maxValueYn]=Math.max(this[maxValueYn],maxY);
 			}
 		}
-    }
+    };
 
 	/********************* Plot display (Raphael) *********************/
     this.draw=function() {
@@ -299,6 +299,7 @@ initializeForm(GP);
 
 /*
 ####>Revision history<####
+# 1.0.8 [FEATURE] Optional external pre-search function (PP 29/10/19)
 # 1.0.7 Minor bug fix in showDataSets initialization (PP 26/10/17)
 # 1.0.6 Uses chart registering for dynamic html calls (PP 20/02/16)
 # 1.0.5 Renamed dataPoint object to gpDataPoint for compatiblity with volcanoPlot library (PP 28/10/15)

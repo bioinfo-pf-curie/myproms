@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# manageModifications.cgi    1.2.1                                             #
+# manageModifications.cgi    1.2.2                                             #
 # Authors: P. Poullet, G. Arras & F. Yvon (Institut Curie)                     #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -613,7 +613,7 @@ window.onload=function() {
 		foreach my $aa (@AA) {
 			if ($usedSpec{$aa}) { # used in Ana => cannot be edited
 				#my $contextStrg=($spec=~/$aa,(.)/)? ";$specDef{$aa}[1]" : '';
-				my $context=($spec=~/$aa;(.)/)? $1 : '';
+				my $context=($spec=~/\\$aa;(.)/)? $1 : '';
 				print "&bull;$specDef{$aa}";
 				#print " ($displayedContext{$specDef{$aa}[1]})" if $aa=~/\w/;
 				my $contextStrg='';
@@ -1028,6 +1028,7 @@ SPECIFICITY::$specificityString
 }
 
 ####>Revision history<####
+# 1.2.2 [BUGFIX] Minor change in aa specificity regex to handle '*' position (VS 30/10/19)
 # 1.2.1 [Fix] minor JavaScript bugs in form submission (PP 21/03/19)
 # 1.2.0 New specificity form to handle site context & 'Add modification' option (PP 11/02/19)
 # 1.1.1 Minor modification to avoid error when PSI_MS_NAME is not defined for merge option (GA 07/06/18)

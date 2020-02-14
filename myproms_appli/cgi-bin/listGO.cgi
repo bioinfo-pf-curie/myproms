@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 #############################################################################
-# listGO.cgi           1.0.6                                                #
+# listGO.cgi           1.0.8                                                #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                   #
 # Contact: myproms@curie.fr                                                 #
 # Display all proteins of current item in GO terms                          #
@@ -337,32 +337,122 @@ function sequenceView(id_protein,id_analysis){
     var winLocation="$promsPath{cgi}/sequenceView.cgi?id_ana="+id_analysis+"&id_prot="+id_protein+"&msdata="+top.showMSdata;
     top.openProtWindow(winLocation);
 }
-function expandOrCollapseTable(id){
+
+function toggleProtDomains(searchTerm) {
+    var tables = document.getElementsByClassName('GOTable');
+    
+    // Search in table for specific protID or geneName
+    for (var i=0; i < tables.length; i++) {
+        var table = tables[i];
+        var id = table.id.substring(5,);
+        var domain = document.getElementById("domain"+id);
+        var hideUnchecked = (document.getElementById('hideUnchecked')) ? document.getElementById('hideUnchecked').checked : false;
+        var found = false;
+        
+        if(searchTerm !== undefined && searchTerm != '' && domain.dataset.name !== undefined && domain.dataset.name.toLowerCase().includes(searchTerm.toLowerCase())) {
+            found = true;
+        }
+        
+        var lines = tables[i].children[0].children;
+        var countProt = 0;
+        var countProtChecked = 0;
+        for(var y=0; y < lines.length; y++) {
+            var line = lines[y];
+            var checkbox = line.children[0].children[0];
+            line.style.display = "";
+            
+            if(checkbox && typeof line.dataset.protid != 'undefined' && typeof line.dataset.genename != 'undefined' && typeof line.dataset.genedesc != 'undefined') {
+                if(searchTerm !== undefined) {
+                    checkbox.checked = (searchTerm != '' && (line.dataset.protid.toLowerCase().includes(searchTerm.toLowerCase()) \|\| line.dataset.genename.toLowerCase().includes(searchTerm.toLowerCase()) \|\| line.dataset.genedesc.toLowerCase().includes(searchTerm.toLowerCase())));
+                }
+                
+                if(checkbox.checked) {
+                    found = true;
+                    countProtChecked++;
+                } else if(hideUnchecked) {
+                    line.style.display = "none";
+                }
+                
+                countProt++;
+            }
+        }
+        
+        if(searchTerm !== undefined) {
+            updateProtCount(id, (searchTerm != '') ? countProtChecked : undefined);
+        }
+        
+        if(!found && hideUnchecked) {
+            domain.style.display = "none";
+            expandOrCollapseTable(id, "none");
+        } else if(domain.style.display == "none") {
+            domain.style.display = "";
+        }
+        
+        found = false;
+    }
+}
+
+
+function checkProt(el, goId) {
+    var table = document.getElementById('table' + goId);
+    var nChecked = (!table.dataset.checkedprot \|\| Number.isNaN(table.dataset.checkedprot)) ? 0 : (el.checked) ? parseInt(table.dataset.checkedprot)+1 : parseInt(table.dataset.checkedprot)-1;
+    updateProtCount(goId, nChecked);
+}
+
+function updateProtCount(goId, nChecked) {
+    var table = document.getElementById('table' + goId);
+    var lines = table.children[0].children;
+    var totalProts = lines.length-2;
+    
+    var protCountersEl = document.getElementsByClassName("count"+goId);
+    if(protCountersEl) {
+        for(var y=0; y<protCountersEl.length; y++) {
+            var counterEl = protCountersEl[y];
+            if(counterEl) {
+                counterEl.innerHTML = (nChecked !== undefined) ? nChecked + "/" + totalProts : totalProts;
+                counterEl.innerHTML += (lines.length > 1) ? " proteins" : " protein";
+            }
+        }
+    }
+    
+    table.dataset.checkedprot = (nChecked !== undefined && !Number.isNaN(nChecked)) ? nChecked : 0;
+}
+
+function toggleAllTables(display=undefined) {
+    var domains = document.getElementsByClassName('GODomain');
+    for (var i=0; i < domains.length; i++) {
+        var domain = domains[i];
+        if(domain.style.display != "none") {
+            var id = domain.id.substring(6,);
+            expandOrCollapseTable(id, display);
+        }
+    }
+}
+
+function expandOrCollapseTable(id, display=undefined){
     var table = document.getElementById("table"+id);
     var image = document.getElementById("button"+id);
 
-    if(table.style.display==""){
-        image.src = '$promsPath{images}/plus.gif';
-        table.style.display = "none";
-    } else if (table.style.display=="none"){
+    if((typeof display !== 'undefined' && display != "none") \|\| (typeof display === 'undefined' && table.style.display == "none")) {
         image.src = '$promsPath{images}/minus1.gif';
         table.style.display = "";
+    } else {
+        image.src = '$promsPath{images}/plus.gif';
+        table.style.display = "none";
     }
 }
-function selectByGO(goBox){
+
+function selectByGO(goBox) {
     var goid = goBox.value;
 
     var allChckBox = document.getElementsByName('checkProt'+goid);
-    if(goBox.checked){
-        for(var i=0;i<allChckBox.length;i++){
-            allChckBox[i].checked = true;
-        }
-    } else {
-        for(var i=0;i<allChckBox.length;i++){
-            allChckBox[i].checked = false;
-        }
+    for(var i=0;i<allChckBox.length;i++){
+        allChckBox[i].checked = goBox.checked;
     }
+    
+    updateProtCount(goid, (goBox.checked) ? allChckBox.length : undefined);
 }
+
 function ajaxShowGO(){
     var goTable = document.getElementById("goTable");
     var canvas = document.getElementById("canvas");
@@ -417,10 +507,12 @@ function ajaxShowGO(){
             var plot = new barPlot({ 'maxWidth' : 1200,
                                    'minWidth' : 600,
                                    'onBarClick' : function(id){
-                                        if(document.getElementById('table'+id).style.display=="none"){
-                                            expandOrCollapseTable(id);
-                                        }
-                                        document.getElementById(id).scrollIntoView();
+                                            if(document.getElementById('domain'+id).style.display != "none") {
+                                                if(document.getElementById('table'+id).style.display=="none"){
+                                                    expandOrCollapseTable(id);
+                                                }
+                                                document.getElementById(id).scrollIntoView();
+                                            }
                                         }});
             plot.draw(table, canvas);
         }
@@ -548,7 +640,13 @@ sub displayGO {
             $sth = $dbh->prepare("SELECT ID_ANALYSIS FROM ANALYSIS,SAMPLE,EXPERIMENT
                                 WHERE ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE
                                 AND SAMPLE.ID_EXPERIMENT=EXPERIMENT.ID_EXPERIMENT
-                                AND EXPERIMENT.ID_PROJECT=?");
+                                AND EXPERIMENT.ID_PROJECT=?
+                                AND EXPERIMENT.ID_EXPERIMENT NOT IN (
+                                    SELECT E2.ID_EXPERIMENT
+                                    FROM EXPERIMENT E2
+                                    INNER JOIN USER_EXPERIMENT_LOCK EU ON EU.ID_EXPERIMENT=E2.ID_EXPERIMENT
+                                    WHERE E2.ID_PROJECT=? AND EU.ID_USER='$userID'
+                                )");
         }
         $sth->execute($itemID);
         while(my ($anaID) = $sth->fetchrow_array){
@@ -688,6 +786,7 @@ sub displayGO {
 		print "</DIV></CENTER><BR>";
     }
 
+    
 	# Restriction #
 	if ($catID) {
 		my $numNotInItem=0;
@@ -704,13 +803,28 @@ sub displayGO {
 		print "$numNotInList protein$s2Strg excluded by List restriction.</FONT><BR><BR>\n";
 	}
 
+    print qq |
+        <table border=0 cellpadding=3 cellspacing=0>
+            <tr bgcolor=$color2><td colspan=4 align="center">
+                <form onsubmit="toggleProtDomains(document.getElementById('searchProtInput').value); return false;">
+                    <label style="font-weight:bold">Protein/gene name filter: <input type="text" id="searchProtInput" value="" /></label>
+                    <input id="checkMatchingProtDomains" type="submit" value="Check matching" />
+                    <input type="button" value="Uncheck all" onclick="toggleProtDomains('');" />
+                    <input type="button" value="Expand/Collapse all" data-collapse="true" onclick="toggleAllTables((this.dataset.collapse == 'true') ? '' : 'none'); this.dataset.collapse = (this.dataset.collapse == 'true') ? false : true;" />
+                    <label><input type="checkbox" id="hideUnchecked" onclick="toggleProtDomains(undefined)" />Hide unchecked</label>
+                </form>
+            </td></tr>
+    |;
+    
 	# Save in List form #
 	if ($projectAccess ne 'guest' && $projectStatus <= 0) {
-		print qq
-|<TABLE border=0 cellpadding=3 cellspacing=0><TR bgcolor=$color2>
-<TD valign=top><SELECT name="addRemove" id="addRemove" style="font-size:14px;font-weight:bold;text-align:right" onchange="checkClassSelection(this.value)"><OPTION value="add">Add selected proteins to</OPTION><OPTION value="replace">Replace w/ selected proteins</OPTION><OPTION value="remove">Remove selected proteins from</OPTION></SELECT></TD>
-<TD valign=top><SELECT name="classList" id="classList" style="width:250px;font-weight:bold" onchange="selectClassification()">
-|;
+        print qq |
+            <tr bgcolor=$color2>
+                <TD valign=top><SELECT name="addRemove" id="addRemove" style="font-size:14px;font-weight:bold;text-align:right" onchange="checkClassSelection(this.value)"><OPTION value="add">Add selected proteins to</OPTION><OPTION value="replace">Replace w/ selected proteins</OPTION><OPTION value="remove">Remove selected proteins from</OPTION></SELECT></TD>
+                <TD valign=top>
+                    <SELECT name="classList" id="classList" style="width:250px;font-weight:bold" onchange="selectClassification()">
+        |;
+        
 		my $displayStatus;
 		if (scalar keys %classificationList) {
 			print "<OPTION selected value=\"null\">-=Select a Theme=-</OPTION>\n";
@@ -720,21 +834,28 @@ sub displayGO {
 				print "<OPTION value=\"Javascript:changeCatList($classNum)\">$classificationList{$classID}[0]</OPTION>\n";
 			}
 			$displayStatus='none';
-		}
-		else {$displayStatus='block';}
-		print qq
-|<OPTION value="-1">-=Create a new Theme=-</OPTION></SELECT><BR>
-<TABLE cellpadding=0 cellspacing=0 id="newClass" style="display:$displayStatus"><TR><TD><INPUT type="text" name="newClassName" id="newClassName" value="New Theme name" style="width:250px"/></TD></TR></TABLE>
-</TD>
-<TD valign=top><SELECT name="catList" id="catList" style="width:250px;font-weight:bold" onchange="checkCreateCat(this.value)" disabled>
-<OPTION value="null:null">-=Select a List=-</OPTION>
-</SELECT><BR>
-<TABLE cellpadding=0 cellspacing=0 id="newCat" style="display:$displayStatus"><TR><TD><INPUT type="text" name="newCatName" id="newCatName" value="New List name" style="width:250px"/></TD></TR></TABLE>
-</TD>
-<TD><INPUT type="button" style="font-size:14px" value="Save" onclick="javascript:addRemFromCategory()">&nbsp</TD>
-</TR></TABLE><BR><DIV id="addProtToListDiv"></DIV>
-|;
+		} else {$displayStatus='block';}
+        
+		print qq |
+                        <OPTION value="-1">-=Create a new Theme=-</OPTION>
+                    </SELECT><BR>
+                    <TABLE cellpadding=0 cellspacing=0 id="newClass" style="display:$displayStatus"><TR><TD><INPUT type="text" name="newClassName" id="newClassName" value="New Theme name" style="width:250px"/></TD></TR></TABLE>
+                </TD>
+                <TD valign=top>
+                    <SELECT name="catList" id="catList" style="width:250px;font-weight:bold" onchange="checkCreateCat(this.value)" disabled>
+                        <OPTION value="null:null">-=Select a List=-</OPTION>
+                    </SELECT><BR>
+                    <TABLE cellpadding=0 cellspacing=0 id="newCat" style="display:$displayStatus"><TR><TD><INPUT type="text" name="newCatName" id="newCatName" value="New List name" style="width:250px"/></TD></TR></TABLE>
+                </TD>
+                <TD><INPUT type="button" style="font-size:14px" value="Save" onclick="javascript:addRemFromCategory()">&nbsp</TD>
+            </TR>
+        |;
 	}
+    
+    print qq |
+        </TABLE><BR>
+        <DIV id="addProtToListDiv"></DIV>
+    |;
 
     # Printing tables #
     my $dataString;
@@ -744,28 +865,28 @@ sub displayGO {
         my $term = formatGOName($node->term);
         my $buttonId = "button$goID";
         my $tableId = "table$goID";
+        my $domainId = "domain$goID";
         my $numProt = scalar keys %{$goToProt{$goID}};
         if($numProt < $minCount and $goID ne $UNMAPPED_ID and $goID ne $OTHERS_ID){
             splice @nodeList, -1, 0, new GO::Node( goid => $OTHERS_ID, term=> 'Others') unless $goToProt{$OTHERS_ID};
             @{$goToProt{$OTHERS_ID}}{keys %{$goToProt{$goID}}} = values %{$goToProt{$goID}};
             next;
         }
-        my $termString = ($goID eq $UNMAPPED_ID)? $term :
-        "<A href=\"http://amigo.geneontology.org/cgi-bin/amigo/term_details?term=$goID\" target=\"_blank\">$term</A>";
+        my $termString = ($goID eq $UNMAPPED_ID)? $term : "<A href='http://amigo.geneontology.org/amigo/term/$goID' target='_blank'>$term</A>";
 
         # Header table (containing GO term) #
         my $proteinString = 'protein';
-        $proteinString .= 's' if $numProt > 1;
+        $proteinString .= 's' if($numProt > 1);
         print qq
-|<TABLE border=0 align="center" width=1200 bgcolor="$color2">
+|<TABLE border=0 align="center" class="GODomain" id="$domainId" data-name="$term" style="width:1200px;background-color:$color2;margin-top: 10px;">
 <TR><TH align=left bgcolor="$color1"><A id="$goID" href="javascript:expandOrCollapseTable('$goID');">
-<IMG src="$promsPath{images}/plus.gif" id="$buttonId"/></A>$termString - ($numProt $proteinString)</TH></TR></TABLE>
+<IMG src="$promsPath{images}/plus.gif" style="position:relative; top:3px" id="$buttonId"/></A><span style="position:relative;bottom:3px">$termString - (<span class="count$goID">$numProt $proteinString</span>)</span></TH></TR></TABLE>
 |;
 
         # Proteins #
         print qq
-|<BR style="font-size:6px"><TABLE border=0 cellspacing=0 align="center" id="$tableId" style="display:none"><TR bgcolor=$color2>
-<TH class="rbBorder" width=250 align="left"><INPUT type="checkbox" name="checkGO" value="$goID" onclick="selectByGO(this)">&nbsp;$numProt $proteinString&nbsp;</TH>
+|<TABLE border=0 cellspacing=0 align="center" class="GOTable" data-checkedprot="0" id="$tableId" style="display:none; margin-top: 5px;"><TR bgcolor=$color2>
+<TH class="rbBorder" width=250 align="left"><INPUT type="checkbox" name="checkGO" value="$goID" onclick="selectByGO(this)">&nbsp;<span class="count$goID">$numProt $proteinString</span>&nbsp;</TH>
 <TH class="rbBorder" width=120>&nbsp;Gene name&nbsp;</TH>
 <TH class="rbBorder" width=80>&nbsp;MW<FONT style="font-size:9px;"> kDa</FONT>&nbsp;</TH>
 <TH class="rbBorder" width=80>&nbsp;Peptides&nbsp;</TH>
@@ -778,17 +899,17 @@ sub displayGO {
         foreach my $protID (sort{ $prot{$b}{numPep} <=> $prot{$a}{numPep}} keys %{$goToProt{$node->goid}}){
             $bgColor = ($bgColor eq $color1)? $color2 : $color1;
 			my $geneStrg='-'; # default
-			if ($prot{$protID}{masterProt} && $masterProteins{$prot{$protID}{masterProt}}[0]) {
+			my $geneName1=shift(@{$masterProteins{$prot{$protID}{masterProt}}});
+			if ($geneName1) {
 				if (scalar @{$masterProteins{$prot{$protID}{masterProt}}} > 1) {
-					my $geneName1=shift(@{$masterProteins{$prot{$protID}{masterProt}}});
 					$geneStrg="<A href=\"javascript:void(null)\" onmouseover=\"popup('<B><U>Synonyms:</U><BR>&nbsp;&nbsp;-".join('<BR>&nbsp;&nbsp;-',@{$masterProteins{$prot{$protID}{masterProt}}})."</FONT>')\" onmouseout=\"popout()\">$geneName1</A>";
 				}
-				else {$geneStrg=$masterProteins{$prot{$protID}{masterProt}}[0];}
+				else {$geneStrg=$geneName1;}
 			}
             print qq
-|<TR bgcolor="$bgColor">
+|<TR bgcolor="$bgColor" data-protid="$prot{$protID}{identifier}" class="GOTableRow" id="TableRow$goID" data-bgcolor="$bgColor" data-genename="$geneName1" data-genedesc="$prot{$protID}{desc}">
 <TH align="left" valign="top">
-<INPUT type="checkbox" name="checkProt$goID" value="$protID">&nbsp;<A href="javascript:sequenceView($protID,$prot{$protID}{anaID});">$prot{$protID}{identifier}</A>&nbsp;</TD>
+<INPUT type="checkbox" onchange="checkProt(this, '$goID');" name="checkProt$goID" value="$protID">&nbsp;<A href="javascript:sequenceView($protID,$prot{$protID}{anaID});">$prot{$protID}{identifier}</A>&nbsp;</TD>
 <TH valign="top" align="left">&nbsp;$geneStrg&nbsp;</TD>
 <TH align="right" valign="top">&nbsp;$prot{$protID}{mw}&nbsp;</TH>
 <TH valign="top">&nbsp;$prot{$protID}{numPep}&nbsp;</TH>
@@ -956,6 +1077,8 @@ sub formatGOName{
 }
 
 ####>Revision history<####
+# 1.0.8 [FEATURE] Add filters and search field to retrieve specific protein(s) (VS 09/11/19)
+# 1.0.7 [FEATURE] Remove locked experiments from GO lists searches (VS 08/08/19)
 # 1.0.6 Handles project status=-1 [no auto-end validation] (PP 07/06/18)
 # 1.0.5 Compatible with MODIFICATION_SITE (PP 08/08/17)
 # 1.0.4 Major bug fix with categories (FY 09/10/13)

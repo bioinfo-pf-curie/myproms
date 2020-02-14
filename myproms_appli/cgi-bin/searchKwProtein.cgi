@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# searchKwProtein.cgi      2.2.10                                              #
+# searchKwProtein.cgi      2.3.0                                               #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Searches DB for proteins using keywords                                      #
@@ -281,7 +281,7 @@ foreach my $sth (@sthSrch) {
 my $existMatches=0;
 my @sthItem;
 if ($refItem eq 'PROJECT') {
-	$sthItem[0]=$dbh->prepare("SELECT P.ID_PROTEIN,ID_ANALYSIS FROM PROTEIN P,ANALYSIS_PROTEIN AP WHERE P.ID_PROTEIN=AP.ID_PROTEIN AND ID_PROJECT=$refItemID ORDER BY NUM_PEP DESC,VISIBILITY DESC,CONF_LEVEL DESC"); # best ana 1st
+	$sthItem[0]=$dbh->prepare("SELECT P.ID_PROTEIN,A.ID_ANALYSIS FROM PROTEIN P INNER JOIN EXPERIMENT E ON E.ID_PROJECT=P.ID_PROJECT INNER JOIN SAMPLE S ON S.ID_EXPERIMENT=E.ID_EXPERIMENT INNER JOIN ANALYSIS A ON A.ID_SAMPLE=S.ID_SAMPLE INNER JOIN ANALYSIS_PROTEIN AP ON AP.ID_ANALYSIS=A.ID_ANALYSIS AND AP.ID_PROTEIN=P.ID_PROTEIN WHERE E.ID_PROJECT=$refItemID AND E.ID_EXPERIMENT NOT IN (SELECT E2.ID_EXPERIMENT FROM EXPERIMENT E2 INNER JOIN USER_EXPERIMENT_LOCK EU ON EU.ID_EXPERIMENT=E2.ID_EXPERIMENT WHERE E2.ID_PROJECT=$refItemID AND EU.ID_USER='$userID') ORDER BY NUM_PEP DESC,VISIBILITY DESC,CONF_LEVEL DESC");
 }
 elsif ($refItem eq 'EXPERIMENT') {
 	$sthItem[0]=$dbh->prepare("SELECT ID_PROTEIN,AP.ID_ANALYSIS FROM ANALYSIS_PROTEIN AP,ANALYSIS A,SAMPLE S WHERE AP.ID_ANALYSIS=A.ID_ANALYSIS AND A.ID_SAMPLE=S.ID_SAMPLE AND S.ID_SPOT IS NULL AND ID_EXPERIMENT=$refItemID ORDER BY NUM_PEP DESC,VISIBILITY DESC,CONF_LEVEL DESC");
@@ -786,6 +786,7 @@ function displayClassification() {
 }
 
 ####>Revision history<####
+# 2.3.0 [FEATURE] Remove locked experiments from search database (VS 08/08/19)
 # 2.2.10 Added number of matches found (PP 14/06/18)
 # 2.2.9 Handles project status=-1 [no auto-end validation] (PP 07/06/18)
 # 2.2.8 [Fix] bug: forgotten LOWER(ALIAS) in SQL query (PP 31/05/18)

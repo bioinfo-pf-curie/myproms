@@ -1,6 +1,6 @@
 ################################################################################
-# promsConfig.pm           2.9.8D                                              #
-# Authors: P. Poullet, G. Arras, F. Yvon & M. Le Picard (Institut Curie)       #
+# promsConfig.pm           2.10.3D                                              #
+# Authors: P. Poullet, G. Arras & V. Sabatet (Institut Curie)                  #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
 
@@ -43,6 +43,7 @@ package promsConfig;
 
 use CGI ':standard';
 use DBI;
+use Time::Piece;
 
 use DBD::mysql;	# MySQL
 
@@ -114,6 +115,7 @@ sub getServerInfo {
 				'go_unix'			=> "$promsPath{data}/go/results",
 				'go'				=> "$promsPath{html}/data/go/results",
 				'explorAna'			=> "$promsPath{data}/exploratory_data",
+                'explorAna_html'    => "$promsPath{html}/data/exploratory_data",
 				'pathAna'			=> "$promsPath{data}/pathway_data"
 				);
 
@@ -130,7 +132,13 @@ sub dbConnect {
 	&checkUser unless $_[0];
 
 	#>DB connexion
-	my $dbh = DBI->connect("dbi:mysql:dbname=$dbName;host=$host;port=$port;mysql_init_command=SET NAMES utf8",$dbUser,$password,{RaiseError=>1,AutoCommit=>0}) || die "ERROR: ",$DBI::errstr;
+	#my $dbh = DBI->connect("dbi:mysql:dbname=$dbName;host=$host;port=$port;mysql_init_command=SET NAMES utf8",$dbUser,$password,{RaiseError=>1,AutoCommit=>0}) || die "ERROR: ",$DBI::errstr;
+	my $dbh = DBI->connect("dbi:mysql:dbname=$dbName;host=$host;port=$port",$dbUser,$password,
+						   {RaiseError			=> 1,
+							AutoCommit			=> 0,
+							mysql_init_command	=> "SET NAMES utf8, sql_mode=''"
+							}
+						   ) || die "ERROR: ",$DBI::errstr;
 	return $dbh;
 }
 
@@ -173,9 +181,12 @@ sub getClusterInfo {
 		'on'=>0, # <------- set to 1 to activate
 ###		'name'=>'myCluster',
 ###		'maxCPUs'=>24,
-###		'maxJobs'=>20,
+###		'maxJobs'=>50,
 ###		'maxMemory'=>240, # Gb
 ###		'singularityImage'=>$clusterCommandPrefix || '',
+###		'setSingularityImage' => sub {
+###			$cluster{'singularityImage'}=$_[0] || '';
+###		},
 ###		'buildCommand' => sub {
 ###			my ($runDir,$command)=@_; # $command: a command string or a bash file full name
 ###			my $userCommandFile;
@@ -201,8 +212,20 @@ sub getClusterInfo {
 ###			$jobIdTag='' unless $jobIdTag;
 ###			unless ($runDir) {($runDir=$bashFile)=~s/\/[^\/]+\Z//;}
 ###			my $jobIdFile="$runDir/torqueID$jobIdTag.txt";
-###			system "qsub $bashFile > $jobIdFile";
-###			return $jobIdFile;
+###			my $connectFile="$runDir/ssh_connect.sh";
+###			open (CONN,">$connectFile");
+###			print CONN qq
+###|#!/bin/bash
+###/bioinfo/local/bin/sqsub_$serverInstance.sh $bashFile > $jobIdFile
+###|;
+####ssh -o "UserKnownHostsFile=/dev/null" -o "StrictHostKeyChecking no" calcsub "$bashFile > $qsubFile" 2> $sshErrorFile
+###			close CONN;
+###			my $modBash=0775;
+###			chmod $modBash, $connectFile;
+###			system "$connectFile 2> $jobIdFile";
+###
+###			my $jobID = `grep -Eo '[0-9]+' $jobIdFile | head -1 | tr -d '\n'`;
+###			return $jobID;
 ###		},
 ###		'checkError' => sub {
 ###			my ($errorFile,$refSkipErrors)=@_;
@@ -219,14 +242,197 @@ sub getClusterInfo {
 ###			return $error;
 ###		},
 ###		'killJob' => sub {
-###			my ($jobIdFile)=@_;
-###			my $jobID;
-###			if ($jobIdFile !~ /\D/) {$jobID=$jobIdFile;} # assume job id
-###			else { # assume /full/path/to/job id file
-###				my $jobIdStrg=`head -1 $jobIdFile`;
-###				($jobID)=$jobIdStrg=~/^(\d+)/;
+###			my ($jobsIDRef, $waitForEnding)=@_;
+###			
+###			&promsMod::cleanDirectory("$promsPath{data}/tmp/delJobs",'15m'); # Remove previous deletion folders
+###			
+###			my $jobName = join('.', @{$jobsIDRef});
+###			my $runDir = "$promsPath{data}/tmp/delJobs/".join('.', @{$jobsIDRef});
+###			my $scriptPath = "$runDir/$jobName.sh";
+###			my %jobParams = (
+###				maxMem     => '20Mb',
+###				numCPUs    => 1,
+###				jobName    => $jobName."_script",
+###				outFile    => "PBS$jobName.txt",
+###				errorFile  => "PBSerror$jobName.txt",
+###			);
+###			
+###			system("mkdir -p $runDir");
+###			my $scriptContent = qq
+###|#!/bin/bash
+###
+#####resources
+####PBS -l mem=$jobParams{maxMem}
+####PBS -l nodes=$jobParams{numCPUs}:ppn=1
+####PBS -l walltime=00:30:00
+####PBS -q batch
+###
+#####Information
+####PBS -N $jobParams{jobName}
+####PBS -m abe
+####PBS -o $runDir/$jobParams{outFile}
+####PBS -e $runDir/$jobParams{errorFile}
+###
+#####Script Content
+###|;
+###			
+###			foreach my $jobID (@{$jobsIDRef}) {
+###				$scriptContent .= "qdel $jobID\n";
 ###			}
-###			system "qdel $jobID";
+###		
+###			open(FILE, '>', $scriptPath) || die "Error while opening $scriptPath\n";
+###			print FILE $scriptContent."\necho Done;";
+###			close FILE;
+###			chmod 0775, $scriptPath;
+###			
+###			system(($serverInstance =~ 'dev') ? "/bioinfo/local/bin/sqsub_dev.sh $scriptPath &" : "/bioinfo/local/bin/sqsub_prod.sh $scriptPath &"); # Start script
+###			
+###			# Remove generated files
+###			my $count = 0;
+###			my $maxCount = 60;
+###			while($waitForEnding && (!-e "$runDir/$jobParams{outFile}" || `cat $runDir/$jobParams{outFile}` !~ /Done/) && $count <= $maxCount) {
+###				$count++;
+###				sleep 2;
+###			}
+###		},
+###		'jobInfos' => sub {
+###			my ($jobsIDRef, $realTime) = @_;
+###			my @jobsID = @{$jobsIDRef};
+###			my %jobInfos = ();
+###			my $jobsLogDir = "/data/tmp/torque6_logs";
+###			my $serverInstance = promsConfig::detectServer;
+###			$jobsLogDir .= ($serverInstance =~ /prod/) ? '/http' : '/w-myproms-ud';
+###			my $t = Time::Piece->new();
+###			
+###			# Check if job is described in the exited job file summary
+###			my $logFilesExistCmd = "find $jobsLogDir -name ".$t->year;
+###			my $getJobInfoExitedCmd = "grep -E '(".join('|', @jobsID).")\.torque6\.curie\.fr' $jobsLogDir/".$t->year."*.E";
+###			my $jobsInfoStr = `$getJobInfoExitedCmd`;
+###			if(`$logFilesExistCmd`) {
+###			if($jobsInfoStr) {
+###				foreach my $jobsInfoStr (split('\n', $jobsInfoStr)) {
+###					my @allJobInfos = split(' ', $jobsInfoStr);
+###					if($allJobInfos[1] =~ /([0-9]+).torque6.curie.fr/) {
+###						my $jobID = $1;
+###						foreach my $jobInfoField (@allJobInfos[2..$#allJobInfos]) {
+###							my ($info, $value) = split('=', $jobInfoField);
+###							$jobInfos{$jobID}{$info} = $value;
+###						}
+###						
+###						@jobsID = grep {!/$jobID/} @jobsID; # Remove job from queried list
+###					}
+###				}
+###				}
+###			}
+###			
+###			# Try to find remaining jobs by using qstat on cluster
+###			if(@jobsID && $realTime) {
+###				my $jobName = "qstatJobs".join('.', @jobsID);
+###				my $runDir = "$promsPath{data}/tmp/qstatJobs";
+###				my $i = 0;
+###				while(-s "$runDir".$i) {
+###					$i++;
+###				}
+###				$runDir .= $i;
+###				
+###				my $scriptPath = "$runDir/$jobName.sh";
+###				my %jobParams = (
+###					maxMem     => '20Mb',
+###					numCPUs    => 1,
+###					maxHours   => 1,
+###					jobName    => $jobName."_script",
+###					outFile    => "PBS$jobName.txt",
+###					errorFile  => "PBSerror$jobName.txt",
+###					noWatch    => '1',
+###				);
+###				
+###				mkdir $runDir;
+###				my $scriptContent = qq |
+###						#!/bin/bash
+###						
+###						##resources
+###						#PBS -l mem=$jobParams{maxMem}
+###						#PBS -l nodes=$jobParams{numCPUs}:ppn=1
+###						#PBS -l walltime=$jobParams{maxHours}:00:00
+###						#PBS -q batch
+###						
+###						##Information
+###						#PBS -N $jobParams{jobName}
+###						#PBS -m abe
+###						#PBS -o $runDir/$jobParams{outFile}
+###						#PBS -e $runDir/$jobParams{errorFile}
+###						
+###						##Script Content
+###				|;
+###				
+###				$scriptContent .= "qstat -f ".join(' ', @jobsID)." > $runDir/qstat.out\n";
+###			
+###				open(FILE, '>', $scriptPath) || die "Error while opening $scriptPath\n";
+###				print FILE $scriptContent;
+###				close FILE;
+###				chmod 0775, $scriptPath;
+###				
+###				system(($serverInstance =~ 'dev') ? "/bioinfo/local/bin/sqsub_dev.sh $scriptPath" : "/bioinfo/local/bin/sqsub_prod.sh $scriptPath"); # Start script
+###				
+###				# Watch for task completion
+###				my $nbWhile = 0;
+###				while (!-s "$runDir/qstat.out" && $nbWhile < 120) {
+###					sleep 1;
+###					$nbWhile++;
+###				}
+###				
+###				if(-s "$runDir/qstat.out") {
+###					open QSTAT, '<', "$runDir/qstat.out";
+###					chomp(my @lines = <QSTAT>);
+###					close QSTAT;
+###					
+###					my $currentJobID = "";
+###					foreach my $jobInfoField (@lines[0..$#lines]) {
+###						chomp($jobInfoField);
+###						if($jobInfoField =~ /([0-9]+).torque6.curie.fr/) {
+###							$currentJobID = $1;
+###							@jobsID = grep {!/$currentJobID/} @jobsID;
+###						} else {
+###							my ($info, $value) = split(' = ', $jobInfoField);
+###							
+###							if($info && $value) {
+###								$info =~ s/\s+//g;
+###								if($info eq 'start_time') {
+###									my $t = Time::Piece->strptime($value, "%a %h %d %H:%M:%S %Y");
+###									$info = 'start';
+###									$value = $t->epoch-3600;
+###								}
+###								$info = 'jobname' if($info eq 'Job_Name');
+###								$jobInfos{$currentJobID}{$info} = $value
+###							}
+###						}
+###					}
+###				}
+###				
+###				system("rm -rf $runDir");
+###			}
+###			
+###			# If jobs are remaining (only not started ones), check in the submitted jobs file summary
+###			if(@jobsID) {
+###				my $getJobInfoSubmitedCmd = "grep -E '(".join('|', @jobsID).")\.torque6\.curie\.fr' $jobsLogDir/".$t->year."*.S";
+###				$jobsInfoStr = `$getJobInfoSubmitedCmd`;
+###				if($jobsInfoStr) {
+###					foreach my $jobsInfoStr (split('\n', $jobsInfoStr)) {
+###						my @allJobInfos = split(' ', $jobsInfoStr);
+###						if($allJobInfos[1] =~ /([0-9]+).torque6.curie.fr/) {
+###							my $jobID = $1;
+###							foreach my $jobInfoField (@allJobInfos[2..$#allJobInfos]) {
+###								my ($info, $value) = split('=', $jobInfoField);
+###								$jobInfos{$jobID}{$info} = $value;
+###							}
+###							
+###							@jobsID = grep {!/$jobID/} @jobsID; # Remove job from queried list
+###						}
+###					}
+###				}
+###			}
+###			
+###			return %jobInfos;
 ###		},
 ###		'runJob' => sub {
 ###			my ($runDir,$command,$refParam)=@_;
@@ -293,7 +499,7 @@ sub getClusterInfo {
 ###
 ##### Command(s)
 ###|;
-###			print BASH "export LC_ALL=\"C\"\n" if $cluster{singularityImage}=~/myproms_1\.1\.17\.img/;
+###			print BASH "export LC_ALL=\"C\"\n" if $cluster{'singularityImage'}=~/myproms_1\.1\.17\.img/;
 ###			print BASH "$commandBefore\n" if $commandBefore;
 ###			print BASH "$commandStrg\n";
 ###			print BASH "$commandAfter\n" if $commandAfter;
@@ -302,7 +508,7 @@ sub getClusterInfo {
 ###			chmod 0775, $bashFile;
 ###
 ###			##<Sending job request to cluster>##
-###			my $jobIdFile=$cluster{'sendToCluster'}->($bashFile,$jobIdTag,$runDir);
+###			my $jobID = $cluster{'sendToCluster'}->($bashFile,$jobIdTag,$runDir);
 ###
 ###			##<Watch job>##
 ###			my $pbsError='';
@@ -312,9 +518,9 @@ sub getClusterInfo {
 ###				my $maxNbWhile=$maxHours*60*2;
 ###				while ((!-e $pbsFile || !`tail -3 $pbsFile | grep $jobEndFlag`) && !$pbsError) {
 ###					if ($nbWhile > $maxNbWhile) {
-###						$pbsError="Aborting quantification: Process is taking too long or died before completion";
+###						$pbsError="Aborting: Process is taking too long or died before completion";
 ###						system "echo $pbsError >> $pbsErrorFile";
-###						$cluster{'killJob'}->($jobIdFile);
+###						$cluster{'killJob'}->([$jobID]);
 ###						last;
 ###					}
 ###					sleep 30;
@@ -325,20 +531,44 @@ sub getClusterInfo {
 ###					$nbWhile++;
 ###				}
 ###			}
-###
-###			return ($pbsError,$pbsErrorFile);
+###			
+###			return ($pbsError, $pbsErrorFile, $jobID);
 ###		},
-###		'path'	=>	{
-###			'java'				=> 'JAVA_DIR',
-###			'masschroq'			=> 'MASSCHROQ_DIR',
-###			'msproteomicstools'	=> 'MSPROTEO_DIR',
-###			'openms'			=> 'OPENMS_DIR',
+###
+###		#'getJobStatus' => sub {
+###		#	my ($jobID)=@_;
+###		#	my %jobStatus = (
+###		#		C => [1,'Job is completed after having run'],
+###		#		E => [1,'Job is exiting after having run'],
+###		#		H => [0,'Job is held'],
+###		#		Q => [0,'Job is queued, eligible to run or routed'],
+###		#		R => [0,'Job is running'],
+###		#		T => [0,'Job is being moved to new location'],
+###		#		W => [0,'Job is waiting for its execution time (-a option) to be reached'],
+###		#		S => [-1,'Job is suspended']
+###		#	);
+###		#	my $results=`qstat $jobID | grep ^$jobID`;
+###		#	my @returnInfo;
+###		#	if ($results) {
+###		#		my $status=(split(/\s+/,$results))[-2];
+###		#		@returnInfo=@{$jobStatus{$status}};
+###		#	}
+###		#	else {@returnInfo=(-1,'Job not found');}
+###		#	return @returnInfo;
+###		#},
+###		'path'		=>	{ # Singularity/docker
+###			'java'				=> '/usr/bin',
+###			#'masschroq'			=> '/usr/local/bin',
+###			'masschroq'			=> '/usr/bin', # myproms_1.1.19-1.img!!!!!! && img 1.2.x
+###			'msproteomicstools'	=> '/usr/local/bin', #'/usr/local/lib/python2.7/dist-packages',
+###			#'openms'			=> '/usr/local/bin', # img 1.1.x
+###			'openms'			=> '/usr/bin', # img 1.2.x
 ###			'perl'				=> '/usr/local/bin',
-###			'pyprophet'			=> 'PYPROPHET_DIR',
-###			'python'			=> 'PYTHON_DIR',
-###			'qvality'			=> 'QVALITY_DIR',
-###			'R'					=> 'R_DIR',
-###			'tpp'           	=> 'TPP_DIR'
+###			'pyprophet'			=> '/usr/local/bin',
+###			'python'			=> '/usr/bin',
+###			'qvality'			=> '/usr/bin',
+###			'R'					=> '/usr/bin',
+###			'tpp'           	=> '/usr/local/tpp/bin'
 ###		}
 	);
 
@@ -351,8 +581,15 @@ sub getClusterInfo {
 ####> MASCOT SERVERS <####
 sub getMascotServers {
 	my %mascotServers=(
-		# ['URL','proxy string if any','full path to Mascot local directory if any',optional 0/1 flag for linking file]
-		#'MASCOT_SERVER_NAME'=>['MASCOT_SERVER_URL','MASCOT_SERVER_PROXY','MASCOT_DIR','MASCOT_LINK_FILES_FLAG']
+		##myServer=>{  Mascot server name
+		##	url=>URL to Mascot server,
+		##	proxy=>proxy string if any,
+		##	data_local_path=>full path to Mascot dat files local directory if any,
+		##	sequence_local_path=>full path to Mascot sequence files local directory if any,					
+		##	link_files=>optional 0/1 flag for linking file
+		##}
+		## Config starts below --->
+		#'MASCOT_SERVER_NAME'=>{url=>'MASCOT_SERVER_URL',proxy=>'MASCOT_SERVER_PROXY',data_local_path=>'MASCOT_DATA_DIR',sequence_local_path=>'MASCOT_SEQUENCE_DIR',link_files=>'MASCOT_LINK_FILES_FLAG'}
 	);
 	return %mascotServers;
 }
@@ -402,6 +639,7 @@ sub getItemIcones { # Navigation tree logos
 	my %iconImg=(
 		'project'=>'project.gif',
 		'experiment'=>'experiment.gif',
+        'experiment:locked' =>'experiment_locked.png',
 		'sample'=>'sample.gif',
 		'analysis:no_scan'=>'analysis_gray.gif',
 		'analysis:no_val'=>'analysis_red.gif',
@@ -677,7 +915,19 @@ sub getFragmentClassif {
 1;
 
 ####>Revision history<####
-# 2.9.15D Adapted for distribution & (PP 24/06/19)
+# 2.10.3D Adapted for distribution & (PP 07/02/19)
+# 2.10.3 [CHANGE] Cluster max number of jobs sets to 50 instead of 20 (PP 07/02/20)
+# 2.10.2 [ENHANCEMENT] Added alternative cluster status & singularity image for docker instance (PP 15/01/20)
+# 2.10.1 [BUGFIX] In docker-based server detection (PP 14/01/20)
+# 2.10.0 [FEATURE] Added server detection for docker container (PP 11/01/20)
+# 2.9.22b [BUGFIX] Check torque6 log files path existence before grep (VS 08/01/20)
+# 2.9.22 [CHANGES] Minor change in $ENV{REMOTE_USER} filtering in dev mode (PP 25/11/19)
+# 2.9.21 [CHANGES] Change TPP path + Improve cluster killJob function + use Singularity image 1.3.2 on cluster (VS 18/11/19)
+# 2.9.20 [CHANGES] Uses Singularity image 1.3.1 on cluster (PP 12/11/19)
+# 2.9.19 [FEATURE] Added 'killJob' and 'jobInfos' to &getClusterInfo and (VS 16/10/19)
+# 2.9.18 [FEATURE] Added cluster singularity image setter (PP 26/08/19)
+# 2.9.17 [FEATURE] Added experiment lock system img (VS 08/08/19)
+# 2.9.16 Uses new &promsConfig::getMascotServers function (PP 25/06/19)
 # 2.9.15 &getFTPmode function now returns a hash, not a reference (PP 24/06/19)
 # 2.9.14 Uses new mysql production server smorpym.curie.fr (PP 12/06/19)
 # 2.9.13 &getFTPmode function (PP 11/06/19) 

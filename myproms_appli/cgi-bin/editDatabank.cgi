@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# editDatabank.cgi         2.5.0                                               #
+# editDatabank.cgi         2.5.1                                               #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -265,12 +265,12 @@ else { # add
 		$mascotOptionsStrg.="<OPTGROUP label='$mascotServer'>\n";
 		my $agent = LWP::UserAgent->new(agent=>'libwww-perl myproms@curie.fr');
 		$agent->timeout(360);
-		if ($mascotServers{$mascotServer}[1]) { # proxy settings
-			if ($mascotServers{$mascotServer}[1] eq 'no') {$agent->no_proxy($mascotServers{$mascotServer}[0]);}
-			else {$agent->proxy('http', $mascotServers{$mascotServer}[1]);}
+		if ($mascotServers{$mascotServer}{proxy}) { # proxy settings
+			if ($mascotServers{$mascotServer}{proxy} eq 'no') {$agent->no_proxy($mascotServers{$mascotServer}{url});}
+			else {$agent->proxy('http', $mascotServers{$mascotServer}{proxy});}
 		}
 		else {$agent->env_proxy;}
-		my $response = $agent->get("$mascotServers{$mascotServer}[0]/cgi/myproms4databanks.pl?ACT=list");
+		my $response = $agent->get("$mascotServers{$mascotServer}{url}/cgi/myproms4databanks.pl?ACT=list");
 		while (my $wait = $response->header('Retry-After')) {
 			sleep $wait;
 			$response = $agent->get($response->base);
@@ -616,8 +616,9 @@ sub processForm {
 			$fileName=(split(/\//,$fullDbankfile))[-1];
 			$fileString="$mascotServer:$dbankName:$fileName";
 
-			if ($mascotServers{$mascotServer}[2]) { # Mascot is accessible from myProMS server
-				$fullDbankfile=~s/.+\/sequence/$mascotServers{$mascotServer}[2]\/sequence/; # in case NFS mount of mascot root dir
+			if ($mascotServers{$mascotServer}{sequence_local_path}) { # Mascot is accessible from myProMS server
+				#$fullDbankfile=~s/.+\/sequence/$mascotServers{$mascotServer}[2]\/sequence/; # in case NFS mount of mascot root dir
+				$fullDbankfile=~s/.+\/mascot\/sequence/$mascotServers{$mascotServer}{sequence_local_path}/;
 			}
 		}
 		else { #  server,local,internet
@@ -834,16 +835,16 @@ sub processForm {
 
 		###<Checking file>###
 		print "<BR><FONT class=\"title2\">Processing $fileName... ";
-		if ($fileOption eq 'mascotFile' && !$mascotServers{$mascotServer}[2]) { # Distant Mascot server
+		if ($fileOption eq 'mascotFile' && !$mascotServers{$mascotServer}{sequence_local_path}) { # Distant Mascot server
 			my $params={ACT=>'dbFile',DB=>$dbankName};
 			my $agent = LWP::UserAgent->new(agent=>'libwww-perl myproms@curie.fr');
 			$agent->timeout(360);
-			if ($mascotServers{$mascotServer}[1]) { # proxy settings
-				if ($mascotServers{$mascotServer}[1] eq 'no') {$agent->no_proxy($mascotServers{$mascotServer}[0]);}
-				else {$agent->proxy('http', $mascotServers{$mascotServer}[1]);}
+			if ($mascotServers{$mascotServer}{proxy}) { # proxy settings
+				if ($mascotServers{$mascotServer}{proxy} eq 'no') {$agent->no_proxy($mascotServers{$mascotServer}{url});}
+				else {$agent->proxy('http', $mascotServers{$mascotServer}{proxy});}
 			}
 			else {$agent->env_proxy;}
-			my $response = $agent->post("$mascotServers{$mascotServer}[0]/cgi/myproms4databanks.pl",$params);
+			my $response = $agent->post("$mascotServers{$mascotServer}{url}/cgi/myproms4databanks.pl",$params);
 			while (my $wait = $response->header('Retry-After')) {
 				sleep $wait;
 				$response = $agent->get($response->base);
@@ -861,6 +862,7 @@ sub processForm {
 			$totNumEntry=`grep -c '>' $fullDbankfile`;
 			chomp $totNumEntry;
 		}
+		$totNumEntry=0 unless $totNumEntry; # just to be safe
 
 		$dbh=&promsConfig::dbConnect;
 		my $qFileString=$dbh->quote($fileString);
@@ -973,16 +975,16 @@ sub ajaxTestParseRules {
 	##<Mascot file
 	if ($fileSource eq 'mascot') { # edit or add
 		my ($mascotServer,$dbankDir,$dbFileName)=($databankID)? split(/:/,$dbFile) : split(/##/,$dbFile);
-		my %mascotServers=&promsConfig::getMascotServers;
+		#my %mascotServers=&promsConfig::getMascotServers;
 		my $agent = LWP::UserAgent->new(agent=>'libwww-perl myproms@curie.fr');
 		$agent->timeout(360);
 		#<Proxy
-		if ($mascotServers{$mascotServer}[1]) {
-			if ($mascotServers{$mascotServer}[1] eq 'no') {$agent->no_proxy($mascotServers{$mascotServer}[0]);}
-			else {$agent->proxy('http', $mascotServers{$mascotServer}[1]);}
+		if ($mascotServers{$mascotServer}{proxy}) {
+			if ($mascotServers{$mascotServer}{proxy} eq 'no') {$agent->no_proxy($mascotServers{$mascotServer}{url});}
+			else {$agent->proxy('http', $mascotServers{$mascotServer}{proxy});}
 		}
 		else {$agent->env_proxy;}
-		my $response=$agent->post("$mascotServers{$mascotServer}[0]/cgi/myproms4databanks.pl",
+		my $response=$agent->post("$mascotServers{$mascotServer}{url}/cgi/myproms4databanks.pl",
 									['ACT'=>'parse',
 									'DB'=>$dbankDir,
 									#'parseRules'=>uri_escape($parseRules), # URL encoding unsafe parameters
@@ -1140,6 +1142,7 @@ sub getParseRules {
 }
 
 ####>Revision history<####
+# 2.5.1 Uses new &promsConfig::getMascotServers function (PP 25/06/19)
 # 2.5.0 Uses Net::FTP for FTP connection (PP 24/05/19)
 # 2.4.2 [Fix] bug in shared file path resolution (PP 11/10/18)
 # 2.4.1 [Fix] Javascript bugs when no shared directory declared (PP 13/04/18)

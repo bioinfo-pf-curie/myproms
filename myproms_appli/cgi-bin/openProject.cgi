@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# openProject.cgi        1.6.9                                                 #
+# openProject.cgi        1.7.5                                                 #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Generates the project's main navigation frames                               #
@@ -45,6 +45,7 @@ use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI ':standard';
 use promsConfig;
 use promsMod;
+#use promsQuantif; set as require in Experiment/quanti view
 use strict;
 
 #######################
@@ -55,7 +56,7 @@ my ($lightColor,$darkColor)=&promsConfig::getRowColors;
 my %analysisClass=(-1=>'no_scan',0=>'no_val',1=>'part_val',2=>'val');
 my $userID=$ENV{'REMOTE_USER'};
 
-# print header(-charset=>'UTF-8'); warningsToBrowser(1); # DEBUG
+#print header(-charset=>'UTF-8'); warningsToBrowser(1); # DEBUG
 ####################
 ####>Parameters<####
 ####################
@@ -156,35 +157,49 @@ elsif ($action eq 'nav') {
 	my ($projectName)=$dbh->selectrow_array("SELECT NAME FROM PROJECT WHERE ID_PROJECT=$projectID");
 	my $sthExp=$dbh->prepare("SELECT ID_EXPERIMENT,NAME FROM EXPERIMENT WHERE ID_PROJECT=$projectID ORDER BY DISPLAY_POS ASC");
 	my $sthG2D=$dbh->prepare("SELECT ID_GEL2D,NAME FROM GEL2D WHERE ID_EXPERIMENT=? ORDER BY DISPLAY_POS ASC");
-	my $sthSamp=$dbh->prepare("SELECT ID_SAMPLE,NAME FROM SAMPLE WHERE ID_EXPERIMENT=? AND ID_SPOT IS NULL ORDER BY DISPLAY_POS ASC");
+	my $sthSamp=$dbh->prepare("SELECT ID_SAMPLE,NAME FROM SAMPLE WHERE ID_EXPERIMENT=? AND ID_SPOT IS NULL AND ID_EXPERIMENT NOT IN (SELECT E2.ID_EXPERIMENT FROM EXPERIMENT E2 INNER JOIN USER_EXPERIMENT_LOCK EU ON EU.ID_EXPERIMENT=E2.ID_EXPERIMENT WHERE E2.ID_PROJECT=$projectID AND EU.ID_USER='$userID') ORDER BY DISPLAY_POS ASC");
 	my $sthAna=$dbh->prepare("SELECT ID_ANALYSIS,NAME,VALID_STATUS,VERIFIED_MG FROM ANALYSIS WHERE ID_SAMPLE=? ORDER BY DISPLAY_POS ASC");
 
 	####>Project<####
 	my @projectTree=(0,'project',$projectID,'','',1,$projectName,''); #(depth,type,ID,labelClass,imageClass,selectable,name,popup,refChild1,...2,...3)
-
+	my %hiddenExperimentIDs = ();
+	my $sthExpHide=$dbh->prepare("SELECT E.ID_EXPERIMENT, LOCK_MSG FROM EXPERIMENT E LEFT JOIN USER_EXPERIMENT_LOCK UEL ON UEL.ID_EXPERIMENT=E.ID_EXPERIMENT WHERE E.ID_PROJECT=$projectID AND ID_USER='$userID' ORDER BY DISPLAY_POS ASC");
+	$sthExpHide->execute;
+	while (my ($expID, $lockMessage)=$sthExpHide->fetchrow_array) {
+		$hiddenExperimentIDs{$expID} = $lockMessage;
+	}
+	$sthExpHide->finish;
+	
 	###>Experiments<###
 	$sthExp->execute;
 	while (my ($expID,$expName)=$sthExp->fetchrow_array) {
-		my @experimentTree=(1,'experiment',$expID,'','',1,$expName,'');
+		my $itemClass = ($hiddenExperimentIDs{$expID}) ? 'lockedItem' : '';
+		my $itemTooltip = ($hiddenExperimentIDs{$expID}) ? $hiddenExperimentIDs{$expID} : $expName;
+		my $itemIcon = ($hiddenExperimentIDs{$expID}) ? 'locked' : '';
+		my $itemSelectable = ($hiddenExperimentIDs{$expID}) ? 0 : 1;
+		
+		my @experimentTree=(1,'experiment',$expID,$itemClass,$itemIcon,$itemSelectable,$expName,$itemTooltip);
 
-		##>Gels<##
-		$sthG2D->execute($expID);
-		while (my ($gelID,$gelName)=$sthG2D->fetchrow_array) {
-			push @experimentTree,[2,'gel2d',$gelID,'','',1,$gelName,''];
-		}
-
-		##>Free Samples<##
-		$sthSamp->execute($expID);
-		while (my ($sampID,$sampName)=$sthSamp->fetchrow_array) {
-			my @sampleTree=(2,'sample',$sampID,'','',1,$sampName,'');
-
-			#>Analyses<#
-			$sthAna->execute($sampID);
-			while (my ($anaID,$anaName,$validStatus,$verifMG)=$sthAna->fetchrow_array) {
-				push @sampleTree,[3,'analysis',$anaID,'',$analysisClass{$validStatus},1,$anaName,''];
-				$expandMode=1 if ($validStatus>=1 && !$verifMG); # set expandMode to 1 if at least 1 valid analysis is not verified for MG
+		if ($itemSelectable) {
+			##>Gels<##
+			$sthG2D->execute($expID);
+			while (my ($gelID,$gelName)=$sthG2D->fetchrow_array) {
+				push @experimentTree,[2,'gel2d',$gelID,'','',1,$gelName,''];
 			}
-			push @experimentTree,\@sampleTree;
+
+			##>Free Samples<##
+			$sthSamp->execute($expID);
+			while (my ($sampID,$sampName)=$sthSamp->fetchrow_array) {
+				my @sampleTree=(2,'sample',$sampID,'','',1,$sampName,'');
+
+				#>Analyses<#
+				$sthAna->execute($sampID);
+				while (my ($anaID,$anaName,$validStatus,$verifMG)=$sthAna->fetchrow_array) {
+					push @sampleTree,[3,'analysis',$anaID,'',$analysisClass{$validStatus},1,$anaName,''];
+					$expandMode=1 if ($validStatus>=1 && !$verifMG); # set expandMode to 1 if at least 1 valid analysis is not verified for MG
+				}
+				push @experimentTree,\@sampleTree;
+			}
 		}
 		push @projectTree,\@experimentTree;
 	}
@@ -470,6 +485,7 @@ elsif ($action eq 'experiment') {# If experiment -> 2 possibilities: GO ANALYSIS
 	########################> VIEW=quanti <#############################
 	#elsif ($action eq 'design' || ($experimentView eq 'QUANTI'  && $action eq 'experiment')) {#}
 	elsif ($experimentView eq 'quanti') {
+		require promsQuantif;
 		#my ($item,$itemID)=split(':',param('EXPERIMENT'));
 		unless ($expID) {
 			if ($item eq 'experiment') {
@@ -479,7 +495,7 @@ elsif ($action eq 'experiment') {# If experiment -> 2 possibilities: GO ANALYSIS
 				($expID)=$dbh->selectrow_array("SELECT ID_EXPERIMENT FROM DESIGN WHERE ID_DESIGN=$itemID");
 			}
 			elsif ($item eq 'quantification') {
-				my ($anaID)=$dbh->selectrow_array("SELECT ID_ANALYSIS FROM ANA_QUANTIFICATION WHERE ID_QUANTIFICATION=$itemID LIMIT 0,1");
+				my ($anaID)=$dbh->selectrow_array("SELECT ID_ANALYSIS FROM ANA_QUANTIFICATION WHERE ID_QUANTIFICATION=$itemID LIMIT 1");
 				($expID)=$dbh->selectrow_array("SELECT S.ID_EXPERIMENT FROM ANALYSIS A, SAMPLE S WHERE A.ID_SAMPLE=S.ID_SAMPLE AND A.ID_ANALYSIS=$anaID"); # as long as analyses are directly linked to sample!
 			}
 		}
@@ -490,7 +506,10 @@ elsif ($action eq 'experiment') {# If experiment -> 2 possibilities: GO ANALYSIS
 		###########################
 		####>Building gel tree<####
 		###########################
-
+		
+		my @userInfo=&promsMod::getUserInfo($dbh,$userID,$projectID);
+		my $maxStatusStrg=($userInfo[1] eq 'bio' || $userInfo[1] eq 'manag')? ' AND STATUS <= 1' : ($userInfo[1] eq 'mass')? ' AND STATUS <= 2' : ''; # filter for quantif visibility
+		
 		my %treeOptions;
 		$treeOptions{'BUTTON'}='font-size:9px;width:60px';
 		$treeOptions{'AUTOSAVE'}='top.itemTreeStatus'; # name of JS variable storing tree status
@@ -501,11 +520,11 @@ elsif ($action eq 'experiment') {# If experiment -> 2 possibilities: GO ANALYSIS
 		my $sthQM=$dbh->prepare("SELECT ID_QUANTIFICATION_METHOD,CODE FROM QUANTIFICATION_METHOD");
 		my $sthD=$dbh->prepare("SELECT ID_DESIGN,NAME FROM DESIGN WHERE ID_EXPERIMENT=$expID ORDER BY NAME ASC");
 		#my $sthQuanti=$dbh->prepare("SELECT ID_QUANTIFICATION,NAME FROM QUANTIFICATION WHERE ID_DESIGN=? AND ID_QUANTIFICATION NOT IN (SELECT DISTINCT(ID_PARENT_QUANTIFICATION) FROM PARENT_QUANTIFICATION) ORDER BY NAME ASC");
-		my $sthDQ=$dbh->prepare('SELECT ID_QUANTIFICATION,NAME,FOCUS,QUANTIF_ANNOT FROM QUANTIFICATION WHERE ID_DESIGN=?'); # quanti with design
-		my $sthQP=$dbh->prepare('SELECT P.ID_PARENT_QUANTIFICATION,NAME,FOCUS,QUANTIF_ANNOT,ID_QUANTIFICATION_METHOD FROM PARENT_QUANTIFICATION P,QUANTIFICATION Q WHERE P.ID_PARENT_QUANTIFICATION=Q.ID_QUANTIFICATION AND P.ID_QUANTIFICATION=?'); # quanti parents
+		my $sthDQ=$dbh->prepare("SELECT ID_QUANTIFICATION,NAME,FOCUS,QUANTIF_ANNOT FROM QUANTIFICATION WHERE ID_DESIGN=? $maxStatusStrg"); # quanti with design
+		my $sthQP=$dbh->prepare('SELECT P.ID_PARENT_QUANTIFICATION,NAME,FOCUS,QUANTIF_ANNOT,ID_QUANTIFICATION_METHOD,UPDATE_DATE FROM PARENT_QUANTIFICATION P,QUANTIFICATION Q WHERE P.ID_PARENT_QUANTIFICATION=Q.ID_QUANTIFICATION AND P.ID_QUANTIFICATION=?'); # quanti parents
 		my $sthSA=$dbh->prepare("SELECT S.ID_SAMPLE,S.NAME,S.DISPLAY_POS,A.ID_ANALYSIS,A.NAME,A.DISPLAY_POS FROM ANA_QUANTIFICATION AQ,ANALYSIS A,SAMPLE S WHERE AQ.ID_ANALYSIS=A.ID_ANALYSIS AND A.ID_SAMPLE=S.ID_SAMPLE AND AQ.ID_QUANTIFICATION=?");
-		my $sthNDPQ=$dbh->prepare("SELECT DISTINCT Q.ID_QUANTIFICATION,Q.NAME,FOCUS,QUANTIF_ANNOT,ID_QUANTIFICATION_METHOD FROM QUANTIFICATION Q, ANA_QUANTIFICATION AQ, SAMPLE S, ANALYSIS A WHERE S.ID_SAMPLE=A.ID_SAMPLE AND A.ID_ANALYSIS=AQ.ID_ANALYSIS AND Q.ID_QUANTIFICATION=AQ.ID_QUANTIFICATION AND S.ID_EXPERIMENT=$expID AND FOCUS='protein' AND ID_DESIGN IS NULL");
-		my $sthPQ=$dbh->prepare("SELECT DISTINCT Q.ID_QUANTIFICATION,Q.NAME,FOCUS,QUANTIF_ANNOT,ID_QUANTIFICATION_METHOD FROM QUANTIFICATION Q, ANA_QUANTIFICATION AQ, SAMPLE S, ANALYSIS A WHERE S.ID_SAMPLE=A.ID_SAMPLE AND A.ID_ANALYSIS=AQ.ID_ANALYSIS AND Q.ID_QUANTIFICATION=AQ.ID_QUANTIFICATION AND S.ID_EXPERIMENT=$expID AND FOCUS='peptide'"); # peptide quantif AND QUANTIF_ANNOT LIKE 'ALGO_TYPE=%'"); # MassChroq only 'LABEL=FREE%'
+		my $sthNDPQ=$dbh->prepare("SELECT DISTINCT Q.ID_QUANTIFICATION,Q.NAME,FOCUS,QUANTIF_ANNOT,ID_QUANTIFICATION_METHOD,Q.UPDATE_DATE FROM QUANTIFICATION Q,ANA_QUANTIFICATION AQ,SAMPLE S,ANALYSIS A WHERE S.ID_SAMPLE=A.ID_SAMPLE AND A.ID_ANALYSIS=AQ.ID_ANALYSIS AND Q.ID_QUANTIFICATION=AQ.ID_QUANTIFICATION AND S.ID_EXPERIMENT=$expID AND FOCUS='protein' AND ID_DESIGN IS NULL $maxStatusStrg");
+		my $sthPQ=$dbh->prepare("SELECT DISTINCT Q.ID_QUANTIFICATION,Q.NAME,FOCUS,QUANTIF_ANNOT,ID_QUANTIFICATION_METHOD,Q.UPDATE_DATE FROM QUANTIFICATION Q,ANA_QUANTIFICATION AQ,SAMPLE S,ANALYSIS A WHERE S.ID_SAMPLE=A.ID_SAMPLE AND A.ID_ANALYSIS=AQ.ID_ANALYSIS AND Q.ID_QUANTIFICATION=AQ.ID_QUANTIFICATION AND S.ID_EXPERIMENT=$expID AND FOCUS='peptide'"); # peptide quantif AND QUANTIF_ANNOT LIKE 'ALGO_TYPE=%'"); # MassChroq only 'LABEL=FREE%'
 		#my $sthQuantiParentID=$dbh->prepare("SELECT ID_PARENT_QUANTIFICATION FROM PARENT_QUANTIFICATION WHERE ID_QUANTIFICATION=?");
 		#my $sthQuantiParentName=$dbh->prepare("SELECT NAME FROM QUANTIFICATION WHERE ID_QUANTIFICATION=?");
 
@@ -856,7 +875,7 @@ elsif ($action eq 'project') {
 	
 	my $sthUsedBioSample=$dbh->prepare("SELECT 'used' FROM OBSERVATION WHERE ID_BIOSAMPLE=? LIMIT 1");
 
-	my $existBiosample = 0;
+	my $numBiosamples = 0;
  	my @bioSampTree=(0,'all',$projectID,'','',1,'All BioSamples','');
 	if ($sampleView eq 'name') {
 		my $sthSelBioSample = $dbh->prepare("SELECT BS.ID_BIOSAMPLE, BS.NAME FROM BIOSAMPLE BS
@@ -865,7 +884,7 @@ elsif ($action eq 'project') {
 		$sthSelBioSample->execute;
 		my %bioSamples;
 		while (my ($bioSampID, $bioSampName) = $sthSelBioSample->fetchrow_array) {
-			$existBiosample=1;
+			$numBiosamples++;
 			$sthUsedBioSample->execute($bioSampID);
 			my ($usedStatus)=$sthUsedBioSample->fetchrow_array;
 			$usedStatus='not_used' unless $usedStatus;
@@ -885,7 +904,7 @@ elsif ($action eq 'project') {
 		$sthSelBioSample -> execute;
 		my (%bioSamples,%species);
 		while (my ($bioSampID,$bioSampName,$speciesID,$scientificName,$commonName) = $sthSelBioSample -> fetchrow_array) {
-			$existBiosample=1;
+			$numBiosamples++;
 			$sthUsedBioSample->execute($bioSampID);
 			my ($usedStatus)=$sthUsedBioSample->fetchrow_array;
 			$usedStatus='not_used' unless $usedStatus;
@@ -894,7 +913,7 @@ elsif ($action eq 'project') {
 		}
 		$sthSelBioSample->finish;
 		foreach my $speciesID (sort{lc($species{$a}[0]) cmp lc($species{$b}[0])} keys %species) {
-			my @speciesTree=(1,'species',$speciesID,'','',0,"$species{$speciesID}[0] ($species{$speciesID}[1])",'');
+			my @speciesTree=(1,'species',$speciesID,'','',0,"$species{$speciesID}[0] ($species{$speciesID}[1]) [x".(scalar keys %{$bioSamples{$speciesID}}).']','');
 			foreach my $bioSampID (sort{&promsMod::sortSmart(lc($bioSamples{$speciesID}{$a}[0]),lc($bioSamples{$speciesID}{$b}[0]))} keys %{$bioSamples{$speciesID}}) {
 				push @speciesTree,[2,'biosample',$bioSampID,'',$bioSamples{$speciesID}{$bioSampID}[1],1,$bioSamples{$speciesID}{$bioSampID}[0],''];
 			}
@@ -913,7 +932,7 @@ elsif ($action eq 'project') {
 		$treatBioSamples{0}={};
 		$sthSelBioSample -> execute;
 		while (my ($bioSampID,$bioSampName,$propID) = $sthSelBioSample -> fetchrow_array) {
-			$existBiosample=1;
+			$numBiosamples++;
 			$sthUsedBioSample->execute($bioSampID);
 			my ($usedStatus)=$sthUsedBioSample->fetchrow_array;
 			$usedStatus='not_used' unless $usedStatus;
@@ -934,7 +953,7 @@ elsif ($action eq 'project') {
 		my $selBioSampID=($selBranchID=~/biosample:(\d+)/)? $1 : 0; # in case $selBranchID = biosample:<bioSampID>:<treatID>
 		foreach my $treatID (sort{lc($properties{$a}[0]) cmp lc($properties{$b}[0])} keys %treatBioSamples) {
 			next if $treatID==0;
-			my @treatmentTree=(1,'treatment',$treatID,'','',0,$properties{$treatID}[0],'');
+			my @treatmentTree=(1,'treatment',$treatID,'','',0,$properties{$treatID}[0].' [x'.(scalar keys %{$treatBioSamples{$treatID}}).']','');
 			foreach my $bioSampID (sort{&promsMod::sortSmart(lc($bioSampleName{$a}[0]),lc($bioSampleName{$b}[0]))} keys %{$treatBioSamples{$treatID}}) {
 				push @treatmentTree,[2,'biosample',"$bioSampID:$treatID",'',$bioSampleName{$bioSampID}[1],1,$bioSampleName{$bioSampID}[0],''];
 				delete $treatBioSamples{0}{$bioSampID} if $treatBioSamples{0}{$bioSampID}; # IMPORTANT:sample can be "untreated" for another treatment!
@@ -946,7 +965,7 @@ elsif ($action eq 'project') {
 			push @bioSampTree,\@treatmentTree;
 		}
 		if (scalar keys %{$treatBioSamples{0}}) {
-			my @treatmentTree=(1,'treatment',0,'','',0,'*Untreated*','');
+			my @treatmentTree=(1,'treatment',0,'','',0,'*Untreated* [x'.(scalar keys %{$treatBioSamples{0}}).']','');
 			foreach my $bioSampID (sort{lc($bioSampleName{$a}[0]) cmp lc($bioSampleName{$b}[0])} keys %{$treatBioSamples{0}}) {
 				push @treatmentTree,[2,'biosample',"$bioSampID:0",'',$bioSampleName{$bioSampID}[1],1,$bioSampleName{$bioSampID}[0],''];
 				if ($bioSampID==$selBioSampID) { # matches 1st occurence of $bioSampID in tree
@@ -966,7 +985,7 @@ elsif ($action eq 'project') {
 		my %bioSamples;
 		$sthSelBioSample -> execute;
 		while (my ($bioSampID, $bioSampName, $propValue) = $sthSelBioSample -> fetchrow_array) {
-			$existBiosample=1;
+			$numBiosamples++;
 			$propValue=' ' unless $propValue; # too make sure it comme first in sort
 			$sthUsedBioSample->execute($bioSampID);
 			my ($usedStatus)=$sthUsedBioSample->fetchrow_array;
@@ -978,7 +997,7 @@ elsif ($action eq 'project') {
 		foreach my $propValue (sort{&promsMod::sortSmart(lc($a),lc($b))} keys %bioSamples) {
 			$valueRank++;
 			my $dispValue=($propValue eq ' ')? '*No value*' : $propValue;
-			my @propertyTree=(1,'property',$valueRank,'','',0,$dispValue,'');
+			my @propertyTree=(1,'property',$valueRank,'','',0,$dispValue.' [x'.(scalar keys %{$bioSamples{$propValue}}).']','');
 			foreach my $bioSampID (sort{&promsMod::sortSmart(lc($bioSamples{$propValue}{$a}[0]),lc($bioSamples{$propValue}{$b}[0]))} keys %{$bioSamples{$propValue}}) {
 				push @propertyTree,[2,'biosample',$bioSampID,'',$bioSamples{$propValue}{$bioSampID}[1],1,$bioSamples{$propValue}{$bioSampID}[0],''];
 			}
@@ -988,7 +1007,8 @@ elsif ($action eq 'project') {
 
 	$sthUsedBioSample->finish;
 	
-	push @bioSampTree,[1,'none',$projectID,'','',0,'None',''] unless $existBiosample;
+	push @bioSampTree,[1,'none',$projectID,'','',0,'None',''] unless $numBiosamples;
+	$bioSampTree[6].=" [x$numBiosamples]"; # append count to 'All BioSamples'
 
 	#######################
 	####>Starting HTML<####
@@ -1122,51 +1142,90 @@ function updateBioSampleView(newView) {
 sub createPeptideQuantificationBranches {
 	my ($refQuantiData,$sthSA,$quantiID,$refQuantiTree,$type,$refFetched,$refMethodCodes)=@_;
 	#$sthQP->execute($quantiID);
-	my (%hierarchy,%itemInfo,%distQuantifNames);
+	my (%hierarchy,%itemInfo,%distQuantifNames,%multiAnaQuantif);
 	#while (my ($parentQuantiID,$parentQuantiName,$parentFocus,$parentAnnot) = $sthQP->fetchrow_array) { #}
 	foreach my $refData (@{$refQuantiData}) {
-		my ($parentQuantiID,$parentQuantiName,$parentFocus,$parentAnnot,$parentMehtodID) = @{$refData};
+		my ($parentQuantiID,$parentQuantiName,$parentFocus,$parentAnnot,$parentMethodID,$updateDate) = @{$refData};
 		$parentQuantiName='?#'.$parentQuantiID.'?' unless $parentQuantiName;
-		$distQuantifNames{$parentQuantiName}=1;
-		my ($sampID,$sampName,$sampPos,$anaID,$anaName,$anaPos);
 		if ($refFetched->{$parentQuantiID}) { # info already retrieved: Do not query DB again
 			next if $type eq 'peptide'; # keep unused pep quantif
-			($sampID,$sampName,$sampPos,$anaID,$anaName,$anaPos)=@{$refFetched->{$parentQuantiID}};
 		}
 		else {
 			$sthSA->execute($parentQuantiID);
-			($sampID,$sampName,$sampPos,$anaID,$anaName,$anaPos)=$sthSA->fetchrow_array;
-			@{$refFetched->{$parentQuantiID}}=($sampID,$sampName,$sampPos,$anaID,$anaName,$anaPos);
+			my $numAna=0;
+			my @parents;
+			while (my @row=$sthSA->fetchrow_array) {
+				$numAna++;
+				@parents=@row;
+			}						 
+			if ($numAna==1) {@{$refFetched->{$parentQuantiID}{SINGLE_ANA}}=@parents;}
+			else {@{$refFetched->{$parentQuantiID}{MULTI_ANA}}=($numAna);}
 		}
-		@{$hierarchy{$sampID}{$anaID}{$parentQuantiID}}=($parentQuantiName,$parentFocus,$parentAnnot,$parentMehtodID);
-		@{$itemInfo{SAMPLE}{$sampID}}=($sampPos,$sampName);
-		@{$itemInfo{ANALYSIS}{$anaID}}=($anaPos,$anaName);
+		if ($refFetched->{$parentQuantiID}{SINGLE_ANA}) {
+			my ($sampID,$sampName,$sampPos,$anaID,$anaName,$anaPos)=@{$refFetched->{$parentQuantiID}{SINGLE_ANA}};
+			@{$hierarchy{$sampID}{$anaID}{$parentQuantiID}}=($parentQuantiName,$parentFocus,$parentAnnot,$parentMethodID);
+			@{$itemInfo{SAMPLE}{$sampID}}=($sampPos,$sampName);
+			@{$itemInfo{ANALYSIS}{$anaID}}=($anaPos,$anaName);
+			$distQuantifNames{$parentQuantiName}=1;
+		}
+		else {
+			my ($softCode,$softName,$softVersion)=&promsQuantif::getXicSoftware($dbh,$parentMethodID,$parentAnnot);
+			my $xicSoftInfo=($softVersion)? "$softName v$softVersion" : $softName;
+			@{$multiAnaQuantif{$parentQuantiID}}=($parentQuantiName,$parentFocus,$parentAnnot,$parentMethodID,$xicSoftInfo,$updateDate,$refFetched->{$parentQuantiID}{MULTI_ANA}[0]);
+		}
 	}
-	my $numDistQuantName=scalar keys %distQuantifNames;
-	foreach my $sampID (sort{$itemInfo{SAMPLE}{$a}[0]<=>$itemInfo{SAMPLE}{$b}[0]} keys %hierarchy) {
-		my $sampName=$itemInfo{SAMPLE}{$sampID}[1];
-		foreach my $anaID (sort{$itemInfo{ANALYSIS}{$a}[0]<=>$itemInfo{ANALYSIS}{$b}[0]} keys %{$hierarchy{$sampID}}) {
-			my $anaName=$itemInfo{ANALYSIS}{$anaID}[1];
-			foreach my $parentQuantiID (sort{$a<=>$b} keys %{$hierarchy{$sampID}{$anaID}}) {
-				my ($parentQuantiName,$parentFocus,$parentAnnot,$parentMehtodID)=@{$hierarchy{$sampID}{$anaID}{$parentQuantiID}};
-				my ($parentLabel)=($parentAnnot && $parentAnnot=~/^LABEL=([^:]+)/)? $1 : 'FREE';
-				my $parentIsLabeledFlag=($parentLabel eq 'FREE')? '_no_label' : '_label';
-				my $parentMethodFlag=($refMethodCodes->{$parentMehtodID} eq 'SWATH')? '_swath' : '';
-				my $fullQuantName="$sampName > $anaName > $parentQuantiName";
-				my $dispName=($numDistQuantName > 1)? &promsMod::shortenName($fullQuantName,25) : &promsMod::shortenName("$sampName > $anaName > ~",25);
-				if ($type eq 'design') { # parent of design quantif
-					push @{$refQuantiTree},[3,'quantification',"$parentQuantiID:$quantiID",'',"$parentFocus$parentIsLabeledFlag$parentMethodFlag",1,$dispName,$fullQuantName]; # double id since quanti can be found multiple times
-				}
-				else {
-					push @{$refQuantiTree},[2,'quantification',$parentQuantiID,'',"$parentFocus$parentIsLabeledFlag$parentMethodFlag",1,$dispName,$fullQuantName];
+	##<Single-ana peptide quantif hierarchy
+	if ($itemInfo{ANALYSIS}) {
+		my $numDistQuantName=scalar keys %distQuantifNames;
+		foreach my $sampID (sort{$itemInfo{SAMPLE}{$a}[0]<=>$itemInfo{SAMPLE}{$b}[0]} keys %hierarchy) {
+			my $sampName=$itemInfo{SAMPLE}{$sampID}[1];
+			foreach my $anaID (sort{$itemInfo{ANALYSIS}{$a}[0]<=>$itemInfo{ANALYSIS}{$b}[0]} keys %{$hierarchy{$sampID}}) {
+				my $anaName=$itemInfo{ANALYSIS}{$anaID}[1];
+				foreach my $parentQuantiID (sort{$a<=>$b} keys %{$hierarchy{$sampID}{$anaID}}) {
+					my ($parentQuantiName,$parentFocus,$parentAnnot,$parentMethodID)=@{$hierarchy{$sampID}{$anaID}{$parentQuantiID}};
+					my ($parentLabel)=($parentAnnot && $parentAnnot=~/^LABEL=([^:]+)/)? $1 : 'FREE';
+					my $parentIsLabeledFlag=($parentLabel eq 'FREE')? '_no_label' : '_label';
+					my $parentMethodFlag=($refMethodCodes->{$parentMethodID} eq 'SWATH')? '_swath' : '';
+					my $fullQuantName="$sampName > $anaName > $parentQuantiName";
+					my $dispName=($numDistQuantName > 1)? &promsMod::shortenName($fullQuantName,25) : &promsMod::shortenName("$sampName > $anaName > ~",25);
+					if ($type eq 'design') { # parent of design quantif
+						push @{$refQuantiTree},[3,'quantification',"$parentQuantiID:$quantiID",'',"$parentFocus$parentIsLabeledFlag$parentMethodFlag",1,$dispName,$fullQuantName]; # double id since quanti can be found multiple times
+					}
+					else {
+						push @{$refQuantiTree},[2,'quantification',$parentQuantiID,'',"$parentFocus$parentIsLabeledFlag$parentMethodFlag",1,$dispName,$fullQuantName];
+					}
 				}
 			}
 		}
 	}
-
+	##<Multi-ana peptide quantif hierarchy
+	if (scalar %multiAnaQuantif) {
+		foreach my $parentQuantiID (sort{$a<=>$b} keys %multiAnaQuantif) {
+			my ($parentQuantiName,$parentFocus,$parentAnnot,$parentMethodID,$xicSoftInfo,$updateDate,$numAna)=@{$multiAnaQuantif{$parentQuantiID}};
+			my ($parentLabel)=($parentAnnot && $parentAnnot=~/^LABEL=([^:]+)/)? $1 : 'FREE';
+			my $parentIsLabeledFlag=($parentLabel eq 'FREE')? '_no_label' : '_label';
+			my $parentMethodFlag=($refMethodCodes->{$parentMethodID} eq 'SWATH')? '_swath' : '';
+			my ($parentXicSoftCode)=($parentAnnot && $parentAnnot=~/^SOFTWARE=([^:]+)/)? $1 : 'Unknown';
+			$updateDate=($updateDate)? &promsMod::formatDate($updateDate,{noTime=>1}) : 'Unknown date';
+			#my $dispName="$parentQuantiName [$updateDate]";
+			my $popupStrg="<B>Software:</B> $xicSoftInfo<BR><B>Analyses used:</B> $numAna<BR><B>Date:</B> $updateDate";
+			if ($type eq 'design') { # parent of design quantif
+				push @{$refQuantiTree},[3,'quantification',"$parentQuantiID:$quantiID",'',"$parentFocus$parentIsLabeledFlag$parentMethodFlag",1,$parentQuantiName,$popupStrg]; # double id since quanti can be found multiple times
+			}
+			else {
+				push @{$refQuantiTree},[2,'quantification',$parentQuantiID,'',"$parentFocus$parentIsLabeledFlag$parentMethodFlag",1,$parentQuantiName,$popupStrg];
+			}
+		}
+	}
 }
 
 ####>Revision history<####
+# 1.7.5 [FEATURE] Number of biological samples is dislayed for each parent branch (PP 19/12/19)
+# 1.7.4 [FEATURE] Handles quantification visibility (PP 27/09/19)
+# 1.7.3 [FEATURE] Different display for multi-ana peptide quantifications in navigation tree (PP 28/08/19)
+# 1.7.2 [ENHANCEMENT] Skip children search for locked experiments (PP 26/08/19)
+# 1.7.1 [ENHANCEMENT] Use selectable param in tree structure to block locked experiments (VS 13/08/19)
+# 1.7.0 [FEATURE] Handles lock system displaying for experiments (VS 08/08/19)
 # 1.6.9 Display different icons for used and unused BioSample. Requires promsConfig &ge; 2.9.10 (PP 11/04/19)
 # 1.6.8 Minor update to handle unexpected undefined quantification name (PP 13/09/18)
 # 1.6.7 order cluster and PCA by ana_type (SL 31/01/18)

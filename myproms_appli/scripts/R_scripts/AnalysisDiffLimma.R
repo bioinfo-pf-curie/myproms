@@ -1,6 +1,6 @@
 ################################################################################
-# AnalysisDiffLimma.R         4.3.2                                           #
-# Authors: Matthieu Lhotellier & Alexandre Sta (Institut Curie)                #
+# AnalysisDiffLimma.R         4.5.2                                            #
+# Authors: Matthieu Lhotellier & Alexandre Sta & Isabel Brito (Institut Curie) #
 # Contact: myproms@curie.fr                                                    #
 # Statiscal Methods for protein quantification by mass spectrometry            #
 ################################################################################
@@ -39,282 +39,540 @@
 # knowledge of the CeCILL license and that you accept its terms.
 #-------------------------------------------------------------------------------
 
-#### Load functions & libraires ####
-source(paste(filepath,"FunctionLimma.R",sep=""))
+#### 1.   LOAD FUNCTIONS & LIBRAIRIES ############
+##################################################
 
-#### Session info ####
-sink(file.path("results","sessionInfo.txt"))
-print(sessionInfo())
-sink()
+  source(paste(filepath,"FunctionLimma.R",sep=""))
 
-#### Load data ####
-data<-fread(file.path("data","table.txt"),sep="\t",header=TRUE,data.table=FALSE,integer64 = "numeric")
-# n = length(unique(data$Protein_ID)) # DEBUG
-# nprot = 500 # DEBUG
-# set.seed(25042017)
-# data2 = data %>% filter(Protein_ID%in% unique(data$Protein_ID)[sample(1:n,nprot)] ) # DEBUG
-# data=data2 # DEBUG
-# data = data2 %>% full_join( (data %>% filter(Protein_ID=="mySelected protein")))
-
-data = .reshapeData(data) #%>% .recoverReplicate()
-historyData = list(rawData = data)
-
-#### Load parameters ####
-parameters=fread(file.path("data","param_char.txt"),header=FALSE,sep="\t",data.table=FALSE) %>% spread(V1,V2) # read the parameters
-# parameters$design="PEP_RATIO" # DEBUG
-
-#### Load normProtein ####
-if(sum(list.files("data/")=="normProtein.txt")){
-  normProtein=fread(file.path("data","normProtein.txt"),header=TRUE,sep="\t",data.table=FALSE)
-}else{
-  normProtein = NULL
-}
-
-#### Load dataRef ####
-if( !( is.null(parameters$normalization.ref.test)  ) ){
-  dataRef <- fread(file.path("data","tableRef.txt"),sep="\t",header=TRUE,data.table=FALSE,integer64 = "numeric")
-  dataRef = .reshapeData(dataRef)
-}else{
-  dataRef = NULL
-}  
-
-#### Control ####
-
-.control(data,parameters,normProtein,dataRef)
-
-#### Missing sample ####
-.missingSample(data,step="Brut_")
-
-#### Compute the log2Ratio  ####
-data<-.calculLog2Ratio(data,parameters)
-historyData$dataRatio = data
+  #### Session info ####
+  sink(file.path("results","sessionInfo.txt"))
+  print(sessionInfo())
+  sink()
 
 
-#### Normalisation  ####
-tmp = .normalizeData(data,parameters,normProtein)
-data <-tmp$data
-bias = tmp$bias
-rm("tmp")
-historyData$dataNorm = data
+#### 2.   LOAD DATA                   ############
+##################################################
 
-#### Normalisation in prot ####
-if (!is.null(dataRef)) {
-  dataRef = .calculLog2Ratio(dataRef,parameters)
-  parametersTmp = parameters
-  parametersTmp$normalization.method = paste(unlist(strsplit(parameters$normalization.ref.test,
-                                                             split="\\."))[1:2],collapse=".")
-  dataRef = .normalizeData(dataRef,parametersTmp,normProtein)$data 
-  data = .normEachProt( data , dataRef , parameters )
-  historyData$dataNormEachProt = data
-}
+  datal<-fread(file.path("data","table.txt"),sep="\t",header=TRUE,data.table=FALSE,integer64 = "numeric")
+  # n = length(unique(data$Protein_ID)) # DEBUG
+  # nprot = 500 # DEBUG
+  # set.seed(25042017)
+  # data2 = data %>% filter(Protein_ID%in% unique(data$Protein_ID)[sample(1:n,nprot)] ) # DEBUG
+  # data=data2 # DEBUG
+  # data = data2 %>% full_join( (data %>% filter(Protein_ID=="mySelected protein")))
 
-#### Remove outliers  ####
-# historyData$rawData %>% select(sample,experiment,proteinId,proteinName,peptide,peptideId) %>%
-#  unique %>% mutate(out="nonOut") %>% spread(sample,out) %>% filter(is.na(State1)|is.na(State2))# DEBUG
-# break()
-tmp = .myFilterOutlier(data,parameters)
-data <-tmp$data
-outlier = tmp$outlier
-rm("tmp")
-historyData$dataWithoutOutlier = data
+  data = .reshapeData(datal) #%>% .recoverReplicate()
+  historyData = list(rawData = data)
 
-#### Quantification  ####
-data <- .analysisDiff(data,parameters)
-historyData$dataQuanti = data
+  #### Load parameters ####
+  parameters=fread(file.path("data","param_char.txt"),header=FALSE,sep="\t",data.table=FALSE) %>% spread(V1,V2) # read the parameters
+  # parameters$design="PEP_RATIO" # DEBUG
 
-################################################################################
-#################################### Output ####################################
-################################################################################
-################################################################################
-#### Bias output ####
-if(!is.null(bias))
-{
-  toWrite = bias %>% (base::t)
-  write.table(toWrite,paste("results/allbias_coef.txt"),row.names = TRUE,col.names = FALSE ,sep="\t",quote=FALSE)
-}
-#### ResultsPep.txt (outliers here) ####
+  #### Load normProtein ####
+  if(sum(list.files("data/")=="normProtein.txt")){
+    normProtein=fread(file.path("data","normProtein.txt"),header=TRUE,sep="\t",data.table=FALSE)
+  }else{
+    normProtein = NULL
+  }
 
-if ( !is.null(dataRef) ){
-resultsPep = historyData$dataNormEachProt %>% dplyr::full_join(outlier,by=names(.)) %>% 
-  dplyr::rename( Condition = sample,
+  #### Load dataRef ####
+  if( !( is.null(parameters$normalization.ref.test)  ) ){
+   dataRefl <- fread(file.path("data","tableRef.txt"),sep="\t",header=TRUE,data.table=FALSE,integer64 = "numeric")
+   dataRef = .reshapeData(dataRefl)
+   historyDataRef = list(rawDataRef = dataRef) 
+  }else{
+    dataRef = NULL
+  }  
+
+   
+#### 3.   PREPROCESS DATA             ############
+##################################################
+  
+  #### Control ####
+  
+  .control(data,parameters,normProtein,dataRef)
+  
+  #### Missing sample ####
+  .missingSample(data,step="Brut_")
+  
+  #### Compute the log2Ratio  ####
+  data<-.calculLog2Ratio(data,parameters)
+  historyData$dataRatio = data
+ 
+  
+  if (is.null(parameters$normalization.only)){  
+  #------------------------------------------------- 
+    
+    #### 4.A   TECHNICAL NORMALIZATION     ###########
+    ##################################################
+    
+    #### Normalisation  ####
+    tmp = .normalizeData(data,parameters,normProtein)
+    data <-tmp$data
+    bias = tmp$bias
+    rm("tmp")
+    historyData$dataNorm = data
+
+        
+    #### 5.A   NORMALIZATION BY PROT       ###########
+    ##################################################
+    
+    #### Normalisation in prot ####
+    if (!is.null(dataRef)) {
+      
+      dataRef = .calculLog2Ratio(dataRef,parameters)
+      historyDataRef$dataRefRatio = dataRef      
+      
+      parametersTmp = parameters
+      parametersTmp$normalization.method = paste(unlist(strsplit(parameters$normalization.ref.test, split="\\."))[1:2],collapse=".")
+      
+      tmp =     .normalizeData(dataRef,parametersTmp,normProtein)
+      dataRef = tmp$data 
+      historyDataRef$dataRefNorm = dataRef       
+      
+      data = .normEachProt( data , dataRef , parameters )
+      historyData$dataNormEachProt = data
+      
+      if ( prod(is.nan(data$M))==1  | prod(is.na( data$M))==1 ) {
+        
+        parametersTmp$normalization.method="median.none"
+        write.table(parametersTmp$normalization.method,paste("results/new_params.txt"),row.names = FALSE,col.names = FALSE)
+        
+        dataRef = historyDataRef$dataRefRatio      
+        tmp =     .normalizeData(dataRef,parametersTmp,normProtein)
+        dataRef = tmp$data 
+        historyDataRef$dataRefNorm = dataRef    
+        
+        tmp = historyData$dataNorm 
+        data = tmp
+        data = .normEachProt( data , dataRef , parameters )
+        historyData$dataNormEachProt = data
+      }
+    }
+    
+    #### 6.A   REMOVE OUTLIERS             ###########
+    ##################################################
+    
+  	# historyData$rawData %>% select(sample,experiment,proteinId,proteinName,peptide,peptideId) %>%
+  	#  unique %>% mutate(out="nonOut") %>% spread(sample,out) %>% filter(is.na(State1)|is.na(State2))# DEBUG
+  	# break()
+  	tmp = .myFilterOutlier(data,parameters)
+  	data <-tmp$data
+  	outlier = tmp$outlier
+  	rm("tmp")
+  	historyData$dataWithoutOutlier = data
+
+  
+  	#### 7.A   QUANTIFICATION              ############
+  	##################################################
+    
+  	if (nrow(   datal)!=sum(   datal$Protein_Validity)) {
+  	  tmp1 = datal %>% rename(proteinId =Protein_ID, 
+  	                          peptide   =Peptide, 
+  	                          experiment=Experiment,
+  	                          replicate =Replicate,
+  	                          repTech   =Technical_Replicate,
+  	                          sample    =Sample,
+  	                          quantifSet=Quantif_Set, 
+  	                          peptideId =Peptide_IDs,
+  	                          intensity =Value )
+  	  tmp2 =  tmp1 %>% select(peptideId,validity=Protein_Validity)
+  	  tmp  =  inner_join(historyData$dataWithoutOutlier, tmp2, by = "peptideId")  %>% 
+  	     mutate(validity=factor(validity), intensity=M) %>% 
+  	     filter(validity==1)
+  	  
+  	  if (nrows(tmp)!=0) {
+  	  data <- .analysisDiff(tmp,parameters)
+  	  historyData$dataQuanti = data 
+  	  } else {print("All Protein Validity are zeros")}
+  	} else {
+  	#### Quantification  ####
+  	data <- .analysisDiff(data,parameters)
+  	historyData$dataQuanti = data  
+  	}
+
+    } else {
+	#-------------------------------------------------
+  
+  	#### 4.B   TECHNICAL NORMALIZATION     ############
+  	##################################################
+  
+  	#### Normalisation  ####
+  	tmp = .normalizeData(data,parameters,normProtein)
+  	data <-tmp$data
+ 	bias = tmp$bias
+  	rm("tmp")
+  	historyData$dataNorm = data
+  
+  	#### 6.B   REMOVE OUTLIERS             ###########
+  	##################################################
+  	
+ 	# historyData$rawData %>% select(sample,experiment,proteinId,proteinName,peptide,peptideId) %>%
+ 	#  unique %>% mutate(out="nonOut") %>% spread(sample,out) %>% filter(is.na(State1)|is.na(State2))# DEBUG
+ 	# break()
+  	tmp = .myFilterOutlier(data,parameters)
+ 	data <-tmp$data
+ 	outlier = tmp$outlier
+ 	rm("tmp")
+ 	historyData$dataWithoutOutlier = data
+  
+	}
+	#-------------------------------------------------
+  
+ 
+#### 8.   OUTPUT                      ############
+##################################################
+
+  ################################################################################
+  #################################### Output ####################################
+  ################################################################################
+  ################################################################################
+
+#### 8.1.   #### Bias output ####
+################
+  if(!is.null(bias)){
+    toWrite = bias %>% (base::t)
+    write.table(toWrite,paste("results/allbias_coef.txt"),row.names = TRUE,col.names = FALSE ,sep="\t",quote=FALSE)
+  }
+
+
+#### 8.2.  #### ResultsPep.txt (outliers here) ####
+###############  
+  if (is.null(parameters$normalization.only)){
+  #------------------------------------------------- 
+  	if ( !is.null(dataRef) ){
+  		resultsPep = historyData$dataNormEachProt %>% dplyr::full_join(outlier,by=names(.)) %>% 
+    	dplyr::rename( Condition = sample,
                  ProteinID = proteinId, 
                  Peptide = peptide,
                  Experiment = experiment,
                  log2Measure = M,
                  PeptideId = peptideId
-  ) %>% dplyr::select(-A,-quantifSet)
-} else if ( is.null(dataRef) ){
-  resultsPep = historyData$dataNorm %>% dplyr::full_join(outlier,by=names(.)) %>% 
-    dplyr::rename( Condition = sample,
+   	   ) %>% dplyr::select(-A,-quantifSet)
+    } else if ( is.null(dataRef) ){
+    	resultsPep = historyData$dataNorm %>% dplyr::full_join(outlier,by=names(.)) %>% 
+      	dplyr::rename( Condition = sample,
                    ProteinID = proteinId, 
                    Peptide = peptide,
                    Experiment = experiment,
                    log2Measure = M,
                    PeptideId = peptideId
-    ) %>% dplyr::select(-A,-quantifSet)
-}
+        ) %>% dplyr::select(-A,-quantifSet)
+    }
+  order = c("Experiment","Condition","replicate","repTech","ProteinID","normProtein","Peptide","PeptideId","log2Measure","out")
+  resultsPep = resultsPep[,order]
+  write.table(resultsPep,paste("results/resultsPep.txt"),row.names = FALSE,col.names = TRUE,sep="\t",quote=FALSE)
 
-order = c("Experiment","Condition","replicate","repTech","ProteinID","normProtein","Peptide","PeptideId","log2Measure","out")
-
-resultsPep = resultsPep[,order]
-
-
-write.table(resultsPep,paste("results/resultsPep.txt"),row.names = FALSE,col.names = TRUE,sep="\t",quote=FALSE)
-
-#### Build ResultsDAProt.txt ####
-# estimate -> log2FC_ for ratios & log2Mean for primary ratios
-resultsDAProt = data %>% dplyr::rename(ProteinID=proteinId) %>% .mySpread(value = "estimate", newName = "Log2FC_")
-# Change the log2FC into log2Mean for the columns of primary ratios
-if(parameters$design=="PEP_INTENSITY"){
-  tmp = base::names( resultsDAProt ) %>% 
-    base::strsplit( split = "_" ) %>% 
-    base::lapply( FUN = function( x ) x[ 2 ] ) %>% 
-    ( base::unlist ) 
-  names( resultsDAProt )[ tmp %in% unique(historyData$dataWithoutOutlier$sample) ]  = tmp %in% unique(historyData$dataWithoutOutlier$sample) %>% tmp[ . ] %>% 
-    paste("Log2Mean_",.,sep="")
-}
-
-# p.value -> pval_
-tmp = data %>% dplyr::rename(ProteinID=proteinId) %>% .mySpread(value="p.value",newName="pVal",sep="_")
-resultsDAProt = resultsDAProt %>% join(.,tmp,"ProteinID")
-# std.error -> SD_
-tmp = data %>% dplyr::rename(ProteinID=proteinId) %>% .mySpread(value="std.error",newName="SD",sep="_")
-resultsDAProt = resultsDAProt %>% join(.,tmp,"ProteinID")
-# ci2.5 -> CI2.5_
-tmp = data %>% dplyr::rename(ProteinID=proteinId) %>% .mySpread(value= "ci2.5",newName= "CI2.5",sep="_")
-resultsDAProt = resultsDAProt %>% join(.,tmp,"ProteinID")
-# ci97.5 -> CI97.5_
-tmp = data %>% dplyr::rename(ProteinID=proteinId) %>% .mySpread(value= "ci97.5",newName= "CI97.5",sep="_")
-resultsDAProt = resultsDAProt %>% join(.,tmp,"ProteinID")
-# Write the table in the file results
-write.table(resultsDAProt,paste("results/ResultsDAProt.txt"),row.names = FALSE,col.names = TRUE,sep="\t",quote=FALSE)
-
-#### Correlation matrix ####
-# Differents cases of designs
-if(parameters$design!="PEP_INTENSITY"){
-  tmpNonNorm = historyData$dataRatio %>% .MAToIntensity
-  tmpNorm = historyData$dataWithoutOutlier %>% .MAToIntensity
-}else{
-  tmpNonNorm = historyData$dataRatio %>% dplyr::rename(intensity=M)
-  tmpNorm = historyData$dataWithoutOutlier %>% dplyr::rename(intensity=M)
-}
-
-# Data before normalization
-# Reshape the data
-tmp = tmpNonNorm %>% dplyr::select(sample,experiment,replicate,repTech,proteinId,peptide,intensity) %>%
-  tidyr::unite(run,sample,experiment,replicate,repTech) %>% tidyr::spread(key=run , value=intensity) %>%
-  dplyr::select(-proteinId,-peptide) %>% (base::as.matrix)
-# Matrice de correlation
-matrix.correlation = cor(tmp,use="pairwise.complete.obs")
-write.table(matrix.correlation,paste("results/Beforematrixcorrelation.txt"),row.names = FALSE,col.names = TRUE,sep="\t",quote=FALSE)
-
-# Plot the correlation matrix
-ggplot(data = melt(matrix.correlation), aes(x=Var1, y=Var2, fill=value)) +
-  geom_tile() + scale_fill_gradient2(low = "blue", high = "red", mid = "white",
-                                     midpoint = 0, limit = c(-1,1), space = "Lab",
-                                     name="Correlation : pairwise.complete.obs") +
-  theme(axis.text.x = element_text(angle = 45, vjust = 1,
-                                   size = 12, hjust = 1)) +
-  coord_fixed() +
-  geom_text(aes(Var2, Var1, label = round(value,2)), color = "black", size = 4)
-ggsave("results/graph/Beforematrixcorrelation.jpeg",width=10,height=10)
-
-# Data After normalization
-# Reshape the data
-tmp = tmpNorm %>% dplyr::select(sample,experiment,replicate,repTech,proteinId,peptide,intensity) %>%
-  tidyr::unite(run,sample,experiment,replicate,repTech) %>% tidyr::spread(key=run , value=intensity) %>%
-  dplyr::select(-proteinId,-peptide) %>% (base::as.matrix)
-# Matrice de correlation
-matrix.correlation = cor(tmp,use="pairwise.complete.obs")
-write.table(matrix.correlation,paste("results/Aftermatrixcorrelation.txt"),row.names = FALSE,col.names = TRUE,sep="\t",quote=FALSE)
+  } else {                                                                 
+  #-------------------------------------------------
+    resultsPep = historyData$dataNorm %>% dplyr::full_join(outlier,by=names(.)) %>% 
+      dplyr::rename( Condition = sample,
+                   ProteinID = proteinId, 
+                   Peptide = peptide,
+                   Experiment = experiment,
+                   log2Measure = M,
+                   PeptideId = peptideId
+     ) %>% dplyr::select(-A,-quantifSet)
+     order = c("Experiment","Condition","replicate","repTech","ProteinID","normProtein","Peptide","PeptideId","log2Measure","out")
+     resultsPep = resultsPep[,order]
+     write.table(resultsPep,paste("results/resultsPep.txt"),row.names = FALSE,col.names = TRUE,sep="\t",quote=FALSE)
+  }
 
 
-# Plot the correlation matrix
-ggplot(data = melt(matrix.correlation), aes(x=Var1, y=Var2, fill=value)) +
-  geom_tile() + scale_fill_gradient2(low = "blue", high = "red", mid = "white",
-                                     midpoint = 0, limit = c(-1,1), space = "Lab",
-                                     name="Correlation : pairwise.complete.obs") +
-  theme(axis.text.x = element_text(angle = 45, vjust = 1,
-                                   size = 12, hjust = 1)) +
-  coord_fixed() +
-  geom_text(aes(Var2, Var1, label = round(value,2)), color = "black", size = 4)
-ggsave("results/graph/Afterematrixcorrelation.jpeg",width=10,height=10)
+#### 8.3. #### Build ResultsDAProt.txt ####
+###############  
+  if (is.null(parameters$normalization.only)){ 
+  #------------------------------------------------- 
 
-#### Density & boxplot ####
-# Differents cases of designs
-# if(parameters$design!="LABELFREE"){
-#   tmpNonNorm = historyData$dataRatio %>% .MAToIntensity
-#   tmpNorm = historyData$dataWithoutOutlier %>% .MAToIntensity
-# }else{
-  tmpNonNorm = historyData$dataRatio %>% dplyr::rename(intensity=M)
-  tmpNorm = historyData$dataWithoutOutlier %>% dplyr::rename(intensity=M)
-# }
-# Before normalization
-tmp = tmpNonNorm %>% select(proteinId,peptide,experiment,replicate,repTech,sample,intensity)
+  	# estimate -> log2FC_ for ratios & log2Mean for primary ratios
+  	resultsDAProt = data %>% dplyr::rename(ProteinID=proteinId) %>% .mySpread(value = "estimate", newName = "Log2FC_")
+  	# Change the log2FC into log2Mean for the columns of primary ratios
+  	if(parameters$design=="PEP_INTENSITY"){
+   	 tmp = base::names( resultsDAProt ) %>% base::strsplit( split = "_" ) %>% base::lapply( FUN = function( x ) x[ 2 ] ) %>%  ( base::unlist ) 
+     names( resultsDAProt )[ tmp %in% unique(historyData$dataWithoutOutlier$sample) ]  = tmp %in% unique(historyData$dataWithoutOutlier$sample) %>% tmp[ . ] %>% 
+     paste("Log2Mean_",.,sep="")
+    }
 
-tmp %>% unite(run,experiment,sample,replicate,sep=".",remove=FALSE) %>% 
-  ggplot(aes(intensity,color=run)) + geom_density() + labs(x = "Log2 intensity")
-ggsave("results/graph/Beforealldensity.jpeg",width=10,height=10)
-a = tmp %>% unite(run,experiment,sample,replicate,sep=".",remove=FALSE)
-a$run = factor( a$run , levels= unique(a$run)[.numOrder(unique(a$run))] ) 
-a %>% ggplot(aes(run,intensity,color=sample)) + geom_boxplot() + labs(x = "Sample" , y = "Log2 intensity") + 
-  theme(axis.text.x=element_text(angle = 90, vjust = 0.5))
-ggsave("results/graph/Beforeallpeptide.jpeg",width=10,height=10)
+    # p.value -> pval_
+    tmp = data %>% dplyr::rename(ProteinID=proteinId) %>% .mySpread(value="p.value",newName="pVal",sep="_")
+    resultsDAProt = resultsDAProt %>% join(.,tmp,"ProteinID")
+    # std.error -> SD_
+    tmp = data %>% dplyr::rename(ProteinID=proteinId) %>% .mySpread(value="std.error",newName="SD",sep="_")
+    resultsDAProt = resultsDAProt %>% join(.,tmp,"ProteinID")
+    # ci2.5 -> CI2.5_
+    tmp = data %>% dplyr::rename(ProteinID=proteinId) %>% .mySpread(value= "ci2.5",newName= "CI2.5",sep="_")
+    resultsDAProt = resultsDAProt %>% join(.,tmp,"ProteinID")
+    # ci97.5 -> CI97.5_
+    tmp = data %>% dplyr::rename(ProteinID=proteinId) %>% .mySpread(value= "ci97.5",newName= "CI97.5",sep="_")
+    resultsDAProt = resultsDAProt %>% join(.,tmp,"ProteinID")
+    # Write the table in the file results
+    write.table(resultsDAProt,paste("results/ResultsDAProt.txt"),row.names = FALSE,col.names = TRUE,sep="\t",quote=FALSE)
+  }
 
-# After normalization
-tmp = tmpNorm %>% select(proteinId,peptide,experiment,replicate,repTech,sample,intensity)
 
-tmp %>% unite(run,experiment,sample,replicate,sep=".",remove=FALSE) %>% 
-  ggplot(aes(intensity,color=run)) + geom_density() + labs(x = "Log2 intensity")
-ggsave("results/graph/Afteralldensity.jpeg",width=10,height=10)
-a = tmp %>% unite(run,experiment,sample,replicate,sep=".",remove=FALSE)
-a$run = factor( a$run , levels= unique(a$run)[.numOrder(unique(a$run))] ) 
-a %>% ggplot(aes(run,intensity,color=sample)) + geom_boxplot() + labs(x = "Sample" , y = "Log2 intensity") + 
-  theme(axis.text.x=element_text(angle = 90, vjust = 0.5))
-ggsave("results/graph/Afterallpeptide.jpeg",width=10,height=10)
+#### 8.4. #### Correlation matrix ####
+###############  
+  # Differents cases of designs
+  if(parameters$design!="PEP_INTENSITY"){
+    tmpNonNorm = historyData$dataRatio %>% .MAToIntensity
+    tmpNorm = historyData$dataWithoutOutlier %>% .MAToIntensity
+  }else{
+    tmpNonNorm = historyData$dataRatio %>% dplyr::rename(intensity=M)
+    tmpNorm = historyData$dataWithoutOutlier %>% dplyr::rename(intensity=M)
+  }
 
-#### Distribution p.values ####
-tmp = historyData$dataQuanti %>%  group_by(term) %>% nest
-for(i in 1:(dim(tmp)[1]) ){
-  title = tmp$term[i]
-  path = paste0("results/graph/distribPValue_",title,".jpeg")
-  p = tmp$data[[i]] %>% filter(!is.na(p.value)) %>%
-    ggplot(aes(p.value)) + geom_histogram(aes(y=..density..),binwidth = 0.01,fill="white",color="black") +
-    coord_cartesian(xlim = c(0,1)) + geom_density(color="black") + ggtitle(title)
-  ggsave(plot = p,path,width=10,height=10)
-}
+  # Data before normalization
+  # Reshape the data
+  tmp = tmpNonNorm %>% dplyr::select(sample,experiment,replicate,repTech,proteinId,peptide,intensity) %>%
+    tidyr::unite(run,sample,experiment,replicate,repTech) %>% tidyr::spread(key=run , value=intensity) %>%
+    dplyr::select(-proteinId,-peptide) %>% (base::as.matrix)
+  # Matrice de correlation
+  matrix.correlation = cor(tmp,use="pairwise.complete.obs")
+  write.table(matrix.correlation,paste("results/Beforematrixcorrelation.txt"),row.names = FALSE,col.names = TRUE,sep="\t",quote=FALSE)
 
-#### Distribution the fold change ####
-tmp = historyData$dataQuanti %>%  group_by(term) %>% nest
-for(i in 1:(dim(tmp)[1]) ){
-  title  = tmp$term[i]
-  path   = paste0("results/graph/distriblog2FC_",title,".jpeg")
-  nProt  = tmp$data[[i]] %>% filter(!is.na(estimate)) %>% .$estimate %>% length
-  for_outliers_step1 = tmp$data[[i]] %>% filter(!is.na(estimate)) %>%
-    dplyr::summarise(outq1 = quantile(estimate, probs=0.25) - 1.5*IQR(estimate),
+  # Plot the correlation matrix
+  ggplot(data = melt(matrix.correlation), aes(x=Var1, y=Var2, fill=value)) +
+         geom_tile() + 
+         scale_fill_gradient2(low = "blue", high = "red", mid = "white",
+                              midpoint = 0, limit = c(-1,1), space = "Lab",
+                              name="Correlation : pairwise.complete.obs") +
+         theme(axis.text.x = element_text(angle = 45, vjust = 1, size = 12, hjust = 1)) +
+         coord_fixed() +
+         geom_text(aes(Var2, Var1, label = round(value,2)), color = "black", size = 4)
+  ggsave("results/graph/Beforematrixcorrelation.jpeg",width=10,height=10)
+
+  # Data After normalization
+  # Reshape the data
+  tmp = tmpNorm %>% dplyr::select(sample,experiment,replicate,repTech,proteinId,peptide,intensity) %>%
+    tidyr::unite(run,sample,experiment,replicate,repTech) %>% tidyr::spread(key=run , value=intensity) %>%
+    dplyr::select(-proteinId,-peptide) %>% (base::as.matrix)
+  # Matrice de correlation
+  matrix.correlation = cor(tmp,use="pairwise.complete.obs")
+  write.table(matrix.correlation,paste("results/Aftermatrixcorrelation.txt"),row.names = FALSE,col.names = TRUE,sep="\t",quote=FALSE)
+
+  # Plot the correlation matrix
+  ggplot(data = melt(matrix.correlation), aes(x=Var1, y=Var2, fill=value)) +
+         geom_tile() + 
+         scale_fill_gradient2(low = "blue", high = "red", mid = "white",
+                              midpoint = 0, limit = c(-1,1), space = "Lab",
+                              name="Correlation : pairwise.complete.obs") +
+         theme(axis.text.x = element_text(angle = 45, vjust = 1, size = 12, hjust = 1)) +
+         coord_fixed() +
+         geom_text(aes(Var2, Var1, label = round(value,2)), color = "black", size = 4)
+  ggsave("results/graph/Afterematrixcorrelation.jpeg",width=10,height=10)
+
+
+#### 8.5. #### Density & boxplot ####
+###############  
+  # Differents cases of designs
+  # if(parameters$design!="LABELFREE"){
+  #   tmpNonNorm = historyData$dataRatio %>% .MAToIntensity
+  #   tmpNorm = historyData$dataWithoutOutlier %>% .MAToIntensity
+  # }else{ }
+
+    tmpNonNorm    = historyData$dataRatio          %>% dplyr::rename(intensity=M)
+    tmpNorm       = historyData$dataWithoutOutlier %>% dplyr::rename(intensity=M)
+ 
+    tmpDATNonNorm = historyData$dataRatio          %>% dplyr::rename(intensity=M) 
+    tmpDATNorm    = historyData$dataNorm           %>% dplyr::rename(intensity=M) 
+    tmpDATfin     = historyData$dataWithoutOutlier %>% dplyr::rename(intensity=M)
+
+  # Before normalization
+   tmp = tmpNonNorm %>% select(proteinId,peptide,experiment,replicate,repTech,sample,intensity)
+   tmp %>% unite(run,experiment,sample,replicate,sep=".",remove=FALSE) %>% 
+   ggplot(aes(intensity,color=run)) + 
+          geom_density() + 
+          labs(x = "Log2 intensity")
+   ggsave("results/graph/Beforealldensity.jpeg",width=10,height=10)
+
+   tmp = tmpDATNonNorm %>% select(proteinId,peptide,experiment,replicate,repTech,sample,intensity)
+   a = tmp %>% unite(run,experiment,sample,replicate,sep=".",remove=FALSE)
+   a$run = factor( a$run , levels= unique(a$run)[.numOrder(unique(a$run))] ) 
+   a %>% 
+   ggplot(aes(run,intensity,color=sample)) + 
+          geom_boxplot() + 
+          labs(x = "Sample" , y = "Log2 intensity") + 
+          theme(axis.text.x=element_text(angle = 90, vjust = 0.5))
+   ggsave("results/graph/Beforeallpeptide.jpeg",width=10,height=10)
+
+  # After normalization
+  tmp = tmpNorm %>% select(proteinId,peptide,experiment,replicate,repTech,sample,intensity)
+  tmp %>% unite(run,experiment,sample,replicate,sep=".",remove=FALSE) %>% 
+  ggplot(aes(intensity,color=run)) + 
+         geom_density() + 
+         labs(x = "Log2 intensity")
+  ggsave("results/graph/Afteralldensity.jpeg",width=10,height=10)
+
+  tmp = tmpDATNorm %>% select(proteinId,peptide,experiment,replicate,repTech,sample,intensity)
+  a = tmp %>% unite(run,experiment,sample,replicate,sep=".",remove=FALSE)
+  a$run = factor( a$run , levels= unique(a$run)[.numOrder(unique(a$run))] ) 
+  a %>% 
+  ggplot(aes(run,intensity,color=sample)) + 
+         geom_boxplot() + 
+         labs(x = "Sample" , y = "Log2 intensity") + 
+         theme(axis.text.x=element_text(angle = 90, vjust = 0.5))
+  ggsave("results/graph/Afternormallpeptide.jpeg",width=10,height=10)
+
+  tmp = tmpDATfin %>% select(proteinId,peptide,experiment,replicate,repTech,sample,intensity)
+  a = tmp %>% unite(run,experiment,sample,replicate,sep=".",remove=FALSE)
+  a$run = factor( a$run , levels= unique(a$run)[.numOrder(unique(a$run))] ) 
+  a %>% 
+  ggplot(aes(run,intensity,color=sample)) + 
+         geom_boxplot() + 
+         labs(x = "Sample" , y = "Log2 intensity") + 
+         theme(axis.text.x=element_text(angle = 90, vjust = 0.5))
+  ggsave("results/graph/Afterallpeptide.jpeg",width=10,height=10)
+
+  if (is.null(parameters$normalization.only)){ 
+  #------------------------------------------------- 
+    if (!is.null(dataRef)) {
+     tmpREFNonNorm = historyDataRef$dataRefRatio %>% dplyr::rename(intensity=M)
+     tmpREFNorm    = historyDataRef$dataRefNorm %>% dplyr::rename(intensity=M)
+   
+     tmp = tmpREFNonNorm %>% select(proteinId,peptide,experiment,replicate,repTech,sample,intensity)
+     a = tmp %>% unite(run,experiment,sample,replicate,sep=".",remove=FALSE)
+     a$run = factor( a$run , levels= unique(a$run)[.numOrder(unique(a$run))] ) 
+     a %>% 
+     ggplot(aes(run,intensity,color=sample)) + 
+            geom_boxplot() + 
+            labs(x = "Sample" , y = "Log2 intensity") + 
+            theme(axis.text.x=element_text(angle = 90, vjust = 0.5))
+     ggsave("results/graph/BeforeREFallpeptide.jpeg",width=10,height=10)
+    
+     tmp = tmpREFNorm %>% select(proteinId,peptide,experiment,replicate,repTech,sample,intensity)
+     a = tmp %>% unite(run,experiment,sample,replicate,sep=".",remove=FALSE)
+     a$run = factor( a$run , levels= unique(a$run)[.numOrder(unique(a$run))] ) 
+     a %>% 
+     ggplot(aes(run,intensity,color=sample)) + 
+            geom_boxplot() + 
+            labs(x = "Sample" , y = "Log2 intensity") + 
+            theme(axis.text.x=element_text(angle = 90, vjust = 0.5))
+     ggsave("results/graph/AfternormREFallpeptide.jpeg",width=10,height=10)
+    }
+  } 
+
+
+  if (nrow(   datal)!=sum(   datal$Protein_Validity)) {
+  #------------------------------------------------- 
+  
+    tmp1 = datal %>% rename(proteinId =Protein_ID, 
+                            peptide   =Peptide, 
+                            experiment=Experiment,
+                            replicate =Replicate,
+                            repTech   =Technical_Replicate,
+                            sample    =Sample,
+                            quantifSet=Quantif_Set, 
+                            peptideId =Peptide_IDs,
+                            intensity =Value )
+    tmp2 =  tmp1 %>% select(peptideId,validity=Protein_Validity)
+    
+    
+    tmp  =  inner_join(historyData$dataRatio, tmp2, by = "peptideId")  %>% mutate(validity=factor(validity), intensity=M)
+    a    = tmp %>% unite(run,experiment,sample,replicate,sep=".",remove=FALSE)
+    a$run = factor( a$run , levels= unique(a$run)[.numOrder(unique(a$run))] )  
+    
+    a %>% 
+      ggplot(aes(run,intensity,color=sample, fill = validity )) + 
+      geom_boxplot() + 
+      scale_fill_brewer(palette="Dark2") +
+      labs(x = "Sample" , y = "Log2 intensity") + 
+      theme(axis.text.x=element_text(angle = 90, vjust = 0.5)) 
+    ggsave("results/graph/Beforeallpeptide_validity.jpeg",width=10,height=10)
+    
+    
+    tmp  =  inner_join(historyData$dataWithoutOutlier, tmp2, by = "peptideId")  %>% mutate(validity=factor(validity), intensity=M)
+    a    = tmp %>% unite(run,experiment,sample,replicate,sep=".",remove=FALSE)
+    a$run = factor( a$run , levels= unique(a$run)[.numOrder(unique(a$run))] )  
+    
+    a %>% 
+      ggplot(aes(run,intensity,color=sample, fill = validity )) + 
+      geom_boxplot() + 
+      scale_fill_brewer(palette="Dark2") +
+      labs(x = "Sample" , y = "Log2 intensity") + 
+      theme(axis.text.x=element_text(angle = 90, vjust = 0.5)) 
+    ggsave("results/graph/Afterallpeptide_validity.jpeg",width=10,height=10)
+    
+    
+    tmp  =  inner_join(historyData$dataNorm, tmp2, by = "peptideId")  %>% mutate(validity=factor(validity), intensity=M)
+    a    = tmp %>% unite(run,experiment,sample,replicate,sep=".",remove=FALSE)
+    a$run = factor( a$run , levels= unique(a$run)[.numOrder(unique(a$run))] )  
+    
+    a %>% 
+      ggplot(aes(run,intensity,color=sample, fill = validity )) + 
+      geom_boxplot() + 
+      scale_fill_brewer(palette="Dark2") +
+      labs(x = "Sample" , y = "Log2 intensity") + 
+      theme(axis.text.x=element_text(angle = 90, vjust = 0.5)) 
+    ggsave("results/graph/Afternormallpeptide_validity.jpeg",width=10,height=10)
+  }
+  
+
+#### 8.6. #### Distribution p.values ####
+###############
+  if (is.null(parameters$normalization.only)){ 
+  #------------------------------------------------- 
+  tmp = historyData$dataQuanti %>%  group_by(term) %>% nest
+  for(i in 1:(dim(tmp)[1]) ){
+    title = tmp$term[i]
+    path = paste0("results/graph/distribPValue_",title,".jpeg")
+    p = tmp$data[[i]] %>% filter(!is.na(p.value)) %>%
+    ggplot(aes(p.value)) + 
+           geom_histogram(aes(y=..density..),binwidth = 0.01,fill="white",color="black") +
+           coord_cartesian(xlim = c(0,1)) + 
+           geom_density(color="black") + 
+           ggtitle(title)
+    ggsave(plot = p,path,width=10,height=10)
+   }
+  }
+
+
+#### 8.7. #### Distribution the fold change ####
+###############
+  if (is.null(parameters$normalization.only)){ 
+  #------------------------------------------------- 
+  tmp = historyData$dataQuanti %>%  group_by(term) %>% nest
+  for(i in 1:(dim(tmp)[1]) ){
+    title  = tmp$term[i]
+    path   = paste0("results/graph/distriblog2FC_",title,".jpeg")
+    nProt  = tmp$data[[i]] %>% filter(!is.na(estimate)) %>% .$estimate %>% length
+    for_outliers_step1 = tmp$data[[i]] %>% filter(!is.na(estimate)) %>%
+      dplyr::summarise(outq1 = quantile(estimate, probs=0.25) - 1.5*IQR(estimate),
                      outq3 = quantile(estimate, probs=0.75) + 1.5*IQR(estimate) )
-  for_outliers_step2 = tmp$data[[i]] %>% filter(!is.na(estimate)) %>% 
-    filter (estimate < for_outliers_step1$outq1 | estimate > for_outliers_step1$outq3 )  %>% .$estimate
-  noutliers = for_outliers_step2  %>% length
-  routliers = for_outliers_step2  %>% range 
-  title = paste(title, paste0("(There are ",noutliers," outliers, min is ", 
+    for_outliers_step2 = tmp$data[[i]] %>% filter(!is.na(estimate)) %>% 
+      filter (estimate < for_outliers_step1$outq1 | estimate > for_outliers_step1$outq3 )  %>% .$estimate
+    noutliers = for_outliers_step2  %>% length
+    routliers = for_outliers_step2  %>% range 
+    title = paste(title, paste0("(There are ",noutliers," outliers, min is ", 
                               round(routliers[1],0), ", max is ", round(routliers[2],0),")"), sep= "     ")
   
-  p = tmp$data[[i]] %>% filter(!is.na(estimate)) %>% 
-    filter (estimate > for_outliers_step1$outq1 & estimate < for_outliers_step1$outq3 ) %>% 
-    ggplot(aes(estimate)) + geom_histogram(aes(y=..density..),bins = min(nProt,100),fill="white",color="black") +
-    geom_density(color="black") + ggtitle(title)
-  ggsave(plot = p,path,width=10,height=10)
-}
+    p = tmp$data[[i]] %>% filter(!is.na(estimate)) %>% 
+     filter (estimate > for_outliers_step1$outq1 & estimate < for_outliers_step1$outq3 ) %>% 
+    ggplot(aes(estimate)) + 
+           geom_histogram(aes(y=..density..),bins = min(nProt,100),fill="white",color="black") +
+           geom_density(color="black") + 
+           ggtitle(title)
+    ggsave(plot = p,path,width=10,height=10)
+   }
+  }
 
-#### Write the design ####
-write.table(parameters$design,paste("results/design.txt"),row.names = FALSE,col.names = FALSE,sep="\t",quote=FALSE)
+#### 8. #### Write the design ####
+###############
+  write.table(parameters$design,paste("results/design.txt"),row.names = FALSE,col.names = FALSE,sep="\t",quote=FALSE)
 
-#### End ####
 
-print("End of the quantification")
+#### 9.   END                         ############
+##################################################
+#### End #### 
+#print("End of the quantification")
+print("End of the analysis")
 
 ####>Revision history<####
+# 4.5.2 Distribution the the fold change is not available, lorsque normalization.only=yes and normalization.method becomes "median.none" in new_params.txt file istead of "none.none"  (IB 30/01/2020) 
+# 4.5.1 If Protein_Validity equal to zero, then new graphs Beforeallpeptide_validity.jpg, Afternormallpeptide_validity.jpg, Afterallpeptide_validity.jpg and removed for quantification; distriblog2FC_....jpg allowed when normalization.only is yes (IB 06/01/2020)   
+# 4.5.0 this script is able to read a new parameter in the file "param_char.txt" called normalization.only; if it existes (normalization.only	yes), then only the technical normalization is performed (IB 31/12/2019) 
+# 4.4.2 if the (technical) normalisation of dataref fails, parameters are changent to none.none and a file named "new_parameters.txt" is created (IB 17/10/2019)
+# 4.4.1 rename boxplot graphs: Beforeallpeptide, BeforeREFallpeptide,  Afternormallpeptide,  AfternormREFallpeptide and Afterallpeptide (IB 20/08/2019)
+# 4.4.0 rename graphs Afterallpeptide as AftereachProtnoOutDATallpeptide and Beforeallpeptide as BeforeDATallpeptide; create graphs AfternormProtDATallpeptide,  AfternormProtRefallpeptide and BeforeRefallpeptide (IB 20/08/2019)
 # 4.3.2 if tableRef doesn't exist, resultsPep uses the dataNorm (IB 05/04/19)
 # 4.3.1 resultsPep uses the dataNormEachProt instead of dataNorm (IB 25/03/19)
 # 4.3.0 normalization.ref.test has now 4 items, 1 and 2 for normalisation of tableRef and 3 and 4 for correction of data with tableRef (IB 29/11/2018)
@@ -393,4 +651,4 @@ print("End of the quantification")
 # 1.0.3 Correction values and add Peptide_IDs version 2  (ML 27/05/14)
 # 1.0.2 List of protein with one peptide, Refreshment, adjust Data and add Peptide_IDs  (ML 26/05/14)
 # 1.0.1 Remove filter same proteins (ML 23/05/14)
-# 1.0.0 First version (ML 22/05/14)
+# 1.0.0 First version (ML 22/05/14)    

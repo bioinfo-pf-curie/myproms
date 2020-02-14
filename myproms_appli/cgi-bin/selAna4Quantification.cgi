@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# selAna4Quantification.cgi      3.1.0                                         #
+# selAna4Quantification.cgi      3.1.2                                         #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -495,7 +495,7 @@ elsif ($quantifType eq 'XICCORR') {
 |;
 }
 print qq
-|	return false;
+|	return true;
 }
 </SCRIPT>
 </HEAD>
@@ -1077,13 +1077,12 @@ sub launchQuantifications {
 	}
 	print "<BR><FONT class=\"title3\"><BR>This page will refresh itself in a few seconds.</FONT>\n";
 
-	###>Calling watch popup window<###
+	###>Calling monitoring popup window<###
 	sleep 3;
 	print qq
 |<SCRIPT type="text/javascript">
-var watchQuantifWin=window.open("$promsPath{cgi}/watchQuantifications.cgi",'WatchQuantifWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
-watchQuantifWin.focus();
-//parent.optionFrame.watchQuantifications(); // starts watchQuantificationw.cgi
+var monitorJobsWin=window.open("$promsPath{cgi}/monitorJobs.cgi?filterType=Quantification [$quantifType]&filterDateNumber=1&filterDateType=DAY&filterStatus=Queued&filterStatus=Running",'monitorJobsWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
+monitorJobsWin.focus();
 </SCRIPT>
 |;
 #exit; # DEBUG!!!!!
@@ -1101,6 +1100,8 @@ parent.optionFrame.selectOption(parent.optionFrame.document.getElementById('summ
 
 
 ####> Revision history
+# 3.1.2 [CHANGES] Use new job monitoring window opening parameters (VS 18/11/19)
+# 3.1.1 [CHANGES] Switch from watchQuantification to monitorJobs script (VS 21/10/19)
 # 3.1.0 Handles peptide quantifications selection for isobaric correction (PP 02/05/19)
 # 3.0.0 Removed design-based quantifications management & compatible with Isobaric XIC correction (PP 19/02/19)
 # 2.2.0 Compatible with PTM-quantif with MaxQuant probabilities for any PTM (PP 04/01/19)

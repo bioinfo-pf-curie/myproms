@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# convertMsf2Pdm.cgi     1.2.9                                                 #
+# convertMsf2Pdm.cgi     1.3.0                                                 #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Converts Proteome Discoverer .msf file into a Mascot-like .pdm file          #
@@ -1879,7 +1879,7 @@ sub printPeptidesMSF2_2 { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber,
 	#	$sthPRScol->finish;
 	#}
     my $workFlowID;
-	my $percolatorStrg=($refSearches->{$processingNodeNumber}{'PERCOLATOR_NODE'})? ',PercolatorqValue,PercolatorPEP' : ',NULL,NULL';
+	my $percolatorStrg=($refSearches->{$processingNodeNumber}{'PERCOLATOR_NODE'})? ',IFNULL(PercolatorqValue, 1) AS PercolatorqValue,IFNULL(PercolatorPEP, 1) AS PercolatorPEP' : ',NULL,NULL';
 	foreach my $refType (@peptideTypes) { # Target (and Decoy)
 		my ($typeName,$tableFlag,$sectionName)=@{$refType};
 
@@ -1904,7 +1904,7 @@ sub printPeptidesMSF2_2 { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber,
 				print '.';
 			}
 			next unless $spectrumInfo{$spectrumID};
-			next if $qVal && $qVal > $percolatorThres;
+			next if(defined $qVal && $qVal > $percolatorThres);
 
 			@{$peptidesInfo{$peptideID}}=(
 				$score,							# 0
@@ -1915,7 +1915,7 @@ sub printPeptidesMSF2_2 { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber,
 				"0" x (length($sequence)+2),	# 5 String that explain the modifications on the peptides
 				[]								# 6 matching proteins
 			);
-			if ($qVal) {push @{$peptidesInfo{$peptideID}},"$qVal:$PEP";} else {push @{$peptidesInfo{$peptideID}},undef} # 7 Percolator data
+			if (defined $qVal) {push @{$peptidesInfo{$peptideID}},"$qVal:$PEP";} else {push @{$peptidesInfo{$peptideID}},undef} # 7 Percolator data
 			push @{$spectrumPeptides{$spectrumID}},$peptideID; # 1 spectrum <-> several peptides
 		}
 		$sthPepInfo->finish;
@@ -2083,6 +2083,7 @@ sub printPeptidesMSF2_2 { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber,
 }
 
 ####>Revision history<####
+# 1.3.0 Handles PD v2.4 (VS 15/11/19)
 # 1.2.9 Corrected fasta header parsing in &printPeptidesMSF2_2 (PP 22/01/19)
 # 1.2.8 Bug correction for Acetyl (N-Terminus) modification (GA 18/01/19)
 # 1.2.7 Modification in &printPeptidesMSF2_2 for merged files to add rawName files and retrieve related peptides (GA 08/01/19)

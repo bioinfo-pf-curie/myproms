@@ -1,13 +1,11 @@
 /*========================================================================*/
-/*                  myProMS database v3.5.20                              */
-/* MySQL script for myproms v3.6 database                                 */
+/*                  myProMS database v3.5.24                              */
+/* MySQL script for myproms v3.8 database                                 */
 /* Requires MySQL 5+                                                      */
-/* Patrick Poullet    21/06/2019                                          */
+/* Patrick Poullet    28/01/2020                                          */
 /* Command:                                                               */
 /* >mysql -u <DB_USER> -p -D <DB_NAME> -h <DB_HOST> < myproms_db.sql      */
 /*========================================================================*/
-
-drop table if exists DOCUMENT;
 
 /*==============================================================*/
 /* Table : ANALYSIS                                             */
@@ -112,7 +110,8 @@ create table ANALYSIS_SWATH_LIB
    ID_ANALYSIS          int not null,
    VERSION_NAME         varchar(20),
    primary key (ID_SWATH_LIB, ID_ANALYSIS)
-);
+)
+engine = InnoDB;
 
 /*==============================================================*/
 /* Table : ANA_COMPARISON                                       */
@@ -581,6 +580,27 @@ create table ISOTOPIC_CORRECTION
 engine = InnoDB;
 
 /*==============================================================*/
+/* Table : JOB_HISTORY                                          */
+/*==============================================================*/
+create table JOB_HISTORY
+(
+   ID_JOB               varchar(50) not null,
+   ID_PROJECT           int,
+   ID_USER              varchar(15),
+   ID_JOB_CLUSTER       text,
+   TYPE                 varchar(45) not null,
+   STATUS               varchar(45) not null,
+   FEATURES             text,
+   SRC_PATH             text not null,
+   LOG_PATH             text not null,
+   ERROR_PATH           text not null,
+   STARTED              datetime not null,
+   ENDED                datetime,
+   primary key (ID_JOB)
+)
+engine = InnoDB;
+
+/*==============================================================*/
 /* Table : MASTERPROT_IDENTIFIER                                */
 /*==============================================================*/
 create table MASTERPROT_IDENTIFIER
@@ -966,7 +986,7 @@ create table PROPERTY
    NAME                 varchar(50),
    DES                  varchar(100),
    PROPERTY_TYPE        varchar(1),
-   POSSIBLE_VALUES      varchar(150),
+   POSSIBLE_VALUES      text,
    USE_IN_ANALYSIS      smallint,
    IS_VERIFIED          smallint,
    primary key (ID_PROPERTY)
@@ -1057,7 +1077,7 @@ create table QUANTIFICATION
    ID_DESIGN            int,
    NAME                 varchar(50),
    FOCUS                varchar(8),
-   QUANTIF_ANNOT        text,
+   QUANTIF_ANNOT        mediumtext,
    STATUS               smallint,
    UPDATE_DATE          datetime,
    UPDATE_USER          varchar(20),
@@ -1326,7 +1346,20 @@ create table SWATH_LIB_MODIFICATION
    ID_MODIFICATION      int not null,
    SPECIFICITY          text,
    primary key (ID_SWATH_LIB, ID_MODIFICATION)
-);
+)
+engine = InnoDB;
+
+/*==============================================================*/
+/* Table : USER_EXPERIMENT_LOCK                                 */
+/*==============================================================*/
+create table USER_EXPERIMENT_LOCK
+(
+   ID_USER              varchar(15) not null,
+   ID_EXPERIMENT        int not null,
+   LOCK_MSG             text,
+   primary key (ID_USER, ID_EXPERIMENT)
+)
+engine = InnoDB;
 
 /*==============================================================*/
 /* Table : USER_LIST                                            */
@@ -1571,6 +1604,12 @@ alter table GO_ANALYSIS add constraint FK_GOANA_ONTOLOGY foreign key (ID_ONTOLOG
 alter table IDENTIFIER add constraint FK_IDENT_SPECIES foreign key (ID_SPECIES)
       references SPECIES (ID_SPECIES);
 
+alter table JOB_HISTORY add constraint FK_PROJECT_JOB foreign key (ID_PROJECT)
+      references PROJECT (ID_PROJECT);
+
+alter table JOB_HISTORY add constraint FK_USER_JOB foreign key (ID_USER)
+      references USER_LIST (ID_USER);
+
 alter table MASTERPROT_IDENTIFIER add constraint FK_MASTERPROT_IDENTIFIER foreign key (ID_IDENTIFIER)
       references IDENTIFIER (ID_IDENTIFIER);
 
@@ -1798,6 +1837,12 @@ alter table SWATH_LIB_MODIFICATION add constraint FK_SWATH_LIB_MODIFICATION fore
 
 alter table SWATH_LIB_MODIFICATION add constraint FK_SWATH_LIB_MODIFICATION2 foreign key (ID_MODIFICATION)
       references MODIFICATION (ID_MODIFICATION);
+
+alter table USER_EXPERIMENT_LOCK add constraint FK_USER_EXPERIMENT_LOCK foreign key (ID_USER)
+      references USER_LIST (ID_USER);
+
+alter table USER_EXPERIMENT_LOCK add constraint FK_USER_EXPERIMENT_LOCK2 foreign key (ID_EXPERIMENT)
+      references EXPERIMENT (ID_EXPERIMENT);
 
 alter table VALIDATION_HISTORY add constraint FK_ANALYSIS_VALHIS foreign key (ID_ANALYSIS)
       references ANALYSIS (ID_ANALYSIS);

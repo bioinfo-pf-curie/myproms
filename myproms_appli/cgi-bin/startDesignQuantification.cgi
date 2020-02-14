@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# startDesignQuantification.cgi      1.0.1                                     #
+# startDesignQuantification.cgi      1.3.4                                     #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -60,7 +60,7 @@ my %xicSoftware=('PD'=>'Proteome Discoverer','MCQ'=>'MassChroQ','MAS'=>'Mascot',
 my $updateFrameString="";
 my $maxLabPerChannel=10; # max num for isotope extraction...
 my %normalizationNames=&promsQuantif::getQuantifNormalizationName;
-my $MAX_PROT_MANUAL_PEP=5;
+my $MAX_PROT_MANUAL_PEP=10;
 
 ###############################
 ####>Recovering parameters<####
@@ -93,25 +93,25 @@ if ($userInfo[1]=~/^(bio|manag)$/) { # for template selection
 	$bioProjectAccessStrg=join(',',keys %{$userInfo[2]});
 }
 my ($designName)=$dbh->selectrow_array("SELECT NAME FROM DESIGN WHERE ID_DESIGN=$designID");
-my $titleString="Start Relative Quantification from Design <FONT color=#DD0000>$designName</FONT>";
+my $titleString="Start Quantification from Design <FONT color=#DD0000>$designName</FONT>";
 my $oldAlgoAccessStrg=''; #($ENV{HTTP_HOST}=~/curie\.fr/)? "<BR>\n<INPUT type=\"button\" class=\"title3\" value=\"Use old alogrithms\" onclick=\"window.location='./selAna4Quantification_OA.cgi?ID=design:$designID&quantifType=DESIGN'\"/>" : '';
 
 ####>Project PTMs<####
-my $sthGetPM=$dbh->prepare("SELECT PM.ID_MODIFICATION,PSI_MS_NAME,INTERIM_NAME,SYNONYMES FROM PROJECT_MODIFICATION PM,MODIFICATION M WHERE PM.ID_MODIFICATION=M.ID_MODIFICATION AND PM.ID_PROJECT=$projectID");
+my $sthGetPM=$dbh->prepare("SELECT PM.ID_MODIFICATION,PSI_MS_NAME,INTERIM_NAME,SYNONYMES,DISPLAY_CODE,DISPLAY_COLOR FROM PROJECT_MODIFICATION PM,MODIFICATION M WHERE PM.ID_MODIFICATION=M.ID_MODIFICATION AND PM.ID_PROJECT=$projectID");
 $sthGetPM->execute;
 my %projectVarMods;
-while (my ($modID,$psiName,$interName,$synName)=$sthGetPM->fetchrow_array) {
-	$projectVarMods{$modID}=$psiName || $interName;
-	unless ($projectVarMods{$modID}) {
+while (my ($modID,$psiName,$interName,$synName,$code,$color)=$sthGetPM->fetchrow_array) {
+	@{$projectVarMods{$modID}}=($psiName || $interName,$code,$color);
+	unless ($projectVarMods{$modID}[0]) {
 		$synName=~s/^##//; $synName=~s/##$//; $synName=~s/##/, /;
-		$projectVarMods{$modID}=$synName;
+		$projectVarMods{$modID}[0]=$synName;
 	}
 }
 $sthGetPM->finish;
 
 my ($phosphoID)=$dbh->selectrow_array('SELECT ID_MODIFICATION FROM MODIFICATION WHERE UNIMOD_ACC=21');
 $phosphoID=-1 unless $projectVarMods{$phosphoID}; # disable if not used in project
-
+my $numPTMs=scalar keys %projectVarMods;
 
 ########################################################
 ####>Recovering list of experiment, sample analysis<####
@@ -120,7 +120,7 @@ my (%listDataBank,@itemAnalyses,%anaProteins,%listParam,%anaLabelMods,%modificat
 ####>Labeled quantifs<####
 #my (%anaPeptideQuantifs,%quantifChannels,$numChannels,$maxReplicates); # SILAC, iTRAQ internal quanti
 my (%categoryList,%quantifMethods,%quantifTemplate,%projectTemplate,%defaultAnaFormSelValues);
-foreach my $quantMethod ('XIC','SILAC','ITRAQ','TMT','MQ','DIA','TDA') {$quantifMethods{$quantMethod}=0;}
+foreach my $quantMethod ('NONE','XIC','SILAC','ITRAQ','TMT','MQ','DIA','TDA') {$quantifMethods{$quantMethod}=0;}
 my (%designInfo,%anaObs); # For TnPQ and Prop Pep Ratio (quantifications associated to a DESIGN)
 my $nbCond=0;
 my $numProtInDesign=0;
@@ -195,11 +195,11 @@ foreach my $sthAnaInfo (@sthGetAnaInfo) {
 #my ($xicIDMethod)=$dbh->selectrow_array('SELECT ID_QUANTIFICATION_METHOD FROM QUANTIFICATION_METHOD WHERE CODE=\'XIC\'');
 
 #my $sthQInfo=$dbh->prepare("SELECT Q.ID_QUANTIFICATION,NAME,QUANTIF_ANNOT,STATUS,ID_ANALYSIS,UPDATE_DATE FROM QUANTIFICATION Q,ANA_QUANTIFICATION AQ WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND FOCUS='peptide' AND ID_QUANTIFICATION_METHOD=$xicIDMethod AND ID_ANALYSIS IN $anaString");
-my $sthQInfo=$dbh->prepare("SELECT Q.ID_QUANTIFICATION,Q.NAME,QUANTIF_ANNOT,STATUS,ID_ANALYSIS,UPDATE_DATE,QM.CODE FROM QUANTIFICATION Q,ANA_QUANTIFICATION AQ,QUANTIFICATION_METHOD QM WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD AND FOCUS='peptide' AND CODE != 'SIN' AND ID_ANALYSIS IN $anaString");
-my $sthIsobar=$dbh->prepare("SELECT DISTINCT M.ID_MODIFICATION FROM MODIFICATION M,ANALYSIS_MODIFICATION AM WHERE AM.ID_MODIFICATION=M.ID_MODIFICATION AND IS_LABEL=1 AND ID_ANALYSIS=? LIMIT 0,1"); #  AND AM.MODIF_TYPE='V'
+my $sthQInfo=$dbh->prepare("SELECT Q.ID_QUANTIFICATION,Q.NAME,QUANTIF_ANNOT,STATUS,ID_ANALYSIS,UPDATE_DATE,QM.CODE,QM.DES FROM QUANTIFICATION Q,ANA_QUANTIFICATION AQ,QUANTIFICATION_METHOD QM WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD AND FOCUS='peptide' AND CODE != 'SIN' AND ID_ANALYSIS IN $anaString");
+my $sthIsobar=$dbh->prepare("SELECT DISTINCT M.ID_MODIFICATION FROM MODIFICATION M,ANALYSIS_MODIFICATION AM WHERE AM.ID_MODIFICATION=M.ID_MODIFICATION AND IS_LABEL=1 AND ID_ANALYSIS=? LIMIT 1"); #  AND AM.MODIF_TYPE='V'
 my $sthAna=$dbh->prepare("SELECT FILE_FORMAT FROM ANALYSIS WHERE ID_ANALYSIS=?");
 $sthQInfo->execute;
-while (my ($quantiID,$quantiName,$quantifAnnot,$qStatus,$anaID,$date,$methodCode) = $sthQInfo->fetchrow_array) {
+while (my ($quantiID,$quantiName,$quantifAnnot,$qStatus,$anaID,$date,$methodCode,$methodDes) = $sthQInfo->fetchrow_array) {
 #$quantiName=~s/3plex.+\| /2plex (/;
 	next unless $quantifAnnot;
 #print "$quantiID,/$quantiName,/$qStatus,/$anaID,/'$methodCode'<BR>\n";
@@ -216,8 +216,10 @@ while (my ($quantiID,$quantiName,$quantifAnnot,$qStatus,$anaID,$date,$methodCode
 		my ($fileFormat)=$sthAna->fetchrow_array;
 		$xicSoftCode=($fileFormat=~/\.PDM\Z/)? 'PD' : ($fileFormat=~/^MASCOT/)? 'MAS' : ($fileFormat=~/PARAGON/)? 'PAR' : '?';
 	}
-	$ptmProbSoft='MaxQuant' if $xicSoftCode eq 'MQ';
-	$ptmProbSoftCode='MQ' if $xicSoftCode eq 'MQ';
+	if ($xicSoftCode eq 'MQ') {
+		$ptmProbSoft='MaxQuant';
+		$ptmProbSoftCode='MQ';
+	}
 	my $labelType=($quantifAnnot=~/LABEL=([^:;]+)/)? $1 : 'FREE';
 	$labelType=uc($labelType);
 	if ($labelType=~/FREE|NONE/) {
@@ -284,7 +286,8 @@ while (my ($quantiID,$quantiName,$quantifAnnot,$qStatus,$anaID,$date,$methodCode
 		}
 	}
 	$designInfo{'LABEL'}{$labelType}=1;
-	$designInfo{'QUANTIFICATION'}{$quantiID}{'NAME'}=$quantiName;
+	$designInfo{'QUANTIFICATION'}{$quantiID}{'NAME'}=$quantiName.' ['.$methodCode.']';
+	$designInfo{'QUANTIFICATION'}{$quantiID}{'METHOD'}=$methodCode;
 	$designInfo{'QUANTIFICATION'}{$quantiID}{'ANNOT'}=$quantifAnnot;
 	$designInfo{'QUANTIFICATION'}{$quantiID}{'STATUS'}=$qStatus;
 	$designInfo{'QUANTIFICATION'}{$quantiID}{'DATE'}=$date;
@@ -299,7 +302,7 @@ while (my ($quantiID,$quantiName,$quantifAnnot,$qStatus,$anaID,$date,$methodCode
 		my ($parameterName,$parameterValue)=split(/=/,$parameter);
 		$quantifParameters{$parameterName}=$parameterValue;
 	}
-	my $popupInfo='<U><B>Quantification parameters:</B></U>';
+	my $popupInfo="<U><B>$methodCode:</B></U><BR>$methodDes<BR><U><B>Quantification parameters:</B></U>";
 	if ($methodCode eq 'XIC') {
 		$popupInfo.="<BR><B>Software:</B> $xicSoftware{$xicSoftCode}";
 		$popupInfo.=" v. $xicSoftVersion" if $xicSoftVersion;
@@ -348,6 +351,11 @@ $sthQInfo->finish;
 $sthIsobar->finish;
 $sthAna->finish;
 
+unless ($designInfo{'LABEL'}) { # no quantif at all
+	$designInfo{'LABEL'}{'FREE'}=1;
+	$quantifMethods{'NONE'}=1;
+}
+
 ###>JS list of quantif=>XIC software
 $jsXicSoftStrg="var quantiXicSoftware={\n";
 my $firstSoft=1;
@@ -370,12 +378,12 @@ while (my($desID,$desFullName)=$sthRefE->fetchrow_array) {
 }
 $sthRefE->finish;
 
-###>Check if manual peptide selection is possible (< 20 protein in design)
+###>Check if manual peptide selection is possible (<= $MAX_PROT_MANUAL_PEP protein in design)
 my $sthNumProt=$dbh->prepare("SELECT DISTINCT(ID_PROTEIN) FROM EXPCONDITION E
 									INNER JOIN OBS_EXPCONDITION OE ON E.ID_EXPCONDITION=OE.ID_EXPCONDITION
 									INNER JOIN OBSERVATION O ON OE.ID_OBSERVATION=O.ID_OBSERVATION
 									INNER JOIN ANALYSIS_PROTEIN AP ON O.ID_ANALYSIS=AP.ID_ANALYSIS
-									WHERE ID_DESIGN=? AND ABS(AP.VISIBILITY)=2 LIMIT ".($MAX_PROT_MANUAL_PEP+1));
+									WHERE ID_DESIGN=? AND ABS(AP.VISIBILITY)=2 LIMIT ".($MAX_PROT_MANUAL_PEP+1)); # +1 to check if >$MAX_PROT_MANUAL_PEP
 $sthNumProt->execute($designID);
 $numProtInDesign=$sthNumProt->rows;
 $sthNumProt->finish;
@@ -504,10 +512,11 @@ warningsToBrowser(1);
 print qq
 |<HTML>
 <HEAD>
-<TITLE>Select Analysis</TITLE>
+<TITLE>Start Design Quantification</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
 <STYLE type="text/css">
 TD.center {text-align:center}
+INPUT.keyword {font-weight:bold; font-size:11px;}
 </STYLE>
 <SCRIPT type="text/javascript">
 |;
@@ -537,7 +546,7 @@ print qq
 	updateLabeling(document.selAnaForm.labeling.value);
 	updateAlgoTypeSelection(document.selAnaForm.algoType.value);
 	recoverDefaultFormParam();
-}
+};
 
 var defaultAnaFormValues=[];
 function recoverDefaultFormParam() {
@@ -594,7 +603,6 @@ function recoverDefaultFormParam() {
 			i++;
 		}
 	}*/
-//console.log(defaultAnaFormValues);
 }
 
 function useTemplate(quantiID,skipLabeling) {
@@ -632,7 +640,7 @@ function useTemplate(quantiID,skipLabeling) {
 		}
 		else if (defaultAnaFormValues[i][3] == 'style.display') {
 			paramIdent.style.display=defaultAnaFormValues[i][2];
-			if (defaultAnaFormValues[i][1] == 'refCommentSpan') {
+			if (defaultAnaFormValues[i][1] == 'refCommentSPAN') {
 				paramIdent.innerHTML='';
 			}
 		}
@@ -669,14 +677,14 @@ function useTemplate(quantiID,skipLabeling) {
 
 	// Template : select template name
 	var selTemplate=document.getElementById('template');
-	for(var i=1; i<selTemplate.options.length;i++){
+	for(let i=1; i<selTemplate.options.length;i++){
 		if (selTemplate.options[i].value == quantiID){
 			selTemplate.selectedIndex=i;
 		}
 	}
 
-	for (var i=0; i<quantifParam.length; i++){
-		var param=quantifParam[i].split('=');
+	for (let p=0; p<quantifParam.length; p++){
+		var param=quantifParam[p].split('=');
 
 		// Strategy
 		if (param[0] == 'SOFTWARE') {
@@ -865,7 +873,7 @@ function useTemplate(quantiID,skipLabeling) {
 		}
 	}
 	updateAlgoTypeSelection(algoTypeStrg);
-	if (algoType == 'PEP_INTENSITY' \|\| algoType == 'PEP_RATIO'){
+	if (algoType == 'PEP_INTENSITY' \|\| algoType == 'PEP_RATIO') {
 		var selPepCharge=document.getElementsByName('pepCharge');
 		for (let i=1; i<selPepCharge[0].options.length; i++) {
 			if (selPepCharge[0].options[i].value==pepCharge) {
@@ -905,10 +913,10 @@ function useTemplate(quantiID,skipLabeling) {
 		}
 		updateBias(normalizationMethod);
 		if (idListBias) {
-			var selBiasrefProt=document.getElementsByName('refProt');
-			for (let i=1; i<selBiasrefProt[0].options.length; i++) {
-				if (selBiasrefProt[0].options[i].value==idListBias) {
-					selBiasrefProt[0].selectedIndex=i;
+			var selBiasRefProt=document.getElementsByName('refProt');
+			for (let i=1; i<selBiasRefProt[0].options.length; i++) {
+				if (selBiasRefProt[0].options[i].value==idListBias) {
+					selBiasRefProt[0].selectedIndex=i;
 					break;
 				}
 			}
@@ -921,14 +929,14 @@ function useTemplate(quantiID,skipLabeling) {
 	// Target
 	if (ptmID) {
 		var selPtmID=(createSiteRes)? -ptmID : ptmID;
-		var selPtmScope=document.getElementsByName('ptmScope');
-		for (let i=1; i<selPtmScope[0].options.length; i++) {
-			if (selPtmScope[0].options[i].value==selPtmID) {
-				selPtmScope[0].selectedIndex=i;
+		var selPtmScope=document.selAnaForm.ptmScope;
+		for (let i=1; i<selPtmScope.options.length; i++) {
+			if (selPtmScope.options[i].value==selPtmID) {
+				selPtmScope.selectedIndex=i;
 				break;
 			}
 		}
-		updateRefQuantification(selPtmID);
+		//updateRefQuantification(selPtmID);
 		updateTopN();
 		
 		if (createSiteRes) {
@@ -947,7 +955,7 @@ function useTemplate(quantiID,skipLabeling) {
 						if (tgtResParam.value==createSiteRes[j]) {tgtResParam.checked=true;}
 					}
 				}
-				document.getElementById('recreateSPAN').style.display='';
+				//document.getElementById('recreateSPAN').style.display='';
 				document.getElementById('targetResSPAN_'+ptmID).style.display='';
 			}
 			else {
@@ -971,75 +979,161 @@ function clearTemplate() {
 		useTemplate('select',true);
 	}
 }
-function updateQuantifTarget(ptmID) {
-	updateRefQuantification(ptmID);
+function updateQuantifFocus(scope) {
+	//updateMultiPtmSelection();
 	updateTopN();
-	if (ptmID==0) { // do nothing
+	var myForm=document.selAnaForm;
+	if (scope=='protein') {
+		// Clear PTM filter spans
+		document.getElementById('ptmSPAN').style.display='none';
+		var phosphoSpan=document.getElementById('phosphoSPAN'); // optional
+		if (phosphoSpan) phosphoSpan.style.display='none';
+		// Clear reference quantif
 		document.getElementById('refQuantifDIV').style.display='none';
-		document.selAnaForm.refQuantifType.selectedIndex=0;
+		myForm.refQuantifType.selectedIndex=0;
 		ajaxFetchReferenceQuantif(0);
-	}
-	else {
-		document.getElementById('refQuantifDIV').style.display='';
-	}
-}
-
-function updateRefQuantification(ptmID) {
-	var modQuantVis;
-	var cusPTMs=document.selAnaForm.customPTM;
-	//Clear any previous disabling
-	if (cusPTMs.length) {
-		for (var i=0; i<cusPTMs.length; i++) {
-			cusPTMs[i].disabled=false;
-		}
-	}
-	else {cusPTMs.disabled=false;}
-	//Update with new selection
-	if (ptmID==0) { // do nothing
-		modQuantVis='hidden';
-	}
-	else {
-		modQuantVis='visible';
-		if (cusPTMs.length) { // disable selected quantified PTM
-			for (var i=0; i<cusPTMs.length; i++) {
-				cusPTMs[i].disabled=(cusPTMs[i].value==ptmID)? true : false;
+		// Clear any multi-PTMs selection
+		document.getElementById('multiPtmUL').style.display='none';
+		var multiPtmChkBoxes=document.selAnaForm.multiPtmScope;
+		if (multiPtmChkBoxes.length) {
+			for (let i=0; i<multiPtmChkBoxes.length; i++) {
+				multiPtmChkBoxes[i].checked=false;
+				clearTargetRes(multiPtmChkBoxes[i].value);
 			}
 		}
-		else {cusPTMs.disabled=true;} // must be =ptmID
+		else {
+			multiPtmChkBoxes.checked=false;
+			clearTargetRes(multiPtmChkBoxes.value);
+		}
+		// Disable manual peptide selection for Bias correction
+		if (myForm.refProt.selectedIndex==1) { // manual peptide
+			myForm.refProt.selectedIndex=0;
+			myForm.refProt.options[1].disabled=true;
+			updateBiasCorrectionSet(0);
+		}
 	}
-	document.getElementById('phosphoSPAN').style.display='none';
-	document.getElementById('ptmSPAN').style.display='none';
-	document.getElementById('recreateSPAN').style.display='none';
-	for (let i=0; i<unusedVarMods.length; i++) {
-		document.getElementById('targetResSPAN_'+unusedVarMods[i]).style.display='none';
+	else { // (ptm/phospho)SPANs "on" handled updateMultiPtmSelection()
+		document.getElementById('refQuantifDIV').style.display=(document.getElementById('algoType').value.match('SSPA\|Abundance'))? 'none' : '';
+		document.getElementById('multiPtmUL').style.display='';
+updateMultiPtmSelection();
+		// Enable manual peptide selection for Bias correction
+		myForm.refProt.options[1].disabled=(myForm.algoType.value.match('(PEP_INTENSITY\|DIA\|TDA):SimpleRatio') && $numProtInDesign > $MAX_PROT_MANUAL_PEP)? false: true;
 	}
-	if (ptmID > 0) { // cannot be SSPA
-		if ((ptmID==$phosphoID \|\| '$ptmProbSoftCode'=='MQ') && !document.selAnaForm.algoType.value.match('MSstats')) {
-			document.getElementById('phosphoSPAN').style.display='';
+	//updateMultiPtmSelection();
+}
+function clearTargetRes(ptmID) {
+	if (ptmID >= 0) return; // matched PTM: nothing to unselect
+	ptmID*=-1;
+	var targetRes=document.getElementsByName('targetRes_'+ptmID);
+	if (targetRes.length) {
+		for (let i=0; i<targetRes.length; i++) {
+			targetRes[i].checked=false;
+			targetRes[i].disabled=false;
+		}
+	}
+	else {
+		targetRes.checked=false;
+		targetRes.disabled=false;
+	}
+}
+function updateMultiPtmSelection() { // former updateRefQuantification(ptmID)
+	//Fetch list of selected PTM-sites
+	var selPtmList={}, numSelMatched=0, numSelOther=0, multiPTMs=document.selAnaForm.multiPtmScope;
+	if (!multiPTMs) {return;} // no project PTMs declared
+	if (multiPTMs.length) {
+		for (let i=0; i<multiPTMs.length; i++) {
+			var ptmID=Math.abs(multiPTMs[i].value*1);
+			var dispTargRes='none';
+			if (multiPTMs[i].checked) {
+				selPtmList[ptmID]=multiPTMs[i].value;
+				if (multiPTMs[i].value*1 > 0) {numSelMatched++;}
+				else { // Other PTMs
+					numSelOther++;
+					dispTargRes='';
+				}
+			}
+			if (multiPTMs[i].value*1 < 0) {
+				document.getElementById('targetResSPAN_'+ptmID).style.display=dispTargRes;
+			}
+		}
+	}
+	else {
+		var ptmID=Math.abs(multiPTMs.value*1);
+		var dispTargRes='none';
+		if (multiPTMs.checked) {
+			selPtmList[ptmID]=multiPTMs.value;
+			if (multiPTMs.value*1 > 0) {numSelMatched++;}
+			else {
+				numSelOther++;
+				dispTargRes='';
+			}
+		}
+		if (multiPTMs.value*1 < 0) {
+			document.getElementById('targetResSPAN_'+ptmID).style.display=dispTargRes;
+		}
+	}
+	//Re-define custom PTMs disable status
+	var cusPTMs=document.selAnaForm.customPTM;
+	if (cusPTMs.length) {
+		for (let i=0; i<cusPTMs.length; i++) {
+			cusPTMs[i].disabled=(selPtmList[cusPTMs[i].value])? true : false;
+		}
+	}
+	else {cusPTMs.disabled=(selPtmList[cusPTMs.value])? true : false;}
+
+	//Other
+	var phosphoSpan=document.getElementById('phosphoSPAN'),
+		ptmSpan=document.getElementById('ptmSPAN'),
+		ambigChk=document.selAnaForm.ambiguousPos;
+		badProb=document.selAnaForm.badProb,
+	    phosphoChecked=(selPtmList['$phosphoID'] && selPtmList['$phosphoID'] > 0)? true : false;
+	if ((phosphoChecked \|\| '$ptmProbSoftCode'=='MQ') && !document.selAnaForm.algoType.value.match('MSstats')) {
+		if (phosphoSpan) phosphoSpan.style.display='';
+		ptmSpan.style.display='none';
+		ambigChk.checked=false;
+	}
+	else {
+		if (phosphoSpan) phosphoSpan.style.display='none';
+		if (numSelMatched==1 && numSelOther==0) { // Possible only for single-modif quantif
+			ptmSpan.style.display='';
 		}
 		else {
-			document.getElementById('ptmSPAN').style.display='';
+			ptmSpan.style.display='none';
+			ambigChk.checked=false;
 		}
 	}
-	else if (ptmID < 0) { // PTM not used for search => to be recreated
-		ptmID*=-1;
-/*
-		var targetResStrg='&nbsp;';
-		for (let i=0; i<targetResVarMods[ptmID].length; i++) {
-			if (i>0) {targetResStrg+=',';}
-			targetResStrg+='<INPUT type="checkbox" name="targetRes" value="'+targetResVarMods[ptmID][i][0]+'" checked>'+targetResVarMods[ptmID][i][1];
+	if (badProb) { // MaxQuant or Phospho: Ambiguity allowed ONLY for single-PTM quantif
+		if (numSelMatched + numSelOther > 1) {
+			badProb.selectedIndex=0;
+			badProb.options[1].disabled=true;
 		}
-		targetResStrg+='&nbsp;';
-		document.getElementById('targetResSPAN').innerHTML=targetResStrg;
-*/
-		document.getElementById('recreateSPAN').style.display='';
-		document.getElementById('targetResSPAN_'+ptmID).style.display='';
+		else {badProb.options[1].disabled=false;}
+	}
+	//Update manual peptide selection (if displayed)
+	if (document.selAnaForm.refQuantifType.value==-1 && document.selAnaForm.manualRefPep.value==1) { // if (document.getElementById('manualRefPepDIV').style.display != 'none')
+		ajaxFetchRefProtPeptides(1,'protCorr');
+	}
+	else if (document.selAnaForm.refProt.value==-1) { // if (document.getElementById('manualBiasPepDIV').style.display != 'none')
+		ajaxFetchRefProtPeptides(-1,'biasCorr');
+	}
+}
+function updateTargetResidues(ptmID,myCkbRes) { // (dis/en)able checked residue for all other modifs
+	if (unusedVarMods.length <= 1) return; // only 1 modif
+	for (let i=0; i<unusedVarMods.length; i++) {
+		if (unusedVarMods[i]==ptmID) continue;
+		var targetResCkb=document.getElementsByName('targetRes_'+unusedVarMods[i]);
+		for (let j=0; j<targetResCkb.length; j++) {
+			if (targetResCkb[j].value==myCkbRes.value) {
+				targetResCkb[j].disabled=(myCkbRes.checked)? true : false;
+				break;
+			}
+		}
 	}
 }
 function updateTopN() {
 	var myForm=document.selAnaForm;
 	var algoType=myForm.algoType.value;
-	if (myForm.labeling.value == 'FREE' && algoType.match('PEP_INTENSITY\|TnPQ') && myForm.ptmScope.value*1 == 0) {
+	if (myForm.labeling.value == 'FREE' && algoType.match('PEP_INTENSITY\|DIA\|TDA') && myForm.ptmScope.value == 'protein') {
 		myForm.topN.disabled=false;
 		myForm.matchingPep.disabled=false;
 		document.getElementById('topSPAN').style.display='';
@@ -1050,37 +1144,90 @@ function updateTopN() {
 		document.getElementById('topSPAN').style.display='none';
 	}
 }
+function updateMultiQuantifOption(algoType) {
+	var myForm=document.selAnaForm;
+	if (!algoType) algoType=myForm.algoType.value;
+	var numSelStates=0;
+	for (let i=1; i <= $nbCond; i++) {
+		if (!myForm['state_'+i].disabled && myForm['state_'+i].value != 'Select') numSelStates++;
+	}
+	var [multiQVis,multiQDisab]=(numSelStates >= 3 && algoType.match(':SimpleRatio:'))? ['',false] : ['none',true]; // :singleRef
+	document.getElementById('multiQuantifSPAN').style.display=multiQVis;
+	var chkMultiQ=document.getElementById('multiQuantifCHK');
+	chkMultiQ.disabled=multiQDisab;
+	
+	/* Protein FC correction for Sites */
+	if (myForm.ptmScope.value=='multiPTM') {
+		document.getElementById('refQuantifDIV').style.display=(algoType.match('MSstats\|Abundance\|SSPA'))? 'none' : '';
+	}
+}
 function ajaxFetchReferenceQuantif(designID) {
-	// Reset manual peptide selection
-	document.selAnaForm.manualRefPep.selectedIndex=0;
+	var myForm=document.selAnaForm;
+	if (myForm.labeling.value=="") {
+		alert('Select a labeling strategy first!');
+		myForm.refQuantifType.selectedIndex=0;
+		return;
+	}
+
+	// Reset prot-level corr. manual peptide selection
+	myForm.manualRefPep.selectedIndex=0;
 	document.getElementById('manualRefPepDIV').innerHTML='';
 	document.getElementById('manualRefPepDIV').style.display='none';
 	document.getElementById('manualRefPepSPAN').style.display=(designID >= 0)? 'none' : ''; 
-	// Disable 3+ states
-	var disab3States=(designID==0)? '' : 'disabled';
-	for (let i=3; i<=$nbCond; i++) {document.selAnaForm['state_'+i].disabled=disab3States;}	
+	var algoSel=document.getElementById('algoType');
+	// Disable 3+ states for PEP_RATIO (until handled by R scripts)
+	//if (algoSel.value.match('PEP_RATIO:')) {
+	//	var disab3States=(designID==0)? false : true;
+	//	for (let i=3; i<=$nbCond; i++) {myForm['state_'+i].disabled=disab3States;}
+	//}
+	// Disable/Enable 'All vs All' algos
+	var selectedIdx=algoSel.options.selectedIndex;
+	for (let i=1; i<algoSel.options.length; i++) { // skip -= Select =-
+		if (algoSel.options[i].value.match('MSstats:')) continue;
+		if (designID==0) { // enable option
+			if (algoSel.options[i].value=='PEP_INTENSITY:SimpleRatio:multiRef') {algoSel.options[i].disabled=false;}
+			else if (algoSel.options[i].value=='PEP_RATIO:SuperRatio:multiRef' && ($quantifMethods{SILAC} \|\| $quantifMethods{ITRAQ} \|\| $quantifMethods{TMT})) {algoSel.options[i].disabled=false;}
+			else if (algoSel.options[i].value=='TDA:SimpleRatio:multiRef' && $quantifMethods{TDA}) {algoSel.options[i].disabled=false;}
+		}
+		else if (algoSel.options[i].value.match(':multiRef')) { // disable option
+			algoSel.options[i].disabled=true;
+		}
+	}
+	if (designID != 0 && algoSel.options[selectedIdx].disabled) { // selected option was disabled => use 1 just before
+		var ratioStrg=(algoSel.options[selectedIdx].value=='PEP_RATIO:SuperRatio:multiRef')? '"Super ratios"' : '"All vs All" ratios';
+		alert('WARNING: '+ratioStrg+' are not possible with "Protein-level fold change correction". Switching to "All vs State1"');
+		algoSel.options.selectedIndex=selectedIdx-1;
+		updateAlgoTypeSelection(algoSel.value);
+	}
+
+	// Disable/Enable manual pept. selection for Exp. bias correction
+	if (designID != 0) {
+		//if (myForm.refProt.selectedIndex==1) {
+		//	myForm.refProt.selectedIndex=0;
+		//}
+		myForm.refProt.options[1].disabled=true;
+		updateBiasCorrectionSet(0);
+	}
+	else {
+		updateBias(myForm.biasCorrect.value);
+	}
+	
 	// Hide refQuantif selection
 	var refQuantSpan=document.getElementById('refQuantifSPAN');
 	if (designID <= 0) {
 		refQuantSpan.innerHTML='<INPUT type="hidden" name="refQuantif" value="-1"/>';
 		return;
 	}
-	if (document.selAnaForm.labeling.value=="") {
-		alert('Select a labeling strategy first!');
-		document.selAnaForm.refQuantifType.selectedIndex=0;
-		return;
-	}
-	//
-	
+		
 	//Creation of the XMLHTTPRequest object
 	var XHR = getXMLHTTP();
 	if (!XHR) {
 		return false;
 	}
-	XHR.open("GET","$promsPath{cgi}/startDesignQuantification.cgi?AJAX=fetchRefQuantif&ID="+designID+"&labeling="+document.selAnaForm.labeling.value,true);
+	XHR.open("GET","$promsPath{cgi}/startDesignQuantification.cgi?AJAX=fetchRefQuantif&ID="+designID+"&labeling="+document.selAnaForm.labeling.value+"&algoType="+document.selAnaForm.algoType.value,true);
 	XHR.onreadystatechange=function() {
 		if (XHR.readyState==4 && XHR.responseText) {
-			refQuantSpan.innerHTML='<BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Select a reference dataset from:'+XHR.responseText;
+			refQuantSpan.innerHTML='<BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Select a reference dataset from:'+XHR.responseText+' <FONT style="color:#DD0000">(WARNING: States order must match with current dataset)</FONT>';
 		}
 	}
 	XHR.send(null);
@@ -1092,15 +1239,15 @@ function applyNewRefQuantifSet(quantifSet) {
 	}
 	ajaxFetchRefProtPeptides(document.selAnaForm.manualRefPep.value);
 }
-function ajaxFetchRefProtPeptides(selVal) {
-	var manualRefPepDiv=document.getElementById('manualRefPepDIV');
-	if (selVal=='0') {
+function ajaxFetchRefProtPeptides(selVal,call='protCorr') {
+	var manualRefPepDiv=(call=='protCorr')? document.getElementById('manualRefPepDIV') : document.getElementById('manualBiasPepDIV');
+	if (selVal=='0' \|\| (call=='biasCorr' && selVal > 0)) {
 		manualRefPepDiv.style.display='none';
 		manualRefPepDiv.innerHTML='';
 		return;
 	}
 	// Check reference dataset
-	if (!document.selAnaForm.refQuantif.value) { // "-= Select =-" <- A design was selected but not a quantif ratio
+	if (call=='protCorr' && !document.selAnaForm.refQuantif.value) { // "-= Select =-" <- A design was selected but not a quantif ratio
 		alert('Select a reference dataset first!');
 		document.selAnaForm.manualRefPep.selectedIndex=0;
 		return;
@@ -1109,9 +1256,9 @@ function ajaxFetchRefProtPeptides(selVal) {
 	var anaList=[];
 	if (document.selAnaForm.refQuantif.value==-1) { // current dataset
 		var numSelStates=0;
-		for (let sPos=1; sPos <=2; sPos++) {
+		for (let sPos=1; sPos <= $nbCond; sPos++) {
 			var okState=0;
-			if (document.selAnaForm['state_'+sPos].value != 'Select') {
+			if (document.selAnaForm['state_'+sPos].value != 'Select' && !document.selAnaForm['state_'+sPos].disabled) {
 				var condID=document.selAnaForm['state_'+sPos].value;
 				var pepQuant=document.selAnaForm['condObs:'+condID];
 				if (pepQuant.length) {
@@ -1135,16 +1282,39 @@ function ajaxFetchRefProtPeptides(selVal) {
 		}
 		if (numSelStates < 2) {
 			alert('Select the States to be compared first!');
-			document.selAnaForm.manualRefPep.selectedIndex=0;
+			document.selAnaForm.manualRefPep.selectedIndex=0; // protCorr
+			document.selAnaForm.refProt.selectedIndex=0; // biasCorr
 			return;
 		}
 	}
+	//Check quantified modifs
+	var quantifModifList=[];
+	if (document.selAnaForm.ptmScope.value=='multiPTM') {
+		//var multiPtmChkBoxes=document.selAnaForm.multiPtmScope;
+		//for (let i=0; i<multiPtmChkBoxes.length; i++) {
+		//	if (multiPtmChkBoxes[i].checked) quantifModifList.push(multiPtmChkBoxes[i].value);
+		//}
+		var multiScope=document.selAnaForm.multiPtmScope;
+		if (!multiScope.length) {multiScope=[multiScope.value];} // force to array if single element
+		multiScope.forEach(function(chkBox) {
+			if (chkBox.checked) {quantifModifList.push(chkBox.value);}
+		});
+	}
+	else {quantifModifList=(call=='protCorr')? [document.selAnaForm.refQuantif.value] : [-1];}
+/* Test below has an hugly side effect after full multi-modif quantif deselection
+	if (call=='protCorr' && quantifModifList.length==0) {
+		alert('Select PTM(s) to be quantified!');
+		document.selAnaForm.manualRefPep.selectedIndex=0;
+		return;
+	}
+*/
+	
 	//Creation of the XMLHTTPRequest object
 	var XHR = getXMLHTTP();
 	if (!XHR) {
 		return false;
 	}
-	XHR.open("GET","$promsPath{cgi}/startDesignQuantification.cgi?AJAX=fetchRefProtPep&ID=$designID&refQuantif="+document.selAnaForm.refQuantif.value+"&modID="+document.selAnaForm.ptmScope.value+"&labeling="+document.selAnaForm.labeling.value+"&selAna="+anaList.join(':'),true);
+	XHR.open("GET","$promsPath{cgi}/startDesignQuantification.cgi?AJAX=fetchRefProtPep&ID=$designID&refQuantif="+document.selAnaForm.refQuantif.value+"&modID="+(quantifModifList.join(':'))+"&labeling="+document.selAnaForm.labeling.value+"&selAna="+anaList.join(':'),true);
 	XHR.onreadystatechange=function() {
 		if (XHR.readyState==4 && XHR.responseText) {
 			manualRefPepDiv.innerHTML=XHR.responseText;
@@ -1194,12 +1364,48 @@ function updatePeptideSource(selCharge) {
 	}
 }
 function updateBias(bias) {
+	var myForm=document.selAnaForm;
 	if (document.getElementById('algoType').value.match('^Ratio\|MSstats')) {
-		document.getElementById('refProtDIV').style.visibility=(bias.match('REF_PROT\|globalStandards'))? 'visible' : 'hidden';
+		document.getElementById('biasProtDIV').style.visibility=(bias.match('REF_PROT\|globalStandards'))? 'visible' : 'hidden';
+		//myForm.refProt.selectedIndex=0;
+		updateBiasCorrectionSet(0);		
 	}
 	else {
-		document.getElementById('refProtDIV').style.visibility=(bias && !bias.match('^none\|quantile'))? 'visible' : 'hidden';
+		if (bias && !bias.match('^none\|quantile')) {
+			document.getElementById('biasProtDIV').style.visibility='visible';
+			// Manual pept. for bias correction (only possible for LF SimpleRatio in myProMS)
+			if (myForm.ptmScope.value=='multiPTM' && myForm.algoType.value.match('(PEP_INTENSITY\|DIA\|TDA):SimpleRatio') && myForm.refQuantifType.value*1 == 0) {
+				myForm.refProt.options[1].disabled=(myForm.refQuantifType.value*1==0 && $numProtInDesign > $MAX_PROT_MANUAL_PEP)? false : true; // Incompatible with protein-level FC correction
+			}
+			else {
+				if (myForm.refProt.selectedIndex==1) {
+					myForm.refProt.selectedIndex=0;
+				}
+				myForm.refProt.options[1].disabled=true;
+			}				
+		}
+		else {
+			document.getElementById('biasProtDIV').style.visibility='hidden';
+			//myForm.refProt.selectedIndex=0;
+			updateBiasCorrectionSet(0);
+		}
 	}
+}
+function updateBiasCorrectionSet(setCode) { // 0:all prot / -1:manual pep selection / <listID>:custom list
+	// "(Do not) Use" switch
+	var selType=document.selAnaForm.refProtSelType;
+	if (setCode <= 0) {
+		if (setCode == 0) {document.selAnaForm.refProt.selectedIndex=0;} // updateBiasCorrectionSet also called from other JS functions
+		selType.selectedIndex==0;
+		selType.options[1].disabled=true;
+		//if (setCode == -1) { // Manual peptide selection
+		//	ajaxFetchRefProtPeptides(setCode,'biasCorr');
+		//}
+	}
+	else { // Custom list
+		selType.options[1].disabled=false;
+	}
+	ajaxFetchRefProtPeptides(setCode,'biasCorr'); // Manual peptide selection
 }
 function autoSelectStates(selMode) {
 	var myForm=document.selAnaForm;
@@ -1270,6 +1476,8 @@ function updateStateSelection(selCond,pos) { // pos=State pos
 	// Update stateCondVal
 	stateCondVal[stateSelected]=selCondIdx;
 	showDivCond(selCond.value); //condID
+	// Update multi-quantif option
+	//updateMultiQuantifOption(); //????????????????
 }
 function showDivCond(condID){
 	var stateDiv=document.getElementsByName('condDiv');
@@ -1315,8 +1523,9 @@ function propagateQuantifSelection(selQuanti,force) {
 		quantifName=selQuanti.options[selQuanti.selectedIndex].text,
 		selState=selQuanti.dataset.state,
 		xicSoft=quantiXicSoftware[valInfo[1]],
-		propagScope=(force)? 'all' : document.getElementById('propagQuantScope:'+selState).value; // all,state,none
+		propagScope=(force)? 'all' : document.getElementById('propagQuantScope:'+selState).value; // none,state*,all
 	if (propagScope=='none') {return;}
+	if (propagScope=='all' && !force && !confirm('WARNING: This peptide quantification will be propagated to ALL other state(s) were available. Proceed?')) {return;}
 	var allSelects=document.getElementsByTagName("select");
 	for (let i=0; i<allSelects.length; i++) {
 		if (allSelects[i].name.match('anaXICQuanti:') && allSelects[i].name != selQuanti.name) {
@@ -1372,59 +1581,63 @@ print qq
 			['Global standards','globalStandards']
 	]
 };
-algoNorms.TDA=algoNorms.PEP_INTENSITY;
+algoNorms.TDA=algoNorms.PEP_INTENSITY; //myProMS algo
+algoNorms.DIA=algoNorms.PEP_INTENSITY; //myProMS algo
 
 function updateAlgoTypeSelection(algoType) {
 	var myForm=document.selAnaForm;
 
-	/* Update States display */
-	var referenceText='';
-	if (algoType=='select') {referenceText='';}
+	/* Update quantif name %...% span & States display */
+	var nameSpanDisp='none',
+	    referenceText='';
 	if (algoType.match('S.+Ratio')) { // myProMS v2+ or MSstats
+		nameSpanDisp='';
 		referenceText=($nbCond==2)? '&nbsp;&lt;&lt;&lt;&nbsp;Reference state' : (algoType.match(':multiRef'))? '&nbsp;Each state will be used as reference for all following states' : '&nbsp;&lt;&lt;&lt;&nbsp;Common reference';
 	}
-	else if (algoType != 'select') { // old algos
-		referenceText=(algoType=='SSPA')? '&nbsp;: At least 3 replicates required per state' : '&nbsp;&lt;&lt;&lt;&nbsp;Reference state'; //'&nbsp;Each state will be used as reference for all following states'; //
-	}
-	document.getElementById('refCommentSpan').innerHTML=referenceText;
-	//Restrict old algo to 2 states
-	var disabStatus=(algoType.match(':Ratio'))? true : false; // Ratio or TnPQ (old algos)
-	for (let i=3; i <= $nbCond; i++) {
-		myForm['state_'+i].disabled=disabStatus;
-	}
-
+	//else if (algoType != 'select') { // old algos
+	//	referenceText=(algoType=='SSPA')? '&nbsp;: At least 3 replicates required per state' : '&nbsp;&lt;&lt;&lt;&nbsp;Reference state'; //'&nbsp;Each state will be used as reference for all following states'; //
+	//}
+	document.getElementById('nameSPAN').style.display=nameSpanDisp;
+	document.getElementById('refCommentSPAN').innerHTML=referenceText;
+	
 	/* Update TopN */
 	updateTopN();
 
 	/* Multi-quantif option */
-	var [multiQVis,multiQDisab]=($nbCond >= 3 && algoType.match(':singleRef'))? ['block',false] : ['none',true];
-	document.getElementById('multiQuantifSPAN').style.display=multiQVis;
-	var chkMultiQ=document.getElementById('multiQuantifCHK');
-	chkMultiQ.disabled=multiQDisab;
-	document.getElementById('multiQuantifDIV').style.display=(multiQVis=='block' && chkMultiQ.checked)? 'block' : 'none';
-
+	updateMultiQuantifOption(algoType);
+	
 	/* Update peptide selection & PTM quantif options */
-	var dispRatioPepDiv='none',dispSspaPepDiv='none';
+	var dispRatioPepDiv='none',dispSspaPepDiv='none',disabAnyPep=true;
 	if (algoType=='SSPA') {
 		dispSspaPepDiv='';
-		if (myForm.ptmScope.value != 0) {
+// DISABLE SITES FOR NOW ------->
+		if (myForm.ptmScope.selectedIndex != 0) { // Whole protein
 			myForm.ptmScope.selectedIndex=0;
-			for (let i=1; i<myForm.ptmScope.options.length; i++) { // disable PTM quantif
-				myForm.ptmScope.options[i].disabled=true;
-			}
+			updateQuantifFocus(myForm.ptmScope.value);
+		}
+		for (let i=1; i<myForm.ptmScope.options.length; i++) { // disable PTM quantif
+			myForm.ptmScope.options[i].disabled=true;
 		}
 	}
 	else {
-		if (!algoType.match('select\|MSstats')) {dispRatioPepDiv='';}
+		if (!algoType.match('select\|MSstats')) {
+			dispRatioPepDiv='';
+			if (algoType.match('Abundance')) {disabAnyPep=false;}
+		}
 		for (let i=1; i<myForm.ptmScope.options.length; i++) { // enable PTM quantif
-			myForm.ptmScope.options[i].disabled=false;
+			myForm.ptmScope.options[i].disabled=($numPTMs)? false : true;
 		}
 	}
 	document.getElementById('ratioPepDIV').style.display=dispRatioPepDiv;
 	document.getElementById('sspaPepSPAN').style.display=dispSspaPepDiv;
-	updateRefQuantification(myForm.ptmScope.value); // because of SSPA & MSstats constaints
+	document.getElementById('rescuedPepDIV').style.display=dispSspaPepDiv;
+	document.getElementById('hiddenProtSPAN').style.display=dispSspaPepDiv;
+	if (disabAnyPep) {myForm.matchingPep.selectedIndex=1;} // matching pep
+	myForm.matchingPep.options[0].disabled=disabAnyPep;
+//updateRefQuantification(myForm.ptmScope.value); // because of SSPA & MSstats constraints
+//updateMultiPtmSelection(); // because of SSPA & MSstats constraints
 
-	/* Update normalization options */
+	/* Update bias correction options */
 	var normSelOpt=myForm.biasCorrect.options;
 	normSelOpt.length=2;
 	//var trueAlgo=(algoType.match('PEP_'))? 'SxxxRatio' : (algoType.match('MSstats'))? 'MSstats' : (algoType.match(':Ratio'))? 'RatioTnPQ' : algoType;
@@ -1442,18 +1655,68 @@ function updateAlgoTypeSelection(algoType) {
 	else { // SSPA, select
 		myForm.biasCorrect.disabled=true;
 	}
+	updateBias();
 
-	/* Update remaining quantification settings */
-	document.getElementById('refProtDIV').style.visibility='hidden'; // hide norm prot list in case visible
+	/* Update remaining quantification options */
+	document.getElementById('biasProtDIV').style.visibility='hidden'; // hide norm prot list in case visible
 	var disabResVar=true, visResVarSpan='hidden';
-	if (algoType.match('PEP_')) {
+	if (algoType.match('PEP_\|TDA\|DIA') && !algoType.match('Abundance')) {
 		disabResVar=false;
 		if (myForm.residualVar.value=='biological') {visResVarSpan='visible';}
 	}
 	myForm.residualVar.disabled=disabResVar;
 	document.getElementById('resVarSPAN').style.visibility=visResVarSpan;
-	myForm.fdrControl.disabled=(algoType=='select')? true : false; // Now active for all algos (old algos too if only FDR & BH)
-	myForm.minInfRatios.disabled=(algoType.match('MSstats\|TDA\|SSPA'))? true : false; // No control on INF ratio before MSstats & SSPA
+	myForm.fdrControl.disabled=(algoType.match('select\|Abundance'))? true : false;
+	myForm.minInfRatios.disabled=(algoType.match('MSstats\|TDA\|SSPA\|Abundance'))? true : false;
+	
+	/* Check for matching quantif type data (if multiple types available) */
+	var compatibleMethods={};
+	if (algoType.match('MSstats\|DIA')) {compatibleMethods.DIA=1;}
+	else if (algoType.match('TDA')) {compatibleMethods.TDA=1;}
+	else if (algoType.match('PEP_RATIO')) {
+		compatibleMethods={
+			SILAC: 1,
+			ITRAQ: 1,
+			TMT: 1
+		};
+	}
+	else if (algoType.match('PEP_INTENSITY')) {
+		compatibleMethods={
+			XIC: 1,
+			SILAC: 1,
+			ITRAQ: 1,
+			TMT: 1
+		};
+	}
+	else { // SSPA or Abundance
+		compatibleMethods={
+			XIC: 1,
+			SILAC: 1,
+			ITRAQ: 1,
+			TMT: 1,
+			DIA: 1
+		};
+	}
+	var labelType=myForm.labeling.value;
+	var optList=(labelType)? document.getElementsByName(labelType) : [];
+	var firstGoodOpt, propagate=false;
+	for (let i=0; i<optList.length; i++) {
+		//if (optList[i].dataset.quantif_method==goodMethod) { //}
+		if (compatibleMethods[optList[i].dataset.quantif_method]) {
+			if (!firstGoodOpt) firstGoodOpt=optList[i];
+			optList[i].disabled=false;
+		}
+		else {
+			if (optList[i].selected) propagate=true; // at least 1 selected option was disabled
+			optList[i].disabled=true;
+		}
+	}
+	if (propagate && firstGoodOpt) {
+		var idInfo=firstGoodOpt.id.split(':');
+		var selQuanti=document.getElementById('anaXICQuanti:'+idInfo[1]);
+		firstGoodOpt.selected=true;
+		propagateQuantifSelection(selQuanti,true); // true -> propagate selection to all
+	}
 }
 function updateLabeling(labelType) { // FREE, SILAC, ITRAQ, TMT
 	/* Update list of compatible algos */
@@ -1465,12 +1728,8 @@ function updateLabeling(labelType) { // FREE, SILAC, ITRAQ, TMT
 	if (labelType) {
 		if ($quantifMethods{XIC} \|\| $quantifMethods{SILAC} \|\| $quantifMethods{ITRAQ} \|\| $quantifMethods{TMT}) {
 			for (let i=1; i<algoSelOpt.length; i++) {
-				//if (i==2 \|\| i==5) continue; // disable 'MSstats (SWATH)'
-				//if (i==4 && labelType != 'SILAC') continue; // disable Super ratio
-
-				if (algoSelOpt[i].value.match('MSstats\|TDA')) continue; // disable MSstats
+				if (algoSelOpt[i].value.match('MSstats\|DIA\|TDA')) continue; // disable MSstats
 				if (algoSelOpt[i].value.match('PEP_RATIO') && labelType == 'FREE') continue; // disable PEP_RATIO algo
-
 				algoSelOpt[i].disabled=false; // enable anything else
 			}
 		}
@@ -1479,7 +1738,7 @@ function updateLabeling(labelType) { // FREE, SILAC, ITRAQ, TMT
 			//algoSelOpt[5].disabled=false; // enable 'Common ref > MSstats (SWATH)'
 			//algoSelOpt[8].disabled=false; // enable 'Peptide count > SSP Analysis'
 			for (let i=1; i<algoSelOpt.length; i++) {
-				if (algoSelOpt[i].value.match('MSstats')) {algoSelOpt[i].disabled=false;} // enable MSstats
+				if (algoSelOpt[i].value.match('MSstats\|DIA')) {algoSelOpt[i].disabled=false;} // enable MSstats
 				else if (algoSelOpt[i].value=='SSPA') {algoSelOpt[i].disabled=false;} // enable SSPA
 			}
 		}
@@ -1487,6 +1746,11 @@ function updateLabeling(labelType) { // FREE, SILAC, ITRAQ, TMT
 			for (let i=1; i<algoSelOpt.length; i++) {
 				if (algoSelOpt[i].value.match('TDA:')) {algoSelOpt[i].disabled=false;} // enable TDA
 				//else if (algoSelOpt[i].value=='SSPA') {algoSelOpt[i].disabled=false;} // enable SSPA
+			}
+		}
+		if ($quantifMethods{NONE}) {
+			for (let i=1; i<algoSelOpt.length; i++) {
+				if (algoSelOpt[i].value=='SSPA') {algoSelOpt[i].disabled=false;} // enable SSPA
 			}
 		}
 /*
@@ -1514,12 +1778,15 @@ function updateLabeling(labelType) { // FREE, SILAC, ITRAQ, TMT
 	if (optList.length) {
 		var idInfo=optList[0].id.split(':'); // Update 1st matching only (opt:obsID)
 		var selQuanti=document.getElementById('anaXICQuanti:'+idInfo[1]);
+/*
 		for (let i=1; i<selQuanti.options.length; i++) { // skip '-= Select =-'
 			if (selQuanti.options[i].value==optList[0].value) {
 				selQuanti.selectedIndex=i;
 				break;
 			}
 		}
+*/
+		optList[0].selected=true;
 		propagateQuantifSelection(selQuanti,true); // true -> propagate selection to all
 	}
 	/* Unselect all datasets (Not really necessary) */
@@ -1536,43 +1803,67 @@ var popupTexts={}; // set below by observations XIC quantifications
 function preparePopup(selectValue) {
 	if (selectValue && popupTexts[selectValue]) {popup(popupTexts[selectValue]);}
 }
-
+function sequenceView(id_protein,anaIdStrg) { // Callable during manual reference peptides selection
+	var winLocation="$promsPath{cgi}/sequenceView.cgi?id_ana="+anaIdStrg+"&id_prot="+id_protein+"&msdata="+top.showMSdata;
+	top.openProtWindow(winLocation);
+}
 function cancelAction() {
 	//top.promsFrame.selectedAction='summary'; // set default action to 'summary'
 	top.promsFrame.optionFrame.selectOption();
 }
-
-function checkForm(myForm) {
-	//name
-	if (!myForm.quantifName.value) {alert('ERROR: Missing name for quantification!'); return false;}
-	//quantif site settings
-	if (myForm.ptmScope.value != 0) {
-		if (myForm.ptmScope.value*1 > 0) { // normal cases
-			//phosphoProbSoft settings
-			if (('$ptmProbSoftCode'=='MQ' \|\| myForm.ptmScope.value==$phosphoID) && (myForm.okProb.value<0 \|\| myForm.okProb.value>100)) {
-				alert('ERROR: $ptmProbSoft probability must be between 0 and 100%');
-				return false;
-			}
-		}
-		else { // recreate sites
-			var tgtResParam=myForm['targetRes_'+(myForm.ptmScope.value*-1)];
-			var okRes=false;
-			if (tgtResParam.length) {
-				for (let i=0; i<tgtResParam.length; i++) {
-					if (tgtResParam[i].checked) {
-						okRes=true;
-						break;
-					}
-				}
-			}
-			else {okRes=tgtResParam.checked;}
-			if (!okRes) {
-				alert('ERROR: Select at least 1 target residue for '+myForm.ptmScope.options[myForm.ptmScope.selectedIndex].text);
-				return false;
-			}
+function checkPtmSelection(myForm,multiPtmScope) {
+	if (!multiPtmScope.checked) {return 0;}
+	var ptmValue=multiPtmScope.value*1, ptmID=Math.abs(ptmValue);
+	if (ptmValue > 0) { // normal cases (Matched)
+		/* PhosphoProbSoft settings */
+		if (('$ptmProbSoftCode'=='MQ' \|\| ptmID==$phosphoID) && (myForm.okProb.value < 0 \|\| myForm.okProb.value > 100)) {
+			alert('ERROR: $ptmProbSoft probability must be between 0 and 100%');
+			return -1;
 		}
 	}
-	//PTM filter
+	else {
+		/* Recreated sites */
+		var tgtResParam=myForm['targetRes_'+ptmID];
+		var okRes=false;
+		if (tgtResParam.length) {
+			for (let j=0; j<tgtResParam.length; j++) {
+				if (tgtResParam[j].checked && !tgtResParam[j].disabled) {
+					okRes=true;
+					break;
+				}
+			}
+		}
+		else if (!tgtResParam.disabled) {okRes=tgtResParam.checked;}
+		if (!okRes) {
+			alert('ERROR: Select at least 1 target residue for '+multiPtmScope.dataset.name);
+			return -1;
+		}
+	}
+	return 1;
+}
+function checkForm(myForm) {
+	/* Quantif name */
+	if (!myForm.quantifName.value) {alert('ERROR: Missing name for quantification!'); return false;}
+	
+	/* PTM sites */
+	if (myForm.ptmScope.value=='multiPTM') {
+		var numSelected=0;
+		if (myForm.multiPtmScope.length) {
+			for (let i=0; i<myForm.multiPtmScope.length; i++) {
+				var ptmStatus=checkPtmSelection(myForm,myForm.multiPtmScope[i]);
+				if (ptmStatus==1) {numSelected++;}
+				else if (ptmStatus==-1) {return false;}
+			}
+		}
+		else {
+			var ptmStatus=checkPtmSelection(myForm,myForm.multiPtmScope);
+			if (ptmStatus==1) {numSelected++;}
+			else if (ptmStatus==-1) {return false;}
+		}
+		if (numSelected==0) {alert('ERROR: Select at least 1 PTM to be quantifed !'); return false;}
+	}
+			
+	/* PTM filter */
 	if (Math.abs(myForm.pepPTM.value)==2) {
 		var okPTM=false;
 		if (myForm.customPTM.length) {
@@ -1590,20 +1881,20 @@ function checkForm(myForm) {
 		}
 	}
 
-	// Labeling
+	/* Labeling */
 	if (!myForm.labeling.value) {
 		alert('ERROR: No labeling method selected.');
 		return false;
 	}
 	var isLabeled=(myForm.labeling.value=='FREE')? false : true;
 
-	// Chosen Algorithm
+	/* Chosen Algorithm */
 	if ( myForm.algoType.value.match('select') ) {
 		alert('ERROR: Select an algorithm!');
 		return false;
 	}
 
-	// States & Observations selection
+	/* States & Observations selection */
 	var numCondition=0;
 	var refStateAnaList={}; // for labeled quantif only
 	for (var i=1; i <= $nbCond; i++) {
@@ -1653,12 +1944,14 @@ function checkForm(myForm) {
 		alert('ERROR: At least 2 distinct states have to be chosen!');
 		return false;
 	}
-	// Bias correction
+	
+	/* Bias correction */
 	if (!myForm.biasCorrect.value && myForm.algoType.value != 'SSPA') {
 		alert('ERROR: No bias correction selected.');
 		return false;
 	}
-	//Multi-quantification
+	
+	/* Multi-quantification */
 	if (myForm.algoType.value.match(':singleRef') && myForm.multiQuantif.checked) {
 		if (numCondition >= 3 && !myForm.quantifName.value.match(/%(TEST\|#)%/i) && !confirm('WARNING: All quantifications have same name. Proceed anyway?')) {
 			return false;
@@ -1667,7 +1960,6 @@ function checkForm(myForm) {
 			return false;
 		}
 	}
-	
 	return true;
 }
 </SCRIPT>
@@ -1693,13 +1985,14 @@ print qq
 <INPUT type="hidden" name="ptmProbSoftCode" value="$ptmProbSoftCode">
 <TABLE bgcolor="$darkColor">
 <TR><TH class="title3" align=right valign=top>Name :</TH><TD bgcolor="$lightColor"><INPUT type="text" name="quantifName" value="" placeholder="Name of quantification" class="title3" style="width:400px"/>
-	<DIV id="multiQuantifDIV" style="display:none">&nbsp;<B>Use: "<FONT color="#DD0000">%TEST%</FONT>", "<FONT color="#DD0000">%REF%</FONT>" and  "<FONT color="#DD0000">%#%</FONT>" for test-state name, reference-state name and quantification rank respectively.</B></DIV>
+<SPAN id="nameSPAN" style="display:none">
+<BR>&nbsp;<B>Use: <INPUT type="button" class="keyword" value="%TEST%" onclick="document.selAnaForm.quantifName.value+=this.value"/>, <INPUT type="button" class="keyword" value="%REF%" onclick="document.selAnaForm.quantifName.value+=this.value"/> or  <INPUT type="button" class="keyword" value="%#%" onclick="document.selAnaForm.quantifName.value+=this.value"/> for test-state name, reference-state name and quantification rank respectively.</B>
+</SPAN>
 </TD></TR>
-
 |;
 if ($userInfo[1]=~/mass|bioinfo/) {
-	print qq |
-<TR><TH class="title3" align=right valign=top>Use parameters :</TH><TD bgcolor="$lightColor" class="title3" nowrap>&nbsp;Template:<SELECT id="template" name="template" class="title3" onchange="useTemplate(this.value)">
+	print qq
+|<TR><TH class="title3" align=right valign=top>Apply template :</TH><TD bgcolor="$lightColor" class="title3" nowrap><SELECT id="template" name="template" class="title3" onchange="useTemplate(this.value)">
 |;
 	if (scalar keys %quantifTemplate) {
 		print "<OPTION value=\"select\">-= Select =-</OPTION>\n";
@@ -1733,8 +2026,8 @@ if ($userInfo[1]=~/mass|bioinfo/) {
 		print "<OPTION value=\"select\">***No template recorded***</OPTION>";
 	}
 }
-print qq |
-</SELECT></TD></TR>
+print qq
+|</SELECT></TD></TR>
 <TR><TH align=right class="title3" nowrap>&nbsp;Strategy :</TH><TD bgcolor="$lightColor" class="title3" nowrap>&nbsp;Labeling:<SELECT name="labeling" class="title3 template" onchange="clearTemplate();updateLabeling(this.value)"><OPTION value="">-= Select =-</OPTION>
 |;
 my $selLabelStrg=(scalar keys %{$designInfo{'LABEL'}} == 1)? 'selected' : '';
@@ -1745,9 +2038,10 @@ foreach my $labelType (sort keys %{$designInfo{'LABEL'}}) {
 	elsif ($labelType eq 'ITRAQ') {print ">iTRAQ</OPTION>";}
 	else {print ">$labelType</OPTION>";}
 }
+my ($disabSites,$siteMessage)=($numPTMs)? ('','PTM sites') : ('disabled','**No project PTMs**');
 print qq
 |</SELECT>
-&nbsp;&nbsp;&nbsp;&nbsp;Algorithm:<SELECT id="algoType" name="algoType" class="title3 template" onchange="updateAlgoTypeSelection(this.value)">
+&nbsp;&nbsp;&nbsp;&nbsp;Method:<SELECT id="algoType" name="algoType" class="title3 template" onchange="updateAlgoTypeSelection(this.value)">
 <OPTION value="select">-= Select =-</OPTION>
 <OPTGROUP label="Peptide ratio:">
 <OPTION value="PEP_RATIO:SimpleRatio:singleRef" disabled>All vs State1</OPTION>
@@ -1756,60 +2050,106 @@ print qq
 <OPTGROUP label="Peptide intensity:">
 <OPTION value="PEP_INTENSITY:SimpleRatio:singleRef" disabled>All vs State1</OPTION>
 <OPTION value="PEP_INTENSITY:SimpleRatio:multiRef" disabled>All vs All</OPTION>
+<OPTION value="PEP_INTENSITY:Abundance" disabled>Abundance in States</OPTION>
 </OPTGROUP>
-<OPTGROUP label="DIA (MSstats):">
-<OPTION value="MSstats:SimpleRatio:singleRef" disabled>All vs State1</OPTION>
-<OPTION value="MSstats:SimpleRatio:multiRef" disabled>All vs All</OPTION>
+<OPTGROUP label="DIA/SWATH:">
+<OPTION value="MSstats:SimpleRatio:singleRef" disabled>All vs State1 (MSstats)</OPTION>
+<OPTION value="MSstats:SimpleRatio:multiRef" disabled>All vs All (MSstats)</OPTION>
+<OPTION value="DIA:SimpleRatio:singleRef" disabled>All vs State1</OPTION>
+<OPTION value="DIA:SimpleRatio:multiRef" disabled>All vs All</OPTION>
+<OPTION value="DIA:Abundance" disabled>Abundance in States</OPTION>
 </OPTGROUP>
 <OPTGROUP label="TDA (PRM,SRM,MRM):">
 <OPTION value="TDA:SimpleRatio:singleRef" disabled>All vs State1</OPTION>
 <OPTION value="TDA:SimpleRatio:multiRef" disabled>All vs All</OPTION>
 </OPTGROUP>
-<OPTGROUP label="Peptide count:">
+<OPTGROUP label="Feature counts:">
 <OPTION value="SSPA" disabled>SSP Analysis</OPTION>
 </OPTGROUP>
 </SELECT>
 
-<SPAN id="topSPAN" class="template" style="display:none">&nbsp;&nbsp;&nbsp;&nbsp;Use:<SELECT name="matchingPep" class="title3 template" disabled><OPTION value="0" disabled>any</OPTION><OPTION value="1" selected>matching</OPTION></SELECT>&nbsp;top<SELECT name="topN" class="title3 template" disabled><OPTION value="1">1</OPTION><OPTION value="2">2</OPTION><OPTION value="3" selected>3</OPTION><OPTION value="0">N</OPTION></SELECT>&nbsp;peptides</SPAN>
-<SPAN id="sspaPepSPAN" style="display:none" class="template">&nbsp;&nbsp;&nbsp;&nbsp;Use:<SELECT name="pepFocus" class="title3 template"><OPTION value="sp_count">Peptide/spectrum matches</OPTION><OPTION value="all_ion">All peptide ions</OPTION><OPTION value="all_pep">All peptides</OPTION><OPTION value="dist_ion">Distinct peptide ions</OPTION><OPTION value="dist_pep">Distinct peptides</OPTION><OPTION value="dist_seq">Distinct peptide sequences</OPTION></SELECT></SPAN>
+<SPAN id="topSPAN" class="template" style="display:none">&nbsp;&nbsp;&nbsp;&nbsp;Use:<SELECT name="matchingPep" class="title3 template" disabled><OPTION value="0" disabled>any</OPTION><OPTION value="1" selected>matching</OPTION></SELECT>&nbsp;top<SELECT name="topN" class="title3 template" disabled><OPTION value="1">1</OPTION><OPTION value="2">2</OPTION><OPTION value="3" selected>3</OPTION><OPTION value="5">5</OPTION><OPTION value="10">10</OPTION><OPTION value="0">N</OPTION></SELECT>&nbsp;peptides</SPAN>
+<SPAN id="sspaPepSPAN" style="display:none" class="template">&nbsp;&nbsp;&nbsp;&nbsp;Use:<SELECT name="pepFocus" class="title3 template"><OPTION value="xic">Peptide abundance</OPTION><OPTION value="sp_count" selected>Peptide/spectrum matches</OPTION><OPTION value="all_ion">All peptide ions</OPTION><OPTION value="all_pep">All peptides</OPTION><OPTION value="dist_ion">Distinct peptide ions</OPTION><OPTION value="dist_pep">Distinct peptides</OPTION><OPTION value="dist_seq">Distinct peptide sequences</OPTION></SELECT></SPAN>
 </TD></TR>
-<TR><TH class="title3" align=right valign=top>Target :</TH><TH align=left bgcolor="$lightColor" nowrap><SELECT name="ptmScope" class="title3 template" onchange="updateQuantifTarget(this.value)">
-<OPTION value="0">Whole proteins</OPTION>
-|;
-my $numPtmMatched=0;
-foreach my $modID (sort{lc($projectVarMods{$a}) cmp lc($projectVarMods{$b})} keys %projectVarMods) {
-	next if $unusedProjVarMods{$modID};
-	$numPtmMatched++;
-	print "<OPTGROUP label=\"Matched sites:\">\n" if $numPtmMatched==1;
-	print "<OPTION value=\"$modID\">$projectVarMods{$modID}-sites</OPTION>\n";
-}
-print "</OPTGROUP>\n" if $numPtmMatched;
-if (scalar keys %unusedProjVarMods) {
-	print "<OPTGROUP label=\"Other sites:\">\n";
-	foreach my $modID (sort{lc($projectVarMods{$a}) cmp lc($projectVarMods{$b})} keys %unusedProjVarMods) {
-		print "<OPTION value=\"-$modID\">$projectVarMods{$modID}-sites</OPTION>\n";
-	}
-	print "</OPTGROUP>\n";
-}
-print qq
-|</SELECT>
-<SPAN id="phosphoSPAN" style="display:none" class="template">&nbsp;&nbsp;Positions with $ptmProbSoft probability&ge;<INPUT type="text" name="okProb" class="title3 template" value="75" size="2">% are confirmed. The others are <SELECT name="badProb" class="title3 template"><OPTION value="exclude" selected>excluded</OPTION><OPTION value="ambiguous">delocalized</OPTION></SELECT></SPAN>
+<TR><TH class="title3" align=right valign=top>Focus :</TH><TH align=left bgcolor="$lightColor" nowrap><SELECT name="ptmScope" class="title3 template" onchange="updateQuantifFocus(this.value)">
+<OPTION value="protein">Whole proteins</OPTION>
+<OPTION value="multiPTM" $disabSites>$siteMessage</OPTION>
+</SELECT>
 <SPAN id="ptmSPAN" style="display:none" class="template">&nbsp;&nbsp;<INPUT type="checkbox" name="ambiguousPos" value="1" class="template">Positions of modification sites are not reliable</SPAN>
-<SPAN id="recreateSPAN" style="display:none" class="template">&nbsp;&nbsp;Sites will be <FONT color=#DD0000>recreated</FONT> on selected residues:|;
-foreach my $modID (keys %unusedProjVarMods) {
-	print "<SPAN id=\"targetResSPAN_$modID\" style=\"display:none\" class=\"template\">&nbsp;";
-	my $resIdx=-1;
-	foreach my $resInfo (@{$unusedProjVarMods{$modID}}) {
-		$resIdx++;
-		print "<INPUT type=\"checkbox\" name=\"targetRes_$modID\" class=\"template\" value=\"$resInfo->[0]\">$resInfo->[1]";
-		print ',' if $resIdx < $#{$unusedProjVarMods{$modID}};
+|;
+if ($ptmProbSoftCode eq 'MQ') { # Position probabilities available for all modifs
+	print qq
+|<SPAN id="phosphoSPAN" style="display:none" class="template">&nbsp;&nbsp;Positions with $ptmProbSoft probability&ge;<INPUT type="text" name="okProb" class="title3 template" value="75" size="2">% are confirmed. The others are <SELECT name="badProb" class="title3 template"><OPTION value="exclude" selected>excluded</OPTION><OPTION value="ambiguous">delocalized</OPTION></SELECT></SPAN>
+|;
+}
+#my $numPtmMatched=0;
+#foreach my $modID (sort{lc($projectVarMods{$a}[0]) cmp lc($projectVarMods{$b}[0])} keys %projectVarMods) {
+#	next if $unusedProjVarMods{$modID};
+#	$numPtmMatched++;
+#	print "<OPTGROUP label=\"Matched sites:\">\n" if $numPtmMatched==1;
+#	print "<OPTION value=\"$modID\">$projectVarMods{$modID}[0]-sites</OPTION>\n";
+#}
+#print "</OPTGROUP>\n" if $numPtmMatched;
+#if (scalar keys %unusedProjVarMods) {
+#	print "<OPTGROUP label=\"Other sites:\">\n";
+#	foreach my $modID (sort{lc($projectVarMods{$a}[0]) cmp lc($projectVarMods{$b}[0])} keys %unusedProjVarMods) {
+#		print "<OPTION value=\"-$modID\">$projectVarMods{$modID}[0]-sites</OPTION>\n";
+#	}
+#	print "</OPTGROUP>\n";
+#}
+## UL with all PTMs
+print "<TABLE id=\"multiPtmUL\" style=\"display:none\" cellspacing=0>\n"; # class=\"ulList\"
+if ($numPTMs > scalar keys %unusedProjVarMods) {
+	print "<TR><TD class=\"title3\">Matched sites:</TD></TR>\n" if scalar keys %unusedProjVarMods;
+	foreach my $modID (sort{lc($projectVarMods{$a}[0]) cmp lc($projectVarMods{$b}[0])} keys %projectVarMods) {
+		next if $unusedProjVarMods{$modID};
+		print "<TR><TD>&nbsp;&nbsp;<INPUT type=\"checkbox\" name=\"multiPtmScope\" id=\"multiPtmScope_$modID\" value=\"$modID\" onchange=\"updateMultiPtmSelection()\"><LABEL for=\"multiPtmScope_$modID\">$projectVarMods{$modID}[0] [<FONT style=\"font-weight:bold;color:#$projectVarMods{$modID}[2]\">$projectVarMods{$modID}[1]</FONT>\]-sites</LABEL>";
+		if ($modID==$phosphoID && $ptmProbSoftCode ne 'MQ') { # Position probabilities available only for Phospho (PRS)
+			print qq
+|<SPAN id="phosphoSPAN" style="display:none" class="template">: Positions with $ptmProbSoft probability&ge;<INPUT type="text" name="okProb" class="template" value="75" size="2">% are confirmed. The others are <SELECT name="badProb" class="template"><OPTION value="exclude" selected>excluded</OPTION><OPTION value="ambiguous">delocalized</OPTION></SELECT></SPAN>
+|;
+		}
+		print "</TD></TR>\n";
 	}
-	print "&nbsp;</SPAN>";
-}	
+}
+if (scalar keys %unusedProjVarMods) {
+	print "<TR><TD class=\"title3\">Other sites:</TD></TR>\n";
+	foreach my $modID (sort{lc($projectVarMods{$a}[0]) cmp lc($projectVarMods{$b}[0])} keys %unusedProjVarMods) {
+		#print "<OPTION value=\"-$modID\">$projectVarMods{$modID}[0]-sites</OPTION>\n";
+		print qq
+|<TR><TD>&nbsp;&nbsp;<INPUT type="checkbox" name="multiPtmScope" id="multiPtmScope_$modID" value="-$modID" data-name="$projectVarMods{$modID}[0]-sites" onchange="updateMultiPtmSelection()"><LABEL for="multiPtmScope_$modID">$projectVarMods{$modID}[0] [<FONT style="font-weight:bold;color:#$projectVarMods{$modID}[2]">$projectVarMods{$modID}[1]</FONT>]-sites&nbsp;</LABEL>
+<SPAN id="targetResSPAN_$modID" class="template">targetting free residues:
+|;
+		my $resIdx=-1;
+		foreach my $resInfo (@{$unusedProjVarMods{$modID}}) {
+			$resIdx++;
+			print qq|<INPUT type="checkbox" name="targetRes_$modID" class="template" value="$resInfo->[0]" onchange="updateTargetResidues($modID,this)">$resInfo->[1]|;
+			print ',' if $resIdx < $#{$unusedProjVarMods{$modID}};
+		}
+		print qq
+|&nbsp;</SPAN>
+</TD></TR>
+|;
+	}
+}
+print "</TABLE>\n";
+
+#<SPAN id="recreateSPAN" style="display:none" class="template">&nbsp;&nbsp;Sites will be <FONT color=#DD0000>recreated</FONT> on selected residues:|;
+#foreach my $modID (keys %unusedProjVarMods) {
+#	print "<SPAN id=\"targetResSPAN_$modID\" style=\"display:none\" class=\"template\">&nbsp;";
+#	my $resIdx=-1;
+#	foreach my $resInfo (@{$unusedProjVarMods{$modID}}) {
+#		$resIdx++;
+#		print "<INPUT type=\"checkbox\" name=\"targetRes_$modID\" class=\"template\" value=\"$resInfo->[0]\">$resInfo->[1]";
+#		print ',' if $resIdx < $#{$unusedProjVarMods{$modID}};
+#	}
+#	print "&nbsp;</SPAN>";
+#}	
+#print qq
+#|</SPAN>
 print qq
-|</SPAN>
-<DIV id="refQuantifDIV" style="display:none">
-&nbsp;Protein-level fold change correction:<SELECT name="refQuantifType" class="title3" onchange="ajaxFetchReferenceQuantif(this.value)"><OPTION value="0">None</OPTION><OPTION value="-1">Use current dataset</OPTION><OPTGROUP label="Use dataset from:">
+|<DIV id="refQuantifDIV" style="display:none">
+<FONT class="title3">Protein-level fold change correction:</FONT><SELECT name="refQuantifType" class="title3" onchange="ajaxFetchReferenceQuantif(this.value)"><OPTION value="0">None</OPTION><OPTION value="-1">Use current dataset</OPTION><OPTGROUP label="Use dataset from:">
 |;
 foreach my $refDes (@referenceDesign) {
 	print "<OPTION value=\"$refDes->[0]\">$refDes->[1]</OPTION>\n";
@@ -1817,28 +2157,22 @@ foreach my $refDes (@referenceDesign) {
 print "<OPTION value=\"0\" disabled>** None found **</OPTION>\n" unless scalar @referenceDesign;
 print qq
 |</SELECT>
-<SPAN id="refQuantifSPAN"></SPAN>&nbsp;
+<SPAN id="refQuantifSPAN"><INPUT type="hidden" name="refQuantif" value="-1"/></SPAN>&nbsp;
 </DIV>
 </TH></TR>
 <TR><TH class="title3" align=right valign=top>States :</TH><TD bgcolor=$lightColor>
-|;
-if ($nbCond > 5) {
-	print qq
-|<INPUT type="button" value="Use all states" onclick="autoSelectStates('all')">&nbsp;<B>or use state range:</B><INPUT type="text" name="stateRange" style="width:80px" value="" placeholder="e.g. 1,5-8"><INPUT type="button" value="Apply" onclick="autoSelectStates('range')">&nbsp;&nbsp;&nbsp;<INPUT type="button" value="Clear all states" onclick="clearAllStates()">
-|;
-}
-print qq
-|<DIV style="max-height:150px;overflow:auto"><TABLE>
+<INPUT type="button" value="Use all states" onclick="autoSelectStates('all')">&nbsp;<B>or use state range:</B><INPUT type="text" name="stateRange" style="width:80px" value="" placeholder="e.g. 1,5-8"><INPUT type="button" value="Apply" onclick="autoSelectStates('range')">&nbsp;&nbsp;&nbsp;<INPUT type="button" value="Clear all states" onclick="clearAllStates()">
+<DIV style="max-height:150px;overflow:auto"><TABLE>
 |;
 # print the states that would be chosen for ratio computation
 foreach my $y (1..$nbCond) {
 	print "<TR><TH align=right nowrap>#$y:</TH><TD><SELECT name=\"state_$y\" onchange=\"updateStateSelection(this,$y)\">$selCondStrg1</SELECT>";
-	print "<SPAN id=\"refCommentSpan\" class=\"template\" style=\"color:#DD0000;font-weight:bold\"></SPAN>" if $y==1;
+	print "<SPAN id=\"refCommentSPAN\" class=\"template\" style=\"color:#DD0000;font-weight:bold\"></SPAN>" if $y==1;
 	print "</TD></TR>\n";
 }
 
 print qq
-|</TABLE></DIV><SPAN id="multiQuantifSPAN" class="template" style="display:none"><LABEL style="color:#DD0000;font-weight:bold"><INPUT type="checkbox" name="multiQuantif" class="template" id="multiQuantifCHK" value=1 onchange="document.getElementById('multiQuantifDIV').style.display=(this.checked)? 'block' : 'none';" disabled>Perform a separate quantification for each ratio</LABEL></SPAN>
+|</TABLE></DIV><SPAN id="multiQuantifSPAN" class="template" style="display:none"><INPUT type="checkbox" name="multiQuantif" class="template" id="multiQuantifCHK" value=1 disabled><LABEL style="color:#DD0000;font-weight:bold" for="multiQuantifCHK">Perform a separate quantification for each ratio</LABEL></SPAN>
 </TD></TR>\n
 |;
 #	if ($quantifType eq 'DESIGN') {
@@ -1854,11 +2188,12 @@ print qq
 #		print "</SELECT></TD></TR>\n";
 #	}
 print qq
-|<TR><TH align=right nowrap valign=top>&nbsp;Peptide selection :</TH><TD bgcolor=$lightColor nowrap>
+|<TR><TH align=right nowrap valign=top>&nbsp;Peptide selection :</TH><TD bgcolor="$lightColor" nowrap>
 	<TABLE cellspacing=0 cellpadding=0><TR>
-	<TD valign="top" nowrap>&nbsp;<B>Specificity:</B><SELECT name="pepSpecifity" class="template"><OPTION value="unique">Proteotypic</OPTION><OPTION value="unique_shared">Proteotypic + shared</OPTION><OPTION value="all" selected>All</OPTION></SELECT>
-	&nbsp;&nbsp;&nbsp;<B>Missed cleav.:<B><SELECT name="pepCleavage" id="pepCleavage" class="template"><OPTION value="1">Allowed</OPTION><OPTION value="0" selected>Not allowed</OPTION></SELECT>
+	<TD valign="top" nowrap>&nbsp;<B>Specificity<SUP onmouseover="popup('<B>For each protein:</B><BR>&nbsp;&bull;<B>Proteotypic:</B> Only proteotypic peptides are used.<BR>&nbsp;&bull;<B>Proteo.+shared:</B> all peptides are used if at least 1 proteotypic exists.<BR>&nbsp;&bull;<B>All:</B> all available peptides are used.')" onmouseout="popout()">?</SUP>:</B><SELECT name="pepSpecifity" class="template"><OPTION value="unique">Proteotypic</OPTION><OPTION value="unique_shared">Proteotypic + shared</OPTION><OPTION value="all" selected>All</OPTION></SELECT>
+	&nbsp;&nbsp;&nbsp;<B>Missed cleav.:<B><SELECT name="pepCleavage" id="pepCleavage" class="template"><OPTION value="1">Allowed</OPTION><OPTION value="0" selected>Not allowed</OPTION><OPTION value="-1">Also exclude cleaved counterparts</OPTION></SELECT>
 	&nbsp;&nbsp;&nbsp;<B>Modifications:<B>
+	<DIV id="rescuedPepDIV" style="display:none"><LABEL><INPUT type="checkbox" name="pepRescued" value="1"/><B>Include data from MBR-rescued peptides</B></LABEL></DIV>
 	</TD>
 	<TD valign="top" nowrap><SELECT name="pepPTM" onchange="updateCustomPtmDisplay(this.value)" class="template"><OPTION value="1">Allow all</OPTION><OPTION value="2">Allow selected</OPTION>
 	<OPTION value="0" selected>Exclude all</OPTION><OPTION value="-1">Exclude all & unmodified forms</OPTION>
@@ -1878,14 +2213,8 @@ print qq |</DIV></TD>
 </DIV>
 </TD></TR></TABLE>
 <SPAN id="manualRefPepSPAN" style="display:none">
-|;
-#if ($numProtInDesign <= $MAX_PROT_MANUAL_PEP) { # manual peptide selection for refQuantif is possible
-print qq
-|&nbsp;<B>Protein-level fold change correction dataset:</B><SELECT name="manualRefPep" onchange="ajaxFetchRefProtPeptides(this.value)"><OPTION value="0">Current rules</OPTION><OPTION value="1" $disabManualStrg>Manual selection</OPTION></SELECT>
-|;
-#}
-print qq
-|</SPAN>
+&nbsp;<B>Protein-level fold change correction dataset:</B><SELECT name="manualRefPep" onchange="ajaxFetchRefProtPeptides(this.value,'protCorr')"><OPTION value="0">Current rules</OPTION><OPTION value="1" $disabManualStrg>Manual selection</OPTION></SELECT>
+</SPAN>
 <DIV id="manualRefPepDIV" style="background-color:white;padding:2px;max-height:500px;overflow:auto;display:none"></DIV>
 </TD></TR>
 <TR><TH align=right nowrap>Protein selection :</TH><TD bgcolor=$lightColor nowrap><SELECT name="protSelType" class="template"><OPTION value="exclude">Exclude</OPTION><OPTION value="restrict">Restrict to</OPTION></SELECT>&nbsp;<B>proteins from List:</B><SELECT name="protSelection" class="template"><OPTION value="">-= Select =-</OPTION>
@@ -1899,14 +2228,16 @@ foreach my $classID (sort{lc($categoryList{$a}{'CL_NAME'}) cmp lc($categoryList{
 	print "</OPTGROUP>\n";
 }
 print qq
-|</SELECT></TD></TR>
+|</SELECT>
+<SPAN id="hiddenProtSPAN" style="display:none">&nbsp;&nbsp;&nbsp;<LABEL><INPUT type="checkbox" name="protHidden" value="1"/><B>Include proteins where hidden if also found visible</B></LABEL></SPAN>
+&nbsp;</TD></TR>
 <TR><TH align=right nowrap valign=top>&nbsp;Quantification settings :
 	</TH><TD bgcolor=$lightColor nowrap valign=top>
 	<TABLE border=0 cellpadding=0 cellspacing=0><TR>
 	<TH align=right valign="top">&nbsp;-Bias correction:</TH>
 	<TD><SELECT name="biasCorrect" class="template" id="biasCorrect" onchange="updateBias(this.value)"><OPTION value="">-= Select =-</OPTION><OPTION value="none.none">None</OPTION></SELECT>&nbsp;</TD>
-	<TD valign="top" nowrap><DIV id="refProtDIV" class="template" style="visibility:hidden">&nbsp;<B><SELECT name="refProtSelType" class="template"><OPTION value="use">Use</OPTION><OPTION value="not" disabled>Do not use</OPTION></SELECT>
-data from</B> <SELECT name="refProt" class="template" onchange="var selType=document.selAnaForm.refProtSelType; if (this.value==0) {selType.selectedIndex=0; selType.options[1].disabled=true;} else {selType.options[1].disabled=false;}"><OPTION value="0">All proteins</OPTION>
+	<TD valign="top" nowrap><DIV id="biasProtDIV" class="template" style="visibility:hidden">&nbsp;<B><SELECT name="refProtSelType" class="template"><OPTION value="use">Use</OPTION><OPTION value="not" disabled>Do not use</OPTION></SELECT>
+data from</B> <SELECT name="refProt" class="template" onchange="updateBiasCorrectionSet(this.value*1)"><OPTION value="0">All proteins</OPTION><OPTION value="-1" disabled>Manual peptide selection</OPTION>
 |;
 foreach my $classID (sort{lc($categoryList{$a}{'CL_NAME'}) cmp lc($categoryList{$b}{'CL_NAME'})} keys %categoryList) {
 	print "<OPTGROUP label=\"$categoryList{$classID}{CL_NAME}:\">\n";
@@ -1922,14 +2253,21 @@ foreach my $classID (sort{lc($categoryList{$a}{'CL_NAME'}) cmp lc($categoryList{
 print qq
 |	</SELECT> <B>for normalization.</B>&nbsp;</DIV></TD>
 	</TR></TABLE>
+<DIV id="manualBiasPepDIV" style="background-color:white;padding:2px;max-height:500px;overflow:auto;display:none"></DIV>
 	&nbsp;<B>-Biological replicates:</B><SELECT name="residualVar" class="template" onchange="document.getElementById('resVarSPAN').style.visibility=(this.value=='biological')? 'visible' : 'hidden'"><OPTION value="auto" selected>Auto-detect*</OPTION><OPTION value="technical">No</OPTION><OPTION value="biological">Yes</OPTION></SELECT>
 <SPAN id="resVarSPAN" style="visibility:hidden" class="template"><FONT style="font-weight:bold;color:#DD0000"> Requires at least 2 biological replicates in each state</FONT></SPAN><BR>
 	&nbsp;<B>-p-value correction:</B><SELECT name="fdrControl" class="template"><OPTION value="none">None</OPTION><OPTION value="fdr" selected>Benjamini-Hochberg*</OPTION><OPTION value="bonferroni">Bonferroni</OPTION></SELECT><BR>
 	&nbsp;<B>-</B><INPUT type="checkbox" name="minInfRatios" class="template" value="1"><B>Avoid infinite ratios when possible.</B><BR>
 	&nbsp;<SMALL><SUP>*</SUP>Recommanded options</SMALL>
 	</TD></TR>
-</TABLE>
 |;
+if ($userInfo[1] =~ /mass|bioinfo/) {
+	print qq
+|<TR><TH align=right>Visibility :</TH><TD bgcolor="$lightColor"><SELECT name="quantifVisibility"><OPTION value="1">Public</OPTION><OPTION value="2">Hide from collaborators</OPTION>|;
+	print '<OPTION value="3">For bioinformaticians only</OPTION>' if $userInfo[1] eq 'bioinfo';
+	print "</SELECT></TD></TR>\n";
+}
+print "</TABLE>\n";
 
 my %itemIcones=&promsConfig::getItemIcones;
 my $bgColor=$darkColor;
@@ -1951,7 +2289,7 @@ foreach my $expConditionID (sort{ $designInfo{'EXPCONDITION'}{$a}{'DISPLAY_POS'}
 	print qq
 |<TR bgcolor=$darkColor>
 <TH class="rbBorder title3" colspan=2 valign="middle">&nbsp;Observations&nbsp;</TH>
-<TH class="bBorder" colspan=2>&nbsp;Peptide quantifications&nbsp;<BR>&nbsp;Extend selection to:<SELECT name="propagQuantScope" id="propagQuantScope:$expConditionID" onchange="synchronizePropagation(this)"><OPTION value="all">All states</OPTION><OPTION value="state">This state</OPTION><OPTION value="none">None</OPTION></SELECT>&nbsp;</TH>
+<TH class="bBorder" colspan=2>&nbsp;Peptide quantifications&nbsp;<BR>&nbsp;Extend selection to:<SELECT name="propagQuantScope" id="propagQuantScope:$expConditionID" onchange="synchronizePropagation(this)"><OPTION value="none">None</OPTION><OPTION value="state" selected>This state</OPTION><OPTION value="all">All states</OPTION></SELECT>&nbsp;</TH>
 </TR>
 |;
 	###> Each Rows.
@@ -1969,13 +2307,14 @@ foreach my $expConditionID (sort{ $designInfo{'EXPCONDITION'}{$a}{'DISPLAY_POS'}
 			#my $obsCode="$anaID:$targetPos";
 			my $fracGroupStrg=($fracGroup)? "[Sample. #$fracGroup]" : '';
 			my $techRepStrg=($techRepGroup)? "[Bio. repl. # $techRepGroup]" : '';
-			print "<TR bgcolor=$bgColor class=\"list\"><TH align=\"left\" nowrap>&nbsp;($designInfo{OBSERVATION}{$obsCode}{BIOSAMPLE})&nbsp;$designInfo{ANALYSIS}{$anaID}{HIERARCHY}&nbsp;>&nbsp;$designInfo{OBSERVATION}{$obsCode}{NAME}&nbsp;</TH><TH align=\"left\" nowrap>&nbsp;$fracGroupStrg&nbsp;$techRepStrg&nbsp;</TH>";
+			my $labelStrg=($designInfo{'ANALYSIS'}{$anaID}{'HAS_QUANTIF'})? $designInfo{'OBSERVATION'}{$obsCode}{'NAME'} : 'Label-free';
+			print "<TR bgcolor=$bgColor class=\"list\"><TH align=\"left\" nowrap>&nbsp;($designInfo{OBSERVATION}{$obsCode}{BIOSAMPLE})&nbsp;$designInfo{ANALYSIS}{$anaID}{HIERARCHY}&nbsp;>&nbsp;$labelStrg&nbsp;</TH><TH align=\"left\" nowrap>&nbsp;$fracGroupStrg&nbsp;$techRepStrg&nbsp;</TH>";
 			print qq
 |<TD><INPUT type="checkbox" name="condObs:$expConditionID" value="$obsID" onclick="updateObsCheckStatus('condObs:$expConditionID',this)" checked ></TD>
 |;
 			if ($designInfo{'ANALYSIS'}{$anaID}{'HAS_QUANTIF'}) {
 				print qq
-|<TD><SELECT name="anaXICQuanti:$obsID" id="anaXICQuanti:$obsID" data-state="$expConditionID" onchange="propagateQuantifSelection(this)" onmouseover="preparePopup(this.value)"  onmouseout="popout()"><OPTION value="">-= Select =-</OPTION>
+|<TD><SELECT name="anaXICQuanti:$obsID" id="anaXICQuanti:$obsID" data-state="$expConditionID" onchange="propagateQuantifSelection(this)" onmouseover="preparePopup(this.value)" onmouseout="popout()"><OPTION value="">-= Select =-</OPTION>
 |;
 				#my $firstOpt=1;
 				foreach my $labelType (sort{$designInfo{'ANALYSIS'}{$anaID}{'LABEL'}{$a} cmp $designInfo{'ANALYSIS'}{$anaID}{'LABEL'}{$b}} keys %{$designInfo{'ANALYSIS'}{$anaID}{'LABEL'}}) {
@@ -1988,7 +2327,7 @@ foreach my $expConditionID (sort{ $designInfo{'EXPCONDITION'}{$a}{'DISPLAY_POS'}
 							#$optValue.=":$fracGroup" if $fracGroup; # fracGroup added for readility by human
 							#my $selStrg=($firstOpt)? ' selected' : '';
 							print qq
-|<OPTION name="$labelType" id="opt:$obsID:$quantiID" value="$obsID:$quantiID:$anaID:$trueTargetPos:$fracGroup:$techRepGroup">$designInfo{QUANTIFICATION}{$quantiID}{NAME}</OPTION>
+|<OPTION name="$labelType" id="opt:$obsID:$quantiID" value="$obsID:$quantiID:$anaID:$trueTargetPos:$fracGroup:$techRepGroup" data-quantif_method="$designInfo{QUANTIFICATION}{$quantiID}{METHOD}">$designInfo{QUANTIFICATION}{$quantiID}{NAME}</OPTION>
 <SCRIPT type="text/javascript">popupTexts['$obsID:$quantiID:$anaID:$trueTargetPos:$fracGroup:$techRepGroup']='$designInfo{QUANTIFICATION}{$quantiID}{ANNOT_STRING}';</SCRIPT>
 |;
 							#$firstOpt=0;
@@ -1998,7 +2337,7 @@ foreach my $expConditionID (sort{ $designInfo{'EXPCONDITION'}{$a}{'DISPLAY_POS'}
 				}
 				print "</SELECT></TD>\n";
 			}
-			else {print "<TH align=\"left\" bgcolor=$bgColor colspan=2>&nbsp;* None found  (SSPA Only!) *&nbsp;<INPUT type=\"hidden\" name=\"anaXICQuanti:$obsID\" value=\"$obsID:0:$anaID:0:$fracGroup:$techRepGroup\"></TH>";} # no pepQuantif, no trueTargetPos
+			else {print "<TH align=\"left\" width=100% colspan=2>&nbsp;None found  (SSPA only!)&nbsp;<INPUT type=\"hidden\" name=\"anaXICQuanti:$obsID\" value=\"$obsID:0:$anaID:0:$fracGroup:$techRepGroup\"></TH>";} # no pepQuantif, no trueTargetPos
 			print "</TR>\n";
 		}
 	}
@@ -2036,33 +2375,70 @@ sub launchQuantifications {
 	my @quantItemList=param('anaList'); # not defined for DESIGN
 
 	my ($projectID,$experimentID); # defined later for Design. needed for nav frame refresh
-	my $numJobs=1; # default
 
 	my @selectedConds; # for Design only
 	my $usedCondNum=0;
 	my $dbh=&promsConfig::dbConnect;
 	($experimentID)=$dbh->selectrow_array("SELECT ID_EXPERIMENT FROM DESIGN WHERE ID_DESIGN=$designID");
 	$projectID=&promsMod::getProjectID($dbh,$experimentID,'experiment');
-	$dbh->disconnect;
+	#$dbh->disconnect;
 
+	
+	my $labeling=param('labeling');
+	my ($algoType,$ratioType,$refType)=split(':',param('algoType')); # $ratioType & $refType undef for SSPA
+	$ratioType='' unless $ratioType;
+	$refType='' unless $refType;
+	my $pepCharge=param('pepCharge') || 'all';
+	my $pepSrc=($pepCharge eq 'best')? 'best' : (param('pepSource'))? param('pepSource') : 'all'; # only for SILAC
+	my $minInfRatios=param('minInfRatios') || 0;
+	my $ptmScope=param('ptmScope');
+	my @ptmScopeModifIDs;
+	if ($ptmScope eq 'multiPTM') { # only for DB: PTM quantification
+		@ptmScopeModifIDs=(sort{abs($a)<=>abs($b)} param('multiPtmScope')); # sort is critical: Modif_rank is based on increasing modifID
+	}	
+	my $phosphoID=param('phosphoID');
+	
 	foreach my $nbCond (1..param('nbMaxCond')){ # Information to compute the ratios
 		my $condID=param("state_$nbCond");
 		push @selectedConds,$condID if ($condID && $condID ne 'Select');
 	}
 	$usedCondNum=scalar @selectedConds; # for Design only
 
-	###<Multi-quantif>###
-	if (param('multiQuantif')) { # only for 'All vs State1'
-		$numJobs=$usedCondNum-1;
+	###<%(REF|TEST)%>###
+	my $quantifBaseName=param('quantifName');
+	my %condNames;
+	if ($quantifBaseName=~/%(REF[^%]*|TEST)%/) {
+		my $condIDs=join(',',@selectedConds);
+		my $sthConds=$dbh->prepare("SELECT ID_EXPCONDITION,NAME FROM EXPCONDITION WHERE ID_EXPCONDITION IN ($condIDs)");
+		$sthConds->execute;
+		while (my ($condID,$condName)=$sthConds->fetchrow_array) {
+			$condNames{$condID}=$condName;
+		}
+		$sthConds->finish;
 	}
+	$dbh->disconnect;
+	
+	###<Multi-quantif>###
+	my $numJobs=0; # default
+	my %job2Conds;
+	if (param('multiQuantif') && $ratioType ne 'SuperRatio') { # only for 'All vs State1' (SuperRatio just to be safe)
+		#$numJobs=($refType eq 'singleRef')? $usedCondNum-1 : $usedCondNum*($usedCondNum-1)/2;
+		foreach my $i (0..$#selectedConds-1) {
+			foreach my $j ($i+1..$#selectedConds) {
+				$numJobs++;
+				@{$job2Conds{$numJobs}}=($selectedConds[$i],$selectedConds[$j]); # REF,TEST
+			}
+			last if $refType eq 'singleRef';
+		}
+	}
+	else {$numJobs=1;}
 	#}
-
 
 	mkdir "$promsPath{tmp}/quantification" unless -e "$promsPath{tmp}/quantification";
 	my $currentQuantifDir="$promsPath{tmp}/quantification/current";
 	mkdir $currentQuantifDir unless -e $currentQuantifDir;
 
-	my $quantifBaseName=param('quantifName');
+	#my $quantifBaseName=param('quantifName');
 	my $refConfName; # for multi-Q only
 
 	my $quantifDate=strftime("%Y%m%d%H%M%S",localtime);
@@ -2073,8 +2449,9 @@ sub launchQuantifications {
 
 	print '<BR><FONT class="title3">Launching quantification process';
 	if ($numJobs > 1) {print "es [Master job=#$quantifDate]:\n";}
-	else {print "[job #$quantifDate]...";}
+	else {print " [job #$quantifDate]...";}
 
+	my $fullQuantifType=($algoType=~/^(MSstats|SSPA|TDA|DIA)$/)? 'DESIGN:'.$algoType : 'DESIGN';
 	my @jobList;
 	foreach my $jobPos (1..$numJobs) {
 
@@ -2089,27 +2466,40 @@ sub launchQuantifications {
 
 		my $quantifName=$quantifBaseName;
 		my @states;
-		if ($numJobs==1) {@states=@selectedConds;} # normal case
-		else { # multi-quantif "All vs State1" splitted into 1 quantif/ratio
-			@states=($selectedConds[0],$selectedConds[$jobPos]);
-			if ($quantifName=~/%(TEST|REF[^%]*)%/i) {
-				my $dbh=&promsConfig::dbConnect;
-				my $sthCond=$dbh->prepare("SELECT NAME FROM EXPCONDITION WHERE ID_EXPCONDITION=?");
-				if ($quantifName=~/%REF[^%]*%/i) {
-					unless ($refConfName) { # do only once
-						$sthCond->execute($states[0]);
-						($refConfName)=$sthCond->fetchrow_array;
-					}
-					$quantifName=~s/%REF[^%]*%/$refConfName/gi;
-				}
-				if ($quantifName=~/%TEST%/i) {
-					$sthCond->execute($states[1]);
-					my ($testCondName)=$sthCond->fetchrow_array;
-					$quantifName=~s/%TEST%/$testCondName/gi;
-				}
-				$sthCond->finish;
-				$dbh->disconnect;
+		if ($numJobs==1) {
+			@states=@selectedConds;
+			$quantifName=~s/%REF[^%]*%/$condNames{$states[0]}/gi;
+			if (scalar @states == 2) {
+				$quantifName=~s/%TEST%/$condNames{$states[1]}/gi;
 			}
+			else {
+				$quantifName=~s/%TEST%/All-test-states/gi;
+			}
+			$quantifName=~s/%#%/$jobPos/g;
+		}
+		else { # multi-quantif
+			#@states=($selectedConds[0],$selectedConds[$jobPos]);
+			@states=@{$job2Conds{$jobPos}};			
+			#if ($quantifName=~/%(TEST|REF[^%]*)%/i) {
+			#	my $dbh=&promsConfig::dbConnect;
+			#	my $sthCond=$dbh->prepare("SELECT NAME FROM EXPCONDITION WHERE ID_EXPCONDITION=?");
+			#	if ($quantifName=~/%REF[^%]*%/i) {
+			#		unless ($refConfName) { # do only once
+			#			$sthCond->execute($states[0]);
+			#			($refConfName)=$sthCond->fetchrow_array;
+			#		}
+			#		$quantifName=~s/%REF[^%]*%/$refConfName/gi;
+			#	}
+			#	if ($quantifName=~/%TEST%/i) {
+			#		$sthCond->execute($states[1]);
+			#		my ($testCondName)=$sthCond->fetchrow_array;
+			#		$quantifName=~s/%TEST%/$testCondName/gi;
+			#	}
+			#	$sthCond->finish;
+			#	$dbh->disconnect;
+			#}
+			$quantifName=~s/%REF[^%]*%/$condNames{$states[0]}/gi;
+			$quantifName=~s/%TEST%/$condNames{$states[1]}/gi;
 			$quantifName=~s/%#%/$jobPos/g;
 		}
 		my $usedStateNum=scalar @states;
@@ -2118,41 +2508,56 @@ sub launchQuantifications {
 		open (INFO,">$quantifDir/quantif_info.txt"); # item valueR valueDB
 		print INFO "USER=$userID\n";
 		print INFO "TYPE=DESIGN\n";
-		my $labeling=param('labeling');
-		##($algoType,my $refType)=split(':',param('algoType')); # $refType defined only for SimpleRatio & MSstats (multiRef or singleRef)
-		##my $ratioType=($algoType=~/S\w+Ratio/)? $algoType : ($algoType eq 'MSstats')? 'SimpleRatio' : ($algoType eq 'SSPA')? 'SSPA' : 'Ratio'; # ratioType is Ratio also for TnPQ!!!
-		my ($algoType,$ratioType,$refType)=split(':',param('algoType')); # $ratioType & $refType undef for SSPA
-		$ratioType='' unless $ratioType;
-		$refType='' unless $refType;
-#$algoType=$ratioType='SuperRatio';
-#$refType='singleRef';
-		#my $numChannels=param('numChannels'); # not for DESIGN
-		#my $maxReplicates=param('maxReplicates'); # not for DESIGN
-		my $pepCharge=param('pepCharge') || 'all';
-		my $pepSrc=($pepCharge eq 'best')? 'best' : (param('pepSource'))? param('pepSource') : 'all'; # only for SILAC
-		my $minInfRatios=param('minInfRatios') || 0;
+#		my $labeling=param('labeling');
+#		##($algoType,my $refType)=split(':',param('algoType')); # $refType defined only for SimpleRatio & MSstats (multiRef or singleRef)
+#		##my $ratioType=($algoType=~/S\w+Ratio/)? $algoType : ($algoType eq 'MSstats')? 'SimpleRatio' : ($algoType eq 'SSPA')? 'SSPA' : 'Ratio'; # ratioType is Ratio also for TnPQ!!!
+#		my ($algoType,$ratioType,$refType)=split(':',param('algoType')); # $ratioType & $refType undef for SSPA
+#		$ratioType='' unless $ratioType;
+#		$refType='' unless $refType;
+##$algoType=$ratioType='SuperRatio';
+##$refType='singleRef';
+#		#my $numChannels=param('numChannels'); # not for DESIGN
+#		#my $maxReplicates=param('maxReplicates'); # not for DESIGN
+#		my $pepCharge=param('pepCharge') || 'all';
+#		my $pepSrc=($pepCharge eq 'best')? 'best' : (param('pepSource'))? param('pepSource') : 'all'; # only for SILAC
+#		my $minInfRatios=param('minInfRatios') || 0;
 		print INFO "PARAMETERS:\n";
+		print INFO "VISIBILITY\t\t",param('quantifVisibility'),"\n" if param('quantifVisibility');
 		print INFO "LABEL\t\t$labeling\n"; # only for DB not R (same as $quantifType for internal quantif)
 		print INFO "QUANTIF_NAME\t\t$quantifName\n"; # only for DB
 		print INFO "TOP_N\t\t",param('topN'),"\n" if param('topN'); # only for DB not R (topN is undef if PTM quantif)
 		print INFO "MATCH_PEP\t\t",param('matchingPep'),"\n" if param('matchingPep'); # only for DB not R
-		my $ptmScope=param('ptmScope');
-		if ($ptmScope) { # only for DB: PTM quantification
-			my $recreateSites=($ptmScope < 0)? 1 : 0;
-			$ptmScope=abs($ptmScope);
-			print INFO "PTM_SCOPE\t\t$ptmScope\n";
-			if ($recreateSites) {
-				print INFO "CREATE_PTM\t\t",join("\t",param("targetRes_$ptmScope")),"\n";
+		#my $ptmScope=param('ptmScope');
+		#my @ptmScopeModifIDs;
+		if ($ptmScope eq 'multiPTM') { # only for DB: PTM quantification
+			#@ptmScopeModifIDs=(sort{abs($a)<=>abs($b)} param('multiPtmScope')); # sort is critical: Modif_rank is based on increasing modifID
+			print INFO "PTM_SCOPE\t\t",join("\t",@ptmScopeModifIDs),"\n";
+			my ($createPTMStrg,$hasMatchedPTMs,$hasPhosphoID)=('',0,0);
+			#my $phosphoID=param('phosphoID');
+			my $modifRank=0;
+			foreach my $modID (@ptmScopeModifIDs) {
+				$modifRank++;
+				if ($modID > 0) {
+					$hasMatchedPTMs++;
+					$hasPhosphoID=1 if $modID==$phosphoID; # phospho has "Other" is not considered
+				}
+				else {
+					$modID*=-1;
+					$createPTMStrg="CREATE_PTM\t" unless $createPTMStrg;
+					$createPTMStrg.="\t$modifRank\:".join(".",param("targetRes_$modID"));
+				}
 			}
-			else { # normal case
+			if ($createPTMStrg) {
+				print INFO "$createPTMStrg\n";
+			}
+			if ($hasMatchedPTMs) { # normal PTMs
 				print INFO "PTM_POS\t\t";
-				my $phosphoID=param('phosphoID');
 				my $ptmProbSoftCode=param('ptmProbSoftCode');
-				if (($ptmScope==$phosphoID || $ptmProbSoftCode eq 'MQ') && $algoType ne 'MSstats') { # phospho-quantif w PRS or anyPTM-quantif with MaxQuant (Not for DIA)
+				if (($hasPhosphoID || $ptmProbSoftCode eq 'MQ') && $algoType ne 'MSstats') { # phospho-quantif w PRS or anyPTM-quantif with MaxQuant (Not for DIA:MSstats)
 					print INFO "$ptmProbSoftCode:",param('okProb'),"\t",param('badProb'),"\n"; # PRS or MQ
 				}
-				else { # other PTM quantif
-					my $ambigPos=(param('ambiguousPos'))? 'ambiguous' : 'valid';
+				else { # non-phospho PTM quantif
+					my $ambigPos=(param('ambiguousPos') && $hasMatchedPTMs==1 && !$createPTMStrg)? 'ambiguous' : 'valid';
 					print INFO "$ambigPos\n";
 				}
 				#my $ambigPos=param('ambiguousPos') || 0;
@@ -2181,7 +2586,9 @@ sub launchQuantifications {
 		else {$ptmFilter=param('pepPTM');} # old options
 
 		if ($algoType eq 'SSPA') {
-			print INFO "PEPTIDES\t\t",param('pepSpecifity'),"\t",param('pepCleavage'),"\t$ptmFilter\t",param('pepFocus'),"\n";
+			print INFO "PEPTIDES\t\t",param('pepSpecifity'),"\t",param('pepCleavage'),"\t$ptmFilter\t",param('pepFocus'),"\t";
+			print INFO (param('pepRescued'))? "0\n" : "1\n"; # flag for skipping MBR data 0=>MBR, 1=>No MBR (back compatibility)
+			print INFO "HIDDEN_PROT\t\t",(param('pepSpecifity') || 0),"\n";
 		}
 		else {
 			print INFO "PEPTIDES\t\t",param('pepSpecifity'),"\t",param('pepCleavage'),"\t$ptmFilter\t$pepCharge\t$pepSrc","\n"; # only for DB ***Leave pepCharge & pepSrc for SWATH for compatibility with showProtQuantif***
@@ -2202,43 +2609,57 @@ sub launchQuantifications {
 		}
 		print INFO "ALGO_TYPE\t\t$algoType\n"; # if $ratioType ne 'Ratio'; # needed for DB (not needed if Ratio) / Overwritten by launchQuantif if PEP_xxx incompatibilty
 		if ($algoType ne 'SSPA') {
-			print INFO "RATIO_TYPE\t\t$ratioType\n";
-			if ($ratioType=~/S\w+Ratio/) { # S*Ratio & DIA
+			my $ratioTypeCode=($ratioType eq 'Abundance')? 'None' : $ratioType;
+			print INFO "RATIO_TYPE\t\t$ratioTypeCode\n";
+			if ($ratioType=~/S\w+Ratio/) {
 				print INFO "SINGLE_REF\t\t1\n" if ($refType && $refType eq 'singleRef');
 			}
+			elsif ($ratioType eq 'Abundance') { # <====== TEMP (parameter name to be changed)!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+				print INFO "\tnormalization.only\tyes\n";
+				print INFO "\tresidual.variability\ttechnical\n"; # useless but still required
+				print INFO "\tpAdj.method\tfdr\n"; # useless but still required
+			}
+			if ($ratioType eq 'Abundance') {
+				my $minPepRatioLFQ=($ptmScope eq 'multiPTM')? 1 : 2; # Hard-coded but could become a user-defined parameter
+				print INFO "NUM_LFQ_RATIOS\t\t$minPepRatioLFQ\n";
+			}
+			#<Bias correction
 			my $normMethod=param('biasCorrect');
 			my $biasCorrect=($normMethod eq 'none.none')? 'FALSE' : 'TRUE';
 			print INFO "BIAS_CORRECTION\t\t$biasCorrect"; # for DB only
-			print INFO "\t#",param('refProt'),"\t",param('refProtSelType') if (param('refProt') && ($normMethod=~/REF_PROT|globalStandards/ || ($algoType=~/PEP_/ && $normMethod !~/quantile/i))); # all algos except SSPA
+			print INFO "\t#",param('refProt'),"\t",param('refProtSelType') if (param('refProt') > 0 && ($normMethod=~/REF_PROT|globalStandards/ || ($algoType=~/^(PEP_|TDA|DIA)/ && $normMethod !~/quantile/i))); # all algos except SSPA
 			print INFO "\n";
-			if ($ratioType=~/S\w+Ratio/) { # S*Ratio & MSstats
+			if ($ratioType=~/S\w+Ratio|Abundance/) { # S*Ratio & MSstats
 				my ($usedMethod)=($normMethod eq 'none.none' && $algoType eq 'MSstats')? 'FALSE' : $normMethod;
+				$usedMethod=~s/scale/none/ if ($usedMethod=~/scale/ && param('refProt')==-1 && scalar param('manualPep') == 1); # no scale if only 1 peptide ion for normalization
 				print INFO "NORMALIZATION_METHOD\tnormalization.method\t$usedMethod\n";
-			}
-			if ($ratioType=~/S\w+Ratio/) { # since SuperRatio
-				#>SWATH with MSstats (list of ratios to be computed: C2/C1 C3/C1 ... Cn/C1 C3/C2 ... Cn/C2 ...)
-				if ($algoType eq 'MSstats') {
-					#>Ratios computed
-					print INFO "\tcontrasts.matrix\t"; # R only
-					foreach my $i (0..$#states-1) {
-						foreach my $j ($i+1..$#states) {
-							print INFO ";" if $j > 1;
-							print INFO 'State'.($j+1).'/State'.($i+1); # positions not indexes
+
+				if ($ratioType=~/S\w+Ratio/) { # since SuperRatio
+					print INFO "PEPTIDES_NORM\t\t",join("\t",('manual',param('manualPep'))),"\n" if (param('refProt')==-1 && param('manualPep')); # manual\tprotID:pep1ID,pep2ID,...,pepNID
+					#<SWATH with MSstats (list of ratios to be computed: C2/C1 C3/C1 ... Cn/C1 C3/C2 ... Cn/C2 ...)
+					if ($algoType eq 'MSstats') {
+						#>Ratios computed
+						print INFO "\tcontrasts.matrix\t"; # R only
+						foreach my $i (0..$#states-1) {
+							foreach my $j ($i+1..$#states) {
+								print INFO ";" if $j > 1;
+								print INFO 'State'.($j+1).'/State'.($i+1); # positions not indexes
+							}
+							last if $refType eq 'singleRef';
 						}
-						last if $refType eq 'singleRef';
+						print INFO "\n";
+						#>CPU to use
+						my %clusterInfo=&promsConfig::getClusterInfo;
+						my $clusters=($clusterInfo{'on'} && $clusterInfo{'maxCPUs'})? $clusterInfo{'maxCPUs'} : 1;
+						print INFO "\tclusters\t$clusters"; # R only
+						print INFO "\n";
 					}
-					print INFO "\n";
-					#>CPU to use
-					my %clusterInfo=&promsConfig::getClusterInfo;
-					my $clusters=($clusterInfo{'on'} && $clusterInfo{'maxCPUs'})? $clusterInfo{'maxCPUs'} : 1;
-					print INFO "\tclusters\t$clusters"; # R only
-					print INFO "\n";
-				}
-				else {
-					#print INFO "\tsavegraph\tTRUE\n"; # only in R (for selected proteins) ?
-					#print INFO "\tdisplaygraph\tTRUE\n"; # only in R
-					#my $labelingR=($labeling eq 'FREE')? 'LabelFree' : ($usedStateNum==2)? 'SILAC' : ($ratioType eq 'SuperRatio')? 'SUPERSILAC' : 'multiSILAC'; # ***multiSILAC does not work if only 2 states! (25/02/15)***
-					#my $labelingR=($labeling eq 'FREE')? 'LabelFree' : ($usedStateNum==2 && $labeling ne 'ITRAQ')? 'SILAC' : ($ratioType eq 'SuperRatio')? 'SUPERSILAC' : 'multiSILAC'; # ***multiSILAC does not work if only 2 states! (25/02/15)***
+					else {
+						#print INFO "\tsavegraph\tTRUE\n"; # only in R (for selected proteins) ?
+						#print INFO "\tdisplaygraph\tTRUE\n"; # only in R
+						#my $labelingR=($labeling eq 'FREE')? 'LabelFree' : ($usedStateNum==2)? 'SILAC' : ($ratioType eq 'SuperRatio')? 'SUPERSILAC' : 'multiSILAC'; # ***multiSILAC does not work if only 2 states! (25/02/15)***
+						#my $labelingR=($labeling eq 'FREE')? 'LabelFree' : ($usedStateNum==2 && $labeling ne 'ITRAQ')? 'SILAC' : ($ratioType eq 'SuperRatio')? 'SUPERSILAC' : 'multiSILAC'; # ***multiSILAC does not work if only 2 states! (25/02/15)***
+					}
 				}
 			}
 		}
@@ -2254,7 +2675,7 @@ sub launchQuantifications {
 		#print INFO "ANALYSES/OBSERVATIONS & PARENT QUANTIFICATIONS:\n";
 
 		my $residualVar=param('residualVar'); # defined only for $algoType=~/S\w+Ratio/
-		my $checkBioRep=($algoType=~/PEP_/ && $residualVar eq 'auto')? 1 : 0;
+		my $checkBioRep=($algoType=~/^(PEP_|TDA|DIA)/ && $ratioType ne 'Abundance' && $residualVar eq 'auto')? 1 : 0;
 		my $numBioRepOK=0;
 		my $isState1=1;
 		my $okSuperRatio=1; # flag for compatibility with SuperRatio
@@ -2309,18 +2730,20 @@ sub launchQuantifications {
 			}
 			$isState1=0;
 		}
-		if ($algoType=~/PEP_/) { # Not Ratio,TnPQ,SSPA,MSstats
+		if ($algoType=~/^(PEP_|TDA|DIA)/) { # Not Ratio,TnPQ,SSPA,MSstats
 			#my $Rdesign=($labeling eq 'FREE')? 'LABELFREE' : ($ratioType eq 'SuperRatio')? 'SUPERRATIO' : 'LABELED'; # ***New algo (17/08/17)***
 			my $Rdesign=($algoType eq 'PEP_RATIO' && $okSuperRatio)? 'PEP_RATIO' : 'PEP_INTENSITY'; # will overwrite ALGO_TYPE above if necessary (in launchQuantifications.cgi)
 			print INFO "\tdesign\t$Rdesign\n"; # only in R
 
-			if ($checkBioRep) {
-				$residualVar=($numBioRepOK==$usedStateNum)? 'biological' : 'technical';
+			if ($ratioType ne 'Abundance') {
+				if ($checkBioRep) {
+					$residualVar=($numBioRepOK==$usedStateNum)? 'biological' : 'technical';
+				}
+				print INFO "RESIDUAL_VAR\tresidual.variability\t$residualVar\n";
+				print INFO "FDR_CONTROL\tpAdj.method\t",param('fdrControl'),"\n";
 			}
-			print INFO "RESIDUAL_VAR\tresidual.variability\t$residualVar\n";
-			print INFO "FDR_CONTROL\tpAdj.method\t",param('fdrControl'),"\n";
 		}
-		print INFO "MIN_INF_RATIOS\t\t$minInfRatios\n" if $algoType !~ /MSstats|SSPA/; # if $usedStateNum==2; # +/- infinite ratio switch (DB only)
+		print INFO "MIN_INF_RATIOS\t\t$minInfRatios\n" if ($algoType !~ /MSstats|SSPA/ && $ratioType ne 'Abundance'); # if $usedStateNum==2; # +/- infinite ratio switch (DB only)
 
 		open(FLAG,">$currentQuantifDir/$jobDir\_request.flag"); # flag file used by watchQuantif
 		print FLAG "#";
@@ -2328,7 +2751,7 @@ sub launchQuantifications {
 
 		close INFO;
 
-		my $fullQuantifType=($algoType=~/MSstats|SSPA/)? 'DESIGN:'.$algoType : 'DESIGN';
+		#my $fullQuantifType=($algoType=~/^(MSstats|SSPA|TDA|DIA)$/)? 'DESIGN:'.$algoType : 'DESIGN';
 		if ($numJobs==1) {
 			###<Forking to launch quantifications>###
 			my $childPid = fork;
@@ -2365,11 +2788,11 @@ sub launchQuantifications {
 
 	###>Calling watch popup window<###
 	sleep 3;
+	#my $fullQuantifType = ($algoType=~/^(MSstats|SSPA|TDA)$/)? 'DESIGN:'.$algoType : 'DESIGN';
 	print qq
 |<SCRIPT type="text/javascript">
-var watchQuantifWin=window.open("$promsPath{cgi}/watchQuantifications.cgi",'WatchQuantifWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
-watchQuantifWin.focus();
-//parent.optionFrame.watchQuantifications(); // starts watchQuantificationw.cgi
+var monitorJobsWin=window.open("$promsPath{cgi}/monitorJobs.cgi?filterType=Quantification [$fullQuantifType]&filterDateNumber=1&filterDateType=DAY&filterStatus=Queued&filterStatus=Running",'monitorJobsWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
+monitorJobsWin.focus();
 </SCRIPT>
 |;
 #exit; # DEBUG!!!!!
@@ -2388,51 +2811,43 @@ parent.itemFrame.location="$promsPath{cgi}/openProject.cgi?ID=$projectID&branchI
 
 sub ajaxFetchReferenceQuantifications {
 	my $labeling=&promsMod::cleanParameters(param('labeling'));
+	my $algoType=(split(':',param('algoType')))[0];
+	$algoType=&promsMod::cleanParameters($algoType);
 	print header(-type=>'text/plain',-charset=>'UTF-8'); warningsToBrowser(1);
 	
 	my $dbh=&promsConfig::dbConnect;
-	my $sthQuantif=$dbh->prepare("SELECT ID_QUANTIFICATION,Q.NAME,QUANTIF_ANNOT FROM QUANTIFICATION Q,QUANTIFICATION_METHOD QM WHERE Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD AND ID_DESIGN=? AND ID_MODIFICATION IS NULL AND FOCUS='protein' AND STATUS=1 AND QM.CODE='PROT_RATIO_PEP' AND QUANTIF_ANNOT LIKE 'LABEL=$labeling:%' ORDER BY NAME");
-	my $sthGetExpCondName = $dbh->prepare("SELECT NAME FROM EXPCONDITION WHERE ID_EXPCONDITION=?");
+	my $sthQuantif=$dbh->prepare("SELECT Q.ID_QUANTIFICATION,Q.NAME,COUNT(ID_EXPCONDITION),GROUP_CONCAT(DISTINCT MQ.ID_MODIFICATION) AS MULTI_MOD FROM QUANTIFICATION Q
+									LEFT JOIN MULTIMODIF_QUANTIFICATION MQ ON Q.ID_QUANTIFICATION=MQ.ID_QUANTIFICATION
+									INNER JOIN QUANTIFICATION_METHOD QM ON Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD AND QM.CODE='PROT_RATIO_PEP'
+									INNER JOIN EXPCONDITION_QUANTIF EQ ON Q.ID_QUANTIFICATION=EQ.ID_QUANTIFICATION
+									WHERE ID_DESIGN=? AND Q.ID_MODIFICATION IS NULL AND FOCUS='protein' AND STATUS=1
+											AND QUANTIF_ANNOT LIKE 'LABEL=$labeling:%' AND QUANTIF_ANNOT LIKE '%ALGO_TYPE=$algoType:%'
+									GROUP BY Q.ID_QUANTIFICATION HAVING MULTI_MOD IS NULL
+									ORDER BY Q.NAME");
 	$sthQuantif->execute($designID);
-	my %fetchedCond;
-	print "<SELECT name=\"refQuantif\" onchange=\"applyNewRefQuantifSet(this.value)\"><OPTION value=\"\">-= Select =-</OPTION>\n";
-	while (my ($quantifID,$quantifName,$quantifAnnot)=$sthQuantif->fetchrow_array) {
-		foreach my $infoStrg (split('::',$quantifAnnot)) {
-			my ($setting,$valueStrg)=split('=',$infoStrg);
-			next unless $setting eq 'RATIOS';
-			my $ratioPos = 0;
-			foreach my $ratio (split(";",$valueStrg)) {
-				$ratioPos++;
-				$ratio=~s/\#//g; # for design experiments, RATIOS are displayed with '#' for condition IDs
-				next if $ratio=~/%\d+/; # skip Super ratios
-				my ($testID,$refID) = split(/\//,$ratio);
-				unless ($fetchedCond{$testID}) {
-					$sthGetExpCondName->execute($testID);
-					($fetchedCond{$testID})=$sthGetExpCondName->fetchrow_array;
-				}
-				unless ($fetchedCond{$refID}) {
-					$sthGetExpCondName->execute($refID);
-					($fetchedCond{$refID})=$sthGetExpCondName->fetchrow_array;
-				}
-				my $testName=$fetchedCond{$testID};
-				my $refName=$fetchedCond{$refID};
-				print "<OPTION value=\"$quantifID\_$ratioPos:$testID:$refID\">$quantifName : $testName/$refName</OPTION>\n";
-			}
-			last;
-		}
+	my $quantifOptStrg='';
+	my $numQuantif=0;
+	while (my ($quantifID,$quantifName,$numStates)=$sthQuantif->fetchrow_array) {
+		$numQuantif++;
+		$quantifOptStrg.="<OPTION value=\"$quantifID\">$quantifName [$numStates states]</OPTION>\n";
 	}
-	print "<OPTION value=\"\">** None found **</OPTION>\n" unless scalar keys %fetchedCond;
+	print "<SELECT name=\"refQuantif\" onchange=\"applyNewRefQuantifSet(this.value)\">";
+	if ($numQuantif) {print "<OPTION value=\"\">-= Select =-</OPTION>\n$quantifOptStrg";}
+	else {print "<OPTION value=\"\">** None found **</OPTION>\n";}
 	print "</SELECT>\n";
 	
 	$sthQuantif->finish;
-	$sthGetExpCondName->finish;
+
 	$dbh->disconnect;
 	exit;
 }
 
 sub ajaxFetchRefProtPeptides {
-	my $refQuantif=&promsMod::cleanParameters(param('refQuantif'));
-	my $modifID=abs(param('modID')); # abs in case site re-creation. TODO: handle site re-creation here
+	my $refQuantifID=&promsMod::cleanNumericalParameters(param('refQuantif'));
+	#my $modifID=&promsMod::cleanNumericalParameters(abs(param('modID'))); # abs in case site re-creation. TODO: handle site re-creation here
+	my $quantifiedModifStrg=param('modID') || 'X';
+	$quantifiedModifStrg=~s/-//g; # abs in case site re-creation. TODO: handle site re-creation here
+	$quantifiedModifStrg=~s/:/\|/g; # for matching later
 	my $labeling=param('labeling');
 	my $selAnaStrg=param('selAna'); # only if $refQuantif is -1
 	
@@ -2441,22 +2856,23 @@ sub ajaxFetchRefProtPeptides {
 	
 	my $dbh=&promsConfig::dbConnect;
 	my $anaStrg;
-	if ($refQuantif eq '-1') { # current design context
+	if ($refQuantifID eq '-1') { # current design context
 		my %selAna;
 		foreach my $anaID (split(':',$selAnaStrg)) {$selAna{$anaID}=1;} # remove duplicates
 		$anaStrg=join(',',keys %selAna);
 	}
 	else { # NOT USED!!! manual peptide selection only allowed in current design context
-		my ($quantID,$ratioPos,$testCondID,$refCondID)=split(/[_:]/,$refQuantif);
-		my $sthRefAna=$dbh->prepare("SELECT DISTINCT(O.ID_ANALYSIS) FROM OBS_EXPCONDITION OE
-									INNER JOIN OBSERVATION O ON OE.ID_OBSERVATION=O.ID_OBSERVATION
-									INNER JOIN EXPCONDITION_QUANTIF EQ ON EQ.ID_EXPCONDITION=OE.ID_EXPCONDITION
-									WHERE OE.ID_EXPCONDITION IN (?,?) AND EQ.ID_QUANTIFICATION=?");
-		$sthRefAna->execute($testCondID,$refCondID,$quantID);
-		my @anaList;
-		while (my ($anaID)=$sthRefAna->fetchrow_array) {push @anaList,$anaID;}
-		$sthRefAna->finish;
-		$anaStrg=join(',',@anaList);
+		#my ($quantID,$ratioPos,$testCondID,$refCondID)=split(/[_:]/,$refQuantif);
+		#my $sthRefAna=$dbh->prepare("SELECT DISTINCT(O.ID_ANALYSIS) FROM OBS_EXPCONDITION OE
+		#							INNER JOIN OBSERVATION O ON OE.ID_OBSERVATION=O.ID_OBSERVATION
+		#							INNER JOIN EXPCONDITION_QUANTIF EQ ON EQ.ID_EXPCONDITION=OE.ID_EXPCONDITION
+		#							WHERE OE.ID_EXPCONDITION IN (?,?) AND EQ.ID_QUANTIFICATION=?");
+		#$sthRefAna->execute($testCondID,$refCondID,$quantID);
+		#my @anaList;
+		#while (my ($anaID)=$sthRefAna->fetchrow_array) {push @anaList,$anaID;}
+		#$sthRefAna->finish;
+		#$anaStrg=join(',',@anaList);
+		($anaStrg)=$dbh->selectrow_array("SELECT GROUP_CONCAT(ID_ANALYSIS SEPARATOR ',') FROM ANA_QUANTIFICATION WHERE ID_QUANTIFICATION=$refQuantifID GROUP BY ID_QUANTIFICATION");	
 	}
 	
 	my $sthTestProt=$dbh->prepare("SELECT DISTINCT AP.ID_PROTEIN,ALIAS,PROT_DES,PROT_LENGTH,ORGANISM FROM EXPCONDITION E
@@ -2466,11 +2882,11 @@ sub ajaxFetchRefProtPeptides {
 										INNER JOIN PROTEIN P ON AP.ID_PROTEIN=P.ID_PROTEIN
 										WHERE ID_DESIGN=? AND ABS(AP.VISIBILITY)=2 GROUP BY AP.ID_PROTEIN LIMIT $MAX_PROT_MANUAL_PEP"); # LIMIT to be safe
 	
-	my $sthRefProtPep=$dbh->prepare("SELECT P.ID_PEPTIDE,ABS(PEP_BEG),PEP_SEQ,GROUP_CONCAT(DISTINCT PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),CHARGE,PPA.IS_SPECIFIC,MISS_CUT
+	my $sthRefProtPep=$dbh->prepare("SELECT P.ID_PEPTIDE,ABS(PEP_BEG),PEP_SEQ,GROUP_CONCAT(DISTINCT PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&') AS VMOD_CODE,CHARGE,PPA.IS_SPECIFIC,MISS_CUT
 									FROM PEPTIDE P
 									LEFT JOIN PEPTIDE_MODIFICATION PM ON P.ID_PEPTIDE=PM.ID_PEPTIDE
 									INNER JOIN PEPTIDE_PROTEIN_ATTRIB PPA ON P.ID_PEPTIDE=PPA.ID_PEPTIDE
-									WHERE P.ID_ANALYSIS=PPA.ID_ANALYSIS AND P.ID_ANALYSIS IN ($anaStrg) AND PPA.ID_PROTEIN=? GROUP BY P.ID_PEPTIDE");
+									WHERE P.ID_ANALYSIS=PPA.ID_ANALYSIS AND P.ID_ANALYSIS IN ($anaStrg) AND PPA.ID_PROTEIN=? GROUP BY P.ID_PEPTIDE ORDER BY VMOD_CODE DESC"); # order by to fetch modified pep 1srt => needed to filter any pepSeq found modifed on another peptide
 	
 	my $labelModStrg;
 	if ($labeling ne 'FREE') {
@@ -2481,14 +2897,23 @@ sub ajaxFetchRefProtPeptides {
 		$sthALM->finish;
 		$labelModStrg=join('|',@labelModifs);
 	}
-	my (%protInfo,%protPeptides,%pepInfo,%varMod,%varModName);
+	my (%protInfo,%protPeptides,%pepInfo,%varMod,%varModName,%skipPepSeq,%skipPepIons);
 	$sthTestProt->execute($designID);
 	while (my ($protID,$alias,$protDes,$protLength,$organism)=$sthTestProt->fetchrow_array) {
 		@{$protInfo{$protID}}=($alias,$protDes,$protLength,$organism);
 		$sthRefProtPep->execute($protID);
 		while (my ($pepID,$pepBeg,$pepSeq,$modCode,$charge,$isSpecif,$missCut)=$sthRefProtPep->fetchrow_array) {
+			if ($skipPepSeq{$pepSeq}) {
+				my $vMod=$modCode || '-';
+				$skipPepIons{$protID}{$pepSeq.'_'.$vMod.'_'.$charge}=1;
+				next;
+			}
 			if ($modCode) {
-				next if $modCode=~/(^|&)$modifID:/;
+				if ($modCode=~/(^|&)($quantifiedModifStrg):/) {
+					$skipPepSeq{$pepSeq}=1;
+					$skipPepIons{$protID}{$pepSeq.'_'.$modCode.'_'.$charge}=1;
+					next;
+				}
 				if ($labeling ne 'FREE') {
 					$modCode=~s/(^|&)($labelModStrg):[\d\.]+//g;
 					$modCode=~s/^&//;
@@ -2510,23 +2935,27 @@ sub ajaxFetchRefProtPeptides {
 	$dbh->disconnect;
 	
 	print "<TABLE border=0 cellspacing=0 cellpadding=2 width=100%>\n";
+	my $numProt=scalar keys %protPeptides;
+	my $protCount=0;
 	foreach my $protID (sort{$protInfo{$a}[0] cmp $protInfo{$b}[0]} keys %protPeptides) {
+		$protCount++;
 		my ($alias,$protDes,$protLength,$organism)=@{$protInfo{$protID}};
 		print qq
 |<TR bgcolor="$darkColor"><TD class="bBorder" colspan=8><TABLE>
-	<TR><TH valign=top><A href="javascript:sequenceView($protID,'$anaStrg')">$alias</A>:</TH><TD bgcolor="$lightColor" width=100%>$protDes <FONT class="org">$organism</FONT> ($protLength aa)</TD></TR>
+	<TR><TH valign=top>#$protCount.<A href="javascript:sequenceView($protID,'$anaStrg')">$alias</A>:</TH><TD bgcolor="$lightColor" width=100%>$protDes <FONT class="org">$organism</FONT> ($protLength aa)</TD></TR>
 	</TABLE></TD></TR>
-<TR><TH>&nbsp;&nbsp;</TH><TH bgcolor="$darkColor" class="rbBorder">#</TH>
-<TH bgcolor="$darkColor" class="rbBorder">&nbsp;Start&nbsp;</TH>
+<TR><TH width=20>&nbsp;&nbsp;</TH><TH bgcolor="$darkColor" class="rbBorder"" width=25>#</TH>
+<TH bgcolor="$darkColor" class="rbBorder" width=50>&nbsp;Start&nbsp;</TH>
 <TH bgcolor="$darkColor" class="rbBorder">Peptide&nbsp;&nbsp;</TH>
-<TH bgcolor="$darkColor" class="rbBorder">&nbsp;Charge&nbsp;</TH>
-<TH bgcolor="$darkColor" class="rbBorder">&nbsp;Proteotypic&nbsp;</TH>
-<TH bgcolor="$darkColor" class="bBorder">&nbsp;Miss.&nbsp;cut&nbsp;</TH>
+<TH bgcolor="$darkColor" class="rbBorder" width=50>&nbsp;Charge&nbsp;</TH>
+<TH bgcolor="$darkColor" class="rbBorder" width=100>&nbsp;Proteotypic&nbsp;</TH>
+<TH bgcolor="$darkColor" class="bBorder" width=60>&nbsp;Miss.&nbsp;cut&nbsp;</TH>
 |;
 		my $bgColor=$lightColor;
 		my $numPep=0;
 		foreach my $pepBeg (sort{$a<=>$b} keys %{$protPeptides{$protID}}) {
 			foreach my $pepSeq (sort{length($a)<=>length($b)} keys %{$protPeptides{$protID}{$pepBeg}}) {
+				my ($disabPepSeq,$popupStrg)=($skipPepSeq{$pepSeq})? ('disabled','onmouseover="popup(\'<B>Disabled: This peptide sequence is also found with a PTM site modification.</B>\')" onmouseout="popout()"') : ('','');
 				foreach my $modCode (sort{length($a)<=>length($b)} keys %{$protPeptides{$protID}{$pepBeg}{$pepSeq}}) {
 					foreach my $charge (sort{$a<=>$b} keys %{$protPeptides{$protID}{$pepBeg}{$pepSeq}{$modCode}}) {
 						$numPep++;
@@ -2537,7 +2966,7 @@ sub ajaxFetchRefProtPeptides {
 	<TD></TD>
 	<TD bgcolor="$bgColor" class="rBorder" align=right>&nbsp;$numPep&nbsp;</TD>
 	<TD bgcolor="$bgColor" align=right>$pepBeg</TD>
-	<TH bgcolor="$bgColor" class="font11" align=left nowrap><INPUT type="checkbox" name="manualPep" value="$pepIdStrg">$pepSeq$varMod{$modCode}&nbsp;</TH>
+	<TH bgcolor="$bgColor" class="font11" align=left nowrap><INPUT type="checkbox" name="manualPep" value="$pepIdStrg"$disabPepSeq $popupStrg >$pepSeq$varMod{$modCode}&nbsp;</TH>
 	<TD bgcolor="$bgColor" align=center>$charge<SUP>+</SUP></TD>
 	<TD bgcolor="$bgColor" align=center>$isSpecif</TD>
 	<TD bgcolor="$bgColor" align=center>$missCut</TD>
@@ -2549,7 +2978,10 @@ sub ajaxFetchRefProtPeptides {
 				}
 			}
 		}
-		print "<TR><TD colspan=8>&nbsp;</TD></TR>\n";
+		if ($skipPepIons{$protID}) {
+			print "<TR bgcolor=\"$darkColor\"><TH colspan=8 align=\"left\">&nbsp;",(scalar keys %{$skipPepIons{$protID}})," peptide ions were excluded</TD></TR>\n";
+		}
+		print "<TR><TD colspan=8>&nbsp;</TD></TR>\n" if $protCount < $numProt;
 	}
 	print "</TABLE>\n";
 	
@@ -2559,6 +2991,18 @@ sub ajaxFetchRefProtPeptides {
 
 # TODO: handle PTM site re-creation in &ajaxFetchRefProtPeptides
 ####> Revision history
-# 1.0.1 [Fix] Bug due to undefined JS variable unusedVarMods (PP 08/04/19)
+# 1.3.4 [ENHANCEMENT] Added NUM_LFQ_RATIOS as hard-coded parameter (PP 05/02/20)
+# 1.3.3 [BUGFIX] Activate forgotten "Any peptide" for DIA:Abundance and biais correction for DIA by myProMS (PP 29/01/20)
+# 1.3.2 [FEATURE] Added use of visible/hidden proteins and peptide xic option for SSPA (PP 28/01/20)
+# 1.3.1 [FEATURE] Added MBR-peptide filter option for SSPA (PP 22/01/20)
+# 1.3.0 [FEATURE] Added DIA and Abundance quantifications with myProMS (PP 31/12/19) 
+# 1.2.4 [FEATURE] Added option to manually select peptides for bias correction of (single!) protein sites quantification (26/12/19)
+# 1.2.3 [CHANGES] Use new job monitoring window opening parameters (VS 18/11/19)
+# 1.2.2 [FEATURE] Added option to extend missed cleavage exclusion to overlapping peptides & [UX] Added letter code and color to modification-site name (PP 15/11/19)
+# 1.2.1 [BUGFIX] Removed duplicate declaration of some variables (PP 12/11/19)
+# 1.2.0 [FEATURE] 3+ States allowed with protein-level normalization in label-free & multi-job option for "All vs All" (PP 31/10/19)
+# 1.1.1 [MODIF] Switch from watchQuantification to monitorJobs script (VS 21/10/19)
+# 1.1.0 [FEATURE] Added multi-modif and TDA by myProMS algo (PP 26/08/19)
+# 1.0.1 [FIX] Bug due to undefined JS variable unusedVarMods (PP 08/04/19)
 # 1.0.0 Forked from selAna4Quantification.cgi v2.2.0 to become design-specific & handle PTM-site creation (PP 04/02/19)
 

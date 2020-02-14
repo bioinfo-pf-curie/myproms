@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# launchQuantifications.pl       1.7.1                                         #
+# launchQuantifications.pl       1.7.13                                        #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Launches multiple quantifications +/- paralellization                        #
@@ -47,6 +47,8 @@
 # 2: ML scripts
 # 3: AS scripts before site-ratio correction by reference protein ratio (AnaDiff <= 4.0.13)
 # 3.1: AS site-ratio correction & IB (AnaDiff >= 4.2.0)
+# 3.2: Multi-modif quantif (format of modProtID is now <protID>-<modifRank1>#<pos1>.<pos2>&...)
+# 3.3: TDA, DIA and Protein Abundance
 
 $| = 1;
 
@@ -56,8 +58,8 @@ use File::Path qw(rmtree); # remove_tree
 use promsConfig;
 use promsMod;
 use promsQuantif;
-#exit;
 
+#exit;
 #######################
 ####>Configuration<####
 #######################
@@ -91,19 +93,21 @@ if ($jobType=~/multi/) {
 
 	####>Looping through job list
 	my $curJobIdx=-1;
+    
 	MAIN_LOOP:while (1) {
 
 		###>Parallel launch of up to $MAX_PARALLEL_QUANTIFS jobs
+        my $nJobs = scalar (keys %runningJobs);
 		while (scalar (keys %runningJobs) < $MAX_PARALLEL_QUANTIFS) {
-
+			my ($jobDir,$fullQuantifType,$anaIDstrg)=split('#',$jobList[$curJobIdx]);
+                
 			##>Also check other user/launches jobs
-			my $numProc=`ps -edf | grep launchQuantifications.pl | grep single | grep -v grep | wc -l`;
+			my $numProc=`ps -edf | grep launchQuantifications.pl | grep $fullQuantifType | grep single | grep -v grep | wc -l`;
 			chomp($numProc);
 			last if $numProc >= $MAX_PARALLEL_QUANTIFS;
 
 			##>Ok to go
 			$curJobIdx++;
-			my ($jobDir,$fullQuantifType,$anaIDstrg)=split('#',$jobList[$curJobIdx]);
 			$anaIDstrg='' unless $anaIDstrg; # for SIN|EMPAI only (PP A single anaID since 02/08/18)
 			my $childPid = fork;
 			unless ($childPid) { # child here
@@ -120,6 +124,7 @@ if ($jobType=~/multi/) {
 		sleep 60; # $SIG{CHLD} is active during sleep
 
 	}
+    
 	###>Wait for last child processes to end
 	while (scalar (keys %runningJobs) > 0) {
 		sleep 60; # $SIG{CHLD} is active during sleep
@@ -137,6 +142,8 @@ my $currentQuantifDir="$promsPath{tmp}/quantification/current";
 #my $quantifScript=($quantifType eq 'XIC')? 'runIonintensityQuantification.pl' : ($quantifType eq 'EMPAI')? 'runemPAIQuantification.pl' : ($quantifType eq 'SIN')? 'runSINQuantification.pl' : '';
 my %quantifScripts=(
 	'DESIGN'=>'runXICProtQuantification.pl',
+	'DESIGN:TDA'=>'runXICProtQuantification.pl',
+	'DESIGN:DIA'=>'runXICProtQuantification.pl',
 	'DESIGN:MSstats'=>'runSWATHProtQuantification.pl',
 	'DESIGN:SSPA'=>'runSSProtQuantification.pl',
 	'EMPAI'=>'runemPAIQuantification.pl',
@@ -147,22 +154,24 @@ my %quantifScripts=(
 	'XICMCQ'=>'runMassChroQ.pl', # different XIC method
 	'XICCORR'=>'correctPepQuantification.pl'
 );
+
 #$quantItemStrg='' unless $quantItemStrg;
 #my @quantItemList=split(':',$quantItemStrg);
 #my %quantifIdList;
-my ($quantifID,$quantifItemID); # $quantifItemID != $quantifID for SIN|emPAI only (=)
+my ($quantifID,$quantifItemID,$quantifName); my $numAllBioRep=0; # $quantifItemID != $quantifID for SIN|emPAI only (=)
 my $extraArgStrg='';
-my (@pepQuantifFiles,$numStates); # needed for cluster run
+my (@pepQuantifFiles,%analysisList,$numStates,$numReplicates); # needed for cluster run
+my %quantifParams;
 my $labelType='FREE'; # default
 if ($quantifType !~ /XICMCQ|XICCORR/) {
 	my $dbh=&promsConfig::dbConnect('no_user');
 	#>Fetching parameters
-	my %quantifParams=&promsQuantif::getQuantificationParameters("$quantifDir/quantif_info.txt");
+	%quantifParams=&promsQuantif::getQuantificationParameters("$quantifDir/quantif_info.txt");
 	my $qRootName=quotemeta($quantifParams{'DB'}{'QUANTIF_NAME'}[0]);
-	$labelType=$quantifParams{'DB'}{'LABEL'}[0] if $quantifType eq 'DESIGN';
+	$labelType=$quantifParams{'DB'}{'LABEL'}[0]; # if $quantifType =~ /^(DESIGN|DESIGN:TDA|DESIGN:DIA)$/; # eq 'DESIGN';
 	my $quantifAnnotStrg="LABEL=$labelType";
 	if ($quantifParams{'DB'}{'ALGO_TYPE'}) {
-		if ($quantifParams{'DB'}{'ALGO_TYPE'}[0]=~/PEP_/) {
+		if ($quantifParams{'DB'}{'ALGO_TYPE'}[0]=~/^(PEP_|TDA|DIA)/) {
 			my $overwritten=0;
 			if ($quantifParams{'R'}{'design'}[0] eq 'PEP_INTENSITY') { # Overwrite in case SuperRatio incompatibility
 				if ($quantifParams{'DB'}{'ALGO_TYPE'}[0] eq 'PEP_RATIO') {
@@ -171,7 +180,7 @@ if ($quantifType !~ /XICMCQ|XICCORR/) {
 					$overwritten=1;
 				}
 			}
-			$quantifAnnotStrg.="::SOFTWARE=myProMS;3.1::ALGO_TYPE=$quantifParams{'DB'}{'ALGO_TYPE'}[0]"; # name;version::PEP_(RATIO/INTENSITY)
+			$quantifAnnotStrg.="::SOFTWARE=myProMS;3.3::ALGO_TYPE=$quantifParams{'DB'}{'ALGO_TYPE'}[0]"; # name;version::PEP_(RATIO/INTENSITY)
 			$quantifAnnotStrg.=';changed' if $overwritten;
 		}
 		elsif ($quantifParams{'DB'}{'ALGO_TYPE'}[0] eq 'MSstats') {
@@ -187,7 +196,8 @@ if ($quantifType !~ /XICMCQ|XICCORR/) {
 	#my $denominator;
 #open (OUT,">$promsPath{tmp}/quantification/debug.txt");
 #print OUT "'$quantifType'\n";
-	my $quantifiedModifID=($quantifParams{'DB'}{'PTM_SCOPE'})? $quantifParams{'DB'}{'PTM_SCOPE'}[0] : undef;
+	#my $quantifiedModifID=($quantifParams{'DB'}{'PTM_SCOPE'})? $quantifParams{'DB'}{'PTM_SCOPE'}[0] : undef;
+	my @quantifiedModifIDs=($quantifParams{'DB'}{'PTM_SCOPE'})? @{$quantifParams{'DB'}{'PTM_SCOPE'}} : ();
 	my $referenceQuantifID=($quantifParams{'DB'}{'REF_QUANTIF'})? $quantifParams{'DB'}{'REF_QUANTIF'}[0] : 0;
 	foreach my $param (sort{&promsMod::sortSmart(lc($a),lc($b))} keys %{$quantifParams{'DB'}}) { # sortSmart required for CONDITION_<n>
 		next if $param=~/QUANTIF_NAME|LABEL|NUM_REP_|ALGO_TYPE|PTM_SCOPE|MATCH_PEP/;
@@ -200,7 +210,7 @@ if ($quantifType !~ /XICMCQ|XICCORR/) {
 		}
 		if ($quantifType !~ /DESIGN/ || $param !~ /QUANTITOCOND|DESIGN|STATE/){
 			$quantifAnnotStrg.='::' if $quantifAnnotStrg;
-			$quantifAnnotStrg.=($param eq 'PEPTIDES_REF')? "$param=$quantifParams{DB}{$param}[0]" : "$param=".join(';',@{$quantifParams{'DB'}{$param}}); # PEPTIDES_REF=manual/current
+			$quantifAnnotStrg.=($param=~/^PEPTIDES_(REF|NORM)$/)? "$param=$quantifParams{DB}{$param}[0]" : "$param=".join(';',@{$quantifParams{'DB'}{$param}}); # PEPTIDES_REF=manual/current or PEPTIDES_NORM=manual only (for now)
 		}
 		#if ($quantifType eq 'DESIGN' && $param=~/NUMERATOR/){
 		#	my $numState=1;
@@ -221,89 +231,67 @@ if ($quantifType !~ /XICMCQ|XICCORR/) {
 		$quantifMethod=$quantifType;
 	}
 	else { # DESIGN(:xxx)
-		$quantifMethod=($quantifParams{'DB'}{'ALGO_TYPE'}[0] eq 'SSPA')? 'SSPA' : ($quantifParams{'DB'}{'ALGO_TYPE'}[0] eq 'TnPQ')? 'TNPQ' : 'PROT_RATIO_PEP';
+		$quantifMethod=($quantifParams{'DB'}{'ALGO_TYPE'}[0] eq 'SSPA')? 'SSPA' : ($quantifParams{'DB'}{'ALGO_TYPE'}[0] eq 'TnPQ')? 'TNPQ' : ($quantifParams{'DB'}{'RATIO_TYPE'}[0] eq 'None')? 'PROT_ABUNDANCE' : 'PROT_RATIO_PEP';
 		my @states=@{$quantifParams{'DB'}{'STATES'}};
 		$numStates=scalar @states;
-		if ($quantifParams{'DB'}{'ALGO_TYPE'}[0] eq 'SSPA') {
-			##>Compute and order all possible sets of size 1 to #states-1 (<=> abundance sets). Position=TARGET_POS of quantif value
-			$quantifAnnotStrg.="::SETS=";
-			## First algo --->
-			#my (%sets,%key2StatePos);
-			#foreach my $i (0..$#states) {
-			#	my %stateKeys;
-			#	$sets{"#$i"}=$i;
-			#	@{$key2StatePos{"#$i"}}=($i+1); # state pos represented by this key (to prevent key split)
-			#	@{$stateKeys{1}}=("#$i"); # {size}
-			#	foreach my $s (2..$#states) {
-			#		foreach my $j ($i+1..$#states) {
-			#			foreach my $prevKey (@{$stateKeys{$s-1}}) {
-			#				next if $j <= $sets{$prevKey}; # prevents "State3State2"
-			#				my $key=$prevKey."#$j";
-			#				@{$key2StatePos{$key}}=(@{$key2StatePos{$prevKey}},$j+1);
-			#				push @{$stateKeys{$s}},$key;
-			#				$sets{$key}=$j;
-			#			}
-			#		}
-			#	}
-			#}
-			#foreach my $key (sort{scalar @{$key2StatePos{$a}} <=> @{$key2StatePos{$b}} || $key2StatePos{$a}[0]<=>$key2StatePos{$b}[0]} keys %key2StatePos) {
-			#	$quantifAnnotStrg.=join('+',@{$key2StatePos{$key}}).';';
-			#}
-			## Second (better?) algo -->
-			my @sets;
-			my $n = scalar(@states);
-			my (@flags) = (0) x $n;
-			$flags[0] = 1; # skip empty subset
-			my $stateIdx;
-			while (1) {
-				my @subset = ();
-				for ($stateIdx=0; $stateIdx<$n; $stateIdx++) {
-					push @subset, $stateIdx+1 if $flags[$stateIdx] == 1; # record state positions
-				}
-				last if scalar @subset == $n; # exclude complete subset (size=n) and exit while loop
-				push @sets,\@subset;
-				for ($stateIdx=0; $stateIdx<$n; $stateIdx++){
-					if($flags[$stateIdx] == 0) {
-						$flags[$stateIdx] = 1;
-						last;
-					}
-					$flags[$stateIdx] = 0;
-				}
-			}
-			foreach my $refSubset (sort{scalar @{$a} <=> scalar @{$b} || $a->[0]<=>$b->[0]} @sets) { # size then 1st state in subset (should be enough)
-				$quantifAnnotStrg.= join('+',@{$refSubset}).';';
-			}
-			print scalar @sets,"\n";
-
-			$quantifAnnotStrg=~s/;\Z//; # remove trailing ';'
-		}
-		else {
+		#if ($quantifMethod eq 'SSPA') {
+		#	##>Compute and order all possible sets of size 1 to #states-1 (<=> abundance sets). Position=TARGET_POS of quantif value
+		#	$quantifAnnotStrg.="::SETS=";
+		#	## First algo --->
+		#	#my (%sets,%key2StatePos);
+		#	#foreach my $i (0..$#states) {
+		#	#	my %stateKeys;
+		#	#	$sets{"#$i"}=$i;
+		#	#	@{$key2StatePos{"#$i"}}=($i+1); # state pos represented by this key (to prevent key split)
+		#	#	@{$stateKeys{1}}=("#$i"); # {size}
+		#	#	foreach my $s (2..$#states) {
+		#	#		foreach my $j ($i+1..$#states) {
+		#	#			foreach my $prevKey (@{$stateKeys{$s-1}}) {
+		#	#				next if $j <= $sets{$prevKey}; # prevents "State3State2"
+		#	#				my $key=$prevKey."#$j";
+		#	#				@{$key2StatePos{$key}}=(@{$key2StatePos{$prevKey}},$j+1);
+		#	#				push @{$stateKeys{$s}},$key;
+		#	#				$sets{$key}=$j;
+		#	#			}
+		#	#		}
+		#	#	}
+		#	#}
+		#	#foreach my $key (sort{scalar @{$key2StatePos{$a}} <=> @{$key2StatePos{$b}} || $key2StatePos{$a}[0]<=>$key2StatePos{$b}[0]} keys %key2StatePos) {
+		#	#	$quantifAnnotStrg.=join('+',@{$key2StatePos{$key}}).';';
+		#	#}
+		#	## Second (better?) algo -->
+		#	my @sets;
+		#	my $n = scalar(@states);
+		#	my (@flags) = (0) x $n;
+		#	$flags[0] = 1; # skip empty subset
+		#	my $stateIdx;
+		#	while (1) {
+		#		my @subset = ();
+		#		for ($stateIdx=0; $stateIdx<$n; $stateIdx++) {
+		#			push @subset, $stateIdx+1 if $flags[$stateIdx] == 1; # record state positions
+		#		}
+		#		last if scalar @subset == $n; # exclude complete subset (size=n) and exit while loop
+		#		push @sets,\@subset;
+		#		for ($stateIdx=0; $stateIdx<$n; $stateIdx++){
+		#			if($flags[$stateIdx] == 0) {
+		#				$flags[$stateIdx] = 1;
+		#				last;
+		#			}
+		#			$flags[$stateIdx] = 0;
+		#		}
+		#	}
+		#	foreach my $refSubset (sort{scalar @{$a} <=> scalar @{$b} || $a->[0]<=>$b->[0]} @sets) { # size then 1st state in subset (should be enough)
+		#		$quantifAnnotStrg.= join('+',@{$refSubset}).';';
+		#	}
+		#	print scalar @sets,"\n";
+		#
+		#	$quantifAnnotStrg=~s/;\Z//; # remove trailing ';'
+		#}
+		#els
+		if ($quantifMethod ne 'SSPA' && $quantifParams{'DB'}{'RATIO_TYPE'}[0] ne 'None') {
 			#$quantifAnnotStrg.='::MEAN_STATE=1' if ($quantifParams{'R'}{'design'} && $quantifParams{'R'}{'design'}[0] eq 'PEP_INTENSITY' && $quantifParams{'DB'}{'ALGO_TYPE'}[0] ne 'MSstats');
-			$quantifAnnotStrg.='::MEAN_STATE=1' if $quantifParams{'DB'}{'ALGO_TYPE'}[0] eq 'PEP_INTENSITY';
+			$quantifAnnotStrg.='::MEAN_STATE=1' if $quantifParams{'DB'}{'ALGO_TYPE'}[0]=~/^(PEP_INTENSITY|TDA|DIA)/;
 			$quantifAnnotStrg.="::RATIOS=";
-
-			##if ($quantifParams{'DB'}{'RATIO_TYPE'}[0] eq 'SuperRatio') {
-			##	my $numPrimRatios=$#states;
-			##	foreach my $y (1..$numPrimRatios) { # single ref ratios (Super or Simple ratios or MSstats)
-			##		$quantifAnnotStrg.="#$states[$y]/#$states[0];";
-			##	}
-			##	if ($quantifParams{'DB'}{'RATIO_TYPE'}[0] eq 'SuperRatio' && $numPrimRatios > 1) { # + ratio of primary ratios (Super SILAC)
-			##		foreach my $x (1..$numPrimRatios-1) { # ratios of ratios
-			##			foreach my $y ($x+1..$numPrimRatios){
-			##				$quantifAnnotStrg.="#$states[$y]%$y/#$states[$x]%$x;";
-			##			}
-			##		}
-			##	}
-			##}
-			##else { # all other design-based quantifs => standard pairwise ratios ('Ratio' restricted to 2 states because of poor quality if more)
-			###if ($quantifParams{'DB'}{'RATIO_TYPE'}[0] eq 'Ratio' || (($quantifParams{'R'}{'design'} && $quantifParams{'R'}{'design'}[0]=~/LABELFREE|LABELED/) || ($quantifParams{'DB'}{'ALGO_TYPE'}[0] eq 'MSstats'))) {#}
-			##	foreach my $x (0..$#states-1) {
-			##		foreach my $y ($x+1..$#states){
-			##			$quantifAnnotStrg.="#$states[$y]/#$states[$x];";
-			##		}
-			##		last if $quantifParams{'DB'}{'SINGLE_REF'};
-			##	}
-			##}
 			foreach my $x (0..$#states-1) {
 				foreach my $y ($x+1..$#states) {
 					$quantifAnnotStrg.="#$states[$y]/#$states[$x];";
@@ -328,6 +316,7 @@ if ($quantifType !~ /XICMCQ|XICCORR/) {
 
 		my $sthAQ=$dbh->prepare("SELECT COUNT(*) FROM ANA_QUANTIFICATION WHERE ID_QUANTIFICATION=?");
 		my %quantifNumAna;
+		$numReplicates=0;
 		$quantifAnnotStrg.="::STATES="; #  numRep,#obsID1:#quantifID1(+#obsID2:#quantifID2)(.#obsID3:#quantifID3(+#obsID4:#quantifID4)),#condID;<data for state2>(;...)
 		foreach my $condID (@states) {
 			#my $curGroup=1000; # to make sure not overlap with user-set fracgroups (~ < 20)
@@ -367,14 +356,22 @@ if ($quantifType !~ /XICMCQ|XICCORR/) {
 				push @{$replicateHierarchy{$bioRep}{ $techRepPosition{$bioRep}{$fracGroup} }},"#$obsID:#$parQuantifID:#$anaID:$targetPos";
 				
 				#>To estimate necessary cluster ressources
-				unless ($quantifNumAna{$parQuantifID}) {
-					$sthAQ->execute($parQuantifID);
-					($quantifNumAna{$parQuantifID})=$sthAQ->fetchrow_array;
+				if ($cluster{'on'}) {
+					if ($quantifParams{'DB'}{'ALGO_TYPE'}[0] eq 'SSPA') {
+						$analysisList{$anaID}=1;
+					}
+					else {
+						unless ($quantifNumAna{$parQuantifID}) {
+							$sthAQ->execute($parQuantifID);
+							($quantifNumAna{$parQuantifID})=$sthAQ->fetchrow_array;
+						}
+						push @pepQuantifFiles,[$parQuantifID,$anaID,$targetPos,$quantifNumAna{$parQuantifID}];
+					}
 				}
-				push @pepQuantifFiles,[$parQuantifID,$anaID,$targetPos,$quantifNumAna{$parQuantifID}]; 
 			}
 			my $numBioRep=scalar keys %replicateHierarchy;
 			$quantifAnnotStrg.="$numBioRep,";
+			$numAllBioRep+=$numBioRep;
 			my $firstBioRep=1;
 			foreach my $bioRep(sort{$a<=>$b} keys %replicateHierarchy) {
 				if ($firstBioRep) {$firstBioRep=0;}
@@ -384,6 +381,7 @@ if ($quantifType !~ /XICMCQ|XICCORR/) {
 					if ($firstTechRep) {$firstTechRep=0;}
 					else {$quantifAnnotStrg.='&';} # &: technical replicate separator
 					$quantifAnnotStrg.=join('+',@{$replicateHierarchy{$bioRep}{$techRep}}); # sum up
+					$numReplicates++; # counts all techReps
 				}
 			}
 			$quantifAnnotStrg.=",#$condID;";
@@ -403,7 +401,9 @@ if ($quantifType !~ /XICMCQ|XICCORR/) {
 	my ($quantifMethodID)=$dbh->selectrow_array("SELECT ID_QUANTIFICATION_METHOD FROM QUANTIFICATION_METHOD WHERE CODE=UCASE('$quantifMethod')");
 	#my $sthN=$dbh->prepare("SELECT COUNT(*) FROM QUANTIFICATION Q,ANA_QUANTIFICATION A WHERE Q.ID_QUANTIFICATION=A.ID_QUANTIFICATION AND A.ID_ANALYSIS=? AND NAME LIKE '$qRootName%'");
 	my $focus=($quantifType eq 'SIN' || $quantifType eq 'XIC')? 'peptide' : 'protein';
-	my $sthInsQ=$dbh->prepare("INSERT INTO QUANTIFICATION (ID_QUANTIFICATION_METHOD,ID_MODIFICATION,NAME,FOCUS,QUANTIF_ANNOT,STATUS,UPDATE_DATE,UPDATE_USER) VALUES ($quantifMethodID,?,?,'$focus',?,-1,NOW(),'$userID')");
+	#my $sthInsQ=$dbh->prepare("INSERT INTO QUANTIFICATION (ID_QUANTIFICATION_METHOD,ID_MODIFICATION,NAME,FOCUS,QUANTIF_ANNOT,STATUS,UPDATE_DATE,UPDATE_USER) VALUES ($quantifMethodID,?,?,'$focus',?,-1,NOW(),'$userID')");
+	my $sthInsQ=$dbh->prepare("INSERT INTO QUANTIFICATION (ID_QUANTIFICATION_METHOD,NAME,FOCUS,QUANTIF_ANNOT,STATUS,UPDATE_DATE,UPDATE_USER) VALUES ($quantifMethodID,?,'$focus',?,-1,NOW(),'$userID')"); # NO LONGER USE ID_MODIFICATION
+	my $sthInsModQ=$dbh->prepare("INSERT INTO MULTIMODIF_QUANTIFICATION (ID_QUANTIFICATION,ID_MODIFICATION,MODIF_RANK) VALUES (?,?,?)");
 	my $sthInsAnaQ=$dbh->prepare("INSERT INTO ANA_QUANTIFICATION (ID_QUANTIFICATION,ID_ANALYSIS) VALUES (?,?)");
 	my $sthInsParQ=$dbh->prepare("INSERT INTO PARENT_QUANTIFICATION (ID_QUANTIFICATION,ID_PARENT_QUANTIFICATION,PAR_FUNCTION) VALUES (?,?,?)");
 	#@quantItemList=split(':',$quantItemStrg);
@@ -413,12 +413,12 @@ if ($quantifType !~ /XICMCQ|XICCORR/) {
 		$extraArgStrg=$analysisID;
 		$extraArgStrg.=" $userID" if $quantifType eq 'SIN';
 		my ($anaName)=$dbh->selectrow_array("SELECT NAME FROM ANALYSIS WHERE ID_ANALYSIS=$analysisID");
-		my $quantifName=$quantifParams{'DB'}{'QUANTIF_NAME'}[0].'_'.$anaName; # Auto_quantifType_anaName
+		$quantifName=$quantifParams{'DB'}{'QUANTIF_NAME'}[0].'_'.$anaName; # Auto_quantifType_anaName
 		my ($lastName)=$dbh->selectrow_array("SELECT NAME FROM QUANTIFICATION Q,ANA_QUANTIFICATION A WHERE Q.ID_QUANTIFICATION=A.ID_QUANTIFICATION AND A.ID_ANALYSIS=$analysisID AND FOCUS='$focus' AND NAME LIKE '$qRootName%' ORDER BY Q.ID_QUANTIFICATION DESC LIMIT 1");
 		if ($lastName) {
 			$quantifName.=($lastName=~/#(\d+)\Z/)? " #".($1+1) : " #2";
 		}
-		$sthInsQ->execute(undef,$quantifName,$quantifAnnotStrg);
+		$sthInsQ->execute($quantifName,$quantifAnnotStrg);
 		$quantifID=$dbh->last_insert_id(undef, undef,'QUANTIFICATION','ID_QUANTIFICATION');
 		$sthInsAnaQ->execute($quantifID,$analysisID);
 		
@@ -428,9 +428,21 @@ if ($quantifType !~ /XICMCQ|XICCORR/) {
 		close INFO;
 	}
 	else {# DESIGN updates
-		my $quantifName=$quantifParams{'DB'}{'QUANTIF_NAME'}[0];
-		$sthInsQ->execute($quantifiedModifID,$quantifName,$quantifAnnotStrg);# Add the new created
+		$quantifName=$quantifParams{'DB'}{'QUANTIF_NAME'}[0];
+		my $numQuantifiedModifs=scalar @quantifiedModifIDs;
+		#my $singleQuantifModID=($numQuantifiedModifs==1)? abs($quantifiedModifIDs[0]) : undef;
+		#$sthInsQ->execute($singleQuantifModID,$quantifName,$quantifAnnotStrg);# Add the new created
+		$sthInsQ->execute($quantifName,$quantifAnnotStrg);# Add the new created
 		$quantifID=$dbh->last_insert_id(undef, undef, 'QUANTIFICATION', 'ID_QUANTIFICATION');
+		#if ($numQuantifiedModifs >= 2) { #}
+		if ($numQuantifiedModifs) {
+			my $modifRank=0;
+			foreach my $qModID (@quantifiedModifIDs) { # already sorted in quantif_info.txt
+				$modifRank++;
+				my $usedModifRank=($numQuantifiedModifs==1)? undef : $modifRank;
+				$sthInsModQ->execute($quantifID,abs($qModID),$usedModifRank);
+			}
+		}
 		$quantifItemID=$quantifID;
 		my $designID=$quantifParams{'DB'}{'ID_DESIGN'}[0];
 		$dbh->do("UPDATE QUANTIFICATION SET ID_DESIGN=$designID WHERE ID_QUANTIFICATION=$quantifID");
@@ -493,6 +505,7 @@ if ($quantifType !~ /XICMCQ|XICCORR/) {
 	}
 
 	$sthInsQ->finish;
+	$sthInsModQ->finish;
 	$sthInsAnaQ->finish;
 	$sthInsParQ->finish;
 
@@ -535,7 +548,7 @@ elsif ($quantifType eq 'XICMCQ') {
 	my %quantifParams=&promsQuantif::getQuantificationParameters("$quantifDir/quantif_info.txt");
 	my $qRootName=quotemeta($quantifParams{'DB'}{'QUANTIF_NAME'}[0]); # Name given by user
 	my $anaIDS=join(',', keys (%{$params{'MZXML'}}) );
-	my $quantifName=$quantifParams{'DB'}{'QUANTIF_NAME'}[0];
+	$quantifName=$quantifParams{'DB'}{'QUANTIF_NAME'}[0];
 	my ($lastName)=$dbh->selectrow_array("SELECT NAME FROM QUANTIFICATION Q,ANA_QUANTIFICATION A WHERE Q.ID_QUANTIFICATION=A.ID_QUANTIFICATION AND A.ID_ANALYSIS IN ($anaIDS) AND FOCUS='peptide' AND NAME LIKE '$qRootName%' ORDER BY Q.ID_QUANTIFICATION DESC LIMIT 1");
 	if ($lastName) {
 		$quantifName.=($lastName=~/#(\d+)\Z/)? " #".($1+1) : " #2";
@@ -593,14 +606,20 @@ elsif ($quantifType eq 'XICCORR') {
 ##########################################
 ####>Launching quantification process<#### only 1 child now (PP 03/08/18)
 ##########################################
-if ($cluster{'on'} && $quantifType =~ /^DESIGN/) { #'DESIGN' or 'DESIGN:MSstats' or 'DESIGN:SSPA'
+my $dbh=&promsConfig::dbConnect('no_user');
+my $projectID=&promsMod::getProjectID($dbh,$quantifID,'QUANTIFICATION');
 
+$quantifName = '' if(!$quantifName);
+my $quantiDBInfo = "ID_QUANTIFICATION=$quantifID;TYPE=$quantifType;QUANTIFICATION_NAME=$quantifName";
+$quantiDBInfo .= ";ID_ANALYSIS=$quantItemStrg" if($quantItemStrg);
+my $logFilePath = ($quantItemStrg) ? "$quantifDir/status\_$quantItemStrg.out" : "$quantifDir/status\_$quantifID.out";
+my $errorFilePath = ($quantItemStrg) ? "$currentQuantifDir/$quantItemStrg\_$jobDir\_error.txt" : "$currentQuantifDir/$quantifID\_$jobDir\_error.txt";
+$dbh->do("INSERT INTO JOB_HISTORY (ID_JOB, ID_USER, ID_PROJECT, TYPE, STATUS, FEATURES, SRC_PATH, LOG_PATH, ERROR_PATH, STARTED) VALUES('$jobDir', '$userID', $projectID, 'Quantification [$quantifType]', 'Queued', '$quantiDBInfo', '$quantifDir', '$logFilePath', '$errorFilePath', NOW())");
+$dbh->commit;
+
+if ($cluster{'on'} && $quantifType =~ /^DESIGN/) { #'DESIGN' or 'DESIGN:MSstats' or 'DESIGN:SSPA' or 'DESIGN:TDA'
 	###>Estimating ressources required<###
-	my $dbh=&promsConfig::dbConnect('no_user');
-	my $projectID=&promsMod::getProjectID($dbh,$quantifID,'QUANTIFICATION');
-	$dbh->disconnect;
-
-	my ($maxHours,$maxMem,$numCPU,$jobName);
+	my ($maxHours,$maxMem,$numCPU,$jobName)=(24,'1Gb',1,"myProMS_protQuant_$quantifType\_$quantifID"); # default
 
 	if ($quantifType eq 'DESIGN') {
 		my $numPepValues=0;
@@ -608,40 +627,62 @@ if ($cluster{'on'} && $quantifType =~ /^DESIGN/) { #'DESIGN' or 'DESIGN:MSstats'
 		foreach my $resQuantInfo (@pepQuantifFiles) {
 			my ($parQuantifID,$anaID,$targetPos,$numAna)=@{$resQuantInfo};
 			my $fileKey=$parQuantifID.':'.$targetPos;
-			next if $usedQuantifFile{$fileKey};
-			$usedQuantifFile{$fileKey}=1;
-			my $pepQuantifFile=($targetPos)? "peptide_quantification_$targetPos.txt" : 'peptide_quantification.txt';
-			my $numLines=`wc -l $promsPath{quantification}/project_$projectID/quanti_$parQuantifID/$pepQuantifFile`;
-			#chomp($numLines);
-			$numLines=~s/^(\d+).*/$1/;
-			$numPepValues+=int($numLines/$numAna);
+			unless ($usedQuantifFile{$fileKey}) {
+				my $pepQuantifFile=($targetPos)? "peptide_quantification_$targetPos.txt" : 'peptide_quantification.txt';
+				my $numLines=`wc -l $promsPath{quantification}/project_$projectID/quanti_$parQuantifID/$pepQuantifFile`;
+				#chomp($numLines);
+				$numLines=~s/^(\d+).*/$1/;
+				$usedQuantifFile{$fileKey}=int($numLines/$numAna);
+			}
+			$numPepValues+=$usedQuantifFile{$fileKey};
 		}
-		$maxHours=int(0.5+($numPepValues/25000)); $maxHours=2 if $maxHours < 2; $maxHours=48 if $maxHours > 48; # 1 M lines -> 40 h
-		$maxMem=int(1.5 + 1E-6 * $numPepValues * $numStates);
+		$maxHours=($quantifParams{'DB'}{'RATIO_TYPE'}[0] eq 'None')? 360 : int(0.5+($numPepValues/25000)); $maxHours=2 if $maxHours < 2; $maxHours=48 if $maxHours > 48; # 1 M lines -> 40 h
+		$maxMem=($quantifParams{'DB'}{'RATIO_TYPE'}[0] eq 'None')? int(1.5 + 5E-7 * $numPepValues * $numReplicates) : int(1.5 + 1E-6 * $numPepValues * $numReplicates); #$numStates
 ##		$maxMem=$cluster{'maxMem'} if $maxMem > $cluster{'maxMem'};  done in $cluster{runJob}
 		$maxMem.='Gb';
 		$numCPU=2;
 		$jobName="myProMS_protQuant_DDA_$quantifID";
 	}
-	elsif ($quantifType eq 'DESIGN:MSstats') {
+	elsif ($quantifType =~ /DESIGN:(MSstats|TDA|DIA)/) {
+		my $algoType=(split(':',$quantifType))[1];
 		my $numPepValues=0;
+		my $sthNumPep=$dbh->prepare("SELECT COUNT(*) FROM PEPTIDE WHERE ID_ANALYSIS=?");
 		foreach my $resQuantInfo (@pepQuantifFiles) {
 			my ($parQuantifID,$anaID,$targetPos,$numAna)=@{$resQuantInfo};
-			#my $numLines=`wc -l $promsPath{peptide}/proj_$projectID/ana_$anaID/swath_quanti_$parQuantifID.txt`;
-			my $numLines=`wc -l $promsPath{quantification}/project_$projectID/quanti_$parQuantifID/swath_ana_$anaID.txt`;
-		    #chomp($numLines);
-			$numLines=~s/^(\d+).*/$1/;
-			$numPepValues+=int($numLines/$numAna);
+			if ($algoType eq 'MSstats') {
+				my $numLines=`wc -l $promsPath{quantification}/project_$projectID/quanti_$parQuantifID/swath_ana_$anaID.txt`;
+				#chomp($numLines);
+				$numLines=~s/^(\d+).*/$1/;
+				$numPepValues+=$numLines; #int($numLines/$numAna);
+			}
+			else { # myProMS algo
+				$sthNumPep->execute($anaID);
+				my ($numPep)=$sthNumPep->fetchrow_array;
+				$numPepValues=$numPep if $numPep > $numPepValues; # keep max
+			}
 		}
-		$maxHours=96;
-		$maxMem=int(1.5 + 2E-5 * $numPepValues * $numStates);
+		$sthNumPep->finish;
+		$maxHours=($quantifParams{'DB'}{'RATIO_TYPE'}[0] eq 'None')? 360 : 96;
+		$maxMem=($quantifParams{'DB'}{'RATIO_TYPE'}[0] eq 'None')? int(1.5 + 5E-6 * $numPepValues * $numReplicates) : int(1.5 + 5E-6 * $numPepValues * $numStates);
+		#$maxMem=int(2.5 + 2E-5 * $numPepValues * $numStates);
 ##		$maxMem=($maxMem < 10)? 10 : ($maxMem > $cluster{'maxMem'}) ? $cluster{'maxMem'} : $maxMem;  done in $cluster{runJob}
 		$maxMem.='Gb';
 ##		$numCPU=($cluster{'maxCPUs'} < 10)? $cluster{'maxCPUs'} : 10;  done in $cluster{runJob}
-		$numCPU=10;
-		$jobName="myProMS_protQuant_DIA_$quantifID";
+		$numCPU=($algoType eq 'MSstats')? 8 : 2;
+		my $jobAlgo=($algoType eq 'MSstats')? 'DIA.MSstats' : $algoType;
+		$jobName="myProMS_protQuant_$jobAlgo\_$quantifID";
 	}
-
+	if ($quantifType eq 'DESIGN:SSPA') {
+		my ($numProtValues)=$dbh->selectrow_array("SELECT COUNT(DISTINCT ID_PROTEIN) FROM ANALYSIS_PROTEIN WHERE ID_ANALYSIS IN (".join(',',keys %analysisList).") AND VISIBILITY >= 1");
+		$numProtValues*=$numAllBioRep;
+		$maxHours=48;
+		$maxMem=int(1.5 + $numProtValues*2E-5);
+		$maxMem=1 if $maxMem < 1;
+		$maxMem.='Gb';
+		$numCPU=2;
+		$jobName="myProMS_protQuant_SSPA_$quantifID";
+	}
+	
 	###>Running job on cluster<###
 ##	my $pbsFile="$quantifDir/PBS.txt"; # !!!! Moved to parent directory !!!
 ##	my $pbsErrorFile="$quantifDir/PBSerror.txt"; # !!!! Moved to parent directory !!!
@@ -658,15 +699,19 @@ if ($cluster{'on'} && $quantifType =~ /^DESIGN/) { #'DESIGN' or 'DESIGN:MSstats'
 		maxHours=>$maxHours,
 		jobName=>$jobName,
 		pbsRunDir=>$cgiUnixDir,
-		commandBefore=>"mv $currentQuantifDir/$quantifItemID\_$jobDir\_wait.flag $currentQuantifDir/$quantifItemID\_$jobDir\_run.flag" # run flag file
+		commandBefore=>"mv $currentQuantifDir/$quantifItemID\_$jobDir\_wait.flag $currentQuantifDir/$quantifItemID\_$jobDir\_run.flag", # run flag file
+        noWatch=>'1',
 	);
-	my ($pbsError,$pbsErrorFile)=$cluster{'runJob'}->($quantifDir,$commandString,\%jobParameters);
+	my ($pbsError,$pbsErrorFile, $jobClusterID)=$cluster{'runJob'}->($quantifDir,$commandString,\%jobParameters);
+    
+    # Add cluster job id to current job in DB
+    $dbh->do("UPDATE JOB_HISTORY SET ID_JOB_CLUSTER='C$jobClusterID' WHERE ID_JOB='$jobDir'");
+    $dbh->commit;
+    
 	if ($pbsError) { # move PBS error message to job error file
 		system "cat $pbsErrorFile >> $currentQuantifDir/$quantifID\_$jobDir\_error.txt";
-		my $dbh=&promsConfig::dbConnect('no_user'); # reconnect
 		$dbh->do("UPDATE QUANTIFICATION SET STATUS=-2 WHERE ID_QUANTIFICATION=$quantifID"); # Failed
 		$dbh->commit;
-		$dbh->disconnect;
 	}
 	elsif (-e "$promsPath{quantification}/project_$projectID/quanti_$quantifID") { # Move cluster files to quantif final directory (except if error in quantif)
 		system "mv $quantifDir/*.txt $promsPath{quantification}/project_$projectID/quanti_$quantifID/.";
@@ -675,64 +720,36 @@ if ($cluster{'on'} && $quantifType =~ /^DESIGN/) { #'DESIGN' or 'DESIGN:MSstats'
 
 } # end of cluster launch
 else { # Local launch (web server): No cluster OR XICMCQ|SIN|EMPAI
+    open(WAIT,">>$currentQuantifDir/$quantifID\_$jobDir\_wait.flag"); # flag file (created by selAna4Quantification for other quantif types than DESIGN* & XICMCQ)
+    print WAIT "./$quantifScripts{$quantifType} $quantifID $jobDir $extraArgStrg 2> $currentQuantifDir/$quantifItemID\_$jobDir\_error.txt\n";
+    close WAIT;
+    
+    # Add process PID to current job in DB
+    $dbh->do("UPDATE JOB_HISTORY SET ID_JOB_CLUSTER='L$$' WHERE ID_JOB='$jobDir'");
+    $dbh->commit;
+    
 	rename("$currentQuantifDir/$quantifItemID\_$jobDir\_wait.flag","$currentQuantifDir/$quantifItemID\_$jobDir\_run.flag"); # run flag file
 	#my $analysisStrg=($quantifType =~ /SIN|EMPAI/)? $quantifItemID : '';
 	#my $extraArgStrg=($quantifType eq 'SIN')? " $userID" : '';
+    
 	system "./$quantifScripts{$quantifType} $quantifID $jobDir $extraArgStrg 2> $currentQuantifDir/$quantifItemID\_$jobDir\_error.txt";
+    
 } # end of local launch
-
-#rename("$currentQuantifDir/$quantifItemID\_$jobDir\_run.flag","$currentQuantifDir/$quantifItemID\_$jobDir\_end.flag"); # end flag file
-unlink "$currentQuantifDir/$quantifItemID\_$jobDir\_run.flag";
-sleep 15;
-
-####>Check for error & clean root quantif directory<####
-unless (-s "$currentQuantifDir/$quantifItemID\_$jobDir\_error.txt") {
-	if (-e $quantifDir) {
-		my $numFiles=`ls -l $quantifDir | wc -l`;
-		chomp($numFiles);
-		if ($numFiles*1 <= 2) { # total + only quantif_info.txt
-			#remove_tree($quantifDir);
-			rmtree($quantifDir);
-			#unlink "$currentQuantifDir/$quantifItemID\_$jobDir\_end.flag";
-			unlink "$currentQuantifDir/$quantifItemID\_$jobDir\_error.txt";
-		}
-	}
-	else {unlink "$currentQuantifDir/$quantifItemID\_$jobDir\_error.txt";}
-}
-
-#if (-e $quantifDir) {
-#	unless (-s "$currentQuantifDir/$quantifItemID\_$jobDir\_error.txt") {
-#		my $numFiles=`ls -l $quantifDir | wc -l`;
-#		chomp($numFiles);
-#		if ($numFiles*1 <= 2) { # total + only quantif_info.txt
-#			#remove_tree($quantifDir);
-#			rmtree($quantifDir);
-#			unlink "$currentQuantifDir/$quantifItemID\_$jobDir\_error.txt";
-#			#unlink "$currentQuantifDir/$quantifItemID\_$jobDir\_end.flag";
-#		}
-#	}
-#}
-
-
-
-
-###sub processEndedQuantif {
-###	my ($endedChildPid)=@_;
-###	my $endedQuantItemID=$childPidQuantItemID{$endedChildPid};
-###	if (-s "$currentQuantifDir/$endedQuantItemID\_$jobDir\_error.txt") {
-###		$errorList{$endedQuantItemID}=1;
-###	}
-###	else {
-###		open(FLAG,">$currentQuantifDir/$endedQuantItemID\_$jobDir\_end.flag"); # flag file
-###		print FLAG '#';
-###		close FLAG;
-###		sleep 3;
-###	}
-###	unlink "$currentQuantifDir/$endedQuantItemID\_$jobDir\_run.flag"; # flag file
-###	$numChildren--;
-###}
+$dbh->disconnect;
 
 #####>Revision history<####
+# 1.7.13 [CHANGES] Changed memory requirement for Abundance & DESIGN (PP 07/02/20)
+# 1.7.12 [BUGFIX] Added forgotten culster memory computation for DESIGN:DIA (PP 29/01/20)
+# 1.7.11 [ENHANCEMENT] Improved cluster memory calculation for SSPA & skip SETS recording for SSPA (PP 28/01/20)
+# 1.7.10 [ENHANCEMENT] Improved support for SSPA (PP 22/01/20)
+# 1.7.9 [FEATURE] Compatible with DIA by myProMS and Protein Abundance (PP 10/01/20)
+# 1.7.8 [FEATURE] Compatible with PEPTIDES_NORM parameter (PP 03/12/19)
+# 1.7.7 [ENHANCEMENT] Remove call to singularity image 1.1.19 for DIA quantif & [BUGFIX] Set undef SSPA quantif cluster parameters (PP 21/11/19)
+# 1.7.6 [CHANGES] Add quantification name in job information (VS 19/11/19)
+# 1.7.5 [BUGFIX] Fix DIA quantification computation issue thanks to the new singularity image (VS 18/11/19)
+# 1.7.4 [ENHANCEMENT] Improved cluster memory calculation (PP 31/10/19)
+# 1.7.3 Compatible with the new job monitoring system (VS 09/10/19)
+# 1.7.2 Compatible with multi-modif quantifications & TDA by myProMS (PP 09/07/19)
 # 1.7.1 Cluster memory calculation now corrected for the number of analyses included in peptide quantification (PP 03/05/19)
 # 1.7.0 Compatible with XICCORR quantif type for Isobaric correction (PP 19/02/19)
 # 1.6.6 New cluster memory calculation for DIA (PP 22/01/19) 

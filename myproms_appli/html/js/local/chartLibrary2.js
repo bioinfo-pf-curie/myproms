@@ -1,6 +1,6 @@
 /*
 ################################################################################
-# chartLibrary2.js         1.4.5                                               #
+# chartLibrary2.js         1.5.0                                               #
 # Authors: P. Poullet (Institut Curie)                                         #
 # Contact: patrick.poullet@curie.fr                                            #
 ################################################################################
@@ -171,7 +171,13 @@ function initializeForm(mainC) { // *public*
 		htmlString+='<FIELDSET style="padding:2px;white-space:nowrap"><LEGEND><B>Search:</B></LEGEND>';
 		var searchBoxID=mainC.divID+'_search';
 		var searchResDivID=mainC.divID+'_srchRes';
-		htmlString+='<INPUT type="text" id="'+searchBoxID+'" style="width:140px" value=""><INPUT type="button" value="Go" style="font-weight:bold;font-size:12px;width:40px" onclick="searchDataPoints(cubiojsCharts['+mainC.chartID+'],\''+searchBoxID+'\',\''+searchResDivID+'\')">';
+		htmlString+='<INPUT type="text" id="'+searchBoxID+'" style="width:140px" value=""><INPUT type="button" value="Go" style="font-weight:bold;font-size:12px;width:40px" onclick="searchDataPoints(cubiojsCharts['+mainC.chartID+'],document.getElementById(\''+searchBoxID+'\').value,\''+searchResDivID+'\',';
+		if (typeof(mainC.searchable)=='object') {
+			var extSearchText=mainC.searchable.text || 'Extended search',
+			    extSearchChkID=mainC.divID+'_extSearch';
+			htmlString+='\''+extSearchChkID+'\')"><BR><INPUT type="checkbox" id="'+extSearchChkID+'" value="1"><LABEL for="'+extSearchChkID+'">'+extSearchText+'</LABEL>';
+		}
+		else {htmlString+='null)">';}
 		htmlString+='<DIV id="'+searchResDivID+'"></DIV>'
 		htmlString+="</FIELDSET>\n";
 	}
@@ -955,15 +961,22 @@ function setUnmatchedPointsVisibility(mainC,hideStatus) {
 
 
 /******************* Search ***********************/
-function searchDataPoints(mainC,searchBoxID,searchResDivID) { // *public*
-	var searchText=document.getElementById(searchBoxID).value;
+function searchDataPoints(mainC,searchText,searchResDivID,extSearchChkID,extSearchJobID) { // *public*
+	if (extSearchJobID && (!mainC.extSearchJobID || mainC.extSearchJobID != extSearchJobID)) {return;} // ignore this job (another search was launched after it return)
+	mainC.extSearchJobID=undefined;
 	var searchResDiv=document.getElementById(searchResDivID);
 	if (!searchText || searchText.length < 2) {
 		searchResDiv.innerHTML='<FONT style="color:#DD0000">Search is string too short!</FONT>';
 		return;
 	}
+	if (extSearchChkID !== null && document.getElementById(extSearchChkID).checked) {
+		mainC.extSearchJobID=Date.now();
+		searchResDiv.innerHTML='<FONT style="color:#0000FF">Processing...</FONT>';
+		mainC.searchable.externalSearch(searchDataPoints,[mainC,searchText,searchResDivID,null,mainC.extSearchJobID],1); // (local search function,array of function arguments,index of search text in array). To be recalled by external search function
+		return;
+	}
 //	var minVx,maxVx,minVy,maxVy;
-	var matchList=new Array();
+	var matchList=[];
 	var matchExp=new RegExp(searchText,"i");
 	var neverMatched=true, okProceed100=false, okProceed1000=false;
 	var newZoom={};
@@ -1831,6 +1844,7 @@ function exportSVGtoImg (svgDivId,imgName,exportScript,format) {
 
 /*
 ####>Revision history<####
+# 1.5.0 [FEATURE] Search: Optional external user-provided pre-search (PP 04/10/19)
 # 1.4.5 Double click removes drag area on non-zoomable charts (PP 15/05/19)
 # 1.4.4 Displays both PNG and SVG image export options if format is not specified by user (PP 06/06/18)
 # 1.4.3 Improved chart.showDataSets detection & chart-specific form elements (PP 20/11/16)

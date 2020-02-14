@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# listProteins.cgi           2.4.3                                             #
+# listProteins.cgi           2.4.7											   #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Lists the validated proteins in a project's item                             #
@@ -379,18 +379,31 @@ function compareItems(){
 	window.location="./compareItems.cgi?FRAMES=1&id_project=$projectID&refITEM1="+item1+"&refITEM2="+item2+"&view=$view";
 }
 */
-function setRowVisibility(rowId) {
-	var img_name='img_'+rowId;
-	var img=document.getElementsByName(img_name)[0];
-	var rowBlock=document.getElementById(rowId);
-	if (rowBlock.style.display=="none") { // block is hidden? => show block
+function toggleMatchGroupVisibility(img,rowId) {
+	var otherProtRows=document.getElementsByName('other_'+rowId);
+	var newVis;
+	if (img.src.match('plus')) { //otherProtRows[0].style.display=='none'
+		newVis='';
 		img.src='$promsPath{images}/minus1.gif';
-		rowBlock.style.display="block";
 	}
 	else { //block is shown => hide block
+		newVis='none';
 		img.src='$promsPath{images}/plus.gif';
-		rowBlock.style.display="none";
 	}
+	for (let i=0; i<otherProtRows.length; i++) {
+		otherProtRows[i].style.display=newVis;
+	}
+}
+function showMatchGroup(rowId) {
+	var img=document.getElementById('img_'+rowId);
+	if (img.src.match('plus')) {
+		toggleMatchGroupVisibility(img,rowId);
+	}
+	var topProtRow=document.getElementById('top_'+rowId);
+	topProtRow.scrollIntoView({block:"start",inline:"nearest",behavior:"smooth"});
+	var trueBg=topProtRow.style.backgroundColor;
+	topProtRow.style.backgroundColor='#FF5555'; // '#EDCA7D';
+	setTimeout(function() {topProtRow.style.backgroundColor=trueBg;},2000);
 }
 function getXMLHTTP() {
 	var xhr=null;
@@ -532,13 +545,22 @@ if (scalar %classificationList) {
 }
 
 if (scalar %dbList) {
+	my $foundDB = 0;
 	print "<OPTGROUP id=\"restDBOPTGR\" label=\"+Databanks:\">\n";
 	foreach my $dbID (keys %dbList){
 		print "<OPTION value='db:$dbID'";
-		print ' selected' if ($listFilterType eq 'db' && $listFilter eq "db:$dbID");
+		if ($listFilterType eq 'db' && $listFilter eq "db:$dbID") {
+			print ' selected' if ($listFilterType eq 'db' && $listFilter eq "db:$dbID");
+			$foundDB = 1;
+		}
 		print ">&nbsp;&nbsp;&nbsp;$dbList{$dbID}</OPTION>\n";
 	}
 	print "</OPTGROUP>\n";
+	
+	if(!$foundDB && $listFilterType eq 'db') {
+		$listFilterType = 'pep_all';
+		$listFilter = '';
+	}
 }
 
 my ($divVisibility,$usedValue)=(!$listFilter || $listFilterType =~ /ptm|category|db/)? ('hidden','') : ('visible',$listFilterValue);
@@ -620,12 +642,14 @@ if ($listFilterType eq 'db') {
 	my @idAnalysis = ();
 	getProjectItemAnaIDs(\@idAnalysis);
 	
-	my $sthCP=$dbh->prepare("SELECT DISTINCT(AP.ID_PROTEIN) FROM ANALYSIS_PROTEIN AP INNER JOIN ANALYSIS_DATABANK AD ON AD.ID_ANALYSIS = AP.ID_ANALYSIS AND AD.DB_RANK = AP.DB_RANK WHERE AD.ID_DATABANK=$listFilterValue AND AP.ID_ANALYSIS IN (".join(',', @idAnalysis).")");
-	$sthCP->execute;
-	while (my ($protID)=$sthCP->fetchrow_array) {
-		$dbFilterProteins{$protID}=1;
+	if(@idAnalysis) {
+		my $sthCP=$dbh->prepare("SELECT DISTINCT(AP.ID_PROTEIN) FROM ANALYSIS_PROTEIN AP INNER JOIN ANALYSIS_DATABANK AD ON AD.ID_ANALYSIS = AP.ID_ANALYSIS AND AD.DB_RANK = AP.DB_RANK WHERE AD.ID_DATABANK=$listFilterValue AND AP.ID_ANALYSIS IN (".join(',', @idAnalysis).")");
+		$sthCP->execute;
+		while (my ($protID)=$sthCP->fetchrow_array) {
+			$dbFilterProteins{$protID}=1;
+		}
+		$sthCP->finish;
 	}
-	$sthCP->finish;
 }
 
 ###############################
@@ -764,133 +788,122 @@ sub displayItemChildren {
 ####<<<Fetching & listing proteins for project hierarchy or raw list>>>####
 ###########################################################################
 sub listItemProteins { # $subjectID is for childItem except if item is ANALYSIS
-	my ($subject,$subjectID,$childIdx,$parentStrg)=@_;
-	%listGroups=%listProteins=%timesFound=%bestAnalysis=(); # reset to () %listClusters not reset (obsolete)
-	%allPeptides=%nonRedundPeptides=%nonRedundPepBestAna=%anaPepVmods=();
+	my ($subject, $subjectID, $childIdx, $parentStrg) = @_;
+	my (%masterProteins, %bestNumPep, %bestScore, %bestProtMG, %protPeptides, %anaProtPeptides, %descStatus, %protVarMods, %protVarModsMG, %labelingInfo, %anaProtConfKey, %anaHasQuantifOrGO); #%anaProtVarMods,
+	%listGroups = %listProteins = %timesFound = %bestAnalysis = (); # reset to () %listClusters not reset (obsolete)
+	%allPeptides = %nonRedundPeptides = %nonRedundPepBestAna = %anaPepVmods = ();
 
-	####<List of queries>####
-	my $visibleQuery;
-	if ($subject eq 'ANALYSIS') {
-	 	$visibleQuery="SELECT ID_PROTEIN,ID_ANALYSIS,MATCH_GROUP,NUM_PEP,NUM_MATCH,SCORE,CONF_LEVEL,VISIBILITY,PEP_COVERAGE,PEP_SPECIFICITY FROM ANALYSIS_PROTEIN WHERE VISIBILITY>0 AND ID_ANALYSIS=$subjectID";
+	## Increase GROUP_CONCAT max length because it will contain the peptides ID list, for each protein
+	$dbh->do("SET SESSION group_concat_max_len = 1000000");
+	
+	## Build visible proteins query
+	my $visibleProtQuery = "SELECT P.ID_PROTEIN, A.ID_ANALYSIS, MATCH_GROUP, NUM_PEP, NUM_MATCH, AP.SCORE, CONF_LEVEL, VISIBILITY, PEP_COVERAGE, PEP_SPECIFICITY,
+						ALIAS, PROT_DES, ORGANISM, ID_MASTER_PROTEIN, MW, 
+						GROUP_CONCAT(PPA.ID_PEPTIDE) AS ID_PEPTIDE, 
+						AQ.ID_QUANTIFICATION, GOA.ID_GOANALYSIS
+						FROM PROTEIN P
+						INNER JOIN ANALYSIS_PROTEIN AP ON P.ID_PROTEIN=AP.ID_PROTEIN
+						INNER JOIN ANALYSIS A ON A.ID_ANALYSIS=AP.ID_ANALYSIS
+						INNER JOIN PEPTIDE_PROTEIN_ATTRIB PPA ON PPA.ID_PROTEIN=P.ID_PROTEIN
+						INNER JOIN PEPTIDE PEP ON PPA.ID_PEPTIDE=PEP.ID_PEPTIDE AND PPA.ID_ANALYSIS=A.ID_ANALYSIS
+						LEFT JOIN ANA_QUANTIFICATION AQ ON AQ.ID_ANALYSIS=A.ID_ANALYSIS LEFT JOIN QUANTIFICATION Q ON AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND (Q.FOCUS IS NULL OR Q.FOCUS='protein')
+						LEFT JOIN GOANA_ANALYSIS GOA ON GOA.ID_ANALYSIS=A.ID_ANALYSIS";
+						
+	my $visibleProtQueryFilter = " WHERE VISIBILITY>0 AND (CONF_LEVEL=0 || ((CONF_LEVEL=1 || CONF_LEVEL=2) && PEP.VALID_STATUS > 0))"; 
+	
+	if ($subject !~ /SAMPLE|ANALYSIS/) {
+		$visibleProtQuery .= " INNER JOIN SAMPLE S ON A.ID_SAMPLE=S.ID_SAMPLE ";
+		
+		if ($subject eq 'GEL2D') {
+			$visibleProtQuery .= " INNER JOIN SPOT SP ON S.ID_SPOT=SP.ID_SPOT ";
+		} elsif ($subject eq 'PROJECT') {
+			$visibleProtQuery .= " INNER JOIN EXPERIMENT E ON E.ID_PROJECT=P.ID_PROJECT AND S.ID_EXPERIMENT=E.ID_EXPERIMENT ";
+			$visibleProtQueryFilter  .= " AND E.ID_EXPERIMENT IN (
+								SELECT E2.ID_EXPERIMENT
+								FROM EXPERIMENT E2
+								LEFT JOIN USER_EXPERIMENT_LOCK EU ON EU.ID_EXPERIMENT=E2.ID_EXPERIMENT
+								WHERE E2.ID_PROJECT=$subjectID AND NOT (EU.ID_USER IS NOT NULL AND EU.ID_USER='$userID')
+							)";
+		}
 	}
-	elsif ($subject eq 'SAMPLE') {
-		#if ($classificationID == 0){ # project hierarchy
-		#	$visibleQuery="SELECT ID_PROTEIN,ID_ANALYSIS,MATCH_GROUP,NUM_PEP,NUM_MATCH,SCORE,CONF_LEVEL,VISIBILITY,PEP_COVERAGE,PEP_SPECIFICITY FROM ANALYSIS_PROTEIN WHERE VISIBILITY>0 AND ID_ANALYSIS=$subjectID";
-		#}
-		#else { # raw list
-			$visibleQuery="SELECT ID_PROTEIN,A.ID_ANALYSIS,MATCH_GROUP,NUM_PEP,NUM_MATCH,SCORE,CONF_LEVEL,VISIBILITY,PEP_COVERAGE,PEP_SPECIFICITY FROM ANALYSIS_PROTEIN AP,ANALYSIS A WHERE AP.ID_ANALYSIS=A.ID_ANALYSIS AND VISIBILITY>0 AND ID_SAMPLE=$subjectID";
-		#}
-	}
-	elsif ($subject eq 'SPOT') {
-		$visibleQuery="SELECT ID_PROTEIN,A.ID_ANALYSIS,MATCH_GROUP,NUM_PEP,NUM_MATCH,SCORE,CONF_LEVEL,VISIBILITY,PEP_COVERAGE,PEP_SPECIFICITY FROM ANALYSIS_PROTEIN AP,ANALYSIS A,SAMPLE S WHERE AP.ID_ANALYSIS=A.ID_ANALYSIS AND A.ID_SAMPLE=S.ID_SAMPLE AND VISIBILITY>0 AND ID_SPOT=$subjectID";
-	}
-	elsif ($subject eq 'GEL2D') {
-		$visibleQuery="SELECT ID_PROTEIN,A.ID_ANALYSIS,MATCH_GROUP,NUM_PEP,NUM_MATCH,SCORE,CONF_LEVEL,VISIBILITY,PEP_COVERAGE,PEP_SPECIFICITY FROM ANALYSIS_PROTEIN AP,ANALYSIS A,SAMPLE S,SPOT SP WHERE AP.ID_ANALYSIS=A.ID_ANALYSIS AND A.ID_SAMPLE=S.ID_SAMPLE AND S.ID_SPOT=SP.ID_SPOT AND VISIBILITY>0 AND ID_GEL2D=$subjectID";
-	}
-	elsif ($subject eq 'EXPERIMENT') {
-		#if ($classificationID == 0){ # project hierarchy
-		#	$visibleQuery="SELECT ID_PROTEIN,ANALYSIS.ID_ANALYSIS,MATCH_GROUP,NUM_PEP,NUM_MATCH,SCORE,CONF_LEVEL,VISIBILITY,PEP_COVERAGE,PEP_SPECIFICITY FROM ANALYSIS_PROTEIN,ANALYSIS WHERE ANALYSIS_PROTEIN.ID_ANALYSIS=ANALYSIS.ID_ANALYSIS AND VISIBILITY>0 AND ID_SAMPLE=$subjectID";
-		#}
-		#else { # raw list
-			$visibleQuery="SELECT ID_PROTEIN,A.ID_ANALYSIS,MATCH_GROUP,NUM_PEP,NUM_MATCH,SCORE,CONF_LEVEL,VISIBILITY,PEP_COVERAGE,PEP_SPECIFICITY FROM ANALYSIS_PROTEIN AP,ANALYSIS A,SAMPLE S WHERE AP.ID_ANALYSIS=A.ID_ANALYSIS AND A.ID_SAMPLE=S.ID_SAMPLE AND VISIBILITY>0 AND ID_EXPERIMENT=$subjectID";
-		#}
-	}
-	elsif ($subject eq 'PROJECT') {
-		#if ($classificationID == 0){ # project hierarchy
-		#	$visibleQuery="SELECT ID_PROTEIN,ANALYSIS.ID_ANALYSIS,MATCH_GROUP,NUM_PEP,NUM_MATCH,SCORE,CONF_LEVEL,VISIBILITY,PEP_COVERAGE,PEP_SPECIFICITY FROM ANALYSIS_PROTEIN,ANALYSIS,SAMPLE WHERE ANALYSIS_PROTEIN.ID_ANALYSIS=ANALYSIS.ID_ANALYSIS AND ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE AND VISIBILITY>0 AND ID_EXPERIMENT=$subjectID";
-		#}
-		#else { # raw list
-			$visibleQuery="SELECT P.ID_PROTEIN,ID_ANALYSIS,MATCH_GROUP,NUM_PEP,NUM_MATCH,SCORE,CONF_LEVEL,VISIBILITY,PEP_COVERAGE,PEP_SPECIFICITY FROM PROTEIN P,ANALYSIS_PROTEIN AP WHERE P.ID_PROTEIN=AP.ID_PROTEIN AND VISIBILITY>0 AND ID_PROJECT=$subjectID";
-		#}
-	}
-	my $sthVis=$dbh->prepare($visibleQuery);
-#my $sthPep=$dbh->prepare("SELECT PEP_SEQ,VAR_MOD FROM PEPTIDE_PROTEIN_ATTRIB PPA,PEPTIDE P WHERE PPA.ID_PEPTIDE=P.ID_PEPTIDE AND VALID_STATUS > 0 AND PPA.ID_ANALYSIS=? AND ID_PROTEIN=?"); # skip ghost
-	my %confKey=(0=>'virtual',1=>'real',2=>'real');
-	#my %sthPep=(
-	#	'real'=>$dbh->prepare("SELECT PEP_SEQ,VAR_MOD FROM PEPTIDE_PROTEIN_ATTRIB PPA,PEPTIDE P WHERE PPA.ID_PEPTIDE=P.ID_PEPTIDE AND VALID_STATUS > 0 AND PPA.ID_ANALYSIS=? AND ID_PROTEIN=?"), # skip ghost peptides
-	#	'virtual'=>$dbh->prepare("SELECT PEP_SEQ,VAR_MOD FROM PEPTIDE_PROTEIN_ATTRIB PPA,PEPTIDE P WHERE PPA.ID_PEPTIDE=P.ID_PEPTIDE AND PPA.ID_ANALYSIS=? AND ID_PROTEIN=?") # ghost peptides <- virtual prot
-	#);
-	my %sthPep=(
-		'real'=>$dbh->prepare("SELECT PEP_SEQ,PPA.ID_PEPTIDE FROM PEPTIDE_PROTEIN_ATTRIB PPA,PEPTIDE P WHERE PPA.ID_PEPTIDE=P.ID_PEPTIDE AND VALID_STATUS > 0 AND PPA.ID_ANALYSIS=? AND ID_PROTEIN=?"), # skip ghost peptides
-		'virtual'=>$dbh->prepare("SELECT PEP_SEQ,PPA.ID_PEPTIDE FROM PEPTIDE_PROTEIN_ATTRIB PPA,PEPTIDE P WHERE PPA.ID_PEPTIDE=P.ID_PEPTIDE AND PPA.ID_ANALYSIS=? AND ID_PROTEIN=?") # ghost peptides <- virtual prot
-	);
-	#my $sthPepMod=$dbh->prepare("SELECT ID_MODIFICATION,POS_STRING FROM PEPTIDE_MODIFICATION WHERE ID_PEPTIDE=? ORDER BY ID_MODIFICATION ASC");
+	
+	$visibleProtQueryFilter .= ($subject =~ /ANALYSIS|PROJECT/) ? " AND ".substr($subject, 0, 1).".ID_$subject=$subjectID " : "AND ID_$subject=$subjectID";
+	$visibleProtQuery .= $visibleProtQueryFilter;
+	$visibleProtQuery .= " GROUP BY P.ID_PROTEIN, A.ID_ANALYSIS";
+	
+	my $sthVis=$dbh->prepare($visibleProtQuery);
+	my $sthPepMod=$dbh->prepare("SELECT PM.ID_MODIFICATION, P.ID_PEPTIDE, POS_STRING
+								 FROM PEPTIDE_MODIFICATION PM 
+								 INNER JOIN MODIFICATION M ON PM.ID_MODIFICATION=M.ID_MODIFICATION 
+								 INNER JOIN ANALYSIS_MODIFICATION AM ON AM.ID_MODIFICATION=M.ID_MODIFICATION 
+								 INNER JOIN PEPTIDE P ON PM.ID_PEPTIDE=P.ID_PEPTIDE 
+								 WHERE AM.ID_ANALYSIS=? AND P.ID_ANALYSIS=? AND P.VALID_STATUS > 0");
 
-	my $sthPepMod=$dbh->prepare("SELECT PM.ID_MODIFICATION,P.ID_PEPTIDE,POS_STRING FROM PEPTIDE_MODIFICATION PM, MODIFICATION M, ANALYSIS_MODIFICATION AM, PEPTIDE P WHERE AM.ID_MODIFICATION=M.ID_MODIFICATION AND PM.ID_MODIFICATION=M.ID_MODIFICATION AND PM.ID_PEPTIDE=P.ID_PEPTIDE AND AM.ID_ANALYSIS=? AND P.ID_ANALYSIS=? AND P.VALID_STATUS > 0");
-#my $sthLabel=$dbh->prepare("SELECT QUANTIF_ANNOT FROM QUANTIFICATION Q,ANA_QUANTIFICATION AQ WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND FOCUS='peptide' AND QUANTIF_ANNOT LIKE 'LABEL=SILAC%' AND AQ.ID_ANALYSIS=?");
-my $sthAQ=$dbh->prepare("SELECT COUNT(*) FROM ANA_QUANTIFICATION AQ,QUANTIFICATION Q WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND FOCUS='protein' AND ID_ANALYSIS=?");
-my $sthGOA=$dbh->prepare("SELECT COUNT(*) FROM GOANA_ANALYSIS WHERE ID_ANALYSIS=?");
 
-	####<Finding best analysis for each protein>####
+	## Find best analysis for each visible protein 
 	$sthVis->execute;
-	my (%bestNumPep,%bestScore,%bestProtMG,%protPeptides,%anaProtPeptides,%descStatus,%protVarMods,%protVarModsMG,%labelingInfo,%anaProtConfKey,%anaHasQuantifOrGO); #%anaProtVarMods,
-	while (my ($protID,$anaID,$matchGroup,$numPep,$numMatch,$score,$conf,$vis,$cov,$specif)=$sthVis->fetchrow_array) {
-		if(!defined($anaPepVmods{$anaID})) {###> Get all the Modifications once (efficiency)
-			$sthPepMod->execute($anaID,$anaID);
+	while (my ($protID,$anaID,$matchGroup,$numPep,$numMatch,$score,$conf,$vis,$cov,$specif,$alias,$desc,$org,$masterProtID,$mw,$pepIDs,$quantiID,$goID)=$sthVis->fetchrow_array) {
+		
+		# Retrieve allowed PTMs (only once)
+		if(!defined($anaPepVmods{$anaID})) {
+			$sthPepMod->execute($anaID, $anaID);
 			while (my ($modID,$pepID,$posString) = $sthPepMod->fetchrow_array) {
 				$anaPepVmods{$anaID}{$pepID}{$modID}=$posString;
 			}
 		}
+		
 		next if (($listFilterType eq 'category' && !$catFilterProteins{$protID}) || ($listFilterType eq 'db' && !$dbFilterProteins{$protID})); # category filter
 		$timesFound{$protID}++;
 		next if ($listFilterType eq 'pep_ba' && $numPep<$listFilterValue); # type #1 (pep_ba)
-		$cov=0 unless $cov;
-		$anaProtConfKey{$anaID}{$protID}=$confKey{$conf};
-		@{$listProteins{$protID}}=();
-		$bestProtMG{$anaID}{$matchGroup}=$protID if $vis==2;
+		
+		# Store protein's information
+		$desc = ($desc) ? &promsMod::HTMLcompatible($desc) : '';
+		$descStatus{$protID} = ($desc =~ /no\sdescription/) ? 2 : ($desc =~ /unnamed/) ? 1 : 0;
+		$cov = 0 unless($cov);
+		$org = '' unless($org);
+		$mw = sprintf("%.1f", ($mw) ? $mw/1000 : 0); # MW
+		@{$masterProteins{$masterProtID}} = () if($masterProtID);
+		@{$listProteins{$protID}} = ($alias, $desc, $org, $masterProtID, $mw);
+		
+		# Check if it corresponds to the best protein
+		$bestProtMG{$anaID}{$matchGroup} = $protID if($vis==2);
 		if (!$bestNumPep{$protID} || $bestNumPep{$protID}<$numPep || ($bestNumPep{$protID}==$numPep && $bestScore{$protID}<$score)) {
-			$bestNumPep{$protID}=$numPep;
-			$bestScore{$protID}=$score;
-			@{$bestAnalysis{$protID}}=($anaID,$matchGroup);
-			#@{$listProteins{$protID}}=();
-			if ($selPepType=~/^ba/) { # ba or banr
-				@{$listGroups{$protID}{$protID}}=($numPep,$numMatch,$score,$conf,$vis,$cov,$specif);
-				undef $protVarMods{$protID} if $protVarMods{$protID}; # reset to match best ana only
-			}
-			else {
-				@{$listGroups{$protID}{$protID}}[0,1]=($numPep,$numMatch);
-			}
-			##>Check if bestAna has protein quantif or GO analysis
-			unless (defined $anaHasQuantifOrGO{$anaID}) {
-				$sthAQ->execute($anaID);
-				($anaHasQuantifOrGO{$anaID})=$sthAQ->fetchrow_array;
-				unless ($anaHasQuantifOrGO{$anaID}) {
-					$sthGOA->execute($anaID);
-					($anaHasQuantifOrGO{$anaID})=$sthGOA->fetchrow_array;
-				}
-			}
-		}
-		$allPeptides{$protID}+=$numPep;
+			$bestNumPep{$protID} = $numPep;
+			$bestScore{$protID} = $score;
+			@{$bestAnalysis{$protID}} = ($anaID, $matchGroup);
 
-		###<Labeling
-		#unless ($labelingInfo{$anaID}) {
-		#	$sthLabel->execute($anaID);
-		#	my ($quantifAnnot)=$sthLabel->fetchrow_array;
-		#	#### TODO ##################################################################################"
-		#
-		#
-		#}
-		$sthPep{$anaProtConfKey{$anaID}{$protID}}->execute($anaID,$protID); # for real OR virtual prot
-		#while (my ($pepSeq,$varMod)=$sthPep{$anaProtConfKey{$anaID}{$protID}}->fetchrow_array) {
-		#	my $varModStrg=($varMod)? " $varMod" : '';
-		#	$protPeptides{$protID}{"$pepSeq$varModStrg"}++;
-		#	$anaProtPeptides{$protID}{$anaID}{"$pepSeq$varModStrg"}++;
-		#	#$anaProtVarMods{$protID}{$anaID}{$varMod}=1 if $varMod;
-		#	&getVarModCodes(\%{$protVarMods{$protID}},$varModStrg) if $varMod;
-		#}
-		while (my ($pepSeq,$idPeptide)=$sthPep{$anaProtConfKey{$anaID}{$protID}}->fetchrow_array) {
+			if ($selPepType =~ /^ba/) { # ba or banr
+				@{$listGroups{$protID}{$protID}} = ($numPep, $numMatch, $score, $conf, $vis, $cov, $specif);
+				undef $protVarMods{$protID} if($protVarMods{$protID}); # reset to match best ana only
+			} else {
+				@{$listGroups{$protID}{$protID}}[0,1] = ($numPep, $numMatch);
+			}
+			
+			# Check if bestAna has protein quantif or GO analysis
+			if(!$anaHasQuantifOrGO{$anaID} && ($goID || $quantiID)) {
+				$anaHasQuantifOrGO{$anaID} = 1;
+			}
+		}
+		$allPeptides{$protID} += $numPep;
+
+		
+		# Add PTMs to protein annotations
+		my @pepIDs = split(/,/, $pepIDs);
+		
+		foreach my $pepID (@pepIDs) {
 			my $varModStrg='';
-			if ($anaPepVmods{$anaID} && $anaPepVmods{$anaID}{$idPeptide}) {
-				foreach my $modID (sort{$a<=>$b} keys %{$anaPepVmods{$anaID}{$idPeptide}}) {
-					$varModStrg.="+$modID:$anaPepVmods{$anaID}{$idPeptide}{$modID}";
-					$protVarMods{$protID}{$modID}=1 if $projectVarMods{$modID};
+			if ($anaPepVmods{$anaID} && $anaPepVmods{$anaID}{$pepID}) {
+				foreach my $modID (sort{$a<=>$b} keys %{$anaPepVmods{$anaID}{$pepID}}) {
+					$varModStrg.="+$modID:$anaPepVmods{$anaID}{$pepID}{$modID}";
+					$protVarMods{$protID}{$modID}=1 if($projectVarMods{$modID});
 				}
 			}
-			$protPeptides{$protID}{"$pepSeq$varModStrg"}++;
-			$anaProtPeptides{$protID}{$anaID}{"$pepSeq$varModStrg"}++;
+			$protPeptides{$protID}{"$pepID$varModStrg"}++;
+			$anaProtPeptides{$protID}{$anaID}{"$pepID$varModStrg"}++;
 		}
-#print "*",join(' + ',keys %{$protVarMods{$protID}}),"*<BR>\n" if $protID==364;
-		if ($selPepType !~ /^ba/) { # get best of each property
+		
+		# Store best value for each property
+		if ($selPepType !~ /^ba/) {
 			$listGroups{$protID}{$protID}[2]=$score if (!$listGroups{$protID}{$protID}[2] || $listGroups{$protID}{$protID}[2] < $score);
 			$listGroups{$protID}{$protID}[3]=$conf if (!$listGroups{$protID}{$protID}[3] || $listGroups{$protID}{$protID}[3] < $conf);
 			$listGroups{$protID}{$protID}[4]=$vis if (!$listGroups{$protID}{$protID}[4] || $listGroups{$protID}{$protID}[4] < $vis);
@@ -899,17 +912,14 @@ my $sthGOA=$dbh->prepare("SELECT COUNT(*) FROM GOANA_ANALYSIS WHERE ID_ANALYSIS=
 		}
 	}
 	$sthVis->finish;
-	$sthAQ->finish;
-	$sthGOA->finish;
-	#$sthLabel->finish;
-
-	####<Non-redundant peptides>###
+	
+	## Non-redundant peptides
 	foreach my $protID (keys %protPeptides) {
 		$nonRedundPeptides{$protID}=scalar keys %{$protPeptides{$protID}};
 		$nonRedundPepBestAna{$protID}=scalar keys %{$anaProtPeptides{$protID}{$bestAnalysis{$protID}[0]}};
 	}
 
-	####<Applying filter (type #2)>####
+	## Apply filter (type #2)
 	if ($listFilter && $listFilterType ne 'pep_ba' && $listFilterType !~ /species|top|category|db/) {
 		foreach my $protID (keys %listGroups) {
 			next if ($listFilterType eq 'pep_all' && $allPeptides{$protID}>=$listFilterValue);
@@ -932,80 +942,79 @@ my $sthGOA=$dbh->prepare("SELECT COUNT(*) FROM GOANA_ANALYSIS WHERE ID_ANALYSIS=
 		}
 	}
 
-	####<Fetching list of proteins in best groups>####
+	## Fetching list of proteins in best groups
 	my %proteinGroups; # record in how many groups a protein is found (needed for filter 'top' & 'species')
-	if ($expandMode) {
-		my $sthGroup=$dbh->prepare("SELECT ID_PROTEIN,NUM_PEP,NUM_MATCH,SCORE,CONF_LEVEL,VISIBILITY,PEP_COVERAGE,PEP_SPECIFICITY FROM ANALYSIS_PROTEIN WHERE ID_ANALYSIS=? AND MATCH_GROUP=?");
+	if ($expandMode && %listGroups) {
+		my (%matchGroups, %idAnalysis);
 		foreach my $protID (keys %listGroups) {
- 			@{$listProteins{$protID}}=();
-			next if $listGroups{$protID}{$protID}[4]==1; # only for best of group (vis=2) cannot be 0
-			$sthGroup->execute(@{$bestAnalysis{$protID}}); # anaID,matchGr
-			while (my ($pID,@protInfo)=$sthGroup->fetchrow_array) {
-				$proteinGroups{$pID}{$protID}=1;
-				next if $pID==$protID; # already recorded
-				@{$listGroups{$protID}{$pID}}=@protInfo;
-				@{$listProteins{$pID}}=();
-				##>Fetching non-redondant peptides for all proteins in MG
-				#if ($selPepType eq 'banr') {
-				$sthPep{$confKey{$protInfo[3]}}->execute($bestAnalysis{$protID}[0],$pID);
-				my %protPeptidesMG;
-				#while (my ($pepSeq,$varMod)=$sthPep{$confKey{$protInfo[3]}}->fetchrow_array) {
-				#	my $varModStrg=($varMod)? " $varMod" : '';
-				#	$protPeptidesMG{"$pepSeq$varModStrg"}++;
-				#	#$protVarModsMG{$pID}{$varMod}=1 if $varMod; # Needed for Var Mod list
-				#	&getVarModCodes(\%{$protVarModsMG{$pID}},$varModStrg) if $varMod; # && $listFilterType eq 'ptm'); # for PTM filter
-				#}
-				while (my ($pepSeq,$idPeptide)=$sthPep{$confKey{$protInfo[3]}}->fetchrow_array) {
-					my $varModStrg='';
-					if ($anaPepVmods{$bestAnalysis{$protID}[0]} && $anaPepVmods{$bestAnalysis{$protID}[0]}{$idPeptide}) {
-						foreach my $modID (sort{$a<=>$b} keys %{$anaPepVmods{$bestAnalysis{$protID}[0]}{$idPeptide}}) {
-							$varModStrg.="+$modID:$anaPepVmods{$bestAnalysis{$protID}[0]}{$idPeptide}{$modID}";
-							$protVarModsMG{$pID}{$modID}=1 if $projectVarMods{$modID};
-						}
+			#@{$listProteins{$protID}}=();
+			next if($listGroups{$protID}{$protID}[4]==1); # only for best of group (vis=2) cannot be 0
+			my ($idAna, $matchGroup) = @{$bestAnalysis{$protID}};
+			$matchGroups{$matchGroup} = 1;
+			$idAnalysis{$idAna} = 1;
+		}
+		
+		my $sthGroup=$dbh->prepare("SELECT AP.ID_PROTEIN,
+									GROUP_CONCAT(PPA.ID_PEPTIDE) AS ID_PEPTIDE,
+									ALIAS, PROT_DES, ORGANISM, ID_MASTER_PROTEIN, MW, 
+									NUM_PEP, NUM_MATCH, AP.SCORE, CONF_LEVEL, VISIBILITY, PEP_COVERAGE, PEP_SPECIFICITY 
+									FROM ANALYSIS_PROTEIN AP
+									INNER JOIN PROTEIN P ON P.ID_PROTEIN=AP.ID_PROTEIN
+									INNER JOIN PEPTIDE_PROTEIN_ATTRIB PPA ON PPA.ID_PROTEIN=AP.ID_PROTEIN
+									INNER JOIN PEPTIDE PEP ON PPA.ID_PEPTIDE=PEP.ID_PEPTIDE AND PPA.ID_ANALYSIS=AP.ID_ANALYSIS
+									WHERE AP.ID_ANALYSIS IN (".join(', ', keys %idAnalysis).") AND MATCH_GROUP IN (".join(', ', keys %matchGroups).")
+										AND (CONF_LEVEL=0 || ((CONF_LEVEL=1 || CONF_LEVEL=2) && PEP.VALID_STATUS > 0))
+									GROUP BY AP.ID_PROTEIN, AP.ID_ANALYSIS
+									ORDER BY AP.ID_ANALYSIS, MATCH_GROUP, VISIBILITY DESC");
+		
+		$sthGroup->execute();
+		my $matchGroupHeadID;
+		while (my ($pID, $pepIDs, $alias, $desc, $org, $masterProtID, $mw, @protInfo) = $sthGroup->fetchrow_array) {
+			$matchGroupHeadID = $pID if($protInfo[4] == 2);
+			$proteinGroups{$matchGroupHeadID}{$pID} = 1;
+			next if($pID == $matchGroupHeadID); # already recorded
+			@{$listGroups{$matchGroupHeadID}{$pID}} = @protInfo;
+			
+			# Fetching non-redondant peptides for all proteins in MG
+			my %protPeptidesMG;
+			my @pepIDs = split(/,/, $pepIDs);
+			
+			foreach my $pepID (@pepIDs) {
+				my $varModStrg='';
+				if ($anaPepVmods{$bestAnalysis{$matchGroupHeadID}[0]} && $anaPepVmods{$bestAnalysis{$matchGroupHeadID}[0]}{$pepID}) {
+					foreach my $modID (sort{$a<=>$b} keys %{$anaPepVmods{$bestAnalysis{$matchGroupHeadID}[0]}{$pepID}}) {
+						$varModStrg.="+$modID:$anaPepVmods{$bestAnalysis{$matchGroupHeadID}[0]}{$pepID}{$modID}";
+						$protVarModsMG{$pID}{$modID}=1 if($projectVarMods{$modID});
 					}
-					$protPeptidesMG{"$pepSeq$varModStrg"}++;
 				}
-				$nonRedundPepBestAna{$pID}=scalar keys %protPeptidesMG if $selPepType eq 'banr'; # Non-redondant peptides for all proteins in MG
-				#}
+				$protPeptidesMG{"$pepID$varModStrg"}++;
 			}
 			
+			$desc = ($desc) ? &promsMod::HTMLcompatible($desc) : '';
+			$org = '' unless($org);
+			$mw = sprintf("%.1f", ($mw) ? $mw/1000 : 0); # MW
+			$descStatus{$pID} = ($desc =~ /no\sdescription/) ? 2 : ($desc =~ /unnamed/) ? 1 : 0;
+			@{$masterProteins{$masterProtID}} = () if($masterProtID);
+			@{$listProteins{$pID}} = ($alias, $desc, $org, $masterProtID, $mw);
+			
+			$nonRedundPepBestAna{$pID}=scalar keys %protPeptidesMG if($selPepType eq 'banr'); # Non-redondant peptides for all proteins in MG
 		}
+			
 		$sthGroup->finish;
 	}
-	$sthPep{'real'}->finish;
-	$sthPep{'virtual'}->finish;
 	$sthPepMod->finish;
 
-	####<Fetching info on all proteins in selected match groups>####
-	my %masterProteins;
-	my $sthProt=$dbh->prepare("SELECT ALIAS,PROT_DES,ORGANISM,ID_MASTER_PROTEIN,MW FROM PROTEIN WHERE ID_PROTEIN=?");
-	foreach my $protID (keys %listProteins) {
-		$sthProt->execute($protID);
-		@{$listProteins{$protID}}=$sthProt->fetchrow_array;
-		$listProteins{$protID}[1]='' unless $listProteins{$protID}[1];
-		$listProteins{$protID}[2]='' unless $listProteins{$protID}[2];
-		$listProteins{$protID}[4]=0 unless $listProteins{$protID}[4];
-		$listProteins{$protID}[1]=&promsMod::HTMLcompatible($listProteins{$protID}[1]); # DES
-		$listProteins{$protID}[4]=sprintf "%.1f",$listProteins{$protID}[4]/1000; # MW
-		$descStatus{$protID}=($listProteins{$protID}[1] =~/no\sdescription/)? 2 : ($listProteins{$protID}[1] =~/unnamed/)? 1 : 0;
-		@{$masterProteins{$listProteins{$protID}[3]}}=() if $listProteins{$protID}[3];
-	}
-	$sthProt->finish;
-
-	####<Fetching master proteins info>####
-	my ($geneNameID)=$dbh->selectrow_array("SELECT ID_IDENTIFIER FROM IDENTIFIER WHERE CODE='GN'");
-	my $sthMP=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_MASTER_PROTEIN=? AND ID_IDENTIFIER=$geneNameID ORDER BY RANK");
-	foreach my $masterProtID (keys %masterProteins) {
-		$sthMP->execute($masterProtID);
-		while (my ($gene)=$sthMP->fetchrow_array) {
-			push @{$masterProteins{$masterProtID}},$gene;
-			#$geneNameWidth=length($gene)*11 if $geneNameWidth<length($gene)*11;
+	## Fetching master proteins info
+	if(%masterProteins) {
+		my $sthMP=$dbh->prepare("SELECT ID_MASTER_PROTEIN,VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_MASTER_PROTEIN IN (".join(', ', keys %masterProteins).") AND ID_IDENTIFIER=$geneNameID ORDER BY RANK");
+		$sthMP->execute();
+		while (my ($masterProtID, $gene)=$sthMP->fetchrow_array) {
+			push @{$masterProteins{$masterProtID}}, $gene;
 		}
+		$sthMP->finish;
 	}
-	$sthMP->finish;
-	#$tableWidth=250+$geneNameWidth+70+55+60+60+570+11;
 
-	####<Applying filter (type #3: top or species)>####
+	## Applying filter (type #3: top or species)
 	if ($listFilter && ($listFilterType eq 'top' || $listFilterType eq 'species')) {
 		foreach my $protID (keys %proteinGroups) {$proteinGroups{$protID}=scalar keys %{$proteinGroups{$protID}};}
 		my $count=0;
@@ -1023,13 +1032,7 @@ my $sthGOA=$dbh->prepare("SELECT COUNT(*) FROM GOANA_ANALYSIS WHERE ID_ANALYSIS=
 		}
 	}
 
-	####<Extending PTMs filter to peptide>####
-	#if ($extPtmFilterPep) {
-	#	my $refPepCount=($selPepType eq 'all')? \%allPeptides : ($selPepType eq 'anr')? \%nonRedundPeptides : ($selPepType eq 'banr')? \%nonRedundPepBestAna : undef;
-	#	&correctPeptideCount(\%listGroups,$refPepCount);
-	#}
-
-	####<Generating PTMs string>####
+	## Generating PTMs string
 	my (%proteinPTMs,%itemPTMs);
 	foreach my $protID (keys %listGroups) {
 		##>Visible protein
@@ -1045,13 +1048,13 @@ my $sthGOA=$dbh->prepare("SELECT COUNT(*) FROM GOANA_ANALYSIS WHERE ID_ANALYSIS=
 	}
 	$itemPTMtext=&convertVarMods(\%itemPTMs,'item');
 
-	####<Printing data in table>####
+	## Printing data in table
 	my $itemType=&promsMod::getItemType($subject);
 	&prepareTable($subject,$subjectID,$itemType,$childIdx,$parentStrg,scalar keys %listGroups,scalar keys %listProteins);
 	$bgColor=$color1;
 	foreach my $protID (sort {&itemSort($view)} keys %listGroups) {
 		my $protPosInMG=0;
-		my $rowID;
+		my $rowID="$subjectID"."_$protID";
 		foreach my $pID (sort {$listGroups{$protID}{$b}[4]<=>$listGroups{$protID}{$a}[4] || $listGroups{$protID}{$b}[0]<=>$listGroups{$protID}{$a}[0] || $listGroups{$protID}{$b}[2]<=>$listGroups{$protID}{$a}[2] || $descStatus{$a} <=> $descStatus{$b} || $listProteins{$a}[0] cmp $listProteins{$b}[0]} keys %{$listGroups{$protID}}) { # sort by visibility>peptide>score>desc_val>alias
 			my ($foundString,$expandString);
 			my ($protClass,$protPopup)=&promsMod::getProteinClass($listGroups{$protID}{$pID}[3],$listGroups{$protID}{$pID}[4]); # conf,vis
@@ -1061,15 +1064,14 @@ my $sthGOA=$dbh->prepare("SELECT COUNT(*) FROM GOANA_ANALYSIS WHERE ID_ANALYSIS=
 				if ($expandMode) {
 					my $numProtMGr=scalar keys %{$listGroups{$protID}};
 					if ($numProtMGr > 1){ # there are hidden proteins
-						$rowID="$subjectID"."_$protID";
-						$expandString="&nbsp;<A href=\"javascript:setRowVisibility('$rowID')\" onmouseover=\"popup('<B>Best Analysis:<BR>$numProtMGr</B> proteins in <B>Match Group</B>.<BR>Click to show/hide proteins.')\" onmouseout=\"popout()\"><IMG border=0 align=top name=\"img_$rowID\" src=\"$promsPath{images}/plus.gif\"></A>";
+						#$rowID="$subjectID"."_$protID";
+						$expandString="&nbsp;<IMG border=0 align=top id=\"img_$rowID\" src=\"$promsPath{images}/plus.gif\" onclick=\"toggleMatchGroupVisibility(this,'$rowID')\" onmouseover=\"popup('<B>Best Analysis:<BR>$numProtMGr</B> proteins in <B>Match Group</B>.<BR>Click to show/hide proteins.')\" onmouseout=\"popout()\">";
 					}
 					else {
 						if ($listGroups{$protID}{$pID}[4]==1) { # visiblity=1: protein is listed outside it's match group
 # 							$expandString="&nbsp<ACRONYM class=\"$protClass\" onmouseover=\"popup('Protein was made <B>visible</B> by a user.<BR>It is listed outside its <B>Match Group</B>.')\" onmouseout=\"popout()\">";
 							my $refRowID="$subjectID"."_$bestProtMG{$bestAnalysis{$protID}[0]}{$bestAnalysis{$protID}[1]}"; # {anaID}{matchGroup}
-							$expandString="&nbsp;<A href=\"javascript:setRowVisibility('$refRowID')\" onmouseover=\"popup('Protein was made <B>visible</B>.<BR>It is listed outside its <B>Match Group</B>.<BR>Click to show/hide proteins in <B>Match Group</B>.')\" onmouseout=\"popout()\">";
-							$expandString.="<IMG width=16 height=22 align=top src=\"$promsPath{images}/out_group.gif\"></A>"; # </ACRONYM>";
+							$expandString.="&nbsp;<IMG width=16 height=22 align=top src=\"$promsPath{images}/out_group.gif\" onclick=\"showMatchGroup('$refRowID')\" onmouseover=\"popup('Protein was made <B>visible</B>.<BR>It is listed outside its <B>Match Group</B>.<BR>Click to show/hide proteins in <B>Match Group</B>.')\" onmouseout=\"popout()\">"; # </ACRONYM>";
 						}
 						else {
 							$expandString="&nbsp;<IMG width=16 height=22 align=top src=\"$promsPath{images}/space.gif\">";
@@ -1087,12 +1089,18 @@ my $sthGOA=$dbh->prepare("SELECT COUNT(*) FROM GOANA_ANALYSIS WHERE ID_ANALYSIS=
 			}
 
 			##<Begining of visible/hidden row(s)
-			if ($protPosInMG==2) { # create a new table for the 2ndary proteins
-				print "</TABLE>\n"; # end table
-				print "<TABLE align=center width=$tableWidth border=0 cellspacing=0 cellpadding=0 id=\"$rowID\" style=\"display:none\">\n";
+			##if ($protPosInMG==2) { # create a new table for the 2ndary proteins
+			##	print "</TABLE>\n"; # end table
+			##	print "<TABLE align=center width=$tableWidth border=0 cellspacing=0 cellpadding=0 id=\"$rowID\" style=\"display:none\">\n";
+			##}
+			print "<TR class=\"list\" bgcolor=\"$bgColor\" valign=top";
+			if ($protPosInMG==1) { # top prot
+				print " id=\"top_$rowID\"";
 			}
-			print "<TR class=\"list\" bgcolor=\"$bgColor\" valign=top>\n";
-
+			else { # lower prot in MG (hidden)
+				print " name=\"other_$rowID\" style=\"display:none\"";
+			}
+			print ">\n";
 			#<Protein
 			my $displayedName=$listProteins{$pID}[0];
 			my $nameIsShorten=0;
@@ -1101,7 +1109,7 @@ my $sthGOA=$dbh->prepare("SELECT COUNT(*) FROM GOANA_ANALYSIS WHERE ID_ANALYSIS=
 				$nameIsShorten=1;
 			}
 			print qq
-|<TD width=250 align=left nowrap>$expandString<A class="$protClass" href="javascript:sequenceView($pID,$bestAnalysis{$protID}[0])" onmouseover="popup('<FONT class=\\'$protClass\\'>$listProteins{$pID}[0]</FONT><BR>$protPopup')" onmouseout="popout()">$displayedName$proteinPTMs{$protID}{$pID}</A>$foundString</TD>
+|<TD align=left nowrap>$expandString<A class="$protClass" href="javascript:sequenceView($pID,$bestAnalysis{$protID}[0])" onmouseover="popup('<FONT class=\\'$protClass\\'>$listProteins{$pID}[0]</FONT><BR>$protPopup')" onmouseout="popout()">$displayedName$proteinPTMs{$protID}{$pID}</A>$foundString</TD>
 |;
 			#<Gene name
 			if ($listProteins{$pID}[3] && $masterProteins{$listProteins{$pID}[3]}[0]) { # gene is not always defined even if master prot is
@@ -1114,9 +1122,9 @@ my $sthGOA=$dbh->prepare("SELECT COUNT(*) FROM GOANA_ANALYSIS WHERE ID_ANALYSIS=
 			else {print "<TD class=\"$protClass\" width=$geneNameWidth align=left>&nbsp;-</TD>\n";}
 			#<Mass
 			my $mass=($listProteins{$pID}[4]==0)? '-' : $listProteins{$pID}[4];
-			print "<TD class=\"$protClass\" width=72 align=right>$mass&nbsp;&nbsp;</TD>\n";
+			print "<TD class=\"$protClass\" align=right>$mass&nbsp;&nbsp;</TD>\n";
 			#<Peptides
-			print "<TD class=\"$protClass\" width=60 align=center>";
+			print "<TD class=\"$protClass\" align=center>";
 			my $pepValue=($selPepType eq 'all')? $allPeptides{$pID} : ($selPepType eq 'anr')? $nonRedundPeptides{$pID} : ($selPepType eq 'banr')? $nonRedundPepBestAna{$pID} : $listGroups{$protID}{$pID}[0];
 			if ($pID==$protID && ($timesFound{$protID}>1 || $listGroups{$protID}{$protID}[0] != $nonRedundPepBestAna{$protID})) {
 				print "<ACRONYM onmouseover=\"popup('<B><U>Peptides:</U><BR>&nbsp;-All in $itemType:</B> $allPeptides{$protID}";
@@ -1135,28 +1143,29 @@ my $sthGOA=$dbh->prepare("SELECT COUNT(*) FROM GOANA_ANALYSIS WHERE ID_ANALYSIS=
 # 			print "<TD width=70 align=center>$listGroups{$protID}{$pID}[2]</TD>\n";
 
 			#<Specificity
-			print "<TD class=\"$protClass\" width=65 align=center>$listGroups{$protID}{$pID}[6]</TD>\n";
+			print "<TD class=\"$protClass\" align=center>$listGroups{$protID}{$pID}[6]</TD>\n";
 			#<Coverage
 			my $covText=(!$listGroups{$protID}{$pID}[5])? '?' : ($listGroups{$protID}{$pID}[5] > 0)? $listGroups{$protID}{$pID}[5] : '&lt;'.abs($listGroups{$protID}{$pID}[5]);
-			print "<TD class=\"$protClass\" width=65 align=center>$covText</TD>\n";
+			print "<TD class=\"$protClass\" align=center>$covText</TD>\n";
 
 			#<Description - Species
-			print "<TD width=575>$listProteins{$pID}[1] <FONT class=\"org\">$listProteins{$pID}[2]</FONT></TD>\n";
+			print "<TD>$listProteins{$pID}[1] <FONT class=\"org\">$listProteins{$pID}[2]</FONT></TD>\n";
 	    	print "</TR>\n";
     	} # end of pID loop
 
     	##<End of visible/hidden row(s)
     	if ($protPosInMG>1 && $protPosInMG == scalar keys %{$listGroups{$protID}}) {
 	    	# Edit & Peptide Distribution buttons
-	    	print "<TR bgcolor=\"$bgColor\"><TD colspan=7>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;\n";
+	    	print "<TR bgcolor=\"$bgColor\" name=\"other_$rowID\" style=\"display:none\"><TD colspan=7>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;\n";
 	    	print "<INPUT type=\"button\" class=\"font11\" value=\"Peptide Distribution\" onclick=\"graphicalView('group','$bestAnalysis{$protID}[0]:$bestAnalysis{$protID}[1]')\">\n";
 	    	if ($projectAccess ne 'guest' && $projectStatus <= 0) {
 		    	print "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;";
 				my $disabStrg=($anaHasQuantifOrGO{$bestAnalysis{$protID}[0]})? ' disabled' : '';
 		    	print "<INPUT type=\"button\" class=\"font11\"  value=\"Edit Match Group\" onclick=\"editMatchGroup($bestAnalysis{$protID}[0],$bestAnalysis{$protID}[1])\"$disabStrg>\n";
 	    	}
-	    	print "</TD></TR></TABLE>\n"; # end visible/hidden table
-	    	print "<TABLE align=center border=0 cellpadding=0 cellspacing=0 width=$tableWidth>\n"; # start next table
+			print "</TD></TR>\n";
+	    	##print "</TABLE>\n"; # end visible/hidden table
+	    	##print "<TABLE align=center border=0 cellpadding=0 cellspacing=0 width=$tableWidth>\n"; # start next table
     	}
     	$bgColor=($bgColor eq $color1)? $color2 : $color1;
 	} # end of protID loop
@@ -1167,292 +1176,158 @@ my $sthGOA=$dbh->prepare("SELECT COUNT(*) FROM GOANA_ANALYSIS WHERE ID_ANALYSIS=
 ####<<<Fetching & listing proteins for user-defined classifications>>>####
 ##########################################################################
 sub listClassProteins {
-	my ($categoryID,$filter)=@_;
-	%listProteins=%timesFound=%bestAnalysis=(); # reset to () %listClusters not reset (obsolete)
-	%allPeptides=%nonRedundPeptides=%nonRedundPepBestAna=%anaPepVmods=();
-
-	####<List of queries>####
-	my $visibleQuery;
-	if ($item eq 'analysis') {
-		#if ($filter){ # unclassified proteins
-	 		$visibleQuery="SELECT ID_PROTEIN,ID_ANALYSIS,NUM_PEP,NUM_MATCH,SCORE,CONF_LEVEL,PEP_COVERAGE,PEP_SPECIFICITY FROM ANALYSIS_PROTEIN WHERE VISIBILITY>0 AND ID_ANALYSIS=$itemID";
-		#}
-		#else {
-		#	$visibleQuery="SELECT ANALYSIS_PROTEIN.ID_PROTEIN,ID_ANALYSIS,NUM_PEP,NUM_MATCH,SCORE,CONF_LEVEL,PEP_COVERAGE,PEP_SPECIFICITY FROM ANALYSIS_PROTEIN,CATEGORY_PROTEIN WHERE ANALYSIS_PROTEIN.ID_PROTEIN=CATEGORY_PROTEIN.ID_PROTEIN AND VISIBILITY>0 AND ID_ANALYSIS=$itemID AND ID_CATEGORY=$categoryID";
-		#}
+	my ($categoryID, $filter)=@_;
+	%listProteins = %timesFound = %bestAnalysis = (); # reset to () %listClusters not reset (obsolete)
+	%allPeptides = %nonRedundPeptides = %nonRedundPepBestAna = %anaPepVmods = ();
+	my $subject = uc($item);
+	
+	## Increase GROUP_CONCAT max length because it will contain the peptides ID list, for each protein
+	$dbh->do("SET SESSION group_concat_max_len = 1000000");
+	
+	## Build visible proteins query
+	my $visibleProtQuery = "SELECT P.ID_PROTEIN, A.ID_ANALYSIS, NUM_PEP, NUM_MATCH, AP.SCORE, CONF_LEVEL, PEP_COVERAGE, PEP_SPECIFICITY,
+						ALIAS, PROT_DES, ORGANISM, ID_MASTER_PROTEIN, MW, 
+						GROUP_CONCAT(PPA.ID_PEPTIDE) AS ID_PEPTIDE 
+						FROM PROTEIN P 
+						INNER JOIN ANALYSIS_PROTEIN AP ON P.ID_PROTEIN=AP.ID_PROTEIN 
+						INNER JOIN ANALYSIS A ON A.ID_ANALYSIS=AP.ID_ANALYSIS 
+						INNER JOIN PEPTIDE_PROTEIN_ATTRIB PPA ON PPA.ID_PROTEIN=P.ID_PROTEIN 
+						INNER JOIN PEPTIDE PEP ON PPA.ID_PEPTIDE=PEP.ID_PEPTIDE AND PPA.ID_ANALYSIS=A.ID_ANALYSIS";
+						
+	my $visibleProtQueryFilter = " WHERE VISIBILITY>0 AND (CONF_LEVEL=0 || ((CONF_LEVEL=1 || CONF_LEVEL=2) && PEP.VALID_STATUS > 0))"; 
+	
+	if ($subject !~ /SAMPLE|ANALYSIS/) {
+		$visibleProtQuery .= " INNER JOIN SAMPLE S ON A.ID_SAMPLE=S.ID_SAMPLE ";
+		
+		if ($subject eq 'GEL2D') {
+			$visibleProtQuery .= " INNER JOIN SPOT SP ON S.ID_SPOT=SP.ID_SPOT ";
+		} elsif ($subject eq 'PROJECT') {
+			$visibleProtQuery .= " INNER JOIN EXPERIMENT E ON E.ID_PROJECT=P.ID_PROJECT AND S.ID_EXPERIMENT=E.ID_EXPERIMENT ";
+			$visibleProtQueryFilter  .= " AND E.ID_EXPERIMENT IN (
+								SELECT E2.ID_EXPERIMENT
+								FROM EXPERIMENT E2
+								LEFT JOIN USER_EXPERIMENT_LOCK EU ON EU.ID_EXPERIMENT=E2.ID_EXPERIMENT
+								WHERE E2.ID_PROJECT=$itemID AND NOT (EU.ID_USER IS NOT NULL AND EU.ID_USER='$userID')
+							)";
+		}
 	}
-	elsif ($item eq 'sample') {
-		#if ($filter){ # unclassified proteins
-			$visibleQuery="SELECT ID_PROTEIN,ANALYSIS.ID_ANALYSIS,NUM_PEP,NUM_MATCH,SCORE,CONF_LEVEL,PEP_COVERAGE,PEP_SPECIFICITY FROM ANALYSIS_PROTEIN,ANALYSIS WHERE ANALYSIS_PROTEIN.ID_ANALYSIS=ANALYSIS.ID_ANALYSIS AND VISIBILITY>0 AND ID_SAMPLE=$itemID";
-		#}
-		#else {
-		#	$visibleQuery="SELECT ANALYSIS_PROTEIN.ID_PROTEIN,ANALYSIS.ID_ANALYSIS,NUM_PEP,NUM_MATCH,SCORE,CONF_LEVEL,PEP_COVERAGE,PEP_SPECIFICITY FROM ANALYSIS_PROTEIN,CATEGORY_PROTEIN,ANALYSIS WHERE ANALYSIS.ID_ANALYSIS=ANALYSIS_PROTEIN.ID_ANALYSIS AND ANALYSIS_PROTEIN.ID_PROTEIN=CATEGORY_PROTEIN.ID_PROTEIN AND VISIBILITY>0 AND ANALYSIS.ID_SAMPLE=$itemID AND ID_CATEGORY=$categoryID";
-		#}
-	}
-	elsif ($item eq 'spot') {
-		#if ($filter){ # unclassified proteins
-			$visibleQuery="SELECT ID_PROTEIN,ANALYSIS.ID_ANALYSIS,NUM_PEP,NUM_MATCH,SCORE,CONF_LEVEL,PEP_COVERAGE,PEP_SPECIFICITY FROM ANALYSIS_PROTEIN,ANALYSIS,SAMPLE WHERE ANALYSIS_PROTEIN.ID_ANALYSIS=ANALYSIS.ID_ANALYSIS AND ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE AND VISIBILITY>0 AND ID_SPOT=$itemID";
-		#}
-		#else {
-		#	$visibleQuery="SELECT ANALYSIS_PROTEIN.ID_PROTEIN,ANALYSIS.ID_ANALYSIS,NUM_PEP,NUM_MATCH,SCORE,CONF_LEVEL,PEP_COVERAGE,PEP_SPECIFICITY FROM ANALYSIS,ANALYSIS_PROTEIN,SAMPLE,CATEGORY_PROTEIN WHERE ANALYSIS_PROTEIN.ID_ANALYSIS=ANALYSIS.ID_ANALYSIS AND ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE AND ANALYSIS_PROTEIN.ID_PROTEIN=CATEGORY_PROTEIN.ID_PROTEIN AND VISIBILITY>0 AND ID_SPOT=$itemID AND ID_CATEGORY=$categoryID";
- 		#}
-	}
-	elsif ($item eq 'gel2d') {
-		#if ($filter){ # unclassified proteins
-			$visibleQuery="SELECT ID_PROTEIN,ANALYSIS.ID_ANALYSIS,NUM_PEP,NUM_MATCH,SCORE,CONF_LEVEL,PEP_COVERAGE,PEP_SPECIFICITY FROM ANALYSIS_PROTEIN,ANALYSIS,SAMPLE,SPOT WHERE ANALYSIS_PROTEIN.ID_ANALYSIS=ANALYSIS.ID_ANALYSIS AND ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE AND SAMPLE.ID_SPOT=SPOT.ID_SPOT AND VISIBILITY>0 AND ID_GEL2D=$itemID";
-		#}
-		#else {
-		#	$visibleQuery="SELECT ANALYSIS_PROTEIN.ID_PROTEIN,ANALYSIS.ID_ANALYSIS,NUM_PEP,NUM_MATCH,SCORE,CONF_LEVEL,PEP_COVERAGE,PEP_SPECIFICITY FROM ANALYSIS,ANALYSIS_PROTEIN,SAMPLE,SPOT,CATEGORY_PROTEIN WHERE ANALYSIS_PROTEIN.ID_ANALYSIS=ANALYSIS.ID_ANALYSIS AND ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE AND SAMPLE.ID_SPOT=SPOT.ID_SPOT AND ANALYSIS_PROTEIN.ID_PROTEIN=CATEGORY_PROTEIN.ID_PROTEIN AND VISIBILITY>0 AND ID_GEL2D=$itemID AND ID_CATEGORY=$categoryID";
- 		#}
-	}
-	elsif ($item eq 'experiment') {
-		#if ($filter){ # unclassified proteins
-			$visibleQuery="SELECT ID_PROTEIN,ANALYSIS.ID_ANALYSIS,NUM_PEP,NUM_MATCH,SCORE,CONF_LEVEL,PEP_COVERAGE,PEP_SPECIFICITY FROM ANALYSIS_PROTEIN,ANALYSIS,SAMPLE WHERE ANALYSIS_PROTEIN.ID_ANALYSIS=ANALYSIS.ID_ANALYSIS AND ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE AND VISIBILITY>0 AND ID_EXPERIMENT=$itemID";
-		#}
-		#else {
-		#	$visibleQuery="SELECT ANALYSIS_PROTEIN.ID_PROTEIN,ANALYSIS.ID_ANALYSIS,NUM_PEP,NUM_MATCH,SCORE,CONF_LEVEL,PEP_COVERAGE,PEP_SPECIFICITY FROM ANALYSIS,ANALYSIS_PROTEIN,SAMPLE,CATEGORY_PROTEIN WHERE ANALYSIS_PROTEIN.ID_ANALYSIS=ANALYSIS.ID_ANALYSIS AND ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE AND ANALYSIS_PROTEIN.ID_PROTEIN=CATEGORY_PROTEIN.ID_PROTEIN AND VISIBILITY>0 AND ID_EXPERIMENT=$itemID AND ID_CATEGORY=$categoryID";
- 		#}
-	}
-	elsif ($item eq 'project') {
-		#if ($filter){ # unclassified proteins
-			$visibleQuery="SELECT PROTEIN.ID_PROTEIN,ID_ANALYSIS,NUM_PEP,NUM_MATCH,SCORE,CONF_LEVEL,PEP_COVERAGE,PEP_SPECIFICITY FROM PROTEIN,ANALYSIS_PROTEIN WHERE PROTEIN.ID_PROTEIN=ANALYSIS_PROTEIN.ID_PROTEIN AND VISIBILITY>0 AND ID_PROJECT=$itemID";
-		#}
-		#else {
-		#	$visibleQuery="SELECT PROTEIN.ID_PROTEIN,ID_ANALYSIS,NUM_PEP,NUM_MATCH,SCORE,CONF_LEVEL,PEP_COVERAGE,PEP_SPECIFICITY FROM PROTEIN,ANALYSIS_PROTEIN,CATEGORY_PROTEIN WHERE PROTEIN.ID_PROTEIN=ANALYSIS_PROTEIN.ID_PROTEIN AND PROTEIN.ID_PROTEIN=CATEGORY_PROTEIN.ID_PROTEIN AND VISIBILITY>0 AND ID_PROJECT=$itemID AND ID_CATEGORY=$categoryID";
-		#}
-	}
-	my $sthVis=$dbh->prepare($visibleQuery);
-
-	#my $sthPep=$dbh->prepare("SELECT PEP_SEQ,VAR_MOD FROM PEPTIDE_PROTEIN_ATTRIB PPA,PEPTIDE P WHERE PPA.ID_PEPTIDE=P.ID_PEPTIDE AND VALID_STATUS > 0 AND PPA.ID_ANALYSIS=? AND ID_PROTEIN=?");
-	my $sthPep=$dbh->prepare("SELECT PEP_SEQ,P.ID_PEPTIDE FROM PEPTIDE_PROTEIN_ATTRIB PPA,PEPTIDE P WHERE PPA.ID_PEPTIDE=P.ID_PEPTIDE AND VALID_STATUS > 0 AND PPA.ID_ANALYSIS=? AND ID_PROTEIN=?");
-	#my $sthPepMod=$dbh->prepare("SELECT ID_MODIFICATION,POS_STRING FROM PEPTIDE_MODIFICATION WHERE ID_PEPTIDE=? ORDER BY ID_MODIFICATION ASC");
+	
+	$visibleProtQueryFilter .= ($subject =~ /ANALYSIS|PROJECT/) ? " AND ".substr($subject, 0, 1).".ID_$subject=$itemID " : "AND ID_$subject=$itemID";
+	$visibleProtQuery .= $visibleProtQueryFilter;
+	$visibleProtQuery .= " GROUP BY P.ID_PROTEIN, A.ID_ANALYSIS";
+	
+	my $sthVis=$dbh->prepare($visibleProtQuery);
 	my $sthPepMod=$dbh->prepare("SELECT PM.ID_MODIFICATION,P.ID_PEPTIDE,POS_STRING FROM PEPTIDE_MODIFICATION PM, MODIFICATION M, ANALYSIS_MODIFICATION AM, PEPTIDE P WHERE AM.ID_MODIFICATION=M.ID_MODIFICATION AND PM.ID_MODIFICATION=M.ID_MODIFICATION AND PM.ID_PEPTIDE=P.ID_PEPTIDE AND AM.ID_ANALYSIS=? AND P.ID_ANALYSIS=? AND P.VALID_STATUS > 0");
 
 	####<List of proteins in current Category>####
 	my %catProteins;
 	if (!$filter) { # proteins in classification
-		my $sthCP=$dbh->prepare("SELECT ID_PROTEIN FROM CATEGORY_PROTEIN WHERE ID_CATEGORY=$categoryID");
+		my $sthCP=$dbh->prepare("SELECT DISTINCT CP.ID_PROTEIN, P.ALIAS, NUM_PEP, PEP_COVERAGE, PEP_SPECIFICITY, PROT_DES, MW, ORGANISM
+								FROM CATEGORY_PROTEIN CP
+								INNER JOIN PROTEIN P ON CP.ID_PROTEIN=P.ID_PROTEIN
+								INNER JOIN ANALYSIS_PROTEIN AP ON P.ID_PROTEIN=AP.ID_PROTEIN
+								INNER JOIN ANALYSIS A ON A.ID_ANALYSIS=AP.ID_ANALYSIS
+								INNER JOIN SAMPLE S ON S.ID_SAMPLE=A.ID_SAMPLE
+								INNER JOIN EXPERIMENT E ON E.ID_PROJECT=P.ID_PROJECT AND S.ID_EXPERIMENT=E.ID_EXPERIMENT
+								WHERE ID_CATEGORY=$categoryID AND P.ID_PROJECT=$projectID AND E.ID_EXPERIMENT IN (
+									SELECT E2.ID_EXPERIMENT
+									FROM EXPERIMENT E2
+									LEFT JOIN USER_EXPERIMENT_LOCK EU ON EU.ID_EXPERIMENT=E2.ID_EXPERIMENT
+									WHERE E2.ID_PROJECT=$projectID AND NOT (EU.ID_USER IS NOT NULL AND EU.ID_USER='$userID')
+								)");
 		$sthCP->execute;
-		while (my ($protID)=$sthCP->fetchrow_array) {
+		while (my ($protID, $alias, $numPep, $pepCoverage, $pepSpe, $desc, $mw, $org)=$sthCP->fetchrow_array) {
 			next if ($listFilterType eq 'category' && !$catFilterProteins{$protID});
 			$catProteins{$protID}=1;
 			$classProteins{$protID}=1; # global
-			@{$listProteins{$protID}}=(0,0,0,0,0,0); # default
+			@{$listProteins{$protID}}=($alias,$desc,$org,'','','','','','','',''); # default
 		}
 		$sthCP->finish;
 	}
-	
+		
 	####<List of visible proteins in selected Project item>####
-	my (%bestNumPep,%bestScore,%protPeptides,%anaProtPeptides,%protVarMods); #,%anaProtVarMods
+	my (%bestNumPep,%bestScore,%protPeptides,%anaProtPeptides,%protVarMods,%masterProteins); #,%anaProtVarMods
 	$sthVis->execute;
-	while (my ($protID,$anaID,$numPep,$numMatch,$score,$conf,$cov,$specif)=$sthVis->fetchrow_array) {
+	while (my ($protID,$anaID,$numPep,$numMatch,$score,$conf,$cov,$specif,$alias,$desc,$org,$masterProtID,$mw,$pepIDs)=$sthVis->fetchrow_array) {
 		next if ((!$filter && !$catProteins{$protID}) || ($filter && $classProteins{$protID})); # next if (classProt wanted && prot not a cat) || (classProt not wanted && prot in any cat))
 		next if ($listFilterType eq 'category' && !$catFilterProteins{$protID});
 		$timesFound{$protID}++;
 		next if ($listFilterType eq 'pep_ba' && $numPep<$listFilterValue);
-		if (!defined($anaPepVmods{$anaID})) {###> Get all the Modifications once (efficiency)
-			$sthPepMod->execute($anaID,$anaID);
+		
+		# Retrieve allowed PTMs (only once)
+		if(!defined($anaPepVmods{$anaID})) {
+			$sthPepMod->execute($anaID, $anaID);
 			while (my ($modID,$pepID,$posString) = $sthPepMod->fetchrow_array) {
 				$anaPepVmods{$anaID}{$pepID}{$modID}=$posString;
 			}
 		}
-		$cov=0 unless $cov;
+		
+		# Store protein's information
+		$desc = ($desc) ? &promsMod::HTMLcompatible($desc) : '';
+		$cov = 0 unless($cov);
+		$org = '' unless($org);
+		$mw = sprintf("%.1f", ($mw) ? $mw/1000 : 0); # MW
+		@{$masterProteins{$masterProtID}} = () if($masterProtID);
+		$allPeptides{$protID} += $numPep;
+		@{$listProteins{$protID}}[0,1,2,3,4] = ($alias, $desc, $org, $masterProtID, $mw);
+		
+		# Check if it corresponds to the best protein
 		if (!$bestNumPep{$protID} || $bestNumPep{$protID}<$numPep || ($bestNumPep{$protID}==$numPep && $bestScore{$protID}<$score)) {
-			$bestNumPep{$protID}=$numPep;
-			$bestScore{$protID}=$score;
-			$bestAnalysis{$protID}=$anaID;
-			if ($selPepType=~/^ba/) { # ba or banr
-				@{$listProteins{$protID}}=($numPep,$numMatch,$score,$conf,$cov,$specif); # will be unshifted +5!!!
-				undef $protVarMods{$protID} if $protVarMods{$protID}; # reset to match best ana only
-			}
-			else {
-				@{$listProteins{$protID}}[0,1]=($numPep,$numMatch);
+			$bestNumPep{$protID} = $numPep;
+			$bestScore{$protID} = $score;
+			$bestAnalysis{$protID} = $anaID;
+
+			if ($selPepType =~ /^ba/) { # ba or banr
+				@{$listProteins{$protID}}[5,6,7,8,9,10] = ($numPep, $numMatch, $score, $conf, $cov, $specif);
+				undef $protVarMods{$protID} if($protVarMods{$protID}); # reset to match best ana only
+			} else {
+				@{$listProteins{$protID}}[5,6] = ($numPep, $numMatch);
 			}
 		}
-
-		$allPeptides{$protID}+=$numPep;
-		$sthPep->execute($anaID,$protID);
-		#while (my ($pepSeq,$varMod)=$sthPep->fetchrow_array) {
-		#	my $varModStrg=($varMod)? " $varMod" : '';
-		#	$protPeptides{$protID}{"$pepSeq$varModStrg"}++;
-		#	$anaProtPeptides{$protID}{$anaID}{"$pepSeq$varModStrg"}++;
-		#	#$anaProtVarMods{$protID}{$anaID}{$varMod}=1 if $varMod;
-		#	&getVarModCodes(\%{$protVarMods{$protID}},$varModStrg) if $varMod;
-		#}
-		while (my ($pepSeq,$idPeptide)=$sthPep->fetchrow_array) {
+		
+		# Add PTMs to protein annotations
+		my @pepIDs = split(/,/, $pepIDs);
+		
+		foreach my $pepID (@pepIDs) {
 			my $varModStrg='';
-			if ($anaPepVmods{$anaID} && $anaPepVmods{$anaID}{$idPeptide}) {
-				foreach my $modID (sort{$a<=>$b} keys %{$anaPepVmods{$anaID}{$idPeptide}}) {
-					$varModStrg.="+$modID:$anaPepVmods{$anaID}{$idPeptide}{$modID}";
-					$protVarMods{$protID}{$modID}=1 if $projectVarMods{$modID};
+			if ($anaPepVmods{$anaID} && $anaPepVmods{$anaID}{$pepID}) {
+				foreach my $modID (sort{$a<=>$b} keys %{$anaPepVmods{$anaID}{$pepID}}) {
+					$varModStrg.="+$modID:$anaPepVmods{$anaID}{$pepID}{$modID}";
+					$protVarMods{$protID}{$modID}=1 if($projectVarMods{$modID});
 				}
 			}
-			$protPeptides{$protID}{"$pepSeq$varModStrg"}++;
-			$anaProtPeptides{$protID}{$anaID}{"$pepSeq$varModStrg"}++;
+			$protPeptides{$protID}{"$pepID$varModStrg"}++;
+			$anaProtPeptides{$protID}{$anaID}{"$pepID$varModStrg"}++;
 		}
+		
+		# Store best value for each property
 		if ($selPepType !~ /^ba/) {
-			$listProteins{$protID}[2]=$score if (!$listProteins{$protID}[2] || $listProteins{$protID}[2] < $score);
-			$listProteins{$protID}[3]=$conf if (!$listProteins{$protID}[3] || $listProteins{$protID}[3] < $conf);
-			$listProteins{$protID}[4]=$cov if (!$listProteins{$protID}[4] || $listProteins{$protID}[4] < $cov);
-			$listProteins{$protID}[5]=$specif if (!$listProteins{$protID}[5] || $listProteins{$protID}[5] < $specif);
+			$listProteins{$protID}[7] = $score if(!$listProteins{$protID}[7] || $listProteins{$protID}[7] < $score);
+			$listProteins{$protID}[8] = $conf if(!$listProteins{$protID}[8] || $listProteins{$protID}[8] < $conf);
+			$listProteins{$protID}[9] = $cov if(!$listProteins{$protID}[9] || $listProteins{$protID}[9] < $cov);
+			$listProteins{$protID}[10] = $specif if(!$listProteins{$protID}[10] || $listProteins{$protID}[10] < $specif);
 		}
 	}
-###########################################
-	#if (!$filter) { # proteins in classification
-	#
-	#	###<List of proteins in current Category>###
-	#	my %catProteins;
-	#	my $sthCP=$dbh->prepare("SELECT ID_PROTEIN FROM CATEGORY_PROTEIN WHERE ID_CATEGORY=$categoryID");
-	#	$sthCP->execute;
-	#	while (my ($protID)=$sthCP->fetchrow_array) {
-	#		$classProteins{$protID}=1;
-	#		$catProteins{$protID}=1;
-	#		@{$listProteins{$protID}}=(0,0,0,0,0,0); # default
-	#	}
-	#	$sthCP->finish;
-	#
-	#	####<List of visible proteins in selected Project item>####
-	#	while (my ($protID,$anaID,$numPep,$numMatch,$score,$conf,$cov,$specif)=$sthVis->fetchrow_array) {
-	#		next unless $catProteins{$protID};
-	#		if (!defined($anaPepVmods{$anaID})) {###> Get all the Modifications once (efficiency)
-	#			$sthPepMod->execute($anaID);
-	#			while (my ($modID,$pepID,$posString) = $sthPepMod->fetchrow_array) {
-	#				$anaPepVmods{$anaID}{$pepID}{$modID}=$posString;
-	#			}
-	#		}
-	#		next if ($listFilterType eq 'category' && !$catFilterProteins{$protID});
-	#		$timesFound{$protID}++;
-	#		next if ($listFilterType eq 'pep_ba' && $numPep<$listFilterValue); # filter type #1 (pep_ba)
-	#		$cov=0 unless $cov;
-	#		if (!$bestNumPep{$protID} || $bestNumPep{$protID}<$numPep || ($bestNumPep{$protID}==$numPep && $bestScore{$protID}<$score)) {
-	#			$bestNumPep{$protID}=$numPep;
-	#			$bestScore{$protID}=$score;
-	#			$bestAnalysis{$protID}=$anaID;
-	#			if ($selPepType=~/^ba/) { # ba or banr
-	#				@{$listProteins{$protID}}=($numPep,$numMatch,$score,$conf,$cov,$specif); # will be unshifted +5!!!
-	#				undef $protVarMods{$protID} if $protVarMods{$protID}; # reset to match best ana only
-	#			}
-	#			else {
-	#				@{$listProteins{$protID}}[0,1]=($numPep,$numMatch);
-	#			}
-	#			#$listProteins{$protID}[6]=($listProteins{$protID}[1] =~/no description/)? 2 : ($listProteins{$protID}[1] =~/unnamed/)? 1 : 0;  #fp
-	#		}
-	#
-	#
-	#		$allPeptides{$protID}+=$numPep;
-	#		$sthPep->execute($anaID,$protID);
-	#		#while (my ($pepSeq,$varMod)=$sthPep->fetchrow_array) {
-	#		#	my $varModStrg=($varMod)? " $varMod" : '';
-	#		#	$protPeptides{$protID}{"$pepSeq$varModStrg"}++;
-	#		#	$anaProtPeptides{$protID}{$anaID}{"$pepSeq$varModStrg"}++;
-	#		#	#$anaProtVarMods{$protID}{$anaID}{$varMod}=1 if $varMod;
-	#		#	&getVarModCodes(\%{$protVarMods{$protID}},$varModStrg) if $varMod;
-	#		#}
-	#		while (my ($pepSeq,$idPeptide)=$sthPep->fetchrow_array) {
-	#			my $varModStrg='';
-	#			if ($anaPepVmods{$anaID}{$idPeptide}) {
-	#				foreach my $modID (sort{$a<=>$b} keys %{$anaPepVmods{$anaID}{$idPeptide}}) {
-	#					$varModStrg.="+$modID:$anaPepVmods{$anaID}{$idPeptide}{$modID}";
-	#					$protVarMods{$protID}{$modID}=1 if $projectVarMods{$modID};
-	#				}
-	#			}
-	#			$protPeptides{$protID}{"$pepSeq$varModStrg"}++;
-	#			$anaProtPeptides{$protID}{$anaID}{"$pepSeq$varModStrg"}++;
-	#		}
-	#		if ($selPepType !~ /^ba/) {
-	#			$listProteins{$protID}[2]=$score if (!$listProteins{$protID}[2] || $listProteins{$protID}[2] < $score);
-	#			$listProteins{$protID}[3]=$conf if (!$listProteins{$protID}[3] || $listProteins{$protID}[3] < $conf);
-	#			$listProteins{$protID}[4]=$cov if (!$listProteins{$protID}[4] || $listProteins{$protID}[4] < $cov);
-	#			$listProteins{$protID}[5]=$specif if (!$listProteins{$protID}[5] || $listProteins{$protID}[5] < $specif);
-	#		}
-	#	}
-	#}
-	#else { # unclassified proteins
-	#	while (my ($protID,$anaID,$numPep,$numMatch,$score,$conf,$cov,$specif)=$sthVis->fetchrow_array) {
-	#		next if $classProteins{$protID}; # filter classified proteins
-	#		next if ($listFilterType eq 'category' && !$catFilterProteins{$protID});
-	#		$timesFound{$protID}++;
-	#		next if ($listFilterType eq 'pep_ba' && $numPep<$listFilterValue); # pep_ba filter
-	#		$cov=0 unless $cov;
-	#		if (!$bestNumPep{$protID} || $bestNumPep{$protID}<$numPep || ($bestNumPep{$protID}==$numPep && $bestScore{$protID}<$score)) {
-	#			$bestNumPep{$protID}=$numPep;
-	#			$bestScore{$protID}=$score;
-	#			$bestAnalysis{$protID}=$anaID;
-	#			if ($selPepType=~/^ba/) { # ba or banr
-	#				@{$listProteins{$protID}}=($numPep,$numMatch,$score,$conf,$cov,$specif); # will be unshifted +5!!!
-	#				undef $protVarMods{$protID} if $protVarMods{$protID}; # reset to match best ana only
-	#			}
-	#			else {
-	#				@{$listProteins{$protID}}[0,1]=($numPep,$numMatch);
-	#			}
-	#			#$listProteins{$protID}[6]=($listProteins{$protID}[1] =~/no\sdescription/)? 2 : ($listProteins{$protID}[1] =~/unnamed/)? 1 : 0;  #fp
-	#		}
-	#		$allPeptides{$protID}+=$numPep;
-	#		$sthPep->execute($anaID,$protID);
-	#		# Before PTMs table formalisation
-	#		#while (my ($pepSeq,$varMod)=$sthPep->fetchrow_array) {
-	#		#	my $varModStrg=($varMod)? " $varMod" : '';
-	#		#	$protPeptides{$protID}{"$pepSeq$varModStrg"}++;
-	#		#	$anaProtPeptides{$protID}{$anaID}{"$pepSeq$varModStrg"}++;
-	#		#	#$anaProtVarMods{$protID}{$anaID}{$varMod}=1 if $varMod;
-	#		#	&getVarModCodes(\%{$protVarMods{$protID}},$varModStrg) if $varMod;
-	#		#}
-	#		while (my ($pepSeq,$idPeptide)=$sthPep->fetchrow_array) {
-	#			my $varModStrg='';
-	#			if ($anaPepVmods{$anaID}{$idPeptide}) {
-	#				foreach my $modID (sort{$a<=>$b} keys %{$anaPepVmods{$anaID}{$idPeptide}}) {
-	#					$varModStrg.="+$modID:$anaPepVmods{$anaID}{$idPeptide}{$modID}";
-	#					$protVarMods{$protID}{$modID}=1 if $projectVarMods{$modID};
-	#				}
-	#			}
-	#			$protPeptides{$protID}{"$pepSeq$varModStrg"}++;
-	#			$anaProtPeptides{$protID}{$anaID}{"$pepSeq$varModStrg"}++;
-	#		}
-	#		if ($selPepType !~ /^ba/) {
-	#			$listProteins{$protID}[2]=$score if (!$listProteins{$protID}[2] || $listProteins{$protID}[2] < $score);
-	#			$listProteins{$protID}[3]=$conf if (!$listProteins{$protID}[3] || $listProteins{$protID}[3] < $conf);
-	#			$listProteins{$protID}[4]=$cov if (!$listProteins{$protID}[4] || $listProteins{$protID}[4] < $cov);
-	#			$listProteins{$protID}[5]=$specif if (!$listProteins{$protID}[5] || $listProteins{$protID}[5] < $specif);
-	#		}
-	#	}
-	#}
-###########################################
 	$sthVis->finish;
-	$sthPep->finish;
 	$sthPepMod->finish;
 
-	####<Non-redundant peptides>###
+	## Non-redundant peptides
 	foreach my $protID (keys %protPeptides) {
-		$nonRedundPeptides{$protID}=scalar keys %{$protPeptides{$protID}};
-		$nonRedundPepBestAna{$protID}=scalar keys %{$anaProtPeptides{$protID}{$bestAnalysis{$protID}}};
+		$nonRedundPeptides{$protID} = scalar keys %{$protPeptides{$protID}};
+		$nonRedundPepBestAna{$protID} = scalar keys %{$anaProtPeptides{$protID}{$bestAnalysis{$protID}}};
 	}
 
-	####<Fetching info on all proteins in selected analysis>####
-	my %masterProteins;
-	my $sthProtInfo=$dbh->prepare("SELECT ALIAS,PROT_DES,ORGANISM,ID_MASTER_PROTEIN,MW FROM PROTEIN WHERE ID_PROTEIN=?"); # ID_CLUSTER (obsolete)
-	foreach my $protID (keys %listProteins) {
-		$sthProtInfo->execute($protID);
-		unshift @{$listProteins{$protID}},$sthProtInfo->fetchrow_array; # UNSHIFTING array!!!
-		$listProteins{$protID}[1]='' unless $listProteins{$protID}[1];
-		$listProteins{$protID}[2]='' unless $listProteins{$protID}[2];
-		$listProteins{$protID}[4]=0 unless $listProteins{$protID}[4];
-		$listProteins{$protID}[1]=&promsMod::HTMLcompatible($listProteins{$protID}[1]); # DES
-		$listProteins{$protID}[4]=sprintf "%.1f",$listProteins{$protID}[4]/1000; # MW
-		@{$masterProteins{$listProteins{$protID}[3]}}=() if $listProteins{$protID}[3];
-	}
-	$sthProtInfo->finish;
-
-	####<Fetching master proteins info>####
-	my $sthMP=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_MASTER_PROTEIN=? AND ID_IDENTIFIER=$geneNameID ORDER BY RANK");
-	foreach my $masterProtID (keys %masterProteins) {
-		$sthMP->execute($masterProtID);
-		while (my ($gene)=$sthMP->fetchrow_array) {
-			push @{$masterProteins{$masterProtID}},$gene;
+	## Fetching master proteins info
+	if(%masterProteins) {
+		my $sthMP=$dbh->prepare("SELECT ID_MASTER_PROTEIN,VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_MASTER_PROTEIN IN (".join(', ', keys %masterProteins).") AND ID_IDENTIFIER=$geneNameID ORDER BY RANK");
+		$sthMP->execute();
+		while (my ($masterProtID, $gene)=$sthMP->fetchrow_array) {
+			push @{$masterProteins{$masterProtID}}, $gene;
 		}
+		$sthMP->finish;
 	}
-	$sthMP->finish;
-
-	####<Applying filter (type 2 & 3)>####
+	
+	## Applying filter (type 2 & 3)
 	if ($listFilter && $listFilterType !~ /pep_ba|category|db/) {
 		my $count=0;
 		foreach my $protID (sort{&classSort($view)} keys %listProteins) {
@@ -1479,16 +1354,17 @@ sub listClassProteins {
 		}
 	}
 
-	####<Generating PTMs string>####
-	my (%proteinPTMs,%itemPTMs);
+	
+	## Generating PTMs string
+	my (%proteinPTMs, %itemPTMs);
 	foreach my $protID (keys %listProteins) {
-		$proteinPTMs{$protID}=&convertVarMods(\%{$protVarMods{$protID}},'protein');
-		#foreach my $varMod (@varModList) {$itemPTMs{$varMod}=1;}
-		foreach my $varMod (keys %{$protVarMods{$protID}}) {$itemPTMs{$varMod}=1;}
+		$proteinPTMs{$protID} = &convertVarMods(\%{$protVarMods{$protID}},'protein');
+		foreach my $varMod (keys %{$protVarMods{$protID}}) { $itemPTMs{$varMod}=1; }
 	}
 	$itemPTMtext=&convertVarMods(\%itemPTMs,'item');
-
-	####<Printing data in table>####
+	
+	
+	## Printing data in table
 	my $itemType=&promsMod::getItemType($item);
 	&prepareTable('CATEGORY',$categoryID,$itemType,0,'',(scalar keys %allPeptides),(scalar keys %listProteins),$filter);
 	$bgColor=$color1;
@@ -1574,7 +1450,7 @@ sub listClassProteins {
 sub prepareTable {
 	my ($subject,$subjectID,$itemType,$childIdx,$parentStrg,$minListSize,$maxListSize,$filter)=@_; #listSize
 
-	print "<TABLE align=center border=0 cellpadding=0 width=$tableWidth>\n<TR><TD colspan=7>\n";
+	print "<TABLE align=center border=0 cellpadding=0 cellspacing=0 width=$tableWidth>\n<TR><TD colspan=7 class=\"bBorder\">\n";
 	if (!$filter) {
 		#if ($classificationID>0 || ($item ne 'analysis' && $classificationID>-1)) { #}
 		if (defined($childIdx)) {
@@ -1641,25 +1517,27 @@ sub prepareTable {
 		$organismValue="<FONT color=#DD0000>$organismValue</FONT>";
 	}
 	#print "<TH width=250 align=left>&nbsp;$checkAllStrg&nbsp;<A href=\"javascript:selectView('protein')\" onmouseover=\"popup('Click to sort proteins by <B>ascending name</B>.')\" onmouseout=\"popout()\">$proteinValue</A>";
-	print "<TH width=250 align=left>&nbsp;<A href=\"javascript:selectView('protein')\" onmouseover=\"popup('Click to sort proteins by <B>ascending name</B>.')\" onmouseout=\"popout()\">$proteinValue</A>";
+	print "<TH width=250 align=left class=\"rbBorder\">&nbsp;<A href=\"javascript:selectView('protein')\" onmouseover=\"popup('Click to sort proteins by <B>ascending name</B>.')\" onmouseout=\"popout()\">$proteinValue</A>";
 	print "+<FONT class=\"help\" onmouseover=\"popup('<B>Post-Trans. Modifications:</B>$itemPTMtext')\" onmouseout=\"popout()\">PTMs</FONT>" if $itemPTMtext;
 	print "</TH>\n";
 	print qq
-|	<TH width=$geneNameWidth>Gene name</TH>
-	<TH width=70><A href="javascript:selectView('mass')" onmouseover="popup('Click to sort proteins by <B>decreasing mass</B>.')" onmouseout="popout()">$massValue</A></TH>
-	<TH width=55><A href="javascript:selectView('peptide')" onmouseover="popup('<B><U>Peptides:</U></B> All or distinct in item or best Analysis.<BR>Click to sort proteins by <B>decreasing number of peptides</B>.')" onmouseout="popout()">$peptideValue</A>$pepSelectStrg</TH>
-	<TH width=60><A href="javascript:selectView('specificity')" onmouseover="popup('<B>$analysisStrg.</B><BR>Click to sort proteins by <B>decreasing peptide specificity</B>.')" onmouseout="popout()">$specificityValue</A></TH>
-	<TH width=60><A href="javascript:selectView('coverage')" onmouseover="popup('<B>$analysisStrg.</B><BR>Click to sort proteins by <B>decreasing peptide coverage</B>.')" onmouseout="popout()">$coverageValue</A></TH>
-	<TH width=570>Description - <A href="javascript:selectView('organism')" onmouseover="popup('Click to sort proteins by <B>ascending organism</B>.')" onmouseout="popout()">$organismValue</A></TH>
-</TR></TABLE>
-<TABLE align=center border=0 cellspacing=0 cellpadding=0 width=$tableWidth>
+|	<TH width=$geneNameWidth class="rbBorder">Gene name</TH>
+	<TH width=70 class="rbBorder"><A href="javascript:selectView('mass')" onmouseover="popup('Click to sort proteins by <B>decreasing mass</B>.')" onmouseout="popout()">$massValue</A></TH>
+	<TH width=55 class="rbBorder"><A href="javascript:selectView('peptide')" onmouseover="popup('<B><U>Peptides:</U></B> All or distinct in item or best Analysis.<BR>Click to sort proteins by <B>decreasing number of peptides</B>.')" onmouseout="popout()">$peptideValue</A>$pepSelectStrg</TH>
+	<TH width=60 class="rbBorder"><A href="javascript:selectView('specificity')" onmouseover="popup('<B>$analysisStrg.</B><BR>Click to sort proteins by <B>decreasing peptide specificity</B>.')" onmouseout="popout()">$specificityValue</A></TH>
+	<TH width=60 class="rbBorder"><A href="javascript:selectView('coverage')" onmouseover="popup('<B>$analysisStrg.</B><BR>Click to sort proteins by <B>decreasing peptide coverage</B>.')" onmouseout="popout()">$coverageValue</A></TH>
+	<TH width=570 class="bBorder">Description - <A href="javascript:selectView('organism')" onmouseover="popup('Click to sort proteins by <B>ascending organism</B>.')" onmouseout="popout()">$organismValue</A></TH>
+</TR>
 |;
+##	print qq|</TABLE>
+##<TABLE align=center border=0 cellspacing=0 cellpadding=0 width=$tableWidth>
+##|;
 #	<TH width=65><A href="javascript:selectView('score')" onmouseover="popup('Click to sort proteins by <B>decreasing score</B>.')" onmouseout="popout()">$scoreValue</A></TH>
 
 	if ($maxListSize == 0) {
 		print "<TR bgcolor=\"$color1\">";
-		print "<TH width=1076 align=left>&nbsp;No protein</TH>\n";
-		print '</TR>';
+		print "<TH align=left colspan=7>&nbsp;No protein</TH>\n";
+		print "</TR>\n";
 	}
 }
 
@@ -1811,10 +1689,12 @@ sub getProjectItemDBList {
 	my @idAnalysis = ();
 	getProjectItemAnaIDs(\@idAnalysis);
 	
-	my $sthDB = $dbh->prepare("SELECT D.ID_DATABANK, D.NAME FROM ANALYSIS A INNER JOIN ANALYSIS_DATABANK AD ON AD.ID_ANALYSIS = A.ID_ANALYSIS INNER JOIN DATABANK D ON D.ID_DATABANK = AD.ID_DATABANK WHERE A.ID_ANALYSIS IN (".join(',', @idAnalysis).")");
-	$sthDB->execute();
-	while (my ($dbID, $dbName)=$sthDB->fetchrow_array) {
-		$refDBList->{$dbID}=$dbName;
+	if(@idAnalysis) {
+		my $sthDB = $dbh->prepare("SELECT D.ID_DATABANK, D.NAME FROM ANALYSIS A INNER JOIN ANALYSIS_DATABANK AD ON AD.ID_ANALYSIS = A.ID_ANALYSIS INNER JOIN DATABANK D ON D.ID_DATABANK = AD.ID_DATABANK WHERE A.ID_ANALYSIS IN (".join(',', @idAnalysis).")");
+		$sthDB->execute();
+		while (my ($dbID, $dbName)=$sthDB->fetchrow_array) {
+			$refDBList->{$dbID}=$dbName;
+		}
 	}
 }
 
@@ -1846,7 +1726,11 @@ sub getProjectItemAnaIDs {
 }
 
 ####>Revision history<####
-# 2.4.3 Add Databank selection to List filtering (VS 19/06/19)
+# 2.4.7 [ENHANCEMENT][UX] Simplifies DOM elements management for Match group display (PP 13/11/19)
+# 2.4.6 [BUGFIX] Proteins information was not displayed properly on class listing (VS 11/10/19)
+# 2.4.5 [ENHANCEMENT] Speed up proteins listing (VS 06/08/19)
+# 2.4.4 [BUGFIX] Error thrown when listing proteins of an empty experiment (VS 24/06/19)
+# 2.4.3 [FEATURE] Add Databank selection to List filtering (VS 19/06/19)
 # 2.4.2 Handles project status=-1 [no auto-end validation] (PP 07/06/18)
 # 2.4.1 Fix minor bug in gene display of hidden proteins (PP 08/02/16)
 # 2.4.0 Custom lists management function moved to promsMod.pm + ajax (PP 26/04/14)

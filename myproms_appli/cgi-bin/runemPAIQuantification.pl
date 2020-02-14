@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# runemPAIQuantification.pl   1.1.7                                            #
+# runemPAIQuantification.pl   1.1.9                                            #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Allows quantification of proteins by retrieving the emPAI of the proteins    #
@@ -185,17 +185,15 @@ if ($fileFormat =~ /MASCOT/) {
     $dbh->disconnect;
 
     open(FILESTAT,">>$fileStat");
-    print FILESTAT "Ended ",strftime("%H:%M:%S %d/%m/%Y",localtime),"\n";
+    print FILESTAT "Quantification Ended";
     close(FILESTAT);
 
     sleep 2;
-    unlink $fileStat;
-
 }
 else {
     open(FILESTAT,">>$fileStat");
-    print FILESTAT "emPAI quantification is only possible to searches performed on Mascot...\n";
-    print FILESTAT "Ended ",strftime("%H:%M:%S %d/%m/%Y",localtime),"\n";
+    print FILESTAT "Quantification Ended\n";
+    print FILESTAT "WARNING : emPAI quantification is only possible to searches performed on Mascot...";
     close(FILESTAT);
 }
 
@@ -254,12 +252,12 @@ sub getMascotemPAI {
 	my $agent = LWP::UserAgent->new;
 	$agent->timeout(360);
 	push @{$agent->requests_redirectable}, 'POST';
-	if ($mascotServers{$mascotServer}[1]) { # proxy settings
-		if ($mascotServers{$mascotServer}[1] eq 'no') {$agent->no_proxy($mascotServers{$mascotServer}[0]);}
-		else {$agent->proxy('http', $mascotServers{$mascotServer}[1]);}
+	if ($mascotServers{$mascotServer}{proxy}) { # proxy settings
+		if ($mascotServers{$mascotServer}{proxy} eq 'no') {$agent->no_proxy($mascotServers{$mascotServer}{url});}
+		else {$agent->proxy('http', $mascotServers{$mascotServer}{proxy});}
 	} else {$agent->env_proxy;}
-	#my $response = $agent->post("$mascotServers{$mascotServer}[0]/cgi/myproms4emPAI_v2.pl",$params);
-	my $response = $agent->post("$mascotServers{$mascotServer}[0]/cgi/myproms4emPAI.pl",$params);
+	#my $response = $agent->post("$mascotServers{$mascotServer}{url}/cgi/myproms4emPAI_v2.pl",$params);
+	my $response = $agent->post("$mascotServers{$mascotServer}{url}/cgi/myproms4emPAI.pl",$params);
     
 	while (my $wait = $response->header('Retry-After')) {
 		#print "Waiting ($wait)...\n";
@@ -369,6 +367,8 @@ sub getMascotemPAI {
 ###}
 
 ####>Revision history<####
+# 1.1.9 [MODIFICATION] Small modifs on log printing (VS 09/10/19) 
+# 1.1.8 Uses new &promsConfig::getMascotServers function (PP 25/06/19)
 # 1.1.7 Minor fix to prevent DBI warning (PP 30/10/18)
 # 1.1.6 Add a test for emPAI normalization and change datecode retrievement for Mascot DAT searches -> use gmtime and not localtime (GA 24/02/16)
 # 1.1.5 Minor change script version -> myproms4emPAI_v2.pl to myproms4emPAI.pl (GA 11/01/16)

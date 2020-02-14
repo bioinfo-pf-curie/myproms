@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# peptide_view.cgi              3.2.1                                          #
+# peptide_view.cgi              3.2.2                                          #
 # Authors: P. Poullet, G. Arras, F. Yvon, M. Le Picard (Institut Curie)        #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -671,7 +671,7 @@ elsif ($fileType eq 'sptxt') { # SWATH library
 		}
 	}
 }
-elsif ($fileType eq 'SWATH.PKV' || $fileType eq 'SKYLINE.CSV' || $fileType eq 'OPENSWATH.TSV' || $fileType eq 'SPECTRONAUT.XLS') {
+elsif ($fileType eq 'SWATH.PKV' || $fileType =~ /SKYLINE\.(?:CSV|SKY)/ || $fileType eq 'OPENSWATH.TSV' || $fileType eq 'SPECTRONAUT.XLS') {  # for skyline, SKYLINE.CSV (old) or SKYLINE.SKY (new)  (VL 20/11/19)
 	open (FILE, $DatFile) || die "Unable to open $DatFile";
 	while (my $line=<FILE>) {
 		next if $.==1; # skip headers
@@ -1757,6 +1757,7 @@ package TDMHandler; {
 }1;
 
 ####>Revision history<####
+# 3.2.2 [MODIF] Minor modif on skyline fileType to be consistent with handling of .sky files (VL 20/11/19)
 # 3.2.1 Cleaner exit on missing spectrum data file (PP 23/03/18)
 # 3.2.0 Minor modif to allow Spectronaut spectrum drawing (MLP 23/01/18)
 # 3.1.10 Minor modif to allow DIA reference spectrum drawing (MLP 19/12/17)

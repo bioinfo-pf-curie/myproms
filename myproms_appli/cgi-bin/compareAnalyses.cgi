@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# compareAnalyses.cgi               2.3.2                                      #
+# compareAnalyses.cgi               2.3.5                                      #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Compares the protein & peptide contents of multiple (groups of) analyses     #
@@ -313,8 +313,28 @@ my $projQuery2=qq |SELECT E.NAME,S.NAME,A.NAME FROM EXPERIMENT E,SAMPLE S,ANALYS
 						WHERE A.ID_ANALYSIS=? AND S.ID_SAMPLE=A.ID_SAMPLE AND E.ID_EXPERIMENT=S.ID_EXPERIMENT AND S.ID_SPOT IS NULL|;
 push @sthAnaList,($dbh->prepare($projQuery1),$dbh->prepare($projQuery2)); # free sample then gel
 
-my $sthCatInfo=$dbh->prepare("SELECT CLASSIFICATION.NAME,CATEGORY.NAME FROM CLASSIFICATION,CATEGORY WHERE CLASSIFICATION.ID_CLASSIFICATION=CATEGORY.ID_CLASSIFICATION AND ID_CATEGORY=?");
-my $sthCatProt=$dbh->prepare("SELECT ID_PROTEIN FROM CATEGORY_PROTEIN WHERE ID_CATEGORY=?");
+my $sthCatInfo=$dbh->prepare("SELECT CL.NAME, C.NAME
+							  FROM CLASSIFICATION CL
+							  INNER JOIN CATEGORY C ON C.ID_CLASSIFICATION=CL.ID_CLASSIFICATION
+							  INNER JOIN EXPERIMENT E ON E.ID_PROJECT=CL.ID_PROJECT
+							  WHERE ID_CATEGORY=? AND E.ID_EXPERIMENT NOT IN (
+								SELECT EU.ID_EXPERIMENT
+								FROM USER_EXPERIMENT_LOCK EU
+								INNER JOIN EXPERIMENT E2 ON E2.ID_EXPERIMENT=EU.ID_EXPERIMENT
+								WHERE E2.ID_PROJECT=$projectID AND EU.ID_USER='$userID'
+							  )");
+
+my $sthCatProt=$dbh->prepare("SELECT ID_PROTEIN
+							 FROM CATEGORY_PROTEIN CP
+							 INNER JOIN CATEGORY C ON C.ID_CATEGORY=CP.ID_CATEGORY
+							 INNER JOIN CLASSIFICATION CL ON CL.ID_CLASSIFICATION=C.ID_CLASSIFICATION
+							 INNER JOIN EXPERIMENT E ON E.ID_PROJECT=CL.ID_PROJECT
+							 WHERE C.ID_CATEGORY=? AND E.ID_EXPERIMENT NOT IN (
+								SELECT EU.ID_EXPERIMENT
+								FROM USER_EXPERIMENT_LOCK EU
+								INNER JOIN EXPERIMENT E2 ON E2.ID_EXPERIMENT=EU.ID_EXPERIMENT
+								WHERE E2.ID_PROJECT=$projectID AND EU.ID_USER='$userID'
+							)");
 #}
 #elsif ($item eq 'experiment') {
 #	push @sthAnaList,$dbh->prepare("SELECT SAMPLE.NAME,ANALYSIS.NAME FROM SAMPLE,ANALYSIS WHERE ID_ANALYSIS=? AND SAMPLE.ID_SAMPLE=ANALYSIS.ID_SAMPLE AND SAMPLE.ID_SPOT IS NULL"); # free sample
@@ -331,9 +351,49 @@ my ($confLevelStrg,$pepValidStrg)=($virtualData)? ('','') : ('AND CONF_LEVEL > 0
 my $protPepSpecifStrg=($pepSpecificity=~/unique/)? 'AND PEP_SPECIFICITY=100' : '';
 my $isSpecificStrg=($pepSpecificity eq 'unique')? 'AND IS_SPECIFIC=1' : '';
 ###my $sthAP=$dbh->prepare("SELECT ID_PROTEIN,VISIBILITY,CONF_LEVEL,SCORE FROM ANALYSIS_PROTEIN WHERE ID_ANALYSIS=? $confLevelStrg $visibilityStrg"); # skip virtual proteins
-my $sthAP=$dbh->prepare("SELECT AP.ID_PROTEIN,VISIBILITY,CONF_LEVEL,AP.SCORE,P.ID_PEPTIDE,PEP_SEQ FROM ANALYSIS_PROTEIN AP,PEPTIDE_PROTEIN_ATTRIB PPA,PEPTIDE P WHERE AP.ID_ANALYSIS=? AND PPA.ID_ANALYSIS=? AND AP.ID_PROTEIN=PPA.ID_PROTEIN AND PPA.ID_PEPTIDE=P.ID_PEPTIDE $confLevelStrg $visibilityStrg $pepValidStrg $protPepSpecifStrg $isSpecificStrg ORDER BY AP.ID_PROTEIN");
-my $sthPep=$dbh->prepare("SELECT P.ID_PEPTIDE,PEP_SEQ FROM PEPTIDE_PROTEIN_ATTRIB PPA,PEPTIDE P WHERE ID_PROTEIN=? AND PPA.ID_ANALYSIS=? AND PPA.ID_PEPTIDE=P.ID_PEPTIDE $pepValidStrg $isSpecificStrg"); # skip ghosts
-my $sthPepMod=$dbh->prepare("SELECT PM.ID_MODIFICATION,P.ID_PEPTIDE,POS_STRING FROM PEPTIDE_MODIFICATION PM,PEPTIDE P WHERE PM.ID_PEPTIDE=P.ID_PEPTIDE AND P.ID_ANALYSIS=? $pepValidStrg"); # <- no pepSpecificity filter applied (not needed)
+my $sthAP=$dbh->prepare("SELECT AP.ID_PROTEIN,VISIBILITY,CONF_LEVEL,AP.SCORE,P.ID_PEPTIDE,PEP_SEQ
+						 FROM ANALYSIS_PROTEIN AP
+						 INNER JOIN PEPTIDE_PROTEIN_ATTRIB PPA ON AP.ID_PROTEIN=PPA.ID_PROTEIN 
+						 INNER JOIN PEPTIDE P ON PPA.ID_PEPTIDE=P.ID_PEPTIDE 
+						 INNER JOIN ANALYSIS A ON A.ID_ANALYSIS=AP.ID_ANALYSIS
+						 INNER JOIN SAMPLE S ON S.ID_SAMPLE=A.ID_SAMPLE
+						 INNER JOIN EXPERIMENT E ON S.ID_EXPERIMENT=E.ID_EXPERIMENT
+						 WHERE AP.ID_ANALYSIS=? AND PPA.ID_ANALYSIS=? $confLevelStrg $visibilityStrg $pepValidStrg $protPepSpecifStrg $isSpecificStrg
+						 AND E.ID_EXPERIMENT NOT IN (
+								SELECT EU.ID_EXPERIMENT
+								FROM USER_EXPERIMENT_LOCK EU
+								INNER JOIN EXPERIMENT E2 ON E2.ID_EXPERIMENT=EU.ID_EXPERIMENT
+								WHERE E2.ID_PROJECT=$projectID AND EU.ID_USER='$userID'
+						 ) ORDER BY AP.ID_PROTEIN");
+
+my $sthPep=$dbh->prepare("SELECT P.ID_PEPTIDE,PEP_SEQ
+						  FROM PEPTIDE_PROTEIN_ATTRIB PPA
+						  INNER JOIN PEPTIDE P ON P.ID_PEPTIDE=PPA.ID_PEPTIDE
+						  INNER JOIN PROTEIN PR ON PR.ID_PROTEIN=PPA.ID_PROTEIN
+						  INNER JOIN PROJECT PJ ON PJ.ID_PROJECT=PR.ID_PROJECT
+						  INNER JOIN EXPERIMENT E ON E.ID_PROJECT=PJ.ID_PROJECT
+						  WHERE ID_PROTEIN=? AND PPA.ID_ANALYSIS=? $pepValidStrg $isSpecificStrg 
+						  AND E.ID_EXPERIMENT NOT IN (
+								SELECT EU.ID_EXPERIMENT
+								FROM USER_EXPERIMENT_LOCK EU
+								INNER JOIN EXPERIMENT E2 ON E2.ID_EXPERIMENT=EU.ID_EXPERIMENT
+								WHERE E2.ID_PROJECT=$projectID AND EU.ID_USER='$userID'
+						 )"); # skip ghosts
+
+my $sthPepMod=$dbh->prepare("SELECT PM.ID_MODIFICATION,P.ID_PEPTIDE,POS_STRING
+							 FROM PEPTIDE_MODIFICATION PM
+							 INNER JOIN PEPTIDE P ON P.ID_PEPTIDE=PM.ID_PEPTIDE
+							 INNER JOIN PEPTIDE_PROTEIN_ATTRIB PPA ON P.ID_PEPTIDE=PPA.ID_PEPTIDE
+ 							 INNER JOIN PROTEIN PR ON PR.ID_PROTEIN=PPA.ID_PROTEIN
+							 INNER JOIN PROJECT PJ ON PJ.ID_PROJECT=PR.ID_PROJECT
+							 INNER JOIN EXPERIMENT E ON E.ID_PROJECT=PJ.ID_PROJECT
+							 WHERE P.ID_ANALYSIS=? $pepValidStrg $isSpecificStrg
+							 AND E.ID_EXPERIMENT NOT IN (
+								SELECT EU.ID_EXPERIMENT
+								FROM USER_EXPERIMENT_LOCK EU
+								INNER JOIN EXPERIMENT E2 ON E2.ID_EXPERIMENT=EU.ID_EXPERIMENT
+								WHERE E2.ID_PROJECT=$projectID AND EU.ID_USER='$userID'
+							 )"); # <- no pepSpecificity filter applied (not needed)
 my (@groupLabels,@groupPeptides,%proteinList,%bestVisibility,%bestAnalysis,%protAnalyses,%processedProtAna,%peptideAnaDistrib,%ptmAnalyses,%catProteins,%anaPepVmods);
 
 my (@parentItemAna,%groupListCompProt,%listInGroup,$contextAna,@groupListAna);
@@ -350,11 +410,13 @@ if ($listComparison) { # fetch list of analyses in selected parent item
 		#push @queryList,"SELECT DISTINCT ID_ANALYSIS FROM PROTEIN P,ANALYSIS_PROTEIN AP WHERE P.ID_PROTEIN=AP.ID_PROTEIN AND ID_PROJECT=$itemID";
 		my $projQS=qq |SELECT A.ID_ANALYSIS
 								FROM EXPERIMENT E,SAMPLE S,ANALYSIS A
-								WHERE E.ID_PROJECT=$itemID AND E.ID_EXPERIMENT=S.ID_EXPERIMENT AND S.ID_SAMPLE=A.ID_SAMPLE AND S.ID_SPOT IS NULL AND A.VALID_STATUS>=1 ORDER BY E.DISPLAY_POS,S.DISPLAY_POS,A.DISPLAY_POS|;
+								WHERE E.ID_PROJECT=$itemID AND E.ID_EXPERIMENT=S.ID_EXPERIMENT AND S.ID_SAMPLE=A.ID_SAMPLE AND S.ID_SPOT IS NULL AND A.VALID_STATUS>=1 ORDER BY E.DISPLAY_POS,S.DISPLAY_POS,A.DISPLAY_POS
+								AND E.ID_EXPERIMENT NOT IN (SELECT EU.ID_EXPERIMENT FROM USER_EXPERIMENT_LOCK EU INNER JOIN EXPERIMENT E2 ON E2.ID_EXPERIMENT=EU.ID_EXPERIMENT WHERE E2.ID_PROJECT=$itemID AND EU.ID_USER='$userID')|;
 		my $projQG=qq |SELECT A.ID_ANALYSIS
 								FROM EXPERIMENT E,GEL2D G,SPOT SP,SAMPLE S,ANALYSIS A
 								WHERE E.ID_PROJECT=$itemID AND E.ID_EXPERIMENT=G.ID_EXPERIMENT AND G.ID_GEL2D=SP.ID_GEL2D AND SP.ID_SPOT=S.ID_SPOT
-								AND S.ID_SAMPLE=A.ID_SAMPLE AND A.VALID_STATUS>=1 ORDER BY E.DISPLAY_POS,G.DISPLAY_POS,SP.NAME,A.DISPLAY_POS|;
+								AND S.ID_SAMPLE=A.ID_SAMPLE AND A.VALID_STATUS>=1 ORDER BY E.DISPLAY_POS,G.DISPLAY_POS,SP.NAME,A.DISPLAY_POS
+								AND E.ID_EXPERIMENT NOT IN (SELECT EU.ID_EXPERIMENT FROM USER_EXPERIMENT_LOCK EU INNER JOIN EXPERIMENT E2 ON E2.ID_EXPERIMENT=EU.ID_EXPERIMENT WHERE E2.ID_PROJECT=$itemID AND EU.ID_USER='$userID')|;
 		push @queryList,($projQS,$projQG);
 	}
 	elsif ($ITEM eq 'EXPERIMENT') {
@@ -1771,6 +1833,7 @@ print qq
 <INPUT type="hidden" name="hiddenRule" value="$hiddenRule">
 <INPUT type="hidden" name="comparisonID" value="$comparisonID">
 <INPUT type="hidden" name="virtualData" value="$virtualData">
+<INPUT type="hidden" name="pepSpecificity" value="$pepSpecificity">
 <INPUT type="hidden" name="autocheck" value="">
 <INPUT type="hidden" name="hideShowStatus" value="$hideShowStatus">
 <INPUT type="hidden" name="sort" value="$sortOrder">
@@ -2382,11 +2445,14 @@ sub selectAnalyses {
 							WHERE E.ID_PROJECT=$projectID AND E.ID_EXPERIMENT=G.ID_EXPERIMENT
 							AND G.ID_GEL2D=SP.ID_GEL2D AND SP.ID_SPOT=S.ID_SPOT
 							AND S.ID_SAMPLE=A.ID_SAMPLE AND A.VALID_STATUS>=1
-							ORDER BY E.DISPLAY_POS ASC,G.DISPLAY_POS ASC|; #,SP.NAME ASC
+							AND E.ID_EXPERIMENT NOT IN (SELECT E2.ID_EXPERIMENT FROM EXPERIMENT E2 INNER JOIN USER_EXPERIMENT_LOCK EU ON EU.ID_EXPERIMENT=E2.ID_EXPERIMENT WHERE E2.ID_PROJECT=$itemID AND EU.ID_USER='$userID')
+							ORDER BY E.DISPLAY_POS ASC,G.DISPLAY_POS ASC
+							|; #,SP.NAME ASC
 	push @queryList,qq |SELECT DISTINCT CONCAT('EXPERIMENT:',E.ID_EXPERIMENT),E.NAME,CONCAT('SAMPLE:',S.ID_SAMPLE),S.NAME
 							FROM EXPERIMENT E,SAMPLE S,ANALYSIS A
 							WHERE E.ID_PROJECT=$projectID AND E.ID_EXPERIMENT=S.ID_EXPERIMENT
 							AND S.ID_SAMPLE=A.ID_SAMPLE AND S.ID_SPOT IS NULL AND A.VALID_STATUS>=1
+							AND E.ID_EXPERIMENT NOT IN (SELECT E2.ID_EXPERIMENT FROM EXPERIMENT E2 INNER JOIN USER_EXPERIMENT_LOCK EU ON EU.ID_EXPERIMENT=E2.ID_EXPERIMENT WHERE E2.ID_PROJECT=$itemID AND EU.ID_USER='$userID')
 							ORDER BY E.DISPLAY_POS ASC,S.DISPLAY_POS ASC|;
 	my (@itemList,%usedItems);
 	foreach my $query (@queryList) {
@@ -2410,7 +2476,7 @@ sub selectAnalyses {
 	}
 	my $usedParent;
 	if ($item eq 'project') {
-		$usedParent=$itemList[0][0];
+		$usedParent=$itemList[0][0] if(scalar @itemList);
 	}
 	elsif ($item eq 'spot') {
 		($usedParent)=$dbh->selectrow_array("SELECT CONCAT('GEL2D:',G.ID_GEL2D) FROM GEL2D G,SPOT SP WHERE G.ID_GEL2D=SP.ID_GEL2D AND SP.ID_SPOT=$itemID");
@@ -3015,9 +3081,14 @@ function listAllAnalyses(anaText) {
 	var o=0;
 	for (var i=0; i<anaList.length; i++) {
 		var anaInfo=anaList[i].split('#:#');
-		if (anaInfo.length==2) { // skip warning & last empty line
+		if (anaInfo.length>=2) { // skip warning & last empty line
 			selAllAna.options[o]=new Option(anaInfo[1],anaInfo[0]);
-			selAllAna.options[o].selected=true;
+			
+			if(anaInfo.length == 3) {
+				selAllAna.options[o].disabled=anaInfo[2];
+			} else {
+				selAllAna.options[o].selected=true;
+			}
 			o++;
 		}
 	}
@@ -3056,7 +3127,10 @@ function getElementPosition(e) {
 	return [top,left];
 }
 window.onload=function() {
-	ajaxGetAnalysesList('$usedParent');
+	var anaSel = document.getElementById("anaParent");
+	var anaSelValue = anaSel.options[anaSel.selectedIndex].value;
+
+	ajaxGetAnalysesList(anaSelValue);
 	ajaxUpdateRestrict($comparisonID);
 	selectComparisonType('$compType');
 	selectComparison($comparisonID,false);
@@ -3110,7 +3184,7 @@ window.onload=function() {
 <FONT style="font-size:2px"><BR></FONT>
 <TABLE bgcolor=$darkColor2 cellpadding=0 border=0><TR>
 <TR>
-<TH valign=top rowspan=2><FONT class="title3">Select :</FONT><SELECT name="anaParent" class="title4" style="width:350px;font-weight:bold;font-size:12px" onchange="ajaxGetAnalysesList(this.value)">
+<TH valign=top rowspan=2><FONT class="title3">Select :</FONT><SELECT id="anaParent" name="anaParent" class="title4" style="width:350px;font-weight:bold;font-size:12px" onchange="ajaxGetAnalysesList(this.value)">
 <OPTION value="" disabled style="color:black">----- Project items -----</OPTION>
 |;
 	####<Looping through list of analyses>####
@@ -3731,8 +3805,15 @@ $exportTitleStrg
 								INNER JOIN PEPTIDE P ON P.ID_PEPTIDE=PM.ID_PEPTIDE
 								INNER JOIN PEPTIDE_PROTEIN_ATTRIB PPA ON P.ID_PEPTIDE=PPA.ID_PEPTIDE $isSpecificStrg
 								INNER JOIN ANALYSIS_PROTEIN AP ON AP.ID_PROTEIN=PPA.ID_PROTEIN AND AP.ID_ANALYSIS=PPA.ID_ANALYSIS $protPepSpecifStrg
-								WHERE P.ID_ANALYSIS=? $pepValidStrg $protVisStrg
-								GROUP BY ABS(PEP_BEG),P.ID_PEPTIDE,PPA.ID_PROTEIN");
+								INNER JOIN ANALYSIS A ON A.ID_ANALYSIS=AP.ID_ANALYSIS
+								INNER JOIN SAMPLE S ON S.ID_SAMPLE=A.ID_SAMPLE
+								INNER JOIN EXPERIMENT E ON E.ID_EXPERIMENT=S.ID_EXPERIMENT
+								WHERE P.ID_ANALYSIS=? $pepValidStrg $protVisStrg AND E.ID_EXPERIMENT NOT IN (
+									SELECT EU.ID_EXPERIMENT
+									FROM USER_EXPERIMENT_LOCK EU
+									INNER JOIN EXPERIMENT E2 ON E2.ID_EXPERIMENT=EU.ID_EXPERIMENT
+									WHERE E2.ID_PROJECT=$itemID AND EU.ID_USER='$userID'
+								) GROUP BY ABS(PEP_BEG),P.ID_PEPTIDE,PPA.ID_PROTEIN");
 
 	####<Scanning analyses>####
 	my (@groupLabels,%proteinSites,%groupDistrib,%siteDistrib,%peptideIDs,%bestVisibility,%distinctAna,@numAnaInGr,%anaType,%proteinSeq,%sitesInProtein,%siteContext,%unlocalizedPep,%excludedProteins);
@@ -4961,7 +5042,7 @@ sub getVarModCodes { # also in listProteins.cgi
 ##################################
 sub ajaxGetAnalysesList {
 	my ($parentItem,$parentID)=split(':',param('branchID'));
-
+	
 	my @queryList;
 	if ($parentItem eq 'EXPERIMENT') {
 		my $expQS=qq |SELECT CONCAT('A:',A.ID_ANALYSIS),S.NAME,A.NAME
@@ -4998,17 +5079,22 @@ sub ajaxGetAnalysesList {
 
 	##<Connecting to the database
 	my $dbh=&promsConfig::dbConnect;
-
+	my $isContent = 0;
 	foreach my $query (@queryList) {
 		my $sthAna=$dbh->prepare($query);
 		$sthAna->execute;
-		while (my ($codeID,@anaInfo)=$sthAna->fetchrow_array) {
+		while (my ($codeID, @anaInfo)=$sthAna->fetchrow_array) {
 			for (my $i=0; $i<$#anaInfo-1; $i++) {
 				$anaInfo[$i]=&promsMod::shortenName($anaInfo[$i],11);
 			}
 			print "$codeID#:#",join (' > ',@anaInfo),"\n";
+			$isContent = 1 if(@anaInfo && !$isContent);
 		}
 		$sthAna->finish;
+	}
+	
+	if(!$isContent) {
+		print("-1#:#No data available#:#true");
 	}
 
 	$dbh->disconnect;
@@ -5021,12 +5107,12 @@ sub ajaxRestrictProteinList {
 	my $catFilter=param('catFilter') || 0;
 
 	my $dbh=&promsConfig::dbConnect;
-	my $sthL=$dbh->prepare("SELECT T.ID_CLASSIFICATION,T.NAME,L.ID_CATEGORY,L.NAME,L.DISPLAY_POS FROM CLASSIFICATION T,CATEGORY L WHERE T.ID_CLASSIFICATION=L.ID_CLASSIFICATION AND T.ID_PROJECT=$projectID");
+	my $sthL=$dbh->prepare("SELECT T.ID_CLASSIFICATION,T.NAME,L.ID_CATEGORY,L.NAME,L.DISPLAY_POS,L.LIST_TYPE FROM CLASSIFICATION T,CATEGORY L WHERE T.ID_CLASSIFICATION=L.ID_CLASSIFICATION AND T.ID_PROJECT=$projectID");
 	$sthL->execute;
 	my (%savedLists,%themeInfo);
-	while (my ($themeID,$themeName,$listID,$listName,$listPos)=$sthL->fetchrow_array) {
+	while (my ($themeID,$themeName,$listID,$listName,$listPos,$type)=$sthL->fetchrow_array) {
 		$themeInfo{$themeID}=$themeName;
-		@{$savedLists{$themeID}{$listID}}=($listName,$listPos);
+		@{$savedLists{$themeID}{$listID}}=($listName,$listPos,$type);
 	}
 	$sthL->finish;
 	$dbh->disconnect;
@@ -5041,7 +5127,9 @@ sub ajaxRestrictProteinList {
 		foreach my $listID (sort{lc($savedLists{$themeID}{$a}[1]) cmp lc($savedLists{$themeID}{$b}[1])} keys %{$savedLists{$themeID}}) {
 			print "<OPTION value=\"$listID\"";
 			print ' selected' if $listID==$catFilter; # in case a list was already selected
-			print ">$savedLists{$themeID}{$listID}[0]</OPTION>\n";
+			print ">$savedLists{$themeID}{$listID}[0]";
+			print ' [sites]' if $savedLists{$themeID}{$listID}[2] eq 'site';
+			print "</OPTION>\n";
 		}
 		print "</OPTGROUP>\n";
 	}
@@ -5189,7 +5277,7 @@ sub ajaxGetProteinDetails {
 											INNER JOIN PEPTIDE_PROTEIN_ATTRIB PPA ON P.ID_PEPTIDE=PPA.ID_PEPTIDE $isSpecificStrg
 											WHERE ID_PROTEIN=$proteinID AND P.ID_ANALYSIS=? $pepBegStrg GROUP BY ABS(PEP_BEG),P.ID_PEPTIDE"); # ABS(PEP_BEG), in case multiple occurence in protein
 
-	my (@bestProtVisibility,%peptideList,%peptideOccurence,%peptideByPos,%peptideGroups,%allAnaList);
+	my (@bestProtVisibility,%peptideList,%peptideOccurence,%peptideByPos,%peptideGroups,%allAnaList,%peptideStatus);
 	foreach my $g (0..$#analysisGroups) {
 		my $codeIndex=-1;
 		my $contextUsed=0;
@@ -5226,14 +5314,14 @@ sub ajaxGetProteinDetails {
 				next if $contextUsed; # context Analyses already scaned
 				$contextUsed=1;
 			}
-my (%modCode2varModStrg,%varMods);
+			my (%modCode2varModStrg,%varMods);
 			foreach my $anaID (@localAnaList) {
 				next if ($bestAnaList && $anaID != $bestAnaList[$g]); # no need to find best Ana again
 				$sthAP->execute($anaID);
 				my ($protVis)=$sthAP->fetchrow_array;
 				#next if (!defined($vis) || ($vis==0 && $hiddenRule)); # !defined($vis) because protein might not be in analysis
 				next if !defined($protVis); # !defined($vis) because protein might not be in analysis
-$allAnaList{$anaID}=1;
+				$allAnaList{$anaID}=1;
 				@bestProtVisibility=($protVis,$anaID) if (!$bestProtVisibility[0] || $bestProtVisibility[0] < $protVis);
 				my $usedVis=($protVis)? 'VIS' : 'HIDDEN';
 
@@ -5269,6 +5357,8 @@ $allAnaList{$anaID}=1;
 						$modCode2varModStrg{$modCode}=$varModStrg;
 					}
 					else {$modCode=$varModStrg='';}
+					my $pepStatus=($valStat)? $usedVis.'_TRUE' : $usedVis.'_GHOST';
+					$peptideStatus{$pepStatus}=1;
 					#my $pepEntity="$pepSeq$varModStrg";
 					my $pepEntity="$pepSeq$modCode";
 					unless ($peptideOccurence{$pepEntity}) { # first analysis where pep+vMod found
@@ -5277,10 +5367,12 @@ $allAnaList{$anaID}=1;
 						$peptideList{$pepEntity}{'VMOD'}=($varModStrg)? $varModStrg : '-'; # %varModData;
 					}
 					unless ($pep1stPosAna{$pepID}) { # pep can be found more than once in same protein & analysis (repeated sequence)
-						if ($peptideRule=~/nr/) {$peptideGroups{$pepEntity}{$g}{$usedVis}=1;}
-						else {$peptideGroups{$pepEntity}{$g}{$usedVis}++;} # occurence in group
+						#if ($peptideRule=~/nr/) {$peptideGroups{$pepEntity}{$g}{$usedVis}=1;}
+						#else {$peptideGroups{$pepEntity}{$g}{$usedVis}++;} # occurence in group
+						if ($peptideRule=~/nr/) {$peptideGroups{$pepEntity}{$g}{$pepStatus}=1;}
+						else {$peptideGroups{$pepEntity}{$g}{$pepStatus}++;} # occurence in group
 						$pep1stPosAna{$pepID}=$pepBeg;
-$peptideGroups{$pepEntity}{$g}{'STATUS'}=$valStat if (!$peptideGroups{$pepEntity}{$g}{'STATUS'} || $valStat > $peptideGroups{$pepEntity}{$g}{'STATUS'});
+						#$peptideGroups{$pepEntity}{$g}{'STATUS'}=$valStat if (!$peptideGroups{$pepEntity}{$g}{'STATUS'} || $valStat > $peptideGroups{$pepEntity}{$g}{'STATUS'});
 					}
 					$peptideOccurence{$pepEntity}{$anaID}=1;
 					if (scalar keys %{$peptideOccurence{$pepEntity}}==1) { # 1st ana
@@ -5313,10 +5405,11 @@ $peptideGroups{$pepEntity}{$g}{'STATUS'}=$valStat if (!$peptideGroups{$pepEntity
 		$countRulesStrg=($peptideRule eq 'ba')? 'All peptides in Analysis' : 'Distinct peptides in Analysis';
 	}
 	$countRulesStrg.=($hiddenRule==2)? ' only if protein is visible' : ' even if protein is hidden';
-	$countRulesStrg.=' [<I>XIC-based extra peptides included</I>]' if $virtualData;
+	$countRulesStrg.=' [<I>MBR-rescued peptides included</I>]' if $virtualData;
 	my $anaStrg=join(',',keys %allAnaList);
 	print qq
-|<A class="$protClass" href="javascript:sequenceView($proteinID,'$anaStrg')">$alias</A>: $protDes - <FONT class="org">$organism</FONT> ($protLength aa.)<BR>
+|<DIV style="float:right">&nbsp;<INPUT type="button" class="font11" value=" Close " onclick="unselectProtein()"></DIV>
+<A class="$protClass" href="javascript:sequenceView($proteinID,'$anaStrg')">$alias</A>: $protDes - <FONT class="org">$organism</FONT> ($protLength aa.) <BR>
 <B>Count rule:</B> $countRulesStrg.
 <TABLE border=0 cellspacing=0>
 <TR bgcolor=$color2>
@@ -5336,7 +5429,8 @@ $peptideGroups{$pepEntity}{$g}{'STATUS'}=$valStat if (!$peptideGroups{$pepEntity
 			if ($hiddenRule==2) { # do not count hidden => Check visible in at least 1 group
 				my $okPep=0;
 				foreach my $g (0..$#analysisGroups) {
-					if ($peptideGroups{$pepEntity}{$g} && $peptideGroups{$pepEntity}{$g}{'VIS'}) {
+					#if ($peptideGroups{$pepEntity}{$g} && $peptideGroups{$pepEntity}{$g}{'VIS'}) { #}
+					if ($peptideGroups{$pepEntity}{$g} && ($peptideGroups{$pepEntity}{$g}{'VIS_TRUE'} || $peptideGroups{$pepEntity}{$g}{'VIS_GHOST'})) {
 						$okPep=1;
 						last;
 					}
@@ -5359,45 +5453,35 @@ $peptideGroups{$pepEntity}{$g}{'STATUS'}=$valStat if (!$peptideGroups{$pepEntity
 			#<Sequence
 			print "<TD>&nbsp;<FONT class=\"seq\">$peptideList{$pepEntity}{SEQ}</FONT></TD>\n";
 			#<PTMs
-			#print "<TH align=left>&nbsp;";
-			#if (scalar keys %{$peptideList{$pepEntity}{'VMOD'}}) { # $peptideList{$pepEntity}{'VMOD'} always defined
-			#	my $vModCount=0;
-			#	foreach my $varModCode (sort keys %{$peptideList{$pepEntity}{'VMOD'}}) {
-			#		my $varModLabel=($allPostTransModifs{$varModCode})? $allPostTransModifs{$varModCode}[1] : $varModCode;
-			#		my $varModClass=($projectVarMods{$varModCode})? $projectVarMods{$varModCode}[2] : 'badPTM';
-			#		$existBadPTMs=1 if $varModClass eq 'badPTM';
-			#		my $absPosStrg='';
-			#		foreach my $absPos (sort{$a<=>$b} keys %{$peptideList{$pepEntity}{'VMOD'}{$varModCode}}) {
-			#			$absPosStrg.=',' if $absPosStrg;
-			#			$absPosStrg.=($absPos==0)? '(N-ter)' : ($absPos==999999)? '(C-ter)' : $absPos;
-			#		}
-			#		print '+' if $vModCount;
-			#		print "<FONT class=\"$varModClass\">$varModLabel<FONT  class=\"font11\">$absPosStrg</FONT></FONT>";
-			#		$vModCount++;
-			#	}
-			#}
-			#else {print '-';}
-			#print "&nbsp;</TH>\n";
 			print "<TD>&nbsp;$peptideList{$pepEntity}{VMOD}&nbsp;</TD>\n";
 			#<Analyses groups
 			foreach my $g (0..$#analysisGroups) {
 				my $distValueStrg;
 				if ($peptideGroups{$pepEntity}{$g}) {
-					my ($vTag1,$vTag2)=($peptideGroups{$pepEntity}{$g}{'STATUS'})? ('','') : ('<I>','</I>'); # virtual pep
-					if ($peptideGroups{$pepEntity}{$g}{'VIS'}) {
-						$distValueStrg="<B>$vTag1$peptideGroups{$pepEntity}{$g}{VIS}$vTag2</B>";
-					}
-					if ($hiddenRule==2) { # do not count hidden
-						$distValueStrg='-' unless $distValueStrg;
-					}
-					else {
-						if ($peptideGroups{$pepEntity}{$g}{'HIDDEN'}) {
-							$distValueStrg.='+' if $distValueStrg;
-							$distValueStrg.="$vTag1$peptideGroups{$pepEntity}{$g}{HIDDEN}$vTag2";
-						}
+					#my ($vTag1,$vTag2)=($peptideGroups{$pepEntity}{$g}{'STATUS'})? ('','') : ('<I>','</I>'); # virtual pep
+					#if ($peptideGroups{$pepEntity}{$g}{'VIS'}) {
+					#	$distValueStrg="<B>$vTag1$peptideGroups{$pepEntity}{$g}{VIS}$vTag2</B>";
+					#}
+					#if ($hiddenRule==2) { # do not count hidden
+					#	$distValueStrg='-' unless $distValueStrg;
+					#}
+					#else {
+					#	if ($peptideGroups{$pepEntity}{$g}{'HIDDEN'}) {
+					#		$distValueStrg.='+' if $distValueStrg;
+					#		$distValueStrg.="$vTag1$peptideGroups{$pepEntity}{$g}{HIDDEN}$vTag2";
+					#	}
+					#}
+					$distValueStrg=$peptideGroups{$pepEntity}{$g}{'VIS_TRUE'} || 0;
+					$distValueStrg.='+<I>'.$peptideGroups{$pepEntity}{$g}{'VIS_GHOST'}.'</I>' if $peptideGroups{$pepEntity}{$g}{'VIS_GHOST'};
+					$distValueStrg='<B>'.$distValueStrg.'</B>' if $distValueStrg;
+					if ($hiddenRule != 2) { # count hidden
+						my $hiddenValueStrg=$peptideGroups{$pepEntity}{$g}{'HIDDEN_TRUE'} || 0;
+						$hiddenValueStrg.='+<I>'.$peptideGroups{$pepEntity}{$g}{'HIDDEN_GHOST'}.'</I>' if $peptideGroups{$pepEntity}{$g}{'HIDDEN_GHOST'};
+						$distValueStrg.=$hiddenValueStrg if $hiddenValueStrg ne '0';				
 					}
 				}
-				else {$distValueStrg='-';}
+				#else {$distValueStrg='-';}
+				$distValueStrg='-' unless $distValueStrg;				
 				print "<TD align=\"center\">$distValueStrg</TD>\n";
 			}
 			print "</TR>\n";
@@ -5408,9 +5492,17 @@ $peptideGroups{$pepEntity}{$g}{'STATUS'}=$valStat if (!$peptideGroups{$pepEntity
 		my $colSpan=3+$numGroups;
 		print "<TR><TD colspan=$colSpan><I><FONT class=\"badPTM\"><B>PTMs</B> not selected in Project.</FONT></I></TD></TR>\n";
 	}
+	my $pepCountStrg='<B>validated';
+	$pepCountStrg.='+<I>rescued</I>' if $peptideStatus{'VIS_GHOST'};
+	$pepCountStrg.='</B> where protein is visible';
+	if ($peptideStatus{'HIDDEN_TRUE'} || $peptideStatus{'HIDDEN_GHOST'}) {
+		$pepCountStrg.=', +validated' if $peptideStatus{'HIDDEN_TRUE'};
+		$pepCountStrg.='+<I>rescued</I>' if  $peptideStatus{'HIDDEN_GHOST'};
+		$pepCountStrg.=' where protein is hidden';
+	}
 	print qq
 |</TABLE>
-&nbsp;&nbsp;<INPUT type="button" class="font11" value=" Close " onclick="unselectProtein()">
+<SPAN class="font11">Peptide counts: $pepCountStrg</SPAN><BR>
 |;
 	exit;
 }
@@ -5423,7 +5515,7 @@ sub ajaxGetModificationSiteDetails {
 	my $pepIdStrg=param('pepIDs');
 	my $anaList=param('anaList');
 	my ($proteinID,$siteRes,$sitePos)=($site=~/^(\d+)-(.)(\d*)/);
-my %convertPos2Text=('-'=>'Protein N-term','='=>'Any N-term','+'=>'Protein C-term','*'=>'Any C-term');
+	my %convertPos2Text=('-'=>'Protein N-term','='=>'Any N-term','+'=>'Protein C-term','*'=>'Any C-term');
 
 #print header(-type=>'text/plain',-charset=>'utf-8'); warningsToBrowser(1); # DEBUG
 	###<Connecting to the database>###
@@ -5657,6 +5749,9 @@ my %convertPos2Text=('-'=>'Protein N-term','='=>'Any N-term','+'=>'Protein C-ter
 }
 
 ####>Revision history<####
+# 2.3.5 [BUGFIX] Use peptide specificity filter on export (VS 09/12/19)
+# 2.3.4 [FEATURE] Split counts into true and rescued peptides in protein details mode (PP 14/11/19)
+# 2.3.3 [FEATURE] Remove locked experiments from comparable proteins queries (VS 08/08/19)
 # 2.3.2 Improved form display for small screens (PP 15/05/19)
 # 2.3.1 Minor JS bug fix occuring when no project-relevant PTMs are found (PP 14/11/18)
 # 2.3.0 Added 'Frequency' filter (PP 23/10/18)

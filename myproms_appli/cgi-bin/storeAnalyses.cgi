@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# storeAnalyses.cgi     3.7.8                                                  #
+# storeAnalyses.cgi     3.8.1                                                  #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Stores analysis data into myProMS server and DB                              #
@@ -51,7 +51,7 @@ use promsConfig;
 use promsMod;
 use strict;
 use XML::SAX;
-use promsDIA;
+use promsDIARefonte;
 use File::Copy;
 
 
@@ -97,7 +97,6 @@ foreach my $dbParam ('databankID','databankID1','databankID2','databankID3') { #
 	push @databankIDs,param($dbParam) if param($dbParam);
 }
 #my $scanDB=(param('scanDB') && param('scanDB') eq 'now')? 1 : 0; !!!OBSOLETE!!! Always performed in background (PP 09/08/12)
-my $scanDB=0;
 #my $selMinScore=(defined(param('minScore')) && param('minScore')=~/[^\d\.]/)? param('minScore') : 'default'; # Modified because '^' as the first character in the list negates the expressions and means - any character not in the list.
 #my $selMinScore=(defined(param('minScore')) && param('minScore')=~/^\d+\.*\d*$/)? param('minScore') : 'default';
 #my $maxFDR=(param('maxFDR') && param('maxFDR') > 0)? param('maxFDR') : 0; # maximum FDR allowed (%)
@@ -670,7 +669,7 @@ foreach my $dataFile (sort{$fileList{$a}{'pos'}<=>$fileList{$b}{'pos'}} keys %fi
 	my ($data_fh,$uploadFile);
 	my $linkedFile; # in case dataFile is symbolic link (to Mascot server)
 	push @colName,'VALID_STATUS';
-	my $validStatus=($action eq 'reval')? 1 : ($scanDB)? 0 : -1; # 1:Partial validation, -1:Protein data not imported, 0:Protein data imported
+	my $validStatus=($action eq 'reval')? 1 : -1; # 1:Partial validation, -1:Protein data not imported, 0:Protein data imported
 	push @colValue,$validStatus;
 
 	if ($action eq 'anaBatch' || param('reval_file_ok')) { # reval_file_ok => full dat file in peptide_data
@@ -1251,7 +1250,8 @@ foreach my $dataFile (sort{$fileList{$a}{'pos'}<=>$fileList{$b}{'pos'}} keys %fi
 
 
 	####>Creating Match groups<####
-	&createMatchGroups;
+	my @sortedIdentifiers = (sort{scalar (keys %{$matchList{$b}})<=>scalar (keys %{$matchList{$a}}) || $maxProtScore{$b}<=>$maxProtScore{$a} || $a cmp $b} keys %matchList);
+	&promsMod::createMatchGroups(\%matchList, \%matchGroup, \@sortedIdentifiers, undef, undef, undef, 1);
 
 
 	####>Protecting ID space in tables QUERY_VALIDATION and PROTEIN_VALIDATION<####
@@ -1269,7 +1269,7 @@ foreach my $dataFile (sort{$fileList{$a}{'pos'}<=>$fileList{$b}{'pos'}} keys %fi
 
 	####>Extracting data from databank file<####
 	if (scalar keys %maxProtMatch) {
-		if ($scanDB || (!$decoyFile && $fileFormat=~/\.PDM/)) {
+		if (!$decoyFile && $fileFormat=~/\.PDM/) {
 			my $refProtMatch;
 			if ($decoy) {
 				my %trueProtMatch;
@@ -1296,14 +1296,14 @@ foreach my $dataFile (sort{$fileList{$a}{'pos'}<=>$fileList{$b}{'pos'}} keys %fi
 				# If multiple banks, assign the rank of the right one to each protein
 				if(scalar @databankIDs > 1) {
 					for(my $i=0; $i < scalar @databankIDs; $i++) {
-						&promsMod::getProtInfo('verbose',$dbh,$databankIDs[$i],[$analysisID],\%protDes,\%protMW,\%protOrg,\%protLength,undef,$refProtMatch); # $tempDbFile only for MSF
+						&promsMod::getProtInfo('verbose',$dbh,$databankIDs[$i],[$analysisID],\%protDes,\%protMW,\%protOrg,\%protLength,undef,$refProtMatch);
 						
 						foreach my $protID (keys %protDes) {
 							$protDbRank{$protID} = $i+1 if(!$protDbRank{$protID} && $protMW{$protID} != 0);
 						}
 					}
 				} else {
-					&promsMod::getProtInfo('verbose',$dbh,$databankIDs[0],[$analysisID],\%protDes,\%protMW,\%protOrg,\%protLength,undef,$refProtMatch,$tempDbFile); # $tempDbFile only for MSF	
+					&promsMod::getProtInfo('verbose',$dbh,$databankIDs[0],[$analysisID],\%protDes,\%protMW,\%protOrg,\%protLength,undef,$refProtMatch,$tempDbFile); # $tempDbFile only for MSF
 				}
 				
 				# Unmatched proteins take a DB_RANK of 1
@@ -1432,6 +1432,7 @@ foreach my $dataFile (sort{$fileList{$a}{'pos'}<=>$fileList{$b}{'pos'}} keys %fi
 					}
 					$modif=$varModCode if ($fileFormat eq 'PARAGON.XML' || $fileFormat eq 'TDM.PEP.XML' || $fileFormat eq 'TDM.XML');
 					my $modificationID=($analysisMods{'V'}{$modif}{'numModDB'})? $analysisMods{'V'}{$modif}{'numModDB'} : ($analysisMods{'L'}{$modif}{'numModDB'}) ? $analysisMods{'L'}{$modif}{'numModDB'} : -1;
+					$modificationID = &promsMod::getModificationIDfromString($dbh, $varModCode, $residues) if($modificationID == -1);
 					foreach my $positionVMOD (@modifsPos) {
 						$modifs{$modificationID}{$positionVMOD}=1;
 					}
@@ -1623,33 +1624,30 @@ $dbh->disconnect; # safer to disconnect before fork
 ################################################
 ####>Launching databank scans in background<####
 ################################################
-if (scalar @databankScans) {
-	#my $analysisStrg=join(',',@databankScans);
-	#system "./scanDatabank.pl $userID $analysisStrg";
-
-	my $analysisStrg=join(',',@databankScans);
-
-	print qq|<SCRIPT LANGUAGE="JavaScript">systemFrame.location="./storeAnalyses.cgi?ACT=scanDB&ANA_ID=$analysisStrg";</SCRIPT>|;
-	my $endFile="$promsPath{logs}/scan_$userID.end";
-	my $numCycles=0;
-	while ($numCycles < 15 && !-e $endFile) { # 30 sec wait max
-		sleep 2;
-		$numCycles++;
-	}
-	sleep 1;
-	unlink $endFile if -e $endFile;
+if($firstAnalysisID) {
+	print "<FONT class=\"title2\">Import is finished !</FONT>\n";
+	print "<BR><FONT class=\"title3\">Protein annotations are being imported in background.</FONT>\n" if scalar @databankScans;
 }
 
+if (scalar @databankScans) {
+	my $analysisStrg=join(',',@databankScans);
+	system "./scanDatabank.pl $userID $analysisStrg&";
+	
+	my $endFile="$promsPath{logs}/scan_$userID.end";
+	my $numCycles=0;
+	my $maxNumCycles=10;
+	while (!-e $endFile && $numCycles < $maxNumCycles) { # 30 sec wait max
+		sleep 30;
+		print("<span class=\"title3\">.</span>");
+		$numCycles++;
+	}
+}
 
 ##########################
 ####>Reloading frames<####
 ##########################
 #exit; # DEBUG!
 if ($firstAnalysisID) {
-	print "<FONT class=\"title2\">Import is finished !</FONT>\n";
-	print "<BR><FONT class=\"title3\">Protein annotations are being imported in background.</FONT>\n" if scalar @databankScans;
-	sleep 3;
-
 	my $anaBranchID="analysis:$firstAnalysisID";
 	my $updateURL="parent.navFrame.location=\"$promsPath{cgi}/openProject.cgi?ID=$projectID&ACT=nav";
 
@@ -2551,38 +2549,6 @@ sub parseTandemXML {
 	print " Done.</FONT><BR>\n";
 }
 
-##########################################
-####<Generates Temporary Match Groups>####
-##########################################
-sub createMatchGroups { # Globals %matchList, %maxProtScore, %matchGroup
-	print "<FONT class=\"title3\">&nbsp;-Grouping proteins...";
-	my $numGroup=0;
-	my @sortedIdentifiers=(sort{scalar (keys %{$matchList{$b}})<=>scalar (keys %{$matchList{$a}}) || $maxProtScore{$b}<=>$maxProtScore{$a} || $a cmp $b} keys %matchList);
-	my $count=0;
-	foreach my $i (0..$#sortedIdentifiers) {
-		$count++;
-		if ($count==150) {print '.'; $count=0;}
-		next if $matchGroup{$sortedIdentifiers[$i]}; # already assigned to a match group
-		$matchGroup{$sortedIdentifiers[$i]}=++$numGroup;
-#next; # SKIP grouping!!!
-		foreach my $j ($i+1..$#sortedIdentifiers) {
-			next if $matchGroup{$sortedIdentifiers[$j]}; # already assigned to a match group
-			##<Comparing peptide contents of identifier#1 and identifier#2>## All peptides must match!
-			my $matchOK=1;
-			foreach my $seq (keys %{$matchList{$sortedIdentifiers[$j]}}) {
-				if (!$matchList{$sortedIdentifiers[$i]}{$seq}) {
-					delete $matchList{$sortedIdentifiers[$i]}{$seq}; # to be safe
-					$matchOK=0;
-					last;
-				}
-			}
-			$matchGroup{$sortedIdentifiers[$j]}=$matchGroup{$sortedIdentifiers[$i]} if $matchOK;
-		}
-	}
-	print " Done.</FONT><BR>\n";
-}
-
-
 ################################
 ####<Mascot boundary String>####
 ################################
@@ -3197,16 +3163,6 @@ sub systemCommand {
 		open(OUT,">$promsPath{valid}/ana_$anaID/fdr.end");
 		print OUT "STEP $step";
 		close OUT;
-	}
-
-	###<Launching background DB scan>###
-	elsif ($action eq 'scanDB') {
-		my $analysisStrg=param('ANA_ID');
-		system "./scanDatabank.pl $userID $analysisStrg";
-		open(OUT,">$promsPath{logs}/scan_$userID.end");
-		print OUT "Scan launched by $userID";
-		close OUT;
-		sleep 1;
 	}
 
 	print qq
@@ -5188,6 +5144,9 @@ sub getPercolatorScores {
 
 
 ####>Revision history<####
+# 3.8.1 [BUGFIX] Multiple modifications (with a '+') could not be imported (VS 15/11/19)
+# 3.8.0 [ENHANCEMENT] Remove scanDatabanks.pl from system iframe and run in background (VS 12/08/19)
+# 3.7.9 [MODIF] Changed createMatchGroup to fit with promsMod.pm prototype (VS 03/07/19)
 # 3.7.8 Handles multi-databases MSF import (VS 21/06/19)
 # 3.7.7 Javascript now encodes MSF file name when calling convertMsf2Pdm.cgi (PP 22/01/19)
 # 3.7.6 Add rawName to analysis name for merged MSF files (GA 08/01/19)

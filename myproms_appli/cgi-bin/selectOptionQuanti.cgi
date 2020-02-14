@@ -1,8 +1,8 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# selectOptionQuanti.cgi    1.2.8                                              #
-# Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
+# selectOptionQuanti.cgi    1.2.21                                             #
+# Authors: P. Poullet, V. Sabatet (Institut Curie)                             #
 # Contact: myproms@curie.fr                                                    #
 # Generates list of options available to user                                  #
 # Displayed in optionFrame                                                     #
@@ -86,22 +86,37 @@ my $status;# for quantification only
 
 ####>Checking if parent Experiment has quantifs<####
 my $experimentID=$itemInfo[1]{'ID'};
-my ($hasProtQuantifs)=$dbh->selectrow_array("SELECT 1 FROM SAMPLE S,ANALYSIS A,ANA_QUANTIFICATION AQ,QUANTIFICATION Q WHERE S.ID_SAMPLE=A.ID_SAMPLE AND A.ID_ANALYSIS=AQ.ID_ANALYSIS AND AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND ID_EXPERIMENT=$experimentID AND FOCUS='protein' AND STATUS > 0 LIMIT 0,1");
+my ($hasProtQuantifs)=$dbh->selectrow_array("SELECT 1 FROM SAMPLE S,ANALYSIS A,ANA_QUANTIFICATION AQ,QUANTIFICATION Q WHERE S.ID_SAMPLE=A.ID_SAMPLE AND A.ID_ANALYSIS=AQ.ID_ANALYSIS AND AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND ID_EXPERIMENT=$experimentID AND FOCUS='protein' AND STATUS > 0 LIMIT 1");
 
 ####>Checking if item has children<####
 my $hasChildren=0;
+my $desHasQuantif=0;
+my $hasQuantifForProtRuler=0;
 my $focus='';
 if ($item eq 'DESIGN') {
 	($nbExpCond)=$dbh->selectrow_array("SELECT COUNT(*) FROM EXPCONDITION WHERE ID_DESIGN=$itemID");
 	if ($nbExpCond) {
 		$hasChildren=$nbExpCond;
 		#($okAddQuantif)=$dbh->selectrow_array("SELECT COUNT(*) FROM EXPCONDITION EC,OBSERVATION O WHERE EC.ID_EXPCONDITION=O.ID_EXPCONDITION AND EC.ID_DESIGN=$itemID");
-		($okAddQuantif)=$dbh->selectrow_array("SELECT 1 FROM EXPCONDITION EC,OBS_EXPCONDITION OE WHERE EC.ID_EXPCONDITION=OE.ID_EXPCONDITION AND EC.ID_DESIGN=$itemID LIMIT 0,1");
+		($okAddQuantif)=$dbh->selectrow_array("SELECT 1 FROM EXPCONDITION EC,OBS_EXPCONDITION OE WHERE EC.ID_EXPCONDITION=OE.ID_EXPCONDITION AND EC.ID_DESIGN=$itemID LIMIT 1");
+		($desHasQuantif)=$dbh->selectrow_array("SELECT 1 FROM QUANTIFICATION WHERE ID_DESIGN=$itemID AND FOCUS='protein' AND STATUS > 0 LIMIT 1");
+		
+		####>Checking if design has suitable quantifs for Proteomic Ruler<####
+		if ($desHasQuantif) {
+			my $sthMethodID = $dbh->prepare("SELECT ID_QUANTIFICATION_METHOD FROM QUANTIFICATION_METHOD WHERE CODE IN ('MQ', 'PROT_ABUNDANCE')"); #,'PROT_RATIO_PEP'
+			my @methIdList;
+			$sthMethodID->execute;
+			while (my ($methodID) = $sthMethodID->fetchrow_array) {push @methIdList,$methodID;}
+			$sthMethodID->finish;
+			if (scalar @methIdList) {
+				($hasQuantifForProtRuler) = $dbh->selectrow_array("SELECT 1 FROM QUANTIFICATION WHERE ID_DESIGN=$itemID AND ID_QUANTIFICATION_METHOD IN (".join(',',@methIdList).") LIMIT 1");
+			}
+		}	
 	}
 	else {
 		foreach my $childItem (@childItems) {
 			next if $childItem eq 'EXPCONDITION';
-			($hasChildren)=$dbh->selectrow_array("SELECT 1 FROM $childItem WHERE ID_DESIGN=$itemID LIMIT 0,1");
+			($hasChildren)=$dbh->selectrow_array("SELECT 1 FROM $childItem WHERE ID_DESIGN=$itemID LIMIT 1");
 			last if $hasChildren;
 		}
 	}
@@ -116,14 +131,18 @@ elsif ($item eq 'QUANTIFICATION') {
 	if ($quantifType eq 'SWATH') {
         $hasChildren=1;
     }
-    else{
-		($hasChildren)=$dbh->selectrow_array("SELECT 1 FROM PARENT_QUANTIFICATION WHERE ID_PARENT_QUANTIFICATION=$itemID LIMIT 0,1");
-	}
-	unless ($hasChildren) {
-		($hasChildren) = $dbh->selectrow_array("SELECT 1 FROM GOANA_QUANTIFICATION WHERE ID_QUANTIFICATION=$itemID LIMIT 0,1");
-	}
-	unless ($hasChildren) {
-		($hasChildren) = $dbh->selectrow_array("SELECT 1 FROM EXPLORANA_QUANTIF WHERE ID_QUANTIFICATION=$itemID LIMIT 0,1");
+    elsif ($status >= 1) {
+		my @sthChild=(
+					$dbh->prepare("SELECT 1 FROM GOANA_QUANTIFICATION WHERE ID_QUANTIFICATION=? LIMIT 1"),
+					$dbh->prepare("SELECT 1 FROM EXPLORANA_QUANTIF WHERE ID_QUANTIFICATION=? LIMIT 1"),
+					$dbh->prepare("SELECT 1 FROM PATHWAYANA_QUANTIFICATION WHERE ID_QUANTIFICATION=? LIMIT 1"),
+					$dbh->prepare("SELECT 1 FROM PARENT_QUANTIFICATION WHERE ID_PARENT_QUANTIFICATION=? LIMIT 1")
+				   );
+		foreach my $sth (@sthChild) {
+			$sth->execute($itemID);
+			($hasChildren)=$sth->fetchrow_array;
+			last if $hasChildren;
+		}
 	}
 }
 
@@ -163,17 +182,22 @@ function selectOption(selectedButton) {
 		top.promsFrame.selectedAction=action;
 	}
 
-	if (action=='summary' \|\| action=='delete' \|\| action=='edit') {
+	if (action=='summary' \|\| action=='delete' \|\| action=='deleteMulti' \|\| action=='edit') {
 		if (action=='delete' && !confirm('Delete selected item ?')) {
 			selectOption(document.getElementById('summary'));
 		}
 		else if ('$item'=='QUANTIFICATION') {
-			if (action=='summary' && '$focus'=='protein') {
-				if ('$quantifType'=='SSPA') {
-					top.promsFrame.resultFrame.location="$promsPath{cgi}/showSSProtQuantification.cgi?CALL=quanti&id_quantif=$itemID&ACT="+action;
+			if (action=='summary') {
+				if ('$focus'=='protein') {
+					if ('$quantifType'=='SSPA') {
+						top.promsFrame.resultFrame.location="$promsPath{cgi}/showSSProtQuantification.cgi?CALL=quanti&id_quantif=$itemID&ACT="+action;
+					}
+					else {
+						top.promsFrame.resultFrame.location="$promsPath{cgi}/showProtQuantification.cgi?CALL=quanti&id_quantif=$itemID&ACT="+action;
+					}
 				}
-				else {
-					top.promsFrame.resultFrame.location="$promsPath{cgi}/showProtQuantification.cgi?CALL=quanti&id_quantif=$itemID&ACT="+action;
+				else { // peptide/fragment
+					top.promsFrame.resultFrame.location="$promsPath{cgi}/showPepQuantification.cgi?CALL=quanti&id_quantif=$itemID&ACT="+action;
 				}
 			}
 			else {
@@ -181,11 +205,15 @@ function selectOption(selectedButton) {
 			}
 		}
 		else { // DESIGN
-			top.promsFrame.resultFrame.location="$promsPath{cgi}/manageDesignCondition.cgi?ACT="+action+"&ITEM=$item&ID=$itemID&PARENT=$itemParents[0]&PROJECT_ID=$projectID";
+			if(action=='deleteMulti') {
+				top.promsFrame.resultFrame.location="$promsPath{cgi}/manageQuantification.cgi?ID=$itemID&PROJECT_ID=$projectID&branchID=$branchID&ACT="+action;	
+			} else {
+				top.promsFrame.resultFrame.location="$promsPath{cgi}/manageDesignCondition.cgi?ACT="+action+"&ITEM=$item&ID=$itemID&PARENT=$itemParents[0]&PROJECT_ID=$projectID";
+			}
 		}
 	}
 	else if (action=='quantiData') {
-		if ('$focus'=='peptide') {
+		if ('$focus'=='peptide' \|\| '$focus'=='fragment') {
 			top.promsFrame.resultFrame.location="$promsPath{cgi}/showPepQuantification.cgi?CALL=quanti&id_quantif=$itemID";
 		}
 		else { // protein
@@ -223,6 +251,12 @@ function selectOption(selectedButton) {
 	else if (action=='addQuantification') {
 		top.promsFrame.resultFrame.location="$promsPath{cgi}/startDesignQuantification.cgi?ID=$itemID";
 	}
+	else if (action=='protRulerQuantif') {
+		top.promsFrame.resultFrame.location="$promsPath{cgi}/startDesignProtRulerQuantif.cgi?ID=$itemID";
+	}
+	else if (action == 'monitor'){
+		var monitorWindow=window.open("$promsPath{cgi}/monitorJobs.cgi?filterType=Quantification&filterDateNumber=1&filterDateType=DAY&filterStatus=Queued&filterStatus=Running",'monitorJobsWindow','width=1000,height=500,scrollbars=yes,resizable=yes');
+	}
 	else {alert('Unrecognized option');}
 }
 function autoSelectButton(buttonId) { // an action was cancelled or selected from resultFrame
@@ -232,11 +266,6 @@ function autoSelectButton(buttonId) { // an action was cancelled or selected fro
 	//currentButton.style.color='#DD0000';
 	currentButton.className='selectedButton';
 	top.promsFrame.selectedAction=buttonId;
-}
-function watchQuantifications() {
-	var watchQuantifWin=window.open("$promsPath{cgi}/watchQuantifications.cgi",'WatchQuantifWindow','width=1000,height=500,scrollbars=yes,resizable=yes');
-	watchQuantifWin.focus();
-	parent.optionFrame.selectOption(parent.optionFrame.document.getElementById('summary')); // refresh optionFrame with summary option
 }
 var currentButton; // currently selected button
 </SCRIPT>
@@ -279,13 +308,17 @@ if ($projectAccess ne 'guest') { #$projectFullAccess
 	if ($item eq 'DESIGN') {
 		print "<TD nowrap>",&displayItemButton;
 		print "<BR>\n",&editItemButton,"</TD>\n";
-		print "<TD>",&delItemButton,"</TD>\n";
-		#my $isSelectable=($nbExpCond <= 1)? ' disabled':'';
-		print "<TD nowrap>"; #,&addQuantificationButton($isSelectable);
-		print &addChildButton('QUANTIFICATION',0),"<BR>\n" if $nbExpCond >=2;
-		print "</TD>\n";
-		print "<TD nowrap>",&monitorQuantificationButton,"<BR>\n",&compQuantifsButton,"</TD>\n";
-		print "<TD nowrap>",&exportQuantifsButton,"</TD>\n" if $hasProtQuantifs;
+		print "<TD>",&delItemButton,"</TD>\n" unless $hasChildren;
+		if ($nbExpCond >= 2) {
+			print "<TD>",&addChildButton('QUANTIFICATION',0);
+			print "<BR>\n",&delMultipleQuantiButton if $desHasQuantif;
+			print "</TD>\n";
+		}
+		print "<TD>",&protRulerQuantifButton,"</TD>\n" if $hasQuantifForProtRuler;
+		if ($hasProtQuantifs) {
+			print "<TD nowrap>",&compQuantifsButton,"</TD>\n";
+			print "<TD nowrap>",&exportQuantifsButton,"</TD>\n";
+		}
 	}
 	elsif ($item eq 'QUANTIFICATION') {
 		#my $dbh=&promsConfig::dbConnect;
@@ -296,17 +329,23 @@ if ($projectAccess ne 'guest') { #$projectFullAccess
 		print "</TD>\n";
 		print "<TD nowrap>",&delItemButton,"</TD>\n";
 		print "<TD nowrap>",&quantiDataButton,"</TD>\n" if $status > 0;
-		print "<TD nowrap>",&monitorQuantificationButton,"<BR>\n",&compQuantifsButton,"</TD>\n";
-		print "<TD nowrap>",&exportQuantifsButton,"</TD>\n" if $hasProtQuantifs;
+		if ($hasProtQuantifs) {
+			print "<TD nowrap>",&compQuantifsButton,"</TD>\n";
+			print "<TD nowrap>",&exportQuantifsButton,"</TD>\n";
+		}
 		print "<TD nowrap>",&goAnalysisButton,"</TD>\n" if ($quantifType=~/PROT_RATIO_PEP|TNPQ/ && $status > 0);
 	}
+	print "<TD nowrap>",&monitorButton,"</TD>\n";
 }
 
 ####>Guest<####
 else { # ($projectAccess eq 'guest')
 	print "<TD nowrap>",&displayItemButton,"</TD>\n";
 	print "<TD nowrap>",&quantiDataButton,"</TD>\n" if ($item eq 'QUANTIFICATION' && $status > 0);
-	print "<TD nowrap>",&exportQuantifsButton,"</TD>\n" if $hasProtQuantifs;
+	if ($hasProtQuantifs) {
+		print "<TD nowrap>",&compQuantifsButton,"</TD>\n";
+		print "<TD nowrap>",&exportQuantifsButton,"</TD>\n";
+	}
 }
 
 print qq
@@ -341,12 +380,16 @@ sub addChildButton { # only for adding quantification so far
 		$buttonID='add';
 		$disabStrg= '';
 	}
-	return "<INPUT type=\"button\" id=\"$buttonID\" style=\"width:160px\" value=\"Add $childType\" onclick=\"selectOption(this)\" $disabStrg>";
+	return "<INPUT type=\"button\" id=\"$buttonID\" style=\"width:170px\" value=\"Add $childType\" onclick=\"selectOption(this)\" $disabStrg>";
 }
 ####<Delete Item>####
 sub delItemButton {
 	my $disabledString = ($hasChildren)?' disabled':'';
 	return "<INPUT type=\"button\" id=\"delete\" style=\"width:80px\" value=\"Delete\" onclick=\"selectOption(this)\"$disabledString>";
+}
+
+sub delMultipleQuantiButton {
+	return "<INPUT type=\"button\" id=\"deleteMulti\" style=\"width:170px\" value=\"Delete Quantifications\" onclick=\"selectOption(this)\">";
 }
 
 
@@ -355,11 +398,6 @@ sub delItemButton {
 #	my ($disabled)=@_;
 #	return "<INPUT type=\"button\" id=\"launch\" style=\"width:180px\" value=\"Launch Quantification\" onclick=\"selectOption(this)\" $disabled>";
 #}
-####<Monitor Quantification>####
-sub monitorQuantificationButton {
-	my $disabledString = ($fromExplorAna)? ' disabled' : '';
-	return "<INPUT type=\"button\" id=\"monitor\" style=\"width:180px\" value=\"Monitor Quantification(s)\" onclick=\"watchQuantifications()\"$disabledString>";
-}
 ####<Call listAnaQuantification>####
 sub quantiDataButton {
 	#my ($disabled)=@_;
@@ -381,9 +419,30 @@ sub goAnalysisButton{
 #sub addAnalysisButton {
 #	return "<INPUT type=\"button\" id=\"addAnalysis\" style=\"width:140px\" value=\"Manage content\" onclick=\"selectOption(this)\">";
 #}
+####<Proteomic Ruler Quantification>####
+sub protRulerQuantifButton {
+	return "<INPUT type=\"button\" id=\"protRulerQuantif\" style=\"width:160px\" value=\"Proteomic Ruler\" onclick=\"selectOption(this)\">";
+}
+####<Jobs monitoring>####
+sub monitorButton {
+	return "<INPUT type=\"button\" id=\"monitor\" style=\"width:125px\" value=\"Monitor Jobs\" onclick=\"selectOption(this)\">";
+}
 
 
 ####>Revision history<####
+# 1.2.21 [ENHANCEMENT] Add PROT_ABUNDANCE to possible methods of Proteomic Ruler and display button (VL 11/02/20)
+# 1.2.20 [CHANGES] In action buttons order and child-detection queries for Design (PP 07/02/20)
+# 1.2.19 [CHANGES] Set same name for all monitor window so it does not open multiple instances of it (VS 08/01/20)
+# 1.2.18 [CHANGES] Use new job monitoring window opening parameters (VS 18/11/19)
+# 1.2.17 [ENHANCEMENT] Include Pathway analysis has potentiel child of quantification during deletability check (PP 12/11/19) 
+# 1.2.16 [FEATURE] Restore "Compare quantifications" button for design (PP 06/11/19)
+# 1.2.15 [MODIF] Remove (temporarily) MEAN_STATE from accepted quantifs for Proteomic Ruler because it's not suitable as such (VL 23/10/19)
+# 1.2.14 [MODIF] Switch from watchQuantification to monitorJobs script (VS 21/10/19)
+# 1.2.13 [ENHANCEMENT] Add button for multi quantifications deletion (VS 04/10/19)
+# 1.2.12 [ENHANCEMENT] Add Proteomic Ruler button to new quantification methods (VL 23/09/19)
+# 1.2.11 [ENHANCEMENT] Merge with Proteomic Ruler code (PP 29/08/19)
+# 1.2.10 [ENHANCEMENT] Points to showPepQuantification.cgi for peptide-quantification summary (PP 28/08/19)
+# 1.2.9 Add button and possibility to use Proteomic Ruler (VL 30/07/19)
 # 1.2.8 Points to startDesignQuantification.cgi for design-based quantifications (PP 01/02/19)
 # 1.2.7 Added Export Quantifications options (PP 07/11/17)
 # 1.2.6 Calls showSSProtQuantification.cgi for SSPA quantification summary (PP 17/08/16)

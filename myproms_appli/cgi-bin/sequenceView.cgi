@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# sequenceView.cgi     3.2.11	                                               #
+# sequenceView.cgi     3.3.4	                                               #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Displays detailed information on a protein:                                  #
@@ -71,6 +71,7 @@ if (param('AJAX')) {
 	elsif (param('AJAX') eq 'vmodPep') {&ajaxDisplayVarModPeptides;}
 	elsif (param('AJAX') eq 'searchInteract') {&ajaxSearchInteractors;}
 	elsif (param('AJAX') eq 'quantifList') {&ajaxGetQuantificationList;}
+	elsif (param('AJAX') eq 'descProt') {&ajaxDisplayProtFullDesc;}
 	exit;
 }
 #my $frame=(param('frame'))? param('frame') : 'top';
@@ -539,9 +540,12 @@ $sthPepMod->finish;
 ####>Finding info on Experiments, Samples and Analyses where protein is found<####
 my (%analysisInfo,%analysisParents,%protVarMods);
 my $parentsQuery1=qq |SELECT 2,EXPERIMENT.NAME,EXPERIMENT.DISPLAY_POS,SAMPLE.NAME,SAMPLE.DISPLAY_POS,'A' FROM EXPERIMENT,SAMPLE,ANALYSIS
-						WHERE ID_ANALYSIS=? AND SAMPLE.ID_SAMPLE=ANALYSIS.ID_SAMPLE AND EXPERIMENT.ID_EXPERIMENT=SAMPLE.ID_EXPERIMENT AND SAMPLE.ID_SPOT IS NULL|;
+						WHERE ID_ANALYSIS=? AND SAMPLE.ID_SAMPLE=ANALYSIS.ID_SAMPLE AND EXPERIMENT.ID_EXPERIMENT=SAMPLE.ID_EXPERIMENT AND SAMPLE.ID_SPOT IS NULL
+						AND EXPERIMENT.ID_EXPERIMENT NOT IN (SELECT E2.ID_EXPERIMENT FROM EXPERIMENT E2 INNER JOIN USER_EXPERIMENT_LOCK EU ON EU.ID_EXPERIMENT=E2.ID_EXPERIMENT INNER JOIN SAMPLE S ON S.ID_EXPERIMENT=E2.ID_EXPERIMENT INNER JOIN ANALYSIS A ON A.ID_SAMPLE=S.ID_SAMPLE WHERE A.ID_ANALYSIS=? AND EU.ID_USER='$userID')|;
 my $parentsQuery2=qq |SELECT 1,EXPERIMENT.NAME,EXPERIMENT.DISPLAY_POS,GEL2D.NAME,GEL2D.DISPLAY_POS,SPOT.NAME FROM EXPERIMENT,GEL2D,SPOT,SAMPLE,ANALYSIS
-						WHERE ID_ANALYSIS=? AND SAMPLE.ID_SAMPLE=ANALYSIS.ID_SAMPLE AND SPOT.ID_SPOT=SAMPLE.ID_SPOT AND GEL2D.ID_GEL2D=SPOT.ID_GEL2D AND EXPERIMENT.ID_EXPERIMENT=GEL2D.ID_EXPERIMENT|;
+						WHERE ID_ANALYSIS=? AND SAMPLE.ID_SAMPLE=ANALYSIS.ID_SAMPLE AND SPOT.ID_SPOT=SAMPLE.ID_SPOT AND GEL2D.ID_GEL2D=SPOT.ID_GEL2D AND EXPERIMENT.ID_EXPERIMENT=GEL2D.ID_EXPERIMENT
+						AND EXPERIMENT.ID_EXPERIMENT NOT IN (SELECT E2.ID_EXPERIMENT FROM EXPERIMENT E2 INNER JOIN USER_EXPERIMENT_LOCK EU ON EU.ID_EXPERIMENT=E2.ID_EXPERIMENT INNER JOIN SAMPLE S ON S.ID_EXPERIMENT=E2.ID_EXPERIMENT INNER JOIN ANALYSIS A ON A.ID_SAMPLE=S.ID_SAMPLE WHERE A.ID_ANALYSIS=? AND EU.ID_USER='$userID')|;
+
 my @sthAnaParents=($dbh->prepare($parentsQuery1),$dbh->prepare($parentsQuery2)); # free sample then gel
 
 ###>Analyses where protein is validated<###
@@ -549,11 +553,11 @@ my @sthAnaParents=($dbh->prepare($parentsQuery1),$dbh->prepare($parentsQuery2));
 if ($validProtID) {
 	my $sthVal;
 	if ($showAllAna) {
-		$sthVal=$dbh->prepare("SELECT A.ID_ANALYSIS,NAME,DISPLAY_POS,MS_TYPE,VALID_STATUS,CONF_LEVEL,VISIBILITY,NUM_PEP,MATCH_GROUP,PEP_SPECIFICITY,PEP_COVERAGE,ID_SAMPLE FROM ANALYSIS A,ANALYSIS_PROTEIN AP WHERE A.ID_ANALYSIS=AP.ID_ANALYSIS AND AP.ID_PROTEIN=$validProtID");
+		$sthVal=$dbh->prepare("SELECT A.ID_ANALYSIS,A.NAME,A.DISPLAY_POS,MS_TYPE,VALID_STATUS,CONF_LEVEL,VISIBILITY,NUM_PEP,MATCH_GROUP,PEP_SPECIFICITY,PEP_COVERAGE,S.ID_SAMPLE FROM ANALYSIS A INNER JOIN ANALYSIS_PROTEIN AP ON AP.ID_ANALYSIS=A.ID_ANALYSIS INNER JOIN SAMPLE S ON S.ID_SAMPLE=A.ID_SAMPLE INNER JOIN EXPERIMENT E ON E.ID_EXPERIMENT=S.ID_EXPERIMENT WHERE AP.ID_PROTEIN=$validProtID AND E.ID_EXPERIMENT NOT IN (SELECT E2.ID_EXPERIMENT FROM EXPERIMENT E2 INNER JOIN USER_EXPERIMENT_LOCK EU ON E2.ID_EXPERIMENT=EU.ID_EXPERIMENT INNER JOIN SAMPLE S2 ON S2.ID_EXPERIMENT=E2.ID_EXPERIMENT INNER JOIN ANALYSIS A2 ON A2.ID_SAMPLE=S2.ID_SAMPLE INNER JOIN ANALYSIS_PROTEIN AP2 ON AP2.ID_ANALYSIS=A2.ID_ANALYSIS WHERE AP2.ID_PROTEIN=$validProtID AND EU.ID_USER='$userID')");
 	}
 	else {
 		my $strgID = join(',',@analysesID);
-		$sthVal=$dbh->prepare("SELECT A.ID_ANALYSIS,NAME,DISPLAY_POS,MS_TYPE,VALID_STATUS,CONF_LEVEL,VISIBILITY,NUM_PEP,MATCH_GROUP,PEP_SPECIFICITY,PEP_COVERAGE,ID_SAMPLE FROM ANALYSIS A,ANALYSIS_PROTEIN AP WHERE A.ID_ANALYSIS=AP.ID_ANALYSIS AND A.ID_ANALYSIS IN ($strgID) AND AP.ID_PROTEIN=$validProtID");
+		$sthVal=$dbh->prepare("SELECT A.ID_ANALYSIS,A.NAME,A.DISPLAY_POS,MS_TYPE,VALID_STATUS,CONF_LEVEL,VISIBILITY,NUM_PEP,MATCH_GROUP,PEP_SPECIFICITY,PEP_COVERAGE,S.ID_SAMPLE FROM ANALYSIS A INNER JOIN ANALYSIS_PROTEIN AP ON AP.ID_ANALYSIS=A.ID_ANALYSIS INNER JOIN SAMPLE S ON S.ID_SAMPLE=A.ID_SAMPLE INNER JOIN EXPERIMENT E ON E.ID_EXPERIMENT=S.ID_EXPERIMENT WHERE AP.ID_PROTEIN=$validProtID AND A.ID_ANALYSIS IN ($strgID) AND E.ID_EXPERIMENT NOT IN (SELECT E2.ID_EXPERIMENT FROM EXPERIMENT E2 INNER JOIN USER_EXPERIMENT_LOCK EU ON E2.ID_EXPERIMENT=EU.ID_EXPERIMENT INNER JOIN SAMPLE S2 ON S2.ID_EXPERIMENT=E2.ID_EXPERIMENT INNER JOIN ANALYSIS A2 ON A2.ID_SAMPLE=S2.ID_SAMPLE INNER JOIN ANALYSIS_PROTEIN AP2 ON AP2.ID_ANALYSIS=A2.ID_ANALYSIS WHERE AP2.ID_PROTEIN=$validProtID AND EU.ID_USER='$userID')");
 	}
 	my $sthGr1=$dbh->prepare("SELECT COUNT(*) FROM ANALYSIS_PROTEIN WHERE MATCH_GROUP=? AND ID_ANALYSIS=?");
 	my $sthGr2=$dbh->prepare("SELECT MAX(NUM_PEP) FROM ANALYSIS_PROTEIN WHERE MATCH_GROUP=? AND ID_ANALYSIS=? AND ID_PROTEIN != $validProtID");
@@ -569,7 +573,7 @@ if ($validProtID) {
 	while (my ($anaID,$anaName,$anaPos,$msType,$anaValid,$conf,$vis,$numPep,$matchGr,$pepSpec,$pepCov,$sampID)=$sthVal->fetchrow_array) {
 		$pepCov='?' unless $pepCov;
 		foreach my $sthPar (@sthAnaParents) { # 2 parent paths are possible
-			$sthPar->execute($anaID);
+			$sthPar->execute($anaID,$anaID);
 			@{$analysisParents{$anaID}}=$sthPar->fetchrow_array;
 			last if $analysisParents{$anaID}[0];
 		}
@@ -599,6 +603,7 @@ if ($validProtID) {
 			$groupClass='matchGroupOK';
 		}
 		#if ($conf) { # Not a ghost protein => look for ghost peptides
+		$numPep=0 if !$conf;
 			$sthGhostPep->execute($anaID);
 			my ($numGhostPep)=$sthGhostPep->fetchrow_array;
 			$numPep.="+<FONT class=\"virtualProt\" onmouseover=\"popup('Peptides retrieved from XIC extraction')\" onmouseout=\"popout()\">$numGhostPep</FONT>" if $numGhostPep;
@@ -630,13 +635,20 @@ if ($showAllAna) {
 						FROM PROTEIN_VALIDATION PV,ANALYSIS A,SAMPLE S,EXPERIMENT E
 						WHERE PV.IDENTIFIER='$identifier'
 							AND PV.ID_ANALYSIS=A.ID_ANALYSIS AND A.ID_SAMPLE=S.ID_SAMPLE AND S.ID_EXPERIMENT=E.ID_EXPERIMENT
-							AND E.ID_PROJECT=$projectID|;
+							AND E.ID_PROJECT=$projectID
+							AND E.ID_EXPERIMENT NOT IN (
+								SELECT E2.ID_EXPERIMENT
+								FROM EXPERIMENT E2
+								INNER JOIN USER_EXPERIMENT_LOCK EU ON EU.ID_EXPERIMENT=E2.ID_EXPERIMENT
+								WHERE E2.ID_PROJECT=$projectID AND EU.ID_USER='$userID'
+							)
+	|;
 	my $sthNoValP=$dbh->prepare($noValQuery);
 	$sthNoValP->execute;
 	while (my ($anaID,$anaName,$anaPos,$msType,$anaValid,$protID,$numPep,$maxPep,$sampID)=$sthNoValP->fetchrow_array) {
 		next if $analysisInfo{$anaID}; # ana is partially validated and prot is validated
 		foreach my $sthPar (@sthAnaParents) { # 2 parent pathes are possible
-			$sthPar->execute($anaID);
+			$sthPar->execute($anaID,$anaID);
 			@{$analysisParents{$anaID}}=$sthPar->fetchrow_array;
 			last if $analysisParents{$anaID}[0];
 		}
@@ -1113,6 +1125,49 @@ function ajaxGetQuantificationsList(designBranch){
 	XHR.send(null);
 }
 
+var protFullDesc = '';
+var protShortDesc = '';
+function ajaxDisplayProtFullDesc() {
+	//Creation of the XMLHTTPRequest object
+	XHR = getXMLHTTP();
+	if (!XHR) {
+		return false;
+	}
+	
+	var isFull = (document.getElementById('protDescButton').value == 'Show full description') ? 1 : 0;
+	if(isFull && !protShortDesc) {
+		protShortDesc = document.getElementById('protDesc').innerHTML;
+	}
+	
+	if(!isFull && protShortDesc) {
+		document.getElementById('protDesc').innerHTML = protShortDesc;
+		document.getElementById('protDescButton').value = 'Show full description';
+	} else if(isFull && protFullDesc) {
+		document.getElementById('protDesc').innerHTML = protFullDesc;
+		document.getElementById('protDescButton').value = 'Hide full description';
+	} else {
+		document.getElementById('protDescButton').disabled = true;
+		document.getElementById('protDesc').innerHTML = "<img src='$promsPath{images}/scrollbarGreen.gif'/>";
+		
+		XHR.open("GET","$promsPath{cgi}/sequenceView.cgi?AJAX=descProt&anaID=$analysesID[0]&id_prot=$proteinID&full=" + isFull);
+		XHR.onreadystatechange=function() {
+			if (XHR.readyState==4 && XHR.responseText) {
+				var protDesc = XHR.responseText;
+				document.getElementById('protDesc').innerHTML = protDesc;
+				
+				if(isFull) {
+					document.getElementById('protDescButton').value = 'Hide full description';
+					protFullDesc = protDesc;
+				} else {
+					document.getElementById('protDescButton').value = 'Show full description';
+					protShortDesc = protDesc;
+				}
+			}
+			document.getElementById('protDescButton').disabled = false;
+		}
+		XHR.send(null);
+	}
+}
 
 function getXMLHTTP(){
 	var xhr=null;
@@ -1206,7 +1261,12 @@ print "<FONT style=\"font-weight:$fWeight;color:$fColor;\">$alias</FONT>";
 print " (Protein is hidden in $msTypeNames{\"s$analysisInfo{$analysesID[0]}[6]\"} Analysis <FONT style=\"font-weight:bold;color:#DD0000;\">$analysisInfo{$analysesID[0]}[0]</FONT>)" unless scalar @analysesID > 1 || $analysisInfo{$analysesID[0]}[3];
 print "</TD></TR>\n";
 print "<TR><TH align=right>Original identifier :</TH><TD bgcolor=\"$color1\">$identifier&nbsp;</TD></TR>\n";
-print "<TR><TH align=right valign=top>Description :</TH><TD bgcolor=\"$color1\">$desProt&nbsp;</TD></TR>\n";
+print "<TR><TH align=right valign=top>Description :</TH><TD bgcolor=\"$color1\"><span id='protDesc'>$desProt</span>&nbsp;";
+if(substr($desProt, -3) eq '...') {
+	###>Button allowing to browse full protein description based on db fasta file
+	print "&nbsp;<INPUT type=\"button\" id='protDescButton' value=\"Show full description\" onclick=\"ajaxDisplayProtFullDesc()\">";
+}
+print "</TD></TR>\n";
 my ($massString,$sizeString)=($protLength)? ("$massProt Da","&nbsp;($protLength aa)") : ('Unknown','');
 #print "<TR><TH align=right>Size :</TH><TD bgcolor=$color1>$sizeString</TD></TR>\n";
 print "<TR><TH align=right nowrap>&nbsp;Nominal mass (Mr) :</TH><TD bgcolor=\"$color1\">$massString$sizeString&nbsp;</TD></TR>\n";
@@ -1335,6 +1395,7 @@ my ($prevExpName,$prevGel2dName,$prevSpotName,$prevSampName)=('','','','');
 my $anaNamesString='';
 foreach my $anaID (sort{$analysisParents{$a}[0]<=>$analysisParents{$b}[0] || $analysisParents{$a}[2]<=>$analysisParents{$b}[2] || $analysisParents{$a}[4]<=>$analysisParents{$b}[4] || lc($analysisParents{$a}[5]) cmp lc($analysisParents{$b}[5]) || $analysisInfo{$a}[1]<=>$analysisInfo{$b}[1]} keys %analysisInfo) {
 	##>Parents
+	next if(!@{$analysisInfo{$anaID}}); 
 	my $parentStrg;
 	if ($analysisParents{$anaID}[0]==1) {# Gel
 		#>Exp
@@ -1970,7 +2031,15 @@ print qq
 			print "<TH nowrap>$elutTime</TH>\n"; # elution time
 			my $rank=(!$peptideInfo{$id_peptide[$i]}[2])? '-' : $peptideInfo{$id_peptide[$i]}[2];
 			print "<TH><ACRONYM onmouseover=\"popup('$pepComments')\" onmouseout=\"popout()\">$rank</ACRONYM></TH>\n"; # rank + comments
-			if ($peptideInfo{$id_peptide[$i]}[6]) {printf "\t<TH>%.1f</TH>\n",$peptideInfo{$id_peptide[$i]}[6];} # score
+			if ($peptideInfo{$id_peptide[$i]}[6]) {  # score
+				my $pepScore;
+				if ($peptideInfo{$id_peptide[$i]}[6] < 1) {
+					$pepScore = sprintf("%.3f", $peptideInfo{$id_peptide[$i]}[6]);
+				} else {
+					$pepScore = sprintf("%.1f", $peptideInfo{$id_peptide[$i]}[6]);
+				}
+				print "\t<TH>$pepScore</TH>\n";
+			}
 			else {print "\t<TH>-</TH>\n";}
 			print "<TH>$charge<SUP>+</SUP></TH>";
 			if (!$peptideInfo{$id_peptide[$i]}[2]) { # ghost
@@ -2026,7 +2095,7 @@ print qq
 				$pepInfo="pep_$id_peptide[$i]_$peptideInfo{$id_peptide[$i]}[1]_$peptideInfo{$id_peptide[$i]}[2]"; # pep_pepID_qNum_rank
 			}
 			else {$pepInfo="seq_$id_peptide[$i]";} # non-validated protein
-			if (($fileFormat{$analysesID[0]} !~ /TDM.PEP.XML|TDM.XML:NoSpec/ && $peptideInfo{$id_peptide[$i]}[6]) || $fileFormat{$analysesID[0]} =~ /SKYLINE\.CSV/ || $fileFormat{$analysesID[0]} =~ /OPENSWATH\.TSV/ ||$fileFormat{$analysesID[0]} =~ /SPECTRONAUT\.XLS/ ) { # no score => no MSMS data (MaxQuant)
+			if (($fileFormat{$analysesID[0]} !~ /TDM.PEP.XML|TDM.XML:NoSpec/ && $peptideInfo{$id_peptide[$i]}[6]) || $fileFormat{$analysesID[0]} =~ /SKYLINE\.(?:CSV|SKY)/ || $fileFormat{$analysesID[0]} =~ /OPENSWATH\.TSV/ ||$fileFormat{$analysesID[0]} =~ /SPECTRONAUT\.XLS/ ) { # no score => no MSMS data (MaxQuant)
 				print "<A id=\"$id_peptide[$i]\" href=\"javascript:drawSpectrum('$id_peptide[$i]','$pepInfo')\" onmouseover=\"popup('$pepComments<BR>Click to display <B>Fragmentation Spectrum</B>.')\" onmouseout=\"popout()\">"; # unless $fileFormat{$analysesID[0]}=~/TDM.PEP.XML|TDM.XML:NoSpec/;
 			}
 			else {
@@ -2495,17 +2564,21 @@ sub ajaxGetQuantificationList {
 	my ($item,$itemIdStrg)=split(':',param('designBranch'));
 	my @itemID=&promsMod::cleanNumericalParameters(split(',',$itemIdStrg));
 
-	my (%quantifList,%anaQuantifs,%modifications);
-	my (%quantifValues,%quantifInfo,%quantifHierarchy,%quantifPos);
+	my (%quantifList,%anaQuantifs); # ,%modifications
+	my (%quantifValues,%quantifInfo,%dispModifSites,%quantifHierarchy,%quantifPos);
 	my @sthQuantifs;
 	if ($item eq 'design') { # Ratio/MQ quantifs
-		$sthQuantifs[0]=$dbh->prepare("SELECT DISTINCT QM.CODE,Q.ID_QUANTIFICATION,PQ.TARGET_POS,Q.ID_MODIFICATION,PQ.ID_QUANTIF_PARAMETER
-										FROM QUANTIFICATION Q,PROTEIN_QUANTIFICATION PQ,QUANTIFICATION_METHOD QM
-										WHERE Q.ID_QUANTIFICATION=PQ.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD
-										AND Q.ID_DESIGN=$itemID[0] AND PQ.ID_PROTEIN=$proteinID AND TARGET_POS IS NOT NULL");
+		my $projectID=&promsMod::getProjectID($dbh,$itemID[0],'design');
+		my @userInfo=&promsMod::getUserInfo($dbh,$userID,$projectID);
+		my $statusStrg=($userInfo[1] eq 'bio' || $userInfo[1] eq 'manag')? '= 1' : ($userInfo[1] eq 'mass')? 'IN (1,2)' : '>=1'; # visibility filter
+		$sthQuantifs[0]=$dbh->prepare("SELECT DISTINCT QM.CODE,Q.ID_QUANTIFICATION,PQ.TARGET_POS,PQ.ID_QUANTIF_PARAMETER
+										FROM QUANTIFICATION Q
+										INNER JOIN PROTEIN_QUANTIFICATION PQ ON Q.ID_QUANTIFICATION=PQ.ID_QUANTIFICATION
+										INNER JOIN QUANTIFICATION_METHOD QM ON Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD
+										WHERE Q.ID_DESIGN=$itemID[0] AND PQ.ID_PROTEIN=$proteinID AND Q.STATUS $statusStrg AND TARGET_POS IS NOT NULL");
 	}
 	else { # internal-analysis
-		my $analysisStrg;
+		my ($analysisStrg,$projectID);
 		if ($itemID[0]==0) {
 			my $sthAna=$dbh->prepare("SELECT ID_ANALYSIS FROM ANALYSIS_PROTEIN WHERE ID_PROTEIN=$proteinID");
 			my @analysisList;
@@ -2514,26 +2587,32 @@ sub ajaxGetQuantificationList {
 				push @analysisList,$anaID;
 			}
 			$analysisStrg=join(',',@analysisList);
+			$projectID=&promsMod::getProjectID($dbh,$analysisList[0],'analysis');
 		}
-		else {$analysisStrg=join(',',@itemID);}
-
+		else {
+			$analysisStrg=join(',',@itemID);
+			$projectID=&promsMod::getProjectID($dbh,$itemID[0],'analysis');
+		}
+		my @userInfo=&promsMod::getUserInfo($dbh,$userID,$projectID);
+		my $statusStrg=($userInfo[1] eq 'bio' || $userInfo[1] eq 'manag')? '= 1' : ($userInfo[1] eq 'mass')? 'IN (1,2)' : '>=1'; # visibility filter
+		
 		#<Ratio-quantifs
-		$sthQuantifs[0]=$dbh->prepare("SELECT DISTINCT QM.CODE,Q.ID_QUANTIFICATION,PQ.TARGET_POS,Q.ID_MODIFICATION
+		$sthQuantifs[0]=$dbh->prepare("SELECT DISTINCT QM.CODE,Q.ID_QUANTIFICATION,PQ.TARGET_POS
 										FROM ANA_QUANTIFICATION AQ,QUANTIFICATION Q,PROTEIN_QUANTIFICATION PQ,QUANTIFICATION_METHOD QM
 										WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION=PQ.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD
-										AND Q.ID_DESIGN IS NULL AND PQ.ID_PROTEIN=$proteinID AND TARGET_POS IS NOT NULL AND AQ.ID_ANALYSIS IN ($analysisStrg)");
+										AND Q.ID_DESIGN IS NULL AND PQ.ID_PROTEIN=$proteinID AND Q.STATUS $statusStrg AND TARGET_POS IS NOT NULL AND AQ.ID_ANALYSIS IN ($analysisStrg)");
 		#<Non-ratio quantifs (SIN,EMPAI)
-		$sthQuantifs[1]=$dbh->prepare("SELECT DISTINCT QM.CODE,Q.ID_QUANTIFICATION,1,Q.ID_MODIFICATION
+		$sthQuantifs[1]=$dbh->prepare("SELECT DISTINCT QM.CODE,Q.ID_QUANTIFICATION,1
 										FROM ANA_QUANTIFICATION AQ,QUANTIFICATION Q,PROTEIN_QUANTIFICATION PQ,QUANTIFICATION_METHOD QM
 										WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION=PQ.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD
-										AND Q.ID_DESIGN IS NULL AND PQ.ID_PROTEIN=$proteinID AND QM.CODE IN ('SIN','EMPAI') AND AQ.ID_ANALYSIS IN ($analysisStrg)");
+										AND Q.ID_DESIGN IS NULL AND PQ.ID_PROTEIN=$proteinID AND Q.STATUS $statusStrg AND QM.CODE IN ('SIN','EMPAI') AND AQ.ID_ANALYSIS IN ($analysisStrg)");
 	}
 
 	###<Fetching quantifs>###
 	my $ratioParamID;
 	foreach my $sthQuantif (@sthQuantifs) {
 		$sthQuantif->execute;
-		while (my ($code,$quantifID,$targetPos,$modifID,$quantifParamID)=$sthQuantif->fetchrow_array) { # anaID only for internal quantifs
+		while (my ($code,$quantifID,$targetPos,$quantifParamID)=$sthQuantif->fetchrow_array) { # anaID only for internal quantifs
 			if ($code eq 'PROT_RATIO_PEP') {
 				unless ($ratioParamID) {
 					($ratioParamID)=$dbh->selectrow_array("SELECT QP.ID_QUANTIF_PARAMETER FROM QUANTIFICATION_PARAMETER QP,QUANTIFICATION_METHOD QM WHERE QP.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD AND QM.CODE='PROT_RATIO_PEP' AND QP.CODE='RATIO'");
@@ -2542,15 +2621,20 @@ sub ajaxGetQuantificationList {
 			}
 			my $quantifFamily=($code=~/_RATIO_|TNPQ/)? 'RATIO' : $code;
 			push @{$quantifList{$quantifFamily}},$quantifID."_".$targetPos;
-			@{$modifications{$modifID}}=() if $modifID;
+			#my $modifStrg=$modifID || $multiModifStrg;
+			#if ($modifStrg) {
+			#	foreach my $modifID (split(',',$modifStrg)) {
+			#		@{$modifications{$modifID}}=();
+			#	}
+			#}
 		}
 		$sthQuantif->finish;
 	}
 
 	###<Fetching ratio-quantification data>###
 	if ($quantifList{'RATIO'}) { # RATIO
-		my %parameters=(QUANTIF_FAMILY=>'RATIO',VIEW=>'',NUM_PEP_CODE=>'NUM_PEP_USED',QUANTIF_LIST=>$quantifList{'RATIO'}); # VIEW & NUM_PEP_CODE only for RATIO
-		&promsQuantif::fetchQuantificationData($dbh,\%parameters,\%quantifInfo,\%quantifValues,undef,{$proteinID=>1});
+		my %parameters=(QUANTIF_FAMILY=>'RATIO',VIEW=>'',SITE_DISPLAY=>'html',NUM_PEP_CODE=>'NUM_PEP_USED',QUANTIF_LIST=>$quantifList{'RATIO'}); # VIEW & NUM_PEP_CODE only for RATIO
+		&promsQuantif::fetchQuantificationData($dbh,\%parameters,\%quantifInfo,\%quantifValues,\%dispModifSites,undef,{$proteinID=>1});
 		foreach my $quantif (@{$quantifList{'RATIO'}}) {
 			my ($quantifID,$ratioPos)=split('_',$quantif);
 			my $ratioIdx=$ratioPos-1;
@@ -2578,7 +2662,7 @@ sub ajaxGetQuantificationList {
 	}
 	if ($quantifList{'MQ'}) {
 		my %parameters=(QUANTIF_FAMILY=>'MQ',VIEW=>'',MEASURE=>['MQ_INT','MQ_IBAQ','MQ_LFQ'],NUM_PEP_CODE=>'PEPTIDES',QUANTIF_LIST=>$quantifList{'MQ'});
-		&promsQuantif::fetchQuantificationData($dbh,\%parameters,\%quantifInfo,\%quantifValues,undef,{$proteinID=>1});
+		&promsQuantif::fetchQuantificationData($dbh,\%parameters,\%quantifInfo,\%quantifValues,\%dispModifSites,undef,{$proteinID=>1});
 		foreach my $quantif (@{$quantifList{'MQ'}}) {
 			my ($quantifID,$ratioPos)=split('_',$quantif);
 			my $quantifPath;
@@ -2597,7 +2681,7 @@ sub ajaxGetQuantificationList {
 	foreach my $quantifFamily ('EMPAI','SIN') { # all measures are fetched
 		if ($quantifList{$quantifFamily}) {
 			my %parameters=(QUANTIF_FAMILY=>$quantifFamily,VIEW=>'',NUM_PEP_CODE=>'',QUANTIF_LIST=>$quantifList{$quantifFamily});
-			&promsQuantif::fetchQuantificationData($dbh,\%parameters,\%quantifInfo,\%quantifValues,undef,{$proteinID=>1});
+			&promsQuantif::fetchQuantificationData($dbh,\%parameters,\%quantifInfo,\%quantifValues,\%dispModifSites,undef,{$proteinID=>1});
 			foreach my $quantif (@{$quantifList{$quantifFamily}}) {
 				my ($quantifID,$ratioPos)=split('_',$quantif);
 				my $quantifPath;
@@ -2615,14 +2699,14 @@ sub ajaxGetQuantificationList {
 	}
 
 	###<Modification quantifications>###
-	if (scalar keys %modifications) {
-		my $sthModif=$dbh->prepare("SELECT DISPLAY_CODE,DISPLAY_COLOR FROM MODIFICATION WHERE ID_MODIFICATION=?");
-		foreach my $modifID (keys %modifications) {
-			$sthModif->execute($modifID);
-			@{$modifications{$modifID}}=$sthModif->fetchrow_array;
-		}
-		$sthModif->finish;
-	}
+	#if (scalar keys %modifications) {
+	#	my $sthModif=$dbh->prepare("SELECT DISPLAY_CODE,DISPLAY_COLOR FROM MODIFICATION WHERE ID_MODIFICATION=?");
+	#	foreach my $modifID (keys %modifications) {
+	#		$sthModif->execute($modifID);
+	#		@{$modifications{$modifID}}=$sthModif->fetchrow_array;
+	#	}
+	#	$sthModif->finish;
+	#}
 
 	$dbh->disconnect;
 
@@ -2653,37 +2737,29 @@ sub ajaxGetQuantificationList {
 |<TR bgcolor="$bgColor" class="list">
 <TH nowrap align="left" valign=top>&nbsp;$quantifNameStrg$quantifHierarchy{$quantif}[1]&nbsp;</TH><TH align="left">|;
 				my ($quantifID,$targetPos)=split('_',$quantif);
-				my $modID=$quantifInfo{$quantifID}[4];
-				my $modStrg;
-				if ($modID) {
-					my ($dispCode, $dispColor)=@{$modifications{$modID}};
-					$modStrg="&nbsp;<FONT color=\"$dispColor\">$dispCode</FONT>";
-					foreach my $protMod (keys %{$quantifValues{$quantif}}) {
-						my ($protID,$modif)=split('-',$protMod);
-						$modif='?' unless $modif;
-						$modif=~s/^\[$modID\]//;
-						&promsQuantif::decodeModificationSite($modif);
-						print "$modStrg-$modif&nbsp;<br>";
+				if ($quantifInfo{$quantifID}[4]) { # modif quantif
+					foreach my $modProtID (keys %{$quantifValues{$quantif}}) {
+						print "-$dispModifSites{$modProtID}&nbsp;<BR>";
 					}
 				}
 				else {print "&nbsp;-&nbsp;"}
 				print "</TH>\n<TH>";
 				# ratio
-				foreach my $protMod (keys %{$quantifValues{$quantif}}) {
-					my $ratio=$quantifValues{$quantif}{$protMod}{'RATIO'};
+				foreach my $modProtID (keys %{$quantifValues{$quantif}}) {
+					my $ratio=$quantifValues{$quantif}{$modProtID}{'RATIO'};
 					$ratio=($ratio == 1000)? "&infin;" : ($ratio == 0.001)? "1/&infin;" : ($ratio <1)? sprintf('1/%.2f',1/$ratio) : sprintf('%.2f',$ratio);
 					print "&nbsp;$ratio&nbsp;<br>";
 				}
 				print "</TH>\n<TH>";
 				# p-value
-				foreach my $protMod (keys %{$quantifValues{$quantif}}) {
-					my $pValue=(!defined($quantifValues{$quantif}{$protMod}{'P_VALUE'}))? '-' : ($quantifValues{$quantif}{$protMod}{'P_VALUE'}==1 || $quantifValues{$quantif}{$protMod}{'P_VALUE'}==0)? $quantifValues{$quantif}{$protMod}{'P_VALUE'} : sprintf('%.2e',$quantifValues{$quantif}{$protMod}{'P_VALUE'});
+				foreach my $modProtID (keys %{$quantifValues{$quantif}}) {
+					my $pValue=(!defined($quantifValues{$quantif}{$modProtID}{'P_VALUE'}))? '-' : ($quantifValues{$quantif}{$modProtID}{'P_VALUE'}==1 || $quantifValues{$quantif}{$modProtID}{'P_VALUE'}==0)? $quantifValues{$quantif}{$modProtID}{'P_VALUE'} : sprintf('%.2e',$quantifValues{$quantif}{$modProtID}{'P_VALUE'});
 					print "&nbsp;$pValue&nbsp;<br>";
 				}
 				print "</TH>\n<TH>";
 				# peptides
-				foreach my $protMod (keys %{$quantifValues{$quantif}}) {
-					print "&nbsp;$quantifValues{$quantif}{$protMod}{NUM_PEP_USED}&nbsp;<BR>\n";
+				foreach my $modProtID (keys %{$quantifValues{$quantif}}) {
+					print "&nbsp;$quantifValues{$quantif}{$modProtID}{NUM_PEP_USED}&nbsp;<BR>\n";
 				}
 				print "</TH></TR>\n";
 				$bgColor=($bgColor eq $color1)? $color2 : $color1;
@@ -2738,7 +2814,36 @@ sub ajaxGetQuantificationList {
 	exit;
 }
 
+sub ajaxDisplayProtFullDesc {
+	my $anaID = param('anaID');
+	my $full = param('full');
+	my (%protDes, %protMW, %protOrg, %protLength);
+	my $dbh = &promsConfig::dbConnect;
+	
+	print header(-charset=>'UTF-8');
+	warningsToBrowser(1);
+	
+	if($full && $anaID && $proteinID) {
+		my ($dbID, $protIdentifier) = $dbh->selectrow_array("SELECT ID_DATABANK, IDENTIFIER FROM PROTEIN P INNER JOIN ANALYSIS_PROTEIN AP ON AP.ID_PROTEIN=P.ID_PROTEIN INNER JOIN ANALYSIS_DATABANK AD ON AD.ID_ANALYSIS=AP.ID_ANALYSIS WHERE P.ID_PROTEIN=$proteinID AND AP.ID_ANALYSIS=$anaID");
+		my %protList = ("$protIdentifier" => 1);
+		my ($error) = &promsMod::getProtInfo('silent', $dbh, $dbID, [$anaID], \%protDes, \%protMW, \%protOrg, \%protLength, undef, \%protList);
+		print(($error) ? $error : $protDes{$protIdentifier});
+	} elsif(!$full && $proteinID) {
+		my ($protSeq) = $dbh->selectrow_array("SELECT PROT_DES FROM PROTEIN WHERE ID_PROTEIN=$proteinID");
+		print($protSeq);
+	} else {
+		print "Error : was not able to retrieve protein's sequence.";
+	}
+}
+
 ####>Revision history<####
+# 3.3.4 [MODIF] Minor modif on skyline fileFormat to be consistent with handling of .sky files (VL 20/11/19)
+# 3.3.3 [FEATURE] Applies Quantification visibility filter (PP 30/09/19)
+# 3.3.2 [MODIF] Display peptide score with precision to the thousandth (%.3f) when relevant (VL 12/09/19)
+# 3.3.1 [FIX] Peptide count display for virtual protein (PP 26/08/19)
+# 3.3.0 [FEATURE] Remove locked experiments from protein information searches (VS 08/08/19)
+# 3.2.13 [FEATURE] Compatible with multi-modif quantifications (PP 15/07/19)
+# 3.2.12 [FEATURE] Possibility to show full protein description when it is shortened (VS 04/07/19)
 # 3.2.11 Removed call to unused LWP::UserAgent package (PP 15/05/19)
 # 3.2.10 Number of ghost peptides are also displayed for 100% ghost proteins in "List of Analyses..." (PP 11/02/19)
 # 3.2.9 Improved support for display of MQ, EMPAI and SIN quantifications (PP 02/11/18)

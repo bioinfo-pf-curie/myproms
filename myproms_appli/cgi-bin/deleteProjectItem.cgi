@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# deleteProjectItem.cgi                  2.6.3                                 #
+# deleteProjectItem.cgi                  2.6.6                                 #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -221,10 +221,13 @@ if ($item eq 'project') { # only 1 project
 		$sthDelProp->execute($propID);
 	}
 	$sthDelProp->finish;
+	
+	###> Deleting related METADATA
+	deleteMetadata($dbh, "PROJECT", $projectID);
 
 	###>Deleting entry in PROJECT table<###
 	$dbh->do("DELETE FROM PROJECT WHERE ID_PROJECT=$projectID") || die $dbh->errstr;
-
+	
 	###>Deleting project data on disk<###
 	my @pathList=("$promsPath{explorAna}/project_$projectID",
 				  "$promsPath{gel_unix}/project_$projectID",
@@ -232,7 +235,6 @@ if ($item eq 'project') { # only 1 project
 				  "$promsPath{peptide}/proj_$projectID",
 				  "$promsPath{quantification}/project_$projectID",
 				  "$promsPath{tmp}/upload/project_$projectID",
-				  "$promsPath{metadata}/proj_$projectID"
 				 );
 	foreach my $path (@pathList) {
 		#remove_tree($path) if -e $path;
@@ -373,27 +375,69 @@ sub deleteAnalyses {
 #	$dbh->commit;
 #}
 
+sub deleteMetadata {
+	my ($dbh,$item,$itemID)=@_;
+	my $sthSelME=$dbh->prepare("SELECT ID_META_ANNOTATION FROM META_ANNOTATION WHERE ID_$item=?");
+	my $sthDelAI=$dbh->prepare("DELETE FROM ANNOTATION_ITEM WHERE ID_META_ANNOTATION=?");
+	my $sthDelME=$dbh->prepare("DELETE FROM META_ANNOTATION WHERE ID_$item=?");
+	
+	my $metaPath = "$promsPath{metadata}/proj_$projectID/";
+	if ($item eq 'EXPERIMENT') {
+		$metaPath .= "exp_$itemID/";
+	} elsif($item eq 'SAMPLE') {
+		my $sthSE=$dbh->prepare("SELECT ID_EXPERIMENT FROM SAMPLE WHERE ID_SAMPLE=?");
+		$sthSE->execute($itemID);
+		my ($expID)=$sthSE->fetchrow_array;
+		$sthSE->finish;
+		
+		$metaPath .= "exp_$expID/samp_$itemID/";
+	}
+	
+	my @metaIDs;
+	rmtree($metaPath) if(-e $metaPath);
+	$sthSelME->execute($itemID);
+	while (my ($metaID)=$sthSelME->fetchrow_array) {
+		push(@metaIDs, $metaID);
+	}
+	
+	if(@metaIDs) {
+		foreach my $metaID (@metaIDs) {
+			$sthDelAI->execute($metaID);
+		}
+		$sthDelME->execute($itemID);
+	}
+	
+	$sthSelME->finish;
+	$sthDelME->finish;
+	$sthDelAI->finish;
+}
+
 sub deleteSamples {
 	my ($dbh,$projectID,$refSampleList)=@_;
 	my %modExperiments;
 	my $sthSE=$dbh->prepare("SELECT ID_SPOT,ID_EXPERIMENT FROM SAMPLE WHERE ID_SAMPLE=?");
 	my $sthSA=$dbh->prepare("SELECT ID_ANALYSIS FROM ANALYSIS WHERE ID_SAMPLE=?");
 	my $sthDel=$dbh->prepare("DELETE FROM SAMPLE WHERE ID_SAMPLE=?");
+	
 	foreach my $sampID (@{$refSampleList}) {
 		$sthSE->execute($sampID);
 		my ($spotID,$expID)=$sthSE->fetchrow_array;
 		$modExperiments{$expID}=1 unless $spotID;
 		$sthSA->execute($sampID);
+		
+		deleteMetadata($dbh, "SAMPLE", $sampID);
+		
+		# Remove analysis
 		my @sampAna;
 		while (my ($anaID)=$sthSA->fetchrow_array) {push @sampAna,$anaID;}
 		&deleteAnalyses($dbh,$projectID,\@sampAna);
+		
+		# Remove sample
 		$sthDel->execute($sampID);
+		
 		print '.';
 		$dbh->commit;
 		
-		# Remove metadata files if any
-		my $sampMetaPath = "$promsPath{metadata}/proj_$projectID/exp_$expID/samp_$sampID";
-		rmtree($sampMetaPath) if -e $sampMetaPath;
 	}
 	$sthSE->finish;
 	$sthSA->finish;
@@ -422,6 +466,7 @@ sub deleteSpots {
 	}
 	$sthDel->finish;
 }
+
 
 sub delete2DGels {
 	my ($dbh,$projectID,$refGelList)=@_;
@@ -479,7 +524,9 @@ sub deleteExperiments {
 	my $sthDelE=$dbh->prepare("DELETE FROM EXPERIMENT WHERE ID_EXPERIMENT=?");
 
 	foreach my $expID (@{$refExpList}) {
-
+		##<Metadata
+		deleteMetadata($dbh, "EXPERIMENT", $expID);
+		
 		##<Exploratory analyses & annotationsets
 		$sthEA->execute($expID);
 		while (my ($eaID)=$sthEA->fetchrow_array) {
@@ -536,10 +583,6 @@ sub deleteExperiments {
 		while (my ($gelID)=$sthEG->fetchrow_array) {push @exp2dGels,$gelID;}
 		&delete2DGels($dbh,$projectID,\@exp2dGels);
 
-		# Remove metadata files if any
-		my $expMetaPath = "$promsPath{metadata}/proj_$projectID/exp_$expID";
-		rmtree($expMetaPath) if -e $expMetaPath;
-		
 		##>Experiment
 		$sthDelE->execute($expID);
 		$dbh->commit;
@@ -714,6 +757,9 @@ sub updateBrothersPosition {
 }
 
 ####>Revision history<####
+# 2.6.6 [BUGFIX] Delete metadata on project item deletion (VS 16/12/19)
+# 2.6.5 [ENHANCEMENT] Simplify metadata deletion (VS 15/11/19)
+# 2.6.4 [FIX] Properly delete a file related to a metadata when it is deleted/its project item is deleted (VS 05/06/19)
 # 2.6.3 Change project data path for metadata path (VS 11/06/19)
 # 2.6.2 Delete Metadata on item deletion (VS 05/06/19)
 # 2.6.1 [Fix] bugs in Experiment global deletion (PP 27/06/18)

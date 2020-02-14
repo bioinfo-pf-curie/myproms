@@ -1,6 +1,6 @@
 ################################################################################
-# FunctionLimma.R         5.0.4                                               #
-# Authors: Matthieu Lhotellier & Alexandre Sta & Isabel Brito(Institut Curie)  #
+# FunctionLimma.R         5.2.4                                              #
+# Authors: Matthieu Lhotellier & Alexandre Sta & Isabel Brito (Institut Curie) #
 # Contact: myproms@curie.fr                                                    #
 # Function of AnalysisDiffLimma.R                                              #
 ################################################################################
@@ -53,6 +53,8 @@ library(broom) # To make tidy a linear model from lm (glance)
 library(stringr) # To manipulate character strings
 library(igraph) # To rebuild the correct names of the replicates
 library(readr) # for the function ???
+library(bit) # for fread  
+library(bit64) # for fread 
 
 #################################################################################
 ## Name : .myFilterOutlier
@@ -479,7 +481,7 @@ library(readr) # for the function ???
     mutate(coefAdd=coefAddRef-coefAdd,coefMul=coefMulRef/coefMul) %>%
     select(-coefMulRef,-coefAddRef,-by)
   # Add the real coefficients of correction of the normalization
-  bias.output = bias.output %>% mutate(by=1) %>% full_join( (bias %>% mutate(by=1) %>% select(-coefMul) %>% rename(coefAddReal="coefAdd")) , by = c("by","experiment")  ) %>% 
+  bias.output = bias.output %>% mutate(by=1) %>% full_join( (bias %>% mutate(by=1) %>% select(-coefMul) %>% dplyr::rename(coefAddReal="coefAdd")) , by = c("by","experiment")  ) %>% 
     select(-by)
   # Correct and build the output
   object = object %>% full_join(bias,by=c("experiment")) %>% mutate(M=coefMul*M+coefAdd) %>% select(-coefMul,-coefAdd)
@@ -508,7 +510,7 @@ library(readr) # for the function ???
     mutate(coefAdd=coefAddExp-(coefMulExp/coefMul)*coefAdd,coefMul=coefMulExp/coefMul) %>%
     select(-coefMulExp,-coefAddExp)
   # Add the real coefficients of correction of the normalization
-  bias.output = bias.output %>% full_join( (bias %>% select(-coefMul) %>% rename(coefAddReal="coefAdd")) )
+  bias.output = bias.output %>% full_join( (bias %>% select(-coefMul) %>% dplyr::rename(coefAddReal="coefAdd")) )
   # Build the output
   object = object %>% full_join(bias,by=c("sample","replicate","experiment","repTech")) %>% mutate(M=coefMul*M+coefAdd) %>% select(-coefMul,-coefAdd)
   X = list(data=object,bias=bias.output)
@@ -640,15 +642,15 @@ library(readr) # for the function ???
       mutate(data.x.NULL=map(data.x,is.null)) %>% 
       unnest(data.x.NULL) %>% mutate(data=data.x)
     object$data[object$data.x.NULL] = object$data.y[object$data.x.NULL]
-    object = object %>% select(proteinId,condId,data) %>% unnest %>% group_by(proteinId,condId)
+    object = object %>% select(proteinId,condId,data) %>% unnest() %>% group_by(proteinId,condId)
     
     .lmRepParam = function(x) .lmProteinPEP_RATIO(x,params=params)
   }else{stop("wrong name of design")}
-  
+     
   object = object %>% do(.lmRepParam(.)) %>% ungroup()
   if(params$design=="PEP_RATIO"){
     object = object %>% select(-condId)
-  }
+   }
   
   # # start DEBUG chapter
   # for(i in 1:length(object$data)){ # DEGUG
@@ -695,7 +697,7 @@ library(readr) # for the function ???
   # Correction of the p.values if needed
   .myAdjust = function(x){p.adjust(x$p.value,method = params$pAdj.method)}
   object = object %>% group_by(term) %>% nest %>%
-    mutate(p.valueAdjusted = map(data,.myAdjust )) %>% unnest %>%
+    mutate(p.valueAdjusted = map(data,.myAdjust )) %>% unnest() %>%
     dplyr::rename(p.valueNonAdjusted=p.value) %>% dplyr::rename(p.value = p.valueAdjusted)   
  
   ind <- which(object$std.error==0) 
@@ -711,7 +713,7 @@ library(readr) # for the function ???
   
   if(params$pAdj.method!="none" & length( which( table(as.data.frame(object)$term)==1) ) ==0){
     object = object %>% group_by(term) %>% nest %>% 
-      mutate(data = map(data,.myCorrectionCI)) %>% unnest
+      mutate(data = map(data,.myCorrectionCI)) %>% unnest()
   }
   
   # Remove NaN
@@ -803,7 +805,7 @@ library(readr) # for the function ???
     # Put NA on p.value, std.error and ci if there is only one replicate observed in a sample
     if(params$residual.variability=="biological"){
       outputPrim = subObject %>% group_by(sample) %>% nest %>% mutate(nRep=map(data,function(x)length(unique(x$replicate))) ) %>%
-        select(-data) %>% unnest %>% rename(term=sample) %>% full_join(.,outputPrim,by="term") %>% 
+        select(-data) %>% unnest() %>% dplyr::rename(term=sample) %>% full_join(.,outputPrim,by="term") %>% 
         mutate(p.value=ifelse(nRep<=1,NA,p.value),
                std.error=ifelse(nRep<=1,NA,std.error),
                ci2.5=ifelse(nRep<=1,NA,ci2.5),
@@ -899,7 +901,7 @@ library(readr) # for the function ???
   # Do not report p.value or variance if the number of replicates obeserved in once condition is <1
   if(params$residual.variability=="biological"){
     nRep = subObject %>% group_by(sample) %>% nest %>% mutate(nRep=map(data,function(x)length(unique(x$replicate))) ) %>%
-      select(-data) %>% unnest %>% .$nRep
+      select(-data) %>% unnest() %>% .$nRep
     if(!prod(nRep>1)){
       output$p.value=NA
       output$std.error=NA
@@ -1010,7 +1012,7 @@ library(readr) # for the function ???
   # Put NA in p.value and variance if a condition have been observed only in one run
   if(params$residual.variability=="biological"){
     nRep = subObject %>% group_by(sample) %>% nest %>% mutate(nRep=map(data,function(x) x %>% .$replicate %>% unique %>% length)) %>% 
-      select(-data) %>% unnest %>% .$nRep
+      select(-data) %>% unnest() %>% .$nRep
     if(!prod(nRep>2)){
       output$std.error=NA
       output$statistic=NA
@@ -1122,7 +1124,7 @@ library(readr) # for the function ???
   .fct <- function(x){ x$M %in% boxplot(x$M,plot=FALSE)$out }
   # Find the outlier
   tmp = X$data %>%
-    group_by(sample,experiment,proteinId,repTech,replicate) %>% nest %>% mutate(out = map(data,.fct) ) %>% unnest
+    group_by(sample,experiment,proteinId,repTech,replicate) %>% nest %>% mutate(out = map(data,.fct) ) %>% unnest()
   # Table of the outliers
   outlier = tmp %>% filter(out==TRUE)
   if(dim(outlier)[1]!=0){
@@ -1160,7 +1162,7 @@ library(readr) # for the function ???
   tmp = X$data %>%
     group_by_( .dots = c("sample","experiment","proteinId","peptide",rep) ) %>% dplyr::summarise(m = median(M,na.rm=TRUE))
   tmp = X$data %>% full_join(tmp,by=c("sample","experiment","proteinId","peptide",rep)) %>% mutate(M=M/m) %>% select(-m) %>% 
-    group_by(sample,experiment,proteinId) %>% nest %>% mutate(out = map(data,.fct) ) %>% unnest
+    group_by(sample,experiment,proteinId) %>% nest()  %>% mutate(out = map(data,.fct) ) %>% unnest() #unnest(cols = c(data, out))
   
   # Table of the outliers : remove the extreme values thanks to a boxplot method.
   outlier = tmp %>% filter(out==TRUE)
@@ -1172,9 +1174,9 @@ library(readr) # for the function ???
   
   # Force every peptides to be present in both states, else flag the peptide as an outlier
   dataPep = data %>% select(sample,experiment,proteinId,peptide) %>% unique %>% mutate(out="inData") %>% spread(sample,out) %>% 
-    group_by(experiment,proteinId,peptide) %>% nest %>% 
+    group_by(experiment,proteinId,peptide) %>% nest()   %>% 
     mutate(out=map(data,function(x) ifelse( (x %>% as.matrix %>% .[!is.na(.)] %>% length)<2 ,"outBalanceStates","FALSE") )) %>% 
-    select(-data) %>% unnest
+    select(-data) %>% unnest() #unnest(cols = c(out))
   dataOutput = data %>% full_join(dataPep) %>% filter(out =="FALSE") %>% select(-out)
   # if there is no outliers do not join the new outlier table with the old one, if not do the join
   if(dim(outlier)[1]==0){
@@ -1189,7 +1191,7 @@ library(readr) # for the function ???
     X$outlier=outlier[0,]
   }
   # Join the old table of the outliers with the new one.
-  outlier = rbind(outlier,X$outlier)
+  outlier = bind_rows(outlier,X$outlier)  # outlier = rbind(outlier,X$outlier)
   # Output
   X = list(
     data = data ,
@@ -1203,7 +1205,7 @@ library(readr) # for the function ???
 ## Description :
 #################################################################################
 .mySpread = function(data,value,newName,toSpread="term",key="ProteinID",sep=""){
-  tmp = data %>% select_(key,toSpread,value) %>% rename_(.dots = setNames(toSpread, newName)) %>%   spread_(newName,value,sep=sep)
+  tmp = data %>% select_(key,toSpread,value) %>% dplyr::rename_(.dots = setNames(toSpread, newName)) %>%   spread_(newName,value,sep=sep)
   return(tmp)
 }
 
@@ -1220,7 +1222,6 @@ library(readr) # for the function ???
   return(p)
 }
 
-
 #################################################################################
 ## Name : .control
 ## Arguments: object
@@ -1233,7 +1234,7 @@ library(readr) # for the function ???
   
   message = NULL
   # ---------- Control the correct number and type of files
-  condition = sum(exists("data"), exists("params"))
+  condition = sum(exists("object"), exists("params"))
   if( !condition ){
     message = "files table.txt or param_char.txt (or both) is(are) missing"
     stop(message)
@@ -1246,7 +1247,7 @@ library(readr) # for the function ???
   }
   
   # ---------- Control the correct type of the parameters
-  condition = prod(c("design","normalization.method","pAdj.method","residual.variability") %in% names(params))
+  condition = prod(c("design","normalization.method") %in% names(params))
   if( !condition ){
     message = "wrong number or names of parameters, parameters must contains:\n              design\n              normalization.method\n              pAdj.method\n              residual.variability"
     stop(message)
@@ -1310,16 +1311,18 @@ library(readr) # for the function ???
   }
   
   # pAdj.method
-  p =  p.adjust.methods
-  condition = params$pAdj.method %in% p
+  if ("pAdj.method" %in% names(params)) { 
+            p =  p.adjust.methods
+            condition = params$pAdj.method %in% p}
   if( !condition ){
     message = paste(c("wrong name of pAdj.method,\n         parameters allowed :",p),collapse="\n                             ")
     stop(message)
   }
   
   # residual.variability
-  p =  c("biological","technical")
-  condition = params$residual.variability %in% p
+  if ("residual.variability" %in% names(params)) {
+             p =  c("biological","technical")
+             condition = params$residual.variability %in% p }
   if( !condition ){
     message = paste(c("wrong name of residual.variability,\n         parameters allowed :",p),collapse="\n                             ")
     stop(message)
@@ -1363,8 +1366,7 @@ library(readr) # for the function ???
 #################################################################################
 
 .normEachProt <- function(object,objectRef,params){
-  
-  
+   
   # dispersion estimated by quantile 
   quant <-function(REF,DAT){
     bx <-boxplot(REF,plot=FALSE)
@@ -1373,10 +1375,8 @@ library(readr) # for the function ???
       min <- bx$stats[1]
       REF <- REF[ REF > min & REF < max ]
     }
-    
     sdx <-sd(REF, na.rm = FALSE)
     sdy <-sd(DAT, na.rm = FALSE)
-    
     X.to.determine.normalization <- matrix(REF)
     Y.to.normalize               <- matrix(DAT)
     
@@ -1390,148 +1390,283 @@ library(readr) # for the function ???
       Y.normalized <- normalize.quantiles.use.target(Y.to.normalize,target) 
     } 
     return(Y.normalized)
-  }
+  }  #quant <-function(REF,DAT){
+
+# effect 
+.effectByProtINT <- function(object,objectRef){
+
+objectNorm <-NULL   
+
+for (i in 1:length(unique(object$proteinId))){ 
+  prot         <- unique(object$proteinId)[i]
+  ind          <- which(object$proteinId == prot)
+  subObject    = object[ind,]
+  subObjectRef = objectRef %>% filter(proteinId == 
+                                        unlist(str_split(unique(subObject$proteinId), "\\-"))[1])
   
-  objectNorm <-NULL
-  if (parameters$design=="PEP_INTENSITY"){
-    for (i in 1:length(unique(object$proteinId))){ 
+  namedat         <- names(table(subObjectRef$sample))
+  nameref         <- names(table(   subObject$sample))
+  namediff1     <-setdiff(unique(c(  namedat, nameref)),intersect( namedat, nameref) ) # les states qui ne matchtent pas 
+  namediff2     <-setdiff(unique(c(  namedat, nameref)),namediff1)
+
+  matrixdat       <- as.data.frame(subObject)      
+  matrixref       <- as.data.frame(subObjectRef)   
+  matrix          <- data.frame( type   = c(rep("data",   nrow(matrixdat)), 
+                                            rep("dataref",nrow(matrixref))    ),
+                                 sample = c(as.character(      matrixdat$sample),
+                                            as.character(      matrixref$sample) ),
+                                 peptide= c(as.character(      matrixdat$peptide),
+                                            as.character(      matrixref$peptide)),
+                                 M      = c(                   matrixdat$M,
+                                                               matrixref$M)     )
+  
+  sds           <- aggregate(M ~ paste(type,sample,sep="_") , matrix, FUN = function(x) {sd(x,na.rm=TRUE)})
+  colnames(sds) <- c("type*state","sd")
+  sds$sample    <- gsub(".*_","",sds$'type*state')
+  S <-NULL
+  for (s in namediff2){
+    S <-c(S,prod(sds$sd[which(sds$sample==s)]))
+  }
+  inddif        <- c(namediff1, namediff2[which(S==0)] )
+  namediff3     <-setdiff(namediff2,inddif)
+  lendif <- length(namediff3)
+  lenuni <- length(unique(c(  namedat, nameref)))
+  
+  if (dim(subObjectRef)[1] ==0  |                                               # si la proteine n'existe pas dans dataref
+      sum(is.element("State1",nameref), is.element("State1",namedat)   )!=2  |  # si le State1 n'est pas dans data et dataref
+      prod(sds$M[which(sds$sample=="State1")]  )==0                          |  # si le State1 ne varie pas dans data et dataref
+      lendif<2                                                               |
+      prod(is.nan(subObjectRef$M))==1                                        |
+      prod(is.na( subObjectRef$M))==1                                        )
+  {
+    subObjectNorm   <- subObject
+    subObjectNorm$M <- rep(NA,dim(subObject)[1])
+    
+  } else {   
+    
+    if (lendif > 2 & lendif < lenuni){ 
+      subObject     <- subObject    [-which(is.element(   subObject$sample,inddif)),]
+      subObjectRef  <- subObjectRef [-which(is.element(subObjectRef$sample,inddif)),]
+     } # if (lendif > 2 & lendif < lenuni)
+    
+    matrixdat       <- as.data.frame(subObject)      
+    matrixref       <- as.data.frame(subObjectRef)   
+    matrix          <- data.frame( type   = c(rep("data",   nrow(matrixdat)), 
+                                              rep("dataref",nrow(matrixref))    ),
+                                   sample = c(as.character(      matrixdat$sample),
+                                              as.character(      matrixref$sample) ),
+                                   peptide= c(as.character(      matrixdat$peptide),
+                                              as.character(      matrixref$peptide)),
+                                   M      = c(                   matrixdat$M,
+                                                                 matrixref$M)     )
+    mean_peptide  = matrix %>%  group_by(type,sample,peptide) %>%  dplyr::summarise(mean.pep = mean(M) ) 
+    mean_state    = matrix %>%  group_by(type,sample)         %>%  dplyr::summarise(mean.all = mean(M) )
+    mean_peptide  = mean_peptide %>% mutate (type_sample_pep = paste(type,sample,peptide)) %>% 
+      mutate (type_sample     = paste(type,sample))
+    mean_state    = mean_state   %>% mutate (type_sample     = paste(type,sample))
+    matrix_mod   = matrix %>%  mutate( type_sample_pep = paste(type,sample,peptide)) %>% 
+      inner_join( mean_peptide, by="type_sample_pep" )     %>% 
+      inner_join( mean_state,   by="type_sample" )
+    matrix_mod  = matrix_mod %>%  mutate(mean.mod = as.numeric(matrix_mod$mean.pep)  - 
+                                           as.numeric(matrix_mod$mean.all) )
+    matrix_mod  = matrix_mod %>%  mutate(Mmod = M - mean.mod) 
+    matrixmod   = matrix_mod %>%  filter(type.x=="dataref")
+    
+    ########################          
+    # quantile and translation vers les moyennes originales     
+    matrixint         <-       matrixdat
+    states <- unique(matrix$sample)
+    for (s in states){
+      inds              <- which(matrixdat$sample==s)
+      matrixint$M[inds] <- quant( matrixmod$Mmod[which(matrixmod$sample.x==s)],
+                                  matrixdat$M   [which(matrixdat$sample  ==s)])
+    }
+    Mean1s<-NULL
+    for (s in states){
+      mean1s            <- mean( matrixint$M[which(matrixint$sample==s)]) - 
+        mean( matrixdat$M[which(matrixdat$sample==s)])
+      Mean1s <- c(Mean1s,mean1s)
+    }   
+    MEAN1s <- data.frame(sample=states, mean.sample=Mean1s)
+    
+    ######################## new        
+    matrixapr         <- matrixint
+    matrixapr$index <- 1:nrow(matrixapr)          
+    mn2       <- merge(matrixapr,MEAN1s, by="sample")
+    mn2$M     <- mn2$M - mn2$mean.sample
+    matrixapr <- mn2
+    matrixapr <- matrixapr[matrixapr$index,]
+    nam       <- colnames(matrixint)
+    matrixapr <-matrixapr[,nam]
+
+    ######################## new  
+    #linear model type for protein effect and sample for condition effect
+    model1        = lm(as.formula("M ~ sample*type"),data=matrix)
+    matrixeff <- matrixapr
+    
+    states <- unique(matrixdat$sample)
+    for (s in 2:length(states)){
+      inds               <- which(matrixapr$sample==states[s])
+      matrixeff$M [inds] <-  
+      matrixapr$M [inds] - (summary(model1)$coefficients[s]+summary(model1)$coefficients[length(states)+s])   
+    }
+    subObjectNorm <- matrixeff
+    
+  } #if (dim(subObject
+  objectNorm    <- rbind(objectNorm,subObjectNorm)
+
+} #for (i in )
+  
+  return(objectNorm)
+}  
+
+.effectByProtRAT <- function(object,objectRef){
+
+objectNorm <-NULL   
+
+ for (i in 1:length(unique(object$proteinId))){ 
       prot        <- unique(object$proteinId)[i]
       ind         <- which(object$proteinId == prot)
       subObject   = object[ind,]
-      
       subObjectRef = objectRef %>% filter(proteinId == 
                                             unlist(str_split(unique(subObject$proteinId), "\\-"))[1])
+ 
+      namedat         <- names(table(subObjectRef$sample))
+      nameref         <- names(table(   subObject$sample)) 
+      namediff1     <-setdiff(unique(c(  namedat, nameref)),intersect( namedat, nameref) ) # les states qui ne machtent pas 
+      namediff2     <-setdiff(unique(c(  namedat, nameref)),namediff1)
+      matrixdat       <- as.data.frame(subObject)      
+      matrixref       <- as.data.frame(subObjectRef)   
+      matrix          <- data.frame( type   = c(rep("data",   nrow(matrixdat)), 
+                                                rep("dataref",nrow(matrixref))    ),
+                                    sample = c(as.character(      matrixdat$sample),
+                                               as.character(      matrixref$sample) ),
+                                    M      = c(                   matrixdat$M,
+                                                                  matrixref$M)     )
       
-      if (dim(subObjectRef)[1] ==0 | length(table(subObjectRef$sample))==1) {  
-        subObjectNorm <- subObject
-        subObjectNorm$M <- rep(NA,dim(subObject)[1])
-      } else {                         
-        matrixdat       <- as.data.frame(subObject)      
-        matrixref       <- as.data.frame(subObjectRef)   
-        matrix          <- data.frame( type   = c(rep("data",   nrow(matrixdat)), 
-                                                  rep("dataref",nrow(matrixref))    ),
-                                       sample = c(as.character(      matrixdat$sample),
-                                                  as.character(      matrixref$sample) ),
-                                       peptide= c(as.character(      matrixdat$peptide),
-                                                  as.character(      matrixref$peptide)),
-                                       M      = c(                   matrixdat$M,
-                                                                     matrixref$M)     )
-                                                                                                                                                  
-        sds <- aggregate(M ~ paste0(type,sample) , matrix, sd)
-        if ( sum(is.na(sds))!=0 ) {     
-          subObjectNorm <- matrixdat
-        } else {
-          
-          mean_peptide  = matrix %>%  group_by(type,sample,peptide) %>%  dplyr::summarise(mean.pep = mean(M) ) 
-          mean_state    = matrix %>%  group_by(type,sample)         %>%  dplyr::summarise(mean.all = mean(M) )
-          
-          mean_peptide  = mean_peptide %>% mutate (type_sample_pep = paste(type,sample,peptide)) %>% 
-            mutate (type_sample     = paste(type,sample))
-          mean_state    = mean_state   %>% mutate (type_sample     = paste(type,sample))
-          
-          
-          matrix_mod   = matrix %>%  mutate( type_sample_pep = paste(type,sample,peptide)) %>% 
-            inner_join( mean_peptide, by="type_sample_pep" )     %>% 
-            inner_join( mean_state,   by="type_sample" )
-          
-          matrix_mod  = matrix_mod %>%  mutate(mean.mod = as.numeric(matrix_mod$mean.pep)  - as.numeric(matrix_mod$mean.all) )
-          matrix_mod  = matrix_mod %>%  mutate(Mmod = M - mean.mod) 
-          matrixmod   = matrix_mod %>%  filter(type.x=="dataref")
-          
-          # quantile and translation vers les moyennes originales     
-          matrixint         <-       matrixdat
-          
-          ind1              <- which(matrixdat$sample=="State1")
-          #matrixint$M[ind1] <- quant(matrixref$M[which(matrixref$sample=="State1")],
-          matrixint$M[ind1] <- quant(matrixmod$Mmod[which(matrixmod$sample.x=="State1")],
-                                     matrixdat$M   [which(matrixdat$sample  =="State1")])
-          
-          ind2              <- which(matrixdat$sample=="State2")
-          #matrixint$M[ind2] <- quant(matrixref$M[which(matrixref$sample=="State2")],
-          matrixint$M[ind2] <- quant(matrixmod$Mmod[which(matrixmod$sample.x=="State2")],                           
-                                     matrixdat$M   [which(matrixdat$sample  =="State2")])
-          
-          
-          mean1i            <- mean( matrixint$M[which(matrixint$sample=="State1")]) - 
-            mean( matrixdat$M[which(matrixdat$sample=="State1")])
-          mean2i            <- mean( matrixint$M[which(matrixint$sample=="State2")]) -
-            mean( matrixdat$M[which(matrixdat$sample=="State2")])
-          
-          matrixapr         <- matrixint
-          matrixapr$M = ifelse(matrixint$sample=="State1", 
-                               matrixapr$M - mean1i ,
-                               matrixapr$M - mean2i)
-          
-          #linear model type for protein effect and sample for condition effect
-          model1        = lm(as.formula("M ~ sample*type"),data=matrix)
-          
-          # linear - remove protein effect
-          matrixeff <- matrixapr
-          matrixeff$M = ifelse(matrixapr$sample=="State1", 
-                               matrixapr$M  ,
-                               matrixapr$M + summary(model1)$coefficients[4] )
-          
-          subObjectNorm <- matrixeff
-        } #if ( sum(is.na      
-      } #if (dim(subObject
-      objectNorm    <- rbind(objectNorm,subObjectNorm)
-    } #for (i in )
+      sds           <- aggregate(M ~ paste(type,sample,sep="_") , matrix, FUN = function(x) {sd(x,na.rm=TRUE)})
+      colnames(sds) <- c("type*state","sd")
+      sds$sample    <- gsub(".*_","",sds$'type*state')
+  
+     S <-NULL
+     for (s in namediff2){
+      S <-c(S,prod(sds$sd[which(sds$sample==s)]))
+     }
+    inddif        <- c(namediff1, namediff2[which(S==0)] )
+    namediff3     <-setdiff(namediff2,inddif)
+    lendif <- length(namediff3)
+    lenuni <- length(unique(c(  namedat, nameref)))
+
+  
+if (dim(subObjectRef)[1] ==0  |                                                  # si la proteine n'existe pas dans dataref
+    #  sum(is.element("State1",nameref), is.element("State1",namedat)   )!=2  |  # si le State1 n'est pas dans data et dataref
+    #  prod(sds$M[which(sds$sample=="State1")]  )==0                          |  # si le State1 ne varie pas dans data et dataref
+      #lendif<2                                                               |
+      prod(is.nan(subObjectRef$M))==1                                        |
+      prod(is.na( subObjectRef$M))==1                                        
+    )
+   {
+    subObjectNorm   <- subObject
+    subObjectNorm$M <- rep(NA,dim(subObject)[1])
+   }  
+  else {   
     
-  } else if (parameters$design=="PEP_RATIO") {     
+    matrixdat       <- as.data.frame(subObject)      
+    matrixref       <- as.data.frame(subObjectRef)   
+    matrix          <- data.frame( type   = c(rep("data",   nrow(matrixdat)), 
+                                              rep("dataref",nrow(matrixref))    ),
+                                   sample = c(as.character(      matrixdat$sample),
+                                              as.character(      matrixref$sample) ),
+                                   M      = c(                   matrixdat$M,
+                                                                 matrixref$M)     )
+
+    # quantile and translation vers les moyennes originales     
+    ########################
+    matrixint         <-       matrixdat
     
-    for (i in 1:length(unique(object$proteinId))){ 
-      prot        <- unique(object$proteinId)[i]
-      ind         <- which(object$proteinId == prot)
-      subObject   = object[ind,]
-      
-      subObjectRef = objectRef %>% filter(proteinId == 
-                                            unlist(str_split(unique(subObject$proteinId), "\\-"))[1])
-      
-      if (dim(subObjectRef)[1] ==0 ) {  
-        subObjectNorm <- subObject
-        subObjectNorm$M <- rep(NA,dim(subObject)[1])
-      } else {                          
-        matrixdat       <- as.data.frame(subObject)      
-        matrixref       <- as.data.frame(subObjectRef)   
-        
-        
-        matrix          <- data.frame( type   = c(rep("data",   nrow(matrixdat)), 
-                                                  rep("dataref",nrow(matrixref))    ),
-                                       sample = c(as.character(      matrixdat$sample),
-                                                  as.character(      matrixref$sample) ),
-                                       M      = c(                   matrixdat$M,
-                                                                     matrixref$M)     )
-        #print(matrix)   
-        sds <- aggregate(M ~ paste0(type,sample) , matrix, sd)
-        if ( sum(is.na(sds))!=0 ) {    
-          subObjectNorm <- matrixdat
-        } else {                    
-          
-          
-          # quantile and translation vers les moyennes originales     
-          matrixint         <-       matrixdat
-          matrixint$M <- quant(matrixref$M, matrixdat$M)
-          
-          mean1i            <- mean( matrixint$M) -  mean( matrixdat$M)
-          mean2i            <- mean( matrixref$M) 
-          
-          matrixapr         <- matrixint
-          matrixapr$M       <- matrixint$M - mean1i 
-          
-          matrixeff         <- matrixapr
-          matrixeff$M       <- matrixapr$M - mean2i
-          
-          subObjectNorm <- matrixeff
-        } #if ( sum(is.na      
-      } #if (dim(subObject
-      objectNorm    <- rbind(objectNorm,subObjectNorm)
-    } #for (i in )
-  }  #if (paramet     
-  objectNorm  = objectNorm  %>% filter(!is.na(M))
-  return(objectNorm) 
+    states <- unique(matrix$sample)
+    for (s in states){
+      inds              <- which(matrixdat$sample==s)
+      matrixint$M[inds] <- quant( matrixref$M[which(matrixref$sample.x==s)],
+                                  matrixdat$M[which(matrixdat$sample  ==s)])
+    }
+    
+    Mean1s<-Mean2s<-NULL
+    for (s in states){
+      mean1s            <- mean( matrixint$M[which(matrixint$sample==s)]) - mean( matrixdat$M[which(matrixdat$sample==s)])
+      mean2s            <- mean( matrixref$M[which(matrixref$sample==s)]) 
+   
+      Mean1s <- c(Mean1s,mean1s)
+      Mean2s <- c(Mean2s,mean2s)
+    }
+    MEAN1s <- data.frame(sample=states, mean.sample=Mean1s)
+    MEAN2s <- data.frame(sample=states, mean.sample=Mean2s)
+    
+      #   matrixapr         <- matrixint
+      #   matrixapr$M       <- matrixint$M - mean1i 
+      #   matrixeff         <- matrixapr
+      #   matrixeff$M       <- matrixapr$M - mean2i
+      #   subObjectNorm <- matrixeff
+    ########################         
+    matrixapr         <- matrixint
+    
+    matrixapr$index <- 1:nrow(matrixapr)          
+    mn2       <- merge(matrixapr,MEAN1s, by="sample")
+    mn2$M     <- mn2$M - mn2$mean.sample
+    matrixapr <- mn2
+    matrixapr <- matrixapr[matrixapr$index,]
+    nam       <- colnames(matrixint)
+    matrixapr <-matrixapr[,nam]
+    
+    ######################## new  
+    #for protein effect and sample for condition effect
+    
+    matrixeff <- matrixapr
+    
+    states <- unique(matrixdat$sample)
+    for (s in states){
+      inds               <- which(matrixapr$sample==states[s])
+      matrixeff$M [inds] <- matrixapr$M [inds] -  mean( matrixref$M[which(matrixref$sample==s)]) 
+    }
+    
+    subObjectNorm <- matrixeff
+
+  }   #if (dim(subObjectRef)[1] ==0   
+    
+   objectNorm    <- rbind(objectNorm,subObjectNorm)
+   
+} #for (i in )
+
+  return(objectNorm)
+}  
+
+  
+#----------------------------------------------------------  
+objectNorm <-NULL
+if         (params$design=="PEP_INTENSITY"){ 
+   objectNorm =.effectByProtINT(object,objectRef)
+  } else if (params$design=="PEP_RATIO") {     
+   objectNorm =.effectByProtRAT(object,objectRef)
+}  #if (paramet
+#----------------------------------------------------------  
+objectNorm = objectNorm%>% filter( !is.na(M))
+
+return(objectNorm)    
+   
 } ##normEachProt  
 
 ####>Revision history<####
+# 5.2.4 bug corrected: pAdj.method	fdr and residual.variability are not necessary when normalization.only=yes (IB 30/01/2002)
+# 5.2.3 .control function checks parameters for normalisation.method and design (minimal required parameters) (IB 06/01/2020)
+# 5.2.2 the R packages are required as the function fread depend on them from now on  (IB 13/11/2019)
+# 5.2.1 correction of quanti bug, rename needs dplyr::rename  (IB 06/11/2019)
+# 5.2.0 normalization eachProt is able to deel with more than 2 states in both INTENSITY and RATIO designs (IB 17/10/2019)
+# 5.1.2 in normalization eachProt, if only State1 remains, protein is not normalized (IB 27/10/2019)  
+# 5.1.1 in normalization eachProt changed how to match "states" (IB 10/09/2019)
+# 5.1.0 normalization eachProt can be used for several "states" in "PEP_INTENSITY" design (IB 20/08/2019)
+# 5.0.7 protein effect in .eachProt normalisation is corrected (IB 09/07/2019)
+# 5.0.6 bug correction: protein effect is added instead of subtracted in .normEachProt (IB 08/07/2019)
+# 5.0.5 bug correction: parameters instead of params in .normEachProt (IB 03/07/2019)
 # 5.0.4 in each Prot normalisation  for INTENSITY design, peptide effect removed from ref (IB 14/06/19)
 # 5.0.3 protein effect taken into account in each Prot normalisation  for RATIO design (IB 21/05/19)
 # 5.0.2 each Prot normalisation ok for RATIO design (IB 20/05/19)

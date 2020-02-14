@@ -1,8 +1,8 @@
-####################################################################################
-# promsMod.pm           4.0.6                                                      #
-# Authors: P. Poullet, G. Arras, S.Liva, M. Le Picard, V. Sabatet (Institut Curie) #
-# Contact: myproms@curie.fr                                                    	   #
-####################################################################################
+################################################################################
+# promsMod.pm           4.1.15                                                 #
+# Authors: P. Poullet, S.Liva, V. Sabatet, V.Laigle (Institut Curie)           #
+# Contact: myproms@curie.fr                                                    #
+################################################################################
 #----------------------------------CeCILL License-------------------------------
 # This file is part of myProMS
 #
@@ -196,7 +196,9 @@ sub getIdentifierTypes {
 #####################################################
 sub cleanParameters {
 	my @params;
-	foreach my $param (@_) {
+	foreach my $param0 (@_) {
+		my $param=$param0; # $param0 is read-only
+		$param='' if !defined($param);
 		$param=~s/;.*//g if $param; # remove ";" and everything after that
 		push @params,$param;
 	}
@@ -204,8 +206,22 @@ sub cleanParameters {
 }
 sub cleanNumericalParameters {
 	my @params;
-	foreach my $param (@_) {
-		$param=~s/\D+//g if $param; # remove everything after that is not a number
+	foreach my $param0 (@_) {
+		my $param=$param0; # $param0 is read-only
+		if ($param) {
+			$param=~s/[^-\.\d]+//g; # remove everything that is not part of a number
+			if ($param=~/-/) {
+				$param=~s/-+/-/g; # compress series of '-'
+				$param=~s/^([^-]+)-.*/$1/; # keep positive part if '-' is not at begining
+			}
+			if ($param=~/\./) {
+				$param=~s/\.+/\./g; # compress series of '.'
+				$param=~s/^\./0./; # add 0 if .xxx
+				$param=~s/^(-?\d+\.\d*)\D.+/$1/; # keep only 1 '.'
+				$param=~s/\.$//; # remove trailing '.'
+			}
+		}
+		else {$param=0;}
 		push @params,$param;
 	}
 	return ($#params)? @params : $params[0];
@@ -230,10 +246,13 @@ sub resize {
 sub shortenName {
 	my $text=($_[0])? $_[0] : '';
 	my $maxLength=($_[1])? $_[1] : length($text);
-	return $text if length($text) <= $maxLength;
-	my $subTextSize=int((($maxLength-3)/2));
-	my ($begText,$endText)=($text=~/^(.{$subTextSize}).*(.{$subTextSize})/);
-	return "$begText...$endText";
+	my $shortenText=$text; # default
+	if (length($text) > $maxLength) {
+		my $subTextSize=int((($maxLength-3)/2));
+		my ($begText,$endText)=($text=~/^(.{$subTextSize}).*(.{$subTextSize})$/);
+		$shortenText="$begText...$endText";
+	}
+	return $shortenText;
 }
 
 ###########################################
@@ -255,11 +274,12 @@ sub HTMLcompatible {
 ####<<< Make date more readable >>>####
 #######################################
 sub formatDate { # argument = date from DB
-	return '--/--/----' unless $_[0];
-	my ($date,$time)=split(/ /,$_[0]);
+	my ($rawDate,$refParam)=@_;
+	return '--/--/----' unless $rawDate;
+	my ($date,$time)=split(/ /,$rawDate);
 	my ($year,$month,$day)=split(/-/,$date);
 	$year+=2000 if $year<2000; # oracle
-	return "$day/$month/$year $time";
+	return ($refParam && $refParam->{noTime})? "$day/$month/$year" : "$day/$month/$year $time";
 }
 
 #############################################
@@ -449,7 +469,7 @@ sub getItemInfo {
 #print "QUANTI!<BR>";
 				($itemName,$parentID,my $focus)=$dbh->selectrow_array("SELECT NAME,ID_DESIGN,FOCUS FROM QUANTIFICATION WHERE ID_QUANTIFICATION=$itemID");
 				###> Change on 22/10/2012 to print the XIC extraction in selectOptionQuanti.cgi
-				unless ($parentID) { # branch to analysis
+				if (!$parentID && $focus) { # branch to analysis
 					if ($focus eq 'protein') {
 						($parentID)=$dbh->selectrow_array("SELECT ID_ANALYSIS FROM ANA_QUANTIFICATION WHERE ID_QUANTIFICATION=$itemID LIMIT 0,1");
 						$increment=-2; # back to analysis
@@ -484,7 +504,7 @@ sub getItemInfo {
 				
 				if($sampleID) {
 					$parentID = $sampleID;
-					$increment += 2; # skip until Sample
+					$increment += 3; # skip until Sample
 				} elsif($experimentID) {
 					$parentID = $experimentID;
 					$increment += 8; # skip until Experiment
@@ -496,6 +516,11 @@ sub getItemInfo {
 				($itemName,$parentID)=$dbh->selectrow_array("SELECT NAME,ID_$itemList[$i+1] FROM $itemList[$i] WHERE ID_$itemList[$i]=$itemID");
 			}
 			unshift @itemInfo,{'ID'=>$itemID,'NAME'=>$itemName,'ITEM'=>$itemList[$i],'TYPE'=>$type{$itemList[$i]},'POS'=>$displayPos}; # add at begining of array
+		}
+		if (!$parentID || ($startItem eq 'PROJECT' && !defined $itemName)) { # entree is no longer in DB
+			@itemInfo=({'ID'=>0,'NAME'=>'Unknown project','ITEM'=>'PROJECT','TYPE'=>$type{'PROJECT'},'POS'=>-100,'STATUS'=>-100}, # STATUS -100 => flag for error
+					   {'ID'=>$itemID,'NAME'=>'Not found','ITEM'=>$startItem,'TYPE'=>$type{$startItem},'POS'=>-100}); # POS -100 => flag for error
+			last;
 		}
 		$i+=$increment unless ($itemList[$i] eq 'QUANTIFICATION' && $childID && $parentID == $childID);
 	}
@@ -560,6 +585,7 @@ sub getProjectID {
 ######################################
 sub getChildrenList {
 	my ($dbh,$id,$item)=@_;
+	my $userID=$ENV{'REMOTE_USER'} || '';
 	$item=uc($item);
 	my @childrenList;
 	my (@children,%query);
@@ -584,7 +610,7 @@ sub getChildrenList {
 	}
 	elsif ($item eq 'PROJECT'){
 		@children=('EXPERIMENT');
-		$query{'EXPERIMENT'}="SELECT ID_EXPERIMENT,NAME,DES,DISPLAY_POS,1 FROM EXPERIMENT WHERE ID_PROJECT=$id";
+		$query{'EXPERIMENT'}="SELECT E.ID_EXPERIMENT,NAME,DES,DISPLAY_POS,1 FROM EXPERIMENT E WHERE ID_PROJECT=$id AND E.ID_EXPERIMENT NOT IN (SELECT E2.ID_EXPERIMENT FROM EXPERIMENT E2 INNER JOIN USER_EXPERIMENT_LOCK EU ON EU.ID_EXPERIMENT=E2.ID_EXPERIMENT WHERE E2.ID_PROJECT=$id AND EU.ID_USER='$userID')";
 	}
 	elsif ($item eq 'CLASSIFICATION') {
 		@children=('CATEGORY');
@@ -777,6 +803,15 @@ sub applyVisibilityRule {
 	($protVisibility)=$dbh->selectrow_array("SELECT PROT_VISIBILITY FROM PROJECT WHERE ID_PROJECT=$projectID") unless defined($protVisibility);
 	$oldProtVisibility=$protVisibility unless defined($oldProtVisibility);
 
+	my %promsPath=&promsConfig::getServerInfo;
+	print qq |
+		<br/><br/>
+		<center>
+			<font class="title">Applying new project settings ...</font><br/><br/>
+			<img src="$promsPath{images}/engrenage.gif">
+		</center>
+	|;
+	
 	##<List of analyses with quantif or GO data
 	my %anaHasQuantifOrGO;
 	my @sthAnaList=(
@@ -790,10 +825,37 @@ sub applyVisibilityRule {
 		}
 		$sth->finish;
 	}
-	my $anaListString=(scalar keys %anaHasQuantifOrGO)? 'AND ID_ANALYSIS NOT IN ('.join(',',keys %anaHasQuantifOrGO).')' : '';
-
+	my $anaListString = (scalar keys %anaHasQuantifOrGO) ? 'AND ID_ANALYSIS NOT IN ('.join(',',keys %anaHasQuantifOrGO).')' : '';
+	
+	##<A protein is Visible if it has the maximum number of peptides in a match group.
+	if ($protVisibility == 3) {
+		my $protListString = '';
+		$dbh->do("UPDATE ANALYSIS_PROTEIN SET VISIBILITY=0 WHERE VISIBILITY=1 AND ID_PROTEIN IN (SELECT DISTINCT ID_PROTEIN FROM PROTEIN WHERE ID_PROJECT=$projectID) $anaListString"); # reset all non-alias to hidden
+		
+		my $sthVis = $dbh->prepare("SELECT P.ID_PROTEIN \
+									FROM PROTEIN P \
+									INNER JOIN ANALYSIS_PROTEIN AP ON AP.ID_PROTEIN = P.ID_PROTEIN \
+									INNER JOIN ( \
+										SELECT AP2.ID_PROTEIN, AP2.ID_ANALYSIS, AP2.MATCH_GROUP, COUNT(DISTINCT(AP2.ID_PROTEIN)) AS NB_PROT, MAX(AP2.NUM_PEP) AS MAX_PEP \
+										FROM ANALYSIS_PROTEIN AP2 \
+										INNER JOIN PROTEIN P2 ON P2.ID_PROTEIN = AP2.ID_PROTEIN \
+										WHERE P2.ID_PROJECT=$projectID $anaListString \
+										GROUP BY AP2.MATCH_GROUP \
+									) AS AP_GRP ON AP.ID_ANALYSIS = AP_GRP.ID_ANALYSIS AND AP.MATCH_GROUP = AP_GRP.MATCH_GROUP AND AP.NUM_PEP = AP_GRP.MAX_PEP \
+									WHERE P.ID_PROJECT=$projectID AND AP.VISIBILITY != 2 $anaListString ");
+		$sthVis->execute;
+		while (my ($protID)=$sthVis->fetchrow_array) {
+			$protListString .= ',' if($protListString);
+			$protListString .= $protID;
+		}
+		$sthVis->finish;
+		
+		my $sthUp=$dbh->prepare("UPDATE ANALYSIS_PROTEIN SET VISIBILITY=1 WHERE ID_PROTEIN IN ($protListString) AND VISIBILITY=0 $anaListString");
+		$sthUp->execute;
+		$sthUp->finish;
+	}	
 	##<A protein is Visible everywhere if Alias or made Visible in at least 1 Match Group.
-	if ($protVisibility==2) {
+	elsif ($protVisibility==2) {
 		my $sthVis=$dbh->prepare("SELECT DISTINCT(PROTEIN.ID_PROTEIN) FROM PROTEIN,ANALYSIS_PROTEIN WHERE VISIBILITY>0 AND PROTEIN.ID_PROTEIN=ANALYSIS_PROTEIN.ID_PROTEIN AND ID_PROJECT=$projectID");
 		my $sthUp=$dbh->prepare("UPDATE ANALYSIS_PROTEIN SET VISIBILITY=1 WHERE ID_PROTEIN=? AND VISIBILITY=0 $anaListString");
 		$sthVis->execute;
@@ -1275,7 +1337,8 @@ sub extractSpectrumMSF { # requires IO::Uncompress::Unzip & XML::Simple
 # WARNING: $refProtList does not have the same structure:
 # $refProtList->{$protID}{$anaID}=1 or $refProtList->{$protID}{pepSeq}=1 (or $refProtList->{$protID}=1?)
 sub getProtInfo { # called by scanDatank.pl, storeAnalysis.cgi (only for MSF) and importMaxQuant
-	my ($action,$dbh,$databankID,$refAnaList,$refProtDes,$refProtMW,$refProtOrg,$refProtLength,$refProtSeq,$refProtList,$localDbFile,$prefixID)=@_;
+	my ($action,$dbh,$databankID,$refAnaList,$refProtDes,$refProtMW,$refProtOrg,$refProtLength,$refProtSeq,$refProtList,$localDbFile,$annotFromDB,$prefixID)=@_;
+	$annotFromDB=0 unless $annotFromDB; # flag/counter (1=flag, >1=counter) for proteins to be tentatively annotated from myProMS DB if not found in fasta (slow!!!)
 	$prefixID='' unless $prefixID; # for MaxQuant import, dynamic addition of CON__ prefix to ids in contaminant db
 	my @percent=(10,20,30,40,50,60,70,80,90,100); # needed to monitor process progression
 	my %taxonIDs;
@@ -1365,18 +1428,18 @@ sub getProtInfo { # called by scanDatank.pl, storeAnalysis.cgi (only for MSF) an
 		}
 		$fileInfo=$dbFileName;
 		#($databankFile=$dbFileName)=~s/.*sequence/$mascotServers{$mascotServer}[2]\/sequence/ if $mascotServers{$mascotServer}[2]; # local access to Mascot banks
-		if ($mascotServers{$mascotServer}[2]) { # local access to Mascot banks
-			$databankFile="$mascotServers{$mascotServer}[2]/sequence/$dbankDir/current/$dbFileName"; # standard hierarchy
+		if ($mascotServers{$mascotServer}{sequence_local_path}) { # local access to Mascot banks
+			$databankFile="$mascotServers{$mascotServer}{sequence_local_path}/$dbankDir/current/$dbFileName"; # standard hierarchy
 			unless (-e $databankFile) { # non-standard hierarchy or unexpected problem -> try retrieve path via LWP to Mascot
 				require LWP::UserAgent;
 				my $agent = LWP::UserAgent->new(agent=>'libwww-perl myproms@curie.fr');
 				$agent->timeout(360);
-				if ($mascotServers{$mascotServer}[1]) { # proxy settings
-					if ($mascotServers{$mascotServer}[1] eq 'no') {$agent->no_proxy($mascotServers{$mascotServer}[0]);}
-					else {$agent->proxy('http', $mascotServers{$mascotServer}[1]);}
+				if ($mascotServers{$mascotServer}{proxy}) { # proxy settings
+					if ($mascotServers{$mascotServer}{proxy} eq 'no') {$agent->no_proxy($mascotServers{$mascotServer}{url});}
+					else {$agent->proxy('http', $mascotServers{$mascotServer}{proxy});}
 				}
 				else {$agent->env_proxy;}
-				my $response = $agent->get("$mascotServers{$mascotServer}[0]/cgi/myproms4databanks.pl?ACT=list");
+				my $response = $agent->get("$mascotServers{$mascotServer}{url}/cgi/myproms4databanks.pl?ACT=list");
 				while (my $wait = $response->header('Retry-After')) {
 					sleep $wait;
 					$response = $agent->get($response->base);
@@ -1391,7 +1454,7 @@ sub getProtInfo { # called by scanDatank.pl, storeAnalysis.cgi (only for MSF) an
 					if (/^(\S+)\s+(\S+)/) {
 						if ($dbankDir eq $1) {
 							my $fullDbankfile=$2;
-							($databankFile=$fullDbankfile)=~s/.*sequence/$mascotServers{$mascotServer}[2]\/sequence/;
+							($databankFile=$fullDbankfile)=~s/.+\/mascot\/sequence/$mascotServers{$mascotServer}{sequence_local_path}/;
 							last;
 						}
 					}
@@ -1421,7 +1484,7 @@ sub getProtInfo { # called by scanDatank.pl, storeAnalysis.cgi (only for MSF) an
 	}
 
 	###<Distant mascot server>###
-	if ($mascotServer && !$mascotServers{$mascotServer}[2] && !$localDbFile) {
+	if ($mascotServer && !$mascotServers{$mascotServer}{sequence_local_path} && !$localDbFile) {
 		if ($action eq 'verbose') {
 			print qq|<TABLE cellpadding=0><TR><TH align=right class="title3">Mascot scan:</TH><TD><IFRAME name="watchScan_$analysisID" width=800 height=25 frameborder=0 src="$promsPath{cgi}/storeProjectItem.cgi?WATCH=1&ITEM_ID=$analysisID&MAXPROT=$maxProtID&DBSIZE=$numEntry&DIR=$anaParentDir"></IFRAME></TD><TH>|;
 		}
@@ -1432,12 +1495,12 @@ sub getProtInfo { # called by scanDatank.pl, storeAnalysis.cgi (only for MSF) an
 		require LWP::UserAgent;
 		my $agent = LWP::UserAgent->new(agent=>'libwww-perl myproms@curie.fr');
 		$agent->timeout(360);
-		if ($mascotServers{$mascotServer}[1]) { # proxy settings
-			if ($mascotServers{$mascotServer}[1] eq 'no') {$agent->no_proxy($mascotServers{$mascotServer}[0]);}
-			else {$agent->proxy('http', $mascotServers{$mascotServer}[1]);}
+		if ($mascotServers{$mascotServer}{proxy}) { # proxy settings
+			if ($mascotServers{$mascotServer}{proxy} eq 'no') {$agent->no_proxy($mascotServers{$mascotServer}{url});}
+			else {$agent->proxy('http', $mascotServers{$mascotServer}{proxy});}
 		}
 		else {$agent->env_proxy;}
-		my $response=$agent->post("$mascotServers{$mascotServer}[0]/cgi/myproms4databanks.pl",
+		my $response=$agent->post("$mascotServers{$mascotServer}{url}/cgi/myproms4databanks.pl",
 									['ACT'=>'scan',
 									'DB'=>$dbankDir,
 									'parseRules'=>$parseRules,
@@ -1740,52 +1803,64 @@ sub getProtInfo { # called by scanDatank.pl, storeAnalysis.cgi (only for MSF) an
 	}
 
 	##<Trying to annotate proteins from DB
-	my ($sthMaster,$all2accRules,$sthProt);
-	if ($identType=~/UNIPROT_/) {
-		my $identCode=($identType eq 'UNIPROT_ID')? 'ID' : 'AC';
-		my ($identID)=$dbh->selectrow_array("SELECT ID_IDENTIFIER FROM IDENTIFIER WHERE CODE='$identCode'");
-		$sthMaster=$dbh->prepare("SELECT 1,PROT_DES,PROT_LENGTH,MW,PROT_SEQ,SCIENTIFIC_NAME FROM MASTERPROT_IDENTIFIER I,MASTER_PROTEIN MP,SPECIES S WHERE I.ID_MASTER_PROTEIN=MP.ID_MASTER_PROTEIN AND MP.ID_SPECIES=S.ID_SPECIES AND I.ID_IDENTIFIER=$identID AND I.VALUE=? ORDER BY UPDATE_DATE DESC LIMIT 1");
-		if ($identType eq 'UNIPROT_ALL') {
-			my ($accParseRules)=$dbh->selectrow_array("SELECT PARSE_RULES FROM DATABANK_TYPE WHERE DEF_IDENT_TYPE='UNIPROT_ACCESSION' ORDER BY ID_DBTYPE DESC LIMIT 1");
-			my @rules=split(',:,',$accParseRules);
-			($all2accRules)=($rules[0]=~/ID=(.+)/);
-		}
-		$sthProt=$dbh->prepare("SELECT IDENTIFIER,PROT_DES,PROT_LENGTH,MW,PROT_SEQ,ORGANISM FROM PROTEIN WHERE IDENTIFIER LIKE ? ORDER BY UPDATE_DATE DESC");
-	}
-	
-	my ($protCount,$numMatched,$verboseAnnot)=(0,0,0);
-	foreach my $identifier (keys %{$refProtList}) { # can be overwritten by next call of &getProtInfo if multi-db search
-		next if $refProtDes->{$identifier};
-		if ($protCount < 500 || $action ne 'verbose') {
-			my $match=0;
-			#<Check if protein already recorded in DB as master protein
-			if ($sthMaster) {
-				if ($protCount==0 && $action eq 'verbose') {
-					print '<FONT class="title3">&nbsp;-Annotating unmatched proteins from database...';
-					$verboseAnnot=1;
-				}
-				my ($usedIdentifier)=($all2accRules)? ($identifier=~/$all2accRules/) : ($identifier);
-				$sthMaster->execute($usedIdentifier);
-				($match,$refProtDes->{$identifier},$refProtLength->{$identifier},$refProtMW->{$identifier},$refProtSeq->{$identifier},$refProtOrg->{$identifier})=$sthMaster->fetchrow_array;
+	if ($annotFromDB) {
+		my ($sthMaster,$all2accRules,$sthProt);
+		if ($identType=~/UNIPROT_/) {
+			my $identCode=($identType eq 'UNIPROT_ID')? 'ID' : 'AC';
+			my ($identID)=$dbh->selectrow_array("SELECT ID_IDENTIFIER FROM IDENTIFIER WHERE CODE='$identCode'");
+			$sthMaster=$dbh->prepare("SELECT 1,PROT_DES,PROT_LENGTH,MW,PROT_SEQ,SCIENTIFIC_NAME FROM MASTERPROT_IDENTIFIER I,MASTER_PROTEIN MP,SPECIES S WHERE I.ID_MASTER_PROTEIN=MP.ID_MASTER_PROTEIN AND MP.ID_SPECIES=S.ID_SPECIES AND I.ID_IDENTIFIER=$identID AND I.VALUE=? ORDER BY UPDATE_DATE DESC LIMIT 1");
+			if ($identType eq 'UNIPROT_ALL') {
+				my ($accParseRules)=$dbh->selectrow_array("SELECT PARSE_RULES FROM DATABANK_TYPE WHERE DEF_IDENT_TYPE='UNIPROT_ACCESSION' ORDER BY ID_DBTYPE DESC LIMIT 1");
+				my @rules=split(',:,',$accParseRules);
+				($all2accRules)=($rules[0]=~/ID=(.+)/);
 			}
-			#<Check if protein already recorded in DB as simple protein
-			if (!$match && $sthProt) {
-				$sthProt->execute("%$identifier%");
-				my $qIdent=quotemeta($identifier);
-				while (my ($ident,$des,$ln,$mw,$seq,$org)=$sthProt->fetchrow_array) {
-					if ($ident=~/(^|\|)$qIdent(\||$)/) {
-						($refProtDes->{$identifier},$refProtLength->{$identifier},$refProtMW->{$identifier},$refProtSeq->{$identifier},$refProtOrg->{$identifier})=($des,$ln,$mw,$seq,$org);
-						$match=1;
-						last;
-					}
-				}
-			}
-			$numMatched++ if $match;
-		}
-		if ($protCount==500 && $verboseAnnot) {
-			print '[Aborting: too many unmatched proteins]';
+			$sthProt=$dbh->prepare("SELECT IDENTIFIER,PROT_DES,PROT_LENGTH,MW,PROT_SEQ,ORGANISM FROM PROTEIN WHERE IDENTIFIER LIKE ? ORDER BY UPDATE_DATE DESC");
 		}
 		
+		my ($protCount,$numMatched,$verboseAnnot)=(0,0,0);
+		my $maxProtCount=($annotFromDB > 1)? $annotFromDB : 500;
+		foreach my $identifier (keys %{$refProtList}) { # can be overwritten by next call of &getProtInfo if multi-db search
+			next if $refProtDes->{$identifier};
+			if ($protCount < $maxProtCount || $action ne 'verbose') {
+				my $match=0;
+				#<Check if protein already recorded in DB as master protein
+				if ($sthMaster) {
+					if ($protCount==0 && $action eq 'verbose') {
+						print '<FONT class="title3">&nbsp;-Annotating unmatched proteins from database...';
+						$verboseAnnot=1;
+					}
+					my ($usedIdentifier)=($all2accRules)? ($identifier=~/$all2accRules/) : ($identifier);
+					$sthMaster->execute($usedIdentifier);
+					($match,$refProtDes->{$identifier},$refProtLength->{$identifier},$refProtMW->{$identifier},$refProtSeq->{$identifier},$refProtOrg->{$identifier})=$sthMaster->fetchrow_array;
+				}
+				#<Check if protein already recorded in DB as simple protein
+				if (!$match && $sthProt) {
+					$sthProt->execute("%$identifier%");
+					my $qIdent=quotemeta($identifier);
+					while (my ($ident,$des,$ln,$mw,$seq,$org)=$sthProt->fetchrow_array) {
+						if ($ident=~/(^|\|)$qIdent(\||$)/) {
+							($refProtDes->{$identifier},$refProtLength->{$identifier},$refProtMW->{$identifier},$refProtSeq->{$identifier},$refProtOrg->{$identifier})=($des,$ln,$mw,$seq,$org);
+							$match=1;
+							last;
+						}
+					}
+				}
+				$numMatched++ if $match;
+			}
+			if ($protCount==$maxProtCount && $verboseAnnot) {
+				print '[Aborting: too many unmatched proteins]';
+			}
+			$protCount++;
+			print '.' if ($verboseAnnot && !($protCount % 50));
+		}
+		$sthMaster->finish if $sthMaster;
+		$sthProt->finish if $sthProt;
+	
+		print " Done ($numMatched/$protCount additional proteins matched).</FONT><BR>\n" if $verboseAnnot;
+	
+	}
+		
+	foreach my $identifier (keys %{$refProtList}) {	
 		$refProtDes->{$identifier}='no description' unless $refProtDes->{$identifier};
 		if ($dbOrganism) {
 			$refProtOrg->{$identifier}=$dbOrganism if (!$refProtOrg->{$identifier} || $refProtOrg->{$identifier} eq 'unknown organism');
@@ -1796,14 +1871,7 @@ sub getProtInfo { # called by scanDatank.pl, storeAnalysis.cgi (only for MSF) an
 		#$refProtOrg->{$identifier}= 'unknown organism' unless $refProtOrg->{$identifier} ;
 		$refProtMW->{$identifier}=0 unless $refProtMW->{$identifier};
 		$refProtLength->{$identifier}=0 unless $refProtLength->{$identifier};
-		
-		$protCount++;
-		print '.' if ($verboseAnnot && !($protCount % 50));
 	}
-	$sthMaster->finish if $sthMaster;
-	$sthProt->finish if $sthProt;
-
-	print " Done ($numMatched/$protCount additional proteins matched).</FONT><BR>\n" if $verboseAnnot;
 	#print "<FONT class=\"title2\">&nbsp;Done.</FONT><BR><BR>\n" if $action eq 'verbose';
 }
 
@@ -1825,14 +1893,14 @@ sub updateMascotDB {
 		my $agent = LWP::UserAgent->new(agent=>'libwww-perl myproms@curie.fr');
 		$agent->timeout(360);
 		#<Proxy
-		if ($mascotServers{$mascotServer}[1]) {
-			if ($mascotServers{$mascotServer}[1] eq 'no') {$agent->no_proxy($mascotServers{$mascotServer}[0]);}
-			else {$agent->proxy('http', $mascotServers{$mascotServer}[1]);}
+		if ($mascotServers{$mascotServer}{proxy}) {
+			if ($mascotServers{$mascotServer}{proxy} eq 'no') {$agent->no_proxy($mascotServers{$mascotServer}{url});}
+			else {$agent->proxy('http', $mascotServers{$mascotServer}{proxy});}
 		}
 		else {$agent->env_proxy;}
 		my $responseData='';
 		my $numChunks=0;
-		$agent->request(HTTP::Request->new(GET => "$mascotServers{$mascotServer}[0]/cgi/myproms4databanks.pl?ACT=dbFile&DB=$dbankDir&FILE=$dbFileName"),
+		$agent->request(HTTP::Request->new(GET => "$mascotServers{$mascotServer}{url}/cgi/myproms4databanks.pl?ACT=dbFile&DB=$dbankDir&FILE=$dbFileName"),
 								sub {
 									my ($chunk, $res) = @_;
 									$responseData.=$chunk;
@@ -1853,7 +1921,7 @@ sub updateMascotDB {
 			}
 			elsif ($newDbFileName ne $dbFileName) {
 				$updated=1;
-				$numEntry=$numEnt;
+				$numEntry=$numEnt || 0; # just to be safe
 				$dbh=&promsConfig::dbConnect('no_user');
 				$dbh->do("UPDATE DATABANK SET VERSION_NAME=NULL,VERSION_DATE=NOW(),UPDATE_DATE=NOW(),FASTA_FILE='$mascotServer:$dbankDir:$newDbFileName',NUM_ENTRY=$numEntry WHERE ID_DATABANK=$databankID");
 				$dbh->commit;
@@ -2190,7 +2258,7 @@ sub browseDirectory_getFiles {
 sub getSearchParam {
 	my ($dbh,$anaID)=@_;
 	my %promsPath=&promsConfig::getServerInfo;
-	my ($fileFormat,$validStatus,$fileName,$rawName)=$dbh->selectrow_array("SELECT FILE_FORMAT,VALID_STATUS,DATA_FILE,NAME FROM ANALYSIS WHERE ID_ANALYSIS=$anaID");
+	my ($anaName,$fileFormat,$validStatus,$fileName,$wiffFile)=$dbh->selectrow_array("SELECT NAME,FILE_FORMAT,VALID_STATUS,DATA_FILE,WIFF_FILE FROM ANALYSIS WHERE ID_ANALYSIS=$anaID");
 	my %infoSubmit;
 	my $projectID=&promsMod::getProjectID($dbh,$anaID,'analysis');
 	$fileName=~s/\.xml/\.pgf/ if $fileFormat=~/(PHENYX|MASCOT)\.XML/;
@@ -2198,7 +2266,7 @@ sub getSearchParam {
 
 	##<MaxQuant
 	if ($fileFormat eq 'MAXQUANT.DIR') {
-		$infoSubmit{'a:Search title'} = $rawName;
+		$infoSubmit{'a:Search title'} = $anaName;
 		if ($fileName eq 'parameters.txt') { # no mqpar.xml provided
 			my %allParameters;
 			open(PARAM,"$anaDir/parameters.txt");
@@ -2211,7 +2279,7 @@ sub getSearchParam {
 			}
 			close PARAM;
 			$infoSubmit{'c:MaxQuant version'}=$allParameters{'Version'} || 'Unknown';
-			$infoSubmit{'f:Fixed modifications'}=join(', ',split(';',$allParameters{'Fixed modifications'})) || 'None';
+			$infoSubmit{'f:Fixed modifications'}=($allParameters{'Fixed modifications'})? join(', ',split(';',$allParameters{'Fixed modifications'})) : 'None'; # MQ versions before 1.6
 			#$infoSubmit{'g:Variable modifications'}=join(', ',split(';',$allParameters{'Site tables'})) || 'None'; $infoSubmit{'g:Variable modifications'}=~s/Sites\.txt//g;
 			my $lKey=97; # chr(97)='a'
 			foreach my $param (keys %allParameters) {
@@ -2227,6 +2295,7 @@ sub getSearchParam {
 			$infoSubmit{'m:Include contaminants'}=$allParameters{'Include contaminants'};
 			$infoSubmit{'n:Decoy mode'}=$allParameters{'Decoy mode'};
 			
+			(my $trueAnaName=$wiffFile)=~s/\.[^\.]+$//; # remove file extension
 			my %summaryColNum;
 			open(SUMM,"$anaDir/summary.txt");
 			while(<SUMM>) {
@@ -2243,10 +2312,15 @@ sub getSearchParam {
 				}
 				foreach my $i (0..$#parameters) {$parameters[$i]='' unless $parameters[$i];} # just to be safe
 				# take only line 2 => assume same parameters for all raw files
-				$infoSubmit{'d:Enzyme'}=$parameters[$summaryColNum{'Enzyme'}];
-				$infoSubmit{'e:Max. missed cleavages'}=$parameters[$summaryColNum{'Max. missed cleavages'}] || 'Unknown';
-				$infoSubmit{'g:Variable modifications'}=join(', ',split(';',$parameters[$summaryColNum{'Variable modifications'}])) || 'None';
-				last;
+				if ($parameters[$summaryColNum{'Raw file'}] eq $trueAnaName) { # take 1st (in case analysis name was changed) or row matching analysis
+					$infoSubmit{'d:Enzyme'}=$parameters[$summaryColNum{'Enzyme'}];
+					$infoSubmit{'e:Max. missed cleavages'}=$parameters[$summaryColNum{'Max. missed cleavages'}] || 'Unknown';
+					if ($summaryColNum{'Fixed modifications'}) { # MQ versions >= 1.6
+						$infoSubmit{'f:Fixed modifications'}=($parameters[$summaryColNum{'Fixed modifications'}])? join(', ',split(';',$parameters[$summaryColNum{'Fixed modifications'}])) : 'None';
+					}
+					$infoSubmit{'g:Variable modifications'}=join(', ',split(';',$parameters[$summaryColNum{'Variable modifications'}])) || 'None';
+					last;
+				}
 			}
 			close SUMM;
 			$infoSubmit{'o:Parameter files'}='parameters.txt, summary.txt';
@@ -2255,12 +2329,26 @@ sub getSearchParam {
 			require XML::Simple;
 			my $xml = new XML::Simple();
 			my $xmlParams = $xml->XMLin("$anaDir/$fileName",ForceArray=>['parameterGroup','string','short','int'],SuppressEmpty=>undef);	
-			my $paramGrIdx=0; # Assumes only 1 parameter group!!!!!!!!!!!!!!!!!!!!!
+			my $anaIdx=0; # default
+			foreach my $fileIdx (0..$#{$xmlParams->{filePaths}{string}}) {
+				my $file=$xmlParams->{filePaths}{string}[$fileIdx];
+				if ($file=~/[\/\\]$wiffFile$/) {
+					$anaIdx=$fileIdx;
+					last;
+				}
+			}
+			my $paramGrIdx=$xmlParams->{paramGroupIndices}{int}[$anaIdx] || 0;
+			
 			my $xmlGroupParams=$xmlParams->{parameterGroups}{parameterGroup}[$paramGrIdx];
 			$infoSubmit{'c:MaxQuant version'} = $xmlParams->{maxQuantVersion} if $xmlParams->{maxQuantVersion};
 			$infoSubmit{'d:Enzyme'}=join(',',@{$xmlGroupParams->{enzymes}{string}});
 			$infoSubmit{'e:Max. missed cleavages'}=$xmlGroupParams->{maxMissedCleavages};
-			$infoSubmit{'f:Fixed modifications'}=join(', ',@{$xmlParams->{fixedModifications}{string}}) if $xmlParams->{fixedModifications}{string}[0];
+			if ($xmlParams->{fixedModifications}) { # MQ versions < 1.6
+				$infoSubmit{'f:Fixed modifications'}=join(', ',@{$xmlParams->{fixedModifications}{string}}) if $xmlParams->{fixedModifications}{string}[0];
+			}
+			else { # MQ versions >= 1.6
+				$infoSubmit{'f:Fixed modifications'}=join(', ',@{$xmlGroupParams->{fixedModifications}{string}}) if $xmlGroupParams->{fixedModifications}{string}[0];
+			}
 			$infoSubmit{'g:Variable modifications'}=join(', ',@{$xmlGroupParams->{variableModifications}{string}}) if $xmlGroupParams->{variableModifications}{string}[0];
 			my $lKey=97; # chr(97)='a'
 			foreach my $refMsmsParam (@{$xmlParams->{msmsParamsArray}{msmsParams}}) {
@@ -2476,7 +2564,7 @@ sub getSearchParam {
 			push @{$infoSubmit{'g:TRIC option'}{'m:Method'}},$value if $name=~/TRIC_METHOD/;
 		}
 		
-		if(scalar @{$infoSubmit{'e:OpenSwath Options'}{'f:m/z extraction unit'}} == 0) {
+		if(!$infoSubmit{'e:OpenSwath Options'}{'f:m/z extraction unit'}) {
 			push @{$infoSubmit{'e:OpenSwath Options'}{'f:m/z extraction unit'}}, "Th";
 		}
 
@@ -2489,7 +2577,7 @@ sub getSearchParam {
 			push @{$infoSubmit{'a:Databank'}{'c:Sequences in databank'}},$numEntry;
         }
 	}
-	elsif($fileFormat eq 'SKYLINE.CSV') {
+	elsif($fileFormat =~ /SKYLINE\.(?:CSV|SKY)/) {  # SKYLINE.CSV (old) or SKYLINE.SKY (new)
 		## PARSE PARAMETERS
 		my $searchParam=$dbh->selectrow_array("SELECT QUANTIF_ANNOT FROM QUANTIFICATION Q, ANA_QUANTIFICATION AQ WHERE Q.ID_QUANTIFICATION=AQ.ID_QUANTIFICATION AND ID_ANALYSIS=$anaID");
 
@@ -3347,9 +3435,7 @@ sub printTree {
 		}
 		print "<TD valign=middle><IMG src=\"$promsPath{images}/$nodeImg\" border=0></TD>\n";
 	}
-	my $expandImg;
-	if ($#{$refTree}>=8) {$expandImg='plus.gif';}
-	else {$expandImg='no_icone.gif';}
+	my $expandImg = ($#{$refTree} >= 8) ? 'plus.gif' : 'no_icone.gif';
 	my $chkboxStrg='';
 	if ($refOptions->{'CHECKBOX'}) {
 		$chkboxStrg="<INPUT type=\"checkbox\" name=\"checkIndex\" value=\"$myIndex\" onclick=\"updateCheckBoxes($myIndex)\"";
@@ -3370,13 +3456,14 @@ sub printTree {
 	my $imageStrg="<IMG name=\"iconImg\" src=\"$promsPath{images}/";
 	if ($iconImg{$itemIcon}) {$imageStrg.="$iconImg{$itemIcon}\" onclick=\"selectItem($myIndex)\">";}
 	else {$imageStrg.="space.gif\" style=\"display:none\">";}
+
 	my $itemID="$refTree->[1]:$refTree->[2]";
-	print qq
+	print qq 
 |<TD valign=middle><IMG name="expandImg" src="$promsPath{images}/$expandImg" onclick="click2OpenClose($myIndex,'auto',1)"></TD>
 <TD valign=middle nowrap>$chkboxStrg$imageStrg</TD>
-<TH valign=middle align=left nowrap>&nbsp<A class="$labelClass" id="$itemID" href="javascript:selectItem($myIndex)" $popupStrg>$refTree->[6]</A></TH>
+<TD valign=middle align='left' style='font-weight:bold' nowrap>&nbsp<A class="$labelClass" id="$itemID" href="javascript:selectItem($myIndex)" $popupStrg>$refTree->[6]</A></TD>
 </TR></TABLE>
-|;
+|;	
 	for (my $i=8;$i<=$#{$refTree};$i++) {
 		${$refTabIndex}++;
 		my $lastChild=($i==$#{$refTree})? 1 : 0;
@@ -3753,10 +3840,9 @@ sub printAjaxManageSaveProteins {
 //CHOOSE OR CREATE THEME, LIST and SAVE CHECKED PROTEIN --->
 var saveListGlobals={
 	themesFetched:false, // TODO: update all calling scripts from themesFetched to saveListGlobals.themesFetched
-	listType:'PROT', // global JS variable because of possible swtich between PROT and SITE without new AJAX call for job=getThemes,save,cancel
-	modifID:0
+	listType:'PROT' // global JS variable because of possible switch between PROT and SITE without new AJAX call for job=getThemes,save,cancel
 };
-function ajaxManageSaveProteins(jobStrg,listType,modifID) { // Uses local XHR: No abort of global XHR if defined
+function ajaxManageSaveProteins(jobStrg,listType) { // Uses local XHR: No abort of global XHR if defined
 	if (!listType) listType=saveListGlobals.listType \|\| 'PROT';
 	saveListGlobals.listType=listType;
 	var jobData=jobStrg.split(':');
@@ -3772,9 +3858,8 @@ function ajaxManageSaveProteins(jobStrg,listType,modifID) { // Uses local XHR: N
 	var targetDiv;
 	var paramStrg='ACT=ajaxSaveProt&job='+job+'&listType='+listType;
 	if (job=='getThemes') { // classifications
-		if (!modifID) {modifID=0;}
-		saveListGlobals.modifID=modifID;
-//console.log('getThemes',saveListGlobals.modifID);
+		//if (!modifID) {modifID=0;}
+		//saveListGlobals.modifID=modifID;
 		if (saveFormBut.style.display=='block') {saveFormBut.style.display='none';} else {saveFormBut.style.visibility='hidden';} // display:block indicates button should be removed not hidden
 		/* Reset other list Type if exists */
 		var otherType=(listType=='SITE')? 'PROT' :'SITE';
@@ -3786,9 +3871,7 @@ function ajaxManageSaveProteins(jobStrg,listType,modifID) { // Uses local XHR: N
 		targetDiv=document.getElementById('saveProtDIV');
 		targetDiv.style.display='block';
 		if (saveListGlobals.themesFetched) { // already retrieved
-			for (let i=1; i<=3; i++) {
-				document.getElementById('listTypeEntity'+i).innerHTML=entities[listType];
-			}
+			document.getElementById('listTypeEntity').innerHTML=entities[listType];
 			if (document.getElementById('themeSELECT').selectedIndex) { // a theme was selected => reset lists
 				//document.getElementById('themeSELECT').selectedIndex=0;
 				ajaxManageSaveProteins(document.getElementById('themeSELECT').value,listType);
@@ -3825,7 +3908,7 @@ function ajaxManageSaveProteins(jobStrg,listType,modifID) { // Uses local XHR: N
 		return;
 	}
 	else { // saveProt
-		paramStrg+='&modifID='+saveListGlobals.modifID;
+		//paramStrg+='&modifID='+saveListGlobals.modifID;
 		// Checking for Theme
 		targetDiv=document.getElementById('saveProtDIV');
 		var themeSel=document.getElementById('themeSELECT');
@@ -3867,7 +3950,8 @@ function ajaxManageSaveProteins(jobStrg,listType,modifID) { // Uses local XHR: N
 			}
 		}
 		//List content management
-		paramStrg+=(document.getElementById('replace0').checked)? '&replace=0' : '&replace=1';
+		//paramStrg+=(document.getElementById('replace0').checked)? '&replace=0' : '&replace=1';
+		paramStrg+='&saveProtAct='+document.getElementById('saveProtAct').value; // add/remove/replace
 
 		// Selected proteins
 		var selProtList=[];
@@ -3884,12 +3968,17 @@ function ajaxManageSaveProteins(jobStrg,listType,modifID) { // Uses local XHR: N
 						continue;
 					}
 					/*Some values are anaID1:...anadIDx:protID*/
-					var anaProtVal=checkBoxList[i].value.split(':');
-					if (anaProtVal[anaProtVal.length-1].match('/')) { // modProtID with ambigutity => do not split!
+					if (checkBoxList[i].value.match(/\\d+-\\d+:/)) { // site: do not split
 						selProtList.push(checkBoxList[i].value);
 					}
-					else { // last/only Idx is protID
-						selProtList.push(anaProtVal[anaProtVal.length-1]);
+					else {
+						var anaProtVal=checkBoxList[i].value.split(':');
+						//if (anaProtVal[anaProtVal.length-1].match('/')) { // modProtID with ambigutity => do not split!
+						//	selProtList.push(checkBoxList[i].value);
+						//}
+						//else { // last/only Idx is protID
+							selProtList.push(anaProtVal[anaProtVal.length-1]);
+						//}
 					}
 				}
 			}
@@ -3900,19 +3989,24 @@ function ajaxManageSaveProteins(jobStrg,listType,modifID) { // Uses local XHR: N
 				return;
 			}
 			/*Some values are anaID1:...anadIDx:protID*/
-			var anaProtVal=checkBoxList.value.split(':');
-			if (anaProtVal[anaProtVal.length-1].match('/')) { // modProtID with ambigutity => do not split!
+			if (checkBoxList.value.match(/\\d+-\\d+:/)) { // site: do not split
 				selProtList.push(checkBoxList.value);
 			}
-			else { // last/only Idx is protID
-				selProtList.push(anaProtVal[anaProtVal.length-1]);
+			else {
+				var anaProtVal=checkBoxList.value.split(':');
+				//if (anaProtVal[anaProtVal.length-1].match('/')) { // modProtID with ambigutity => do not split!
+				//	selProtList.push(checkBoxList.value);
+				//}
+				//else { // last/only Idx is protID
+					selProtList.push(anaProtVal[anaProtVal.length-1]);
+				//}
 			}
 		}
 		if (selProtList.length==0) {
 			alert('ERROR: No valid proteins selected!');
 			return;
 		}
-		paramStrg+='&protID='+selProtList.join(','); // was ':' before (PP 21/01/15)
+		paramStrg+='&protID='+encodeURIComponent(selProtList.join(',')); // was ':' before (PP 21/01/15)
 	}
 	//Creation of the XMLHTTPRequest object
 	var XHR = getXMLHTTP();
@@ -4181,8 +4275,10 @@ sub toStringVariableModifications { # Too slow. Avoid if large dataset. Modify p
 	$sthVmods->execute;
 	while (my ($modID,$psiMsName,$interimName,$altNames,$specificity,$posString,$refPosString) = $sthVmods->fetchrow_array) {
 		next if $refExcludedVM->{$modID}; # skip this mod
-		$altNames=~ s/##/,/g if $altNames;
-		$altNames=~ s/^,//; $altNames=~ s/,\Z//; # remove starting & trailing "," if any
+		if ($altNames) {
+			$altNames=~ s/##/,/g;
+			$altNames=~ s/^,//; $altNames=~ s/,\Z//; # remove starting & trailing "," if any
+		}
 		my $name=($psiMsName)? $psiMsName : ($interimName)? $interimName : ($altNames)? $altNames : '';
 		my %aa=();
 		#my $oldPosTag=-1;
@@ -4469,6 +4565,70 @@ sub getModificationIDfromString { # requires XML::SAX::ParserFactory
 	return ($modificationID);
 }
 
+
+sub getMonoMassFromFormula {  # Requires XML::Twig
+# Get the monoisotopic mass of a molecule from its molecular formula.
+# The molecular formula must not contain anything else than the chemical elements (1/2 letter(s) representation) 
+# and their stoichiometry (no space, no parenthesis, no charge sign etc).
+#
+# Examples : 
+# Glucose should be given as : C6H12O6,
+# Sulfate ion as : SO4 (not SO4(2-), although it would work for this particular case)
+# For a chemical modification, provide the final/total molecular formula
+# such as C3H9 for trimethylation, and not (CH3)3. 
+# Note that the returned mass does NOT take into account the mass of the lost atoms 
+# (3 H in the case of trimethylation of lysine for example)
+
+    my ($formula) = @_;
+	my %elements;
+	my %molecule;
+	my $moleculeMonoMass = 0;
+
+	my %promsPath = &promsConfig::getServerInfo('no_user');
+
+	# Get unimod_tables.xml file to find monoisotopic mass of elements
+	my $xmlFile="$promsPath{data}/unimod_tables.xml";
+	require XML::Twig; # to be safe
+
+	my $elementsSub = sub {  # sub for parser
+		my ($innerTwig, $elementsField) = @_;  # twig handlers params
+
+		my @elementsArr = $elementsField->children('elements_row');
+		foreach my $element (@elementsArr) {
+			my $elemAttrs = $element->atts;
+			$elements{$elemAttrs->{'element'}} = {
+				'monoMass' => $elemAttrs->{'mono_mass'},
+				'avgeMass' => $elemAttrs->{'avge_mass'},
+				'fullName' => $elemAttrs->{'full_name'}
+			}
+		}
+		$innerTwig->purge;
+	};
+
+	my $twig = XML::Twig->new(
+        twig_handlers => {
+            elements => $elementsSub
+        }
+    );
+    $twig->parsefile($xmlFile);
+
+	while ($formula =~ /([A-Z][a-z]?\d+)/g){
+		my ($elem, $nb) = $1 =~ /([A-Z][a-z]?)(\d+)/;
+		$nb = 1 unless $nb;
+		if ($molecule{$elem}) {
+			$molecule{$elem} += $nb;
+		} else {
+			$molecule{$elem} = $nb;
+		}
+	}
+	foreach my $elem (keys %molecule) {
+		$moleculeMonoMass += $elements{$elem}{'monoMass'} * $molecule{$elem};
+	}
+	$moleculeMonoMass = sprintf("%.6f", $moleculeMonoMass);
+	return $moleculeMonoMass;
+}
+
+
 ######################################
 #######<Generates Match Groups>#######
 ######################################
@@ -4551,7 +4711,7 @@ sub updateMatchGroups {
 
 	####<Create match groups
 	my (%matchGroups,%visibility);
-	&createMatchGroups(\%matchList,\%matchGroups,\%visibility,$refProjectData->{BEST_VIS},$refProjectData->{VIS},\@sortedProtIDs,$verbose);
+	&createMatchGroups(\%matchList,\%matchGroups,\@sortedProtIDs,\%visibility,$refProjectData->{BEST_VIS},$refProjectData->{VIS},$verbose);
 
 	####<Update ANALYSIS_PROTEIN & project global data
 	print "<FONT class=\"title3\">&nbsp;-Updating database..." if $verbose;
@@ -4576,43 +4736,61 @@ sub updateMatchGroups {
 	}
 }
 sub createMatchGroups { # computes match groups from provided data & parameters (can also be called directly from a script)
-	my ($refmatchList,$refmatchGroup,$refVisibility,$refBestProtVis,$protVisibility,$refsortedIdentifiers,$verbose)=@_;
-	print "<FONT class=\"title3\">&nbsp;-Grouping proteins: 0%..." if $verbose;
-	my $numGroup=0;
+	my ($refMatchList,$refmatchGroup,$refsortedIdentifiers,$refVisibility,$refBestProtVis,$protVisibility,$verbose)=@_;
     %{$refmatchGroup}=(); # just to be safe
-	%{$refVisibility}=(); # just to be safe
-	my $count=0;
+    %{$refVisibility}=(); # just to be safe
+	my %numPepMatchGroups = ();
 	my $numProt=scalar @{$refsortedIdentifiers};
+	my $count=0;
+	my $numGroup=0;
 	my $currPC=0;
+	
+	print "<FONT class=\"title3\">&nbsp;-Grouping proteins: 0%..." if $verbose;
 	foreach my $i (0..$#{$refsortedIdentifiers}) {
 		#if ($verbose) {
 		#	$count++;
 		#	if ($count==150 && $verbose) {print '.'; $count=0;}
 		#}
-		next if $refmatchGroup->{$refsortedIdentifiers->[$i]}; # already assigned to a match group
-		$refmatchGroup->{$refsortedIdentifiers->[$i]}=++$numGroup;
-		$refVisibility->{$refsortedIdentifiers->[$i]}=2; # Reference protein
-		$refBestProtVis->{$refsortedIdentifiers->[$i]}=2; # update bestVis
-#next; # SKIP grouping!!!
+		my $protID = $refsortedIdentifiers->[$i];
+		next if $refmatchGroup->{$protID}; # already assigned to a match group
+		$refmatchGroup->{$protID}=++$numGroup;
+		$numPepMatchGroups{$numGroup} = scalar keys %{$refMatchList->{$protID}}; # Set match group max num pep to the first prot amount
+		
+		$refVisibility->{$protID} = 2;
+		$refBestProtVis->{$protID} = 2 if(defined($refBestProtVis));# update bestVis
+		#next; # SKIP grouping!!!
+		
 		foreach my $j ($i+1..$#{$refsortedIdentifiers}) {
-			next if $refmatchGroup->{$refsortedIdentifiers->[$j]}; # already assigned to a match group
+			my $protID2 = $refsortedIdentifiers->[$j];
+			next if $refmatchGroup->{$protID2}; # already assigned to a match group
 			if ($verbose) {
 				$count++;
 				if ($count >= 500000) {print '.'; $count=0;}
 			}
+			
 			##<Comparing peptide contents of identifier#1 and identifier#2>## All peptides must match!
 			my $matchOK=1;
-			foreach my $seq (keys %{$refmatchList->{$refsortedIdentifiers->[$j]}}) {
-				if (!$refmatchList->{$refsortedIdentifiers->[$i]}{$seq}) {
-					delete $refmatchList->{$refsortedIdentifiers->[$i]}{$seq}; # to be safe
+			foreach my $seq (keys %{$refMatchList->{$protID2}}) {
+				if (!$refMatchList->{$protID}{$seq}) {
+					delete $refMatchList->{$protID}{$seq}; # to be safe
 					$matchOK=0;
 					last;
 				}
 			}
+			
 			if ($matchOK) {
-				$refmatchGroup->{$refsortedIdentifiers->[$j]}=$refmatchGroup->{$refsortedIdentifiers->[$i]}; # $numGroup
-				$refVisibility->{$refsortedIdentifiers->[$j]}=($protVisibility && defined($refBestProtVis->{$refsortedIdentifiers->[$j]}) && ($refBestProtVis->{$refsortedIdentifiers->[$j]}==2 || ($protVisibility==2 && $refBestProtVis->{$refsortedIdentifiers->[$j]})))? 1 : 0; # visible or hidden
-				$refBestProtVis->{$refsortedIdentifiers->[$j]}=$refVisibility->{$refsortedIdentifiers->[$j]} if (!defined($refBestProtVis->{$refsortedIdentifiers->[$j]}) || $refVisibility->{$refsortedIdentifiers->[$j]} > $refBestProtVis->{$refsortedIdentifiers->[$j]}); # update bestVis
+				$refmatchGroup->{$protID2} = $refmatchGroup->{$protID}; # $numGroup
+				
+				## Compute max nb peptide by match group
+				if(scalar keys %{$refMatchList->{$protID2}} > $numPepMatchGroups{$refmatchGroup->{$protID2}}) {
+					$numPepMatchGroups{$refmatchGroup->{$protID2}} = scalar keys %{$refMatchList->{$protID2}};
+				}
+				
+				$refVisibility->{$protID2} = defined($refBestProtVis->{$protID2}) && $protVisibility != 3 && ($refBestProtVis->{$protID2}==2 || ($protVisibility==2 && $refBestProtVis->{$protID2})) ? 1 : 0; # visible or hidden
+				
+				if(defined($refBestProtVis) && $protVisibility && (defined($refBestProtVis->{$protID2}) || $refVisibility->{$protID2} > $refBestProtVis->{$protID2})) {
+					$refBestProtVis->{$protID2}=$refVisibility->{$protID2};
+				}
 			}
 		}
 		if ($verbose) {
@@ -4626,6 +4804,16 @@ sub createMatchGroups { # computes match groups from provided data & parameters 
 			}
 		}
 	}
+	
+	if($protVisibility == 3) {
+		# Update visibility of proteins with max nb peptides by match group
+		foreach my $protID (keys %{$refmatchGroup})	 {
+			next if(defined($refBestProtVis->{$protID}) && $refBestProtVis->{$protID} == 2);
+			my $nbPep = scalar keys %{$refMatchList->{$protID}};
+			$refVisibility->{$protID} = (scalar keys %{$refMatchList->{$protID}} == $numPepMatchGroups{$refmatchGroup->{$protID}}) ? 1 : 0;
+		}
+	}
+	
 	print " Done.</FONT><BR>\n" if $verbose;
 	return $numGroup;
 }
@@ -4753,6 +4941,26 @@ $self->{'vmods'}->{$unimodID}{'IS_LABEL'}=(!$self->{'vmods'}->{$unimodID}{'IS_LA
 1;
 
 ####>Revision history
+# 4.1.15 [MODIF] Minor modif on skyline fileFormat to be consistent with handling of .sky files (VL 20/11/19)
+# 4.1.14 [BUGFIX] Minor JS fix in &ajaxManageSaveProteins to match change in showProtQuantification.cgi (PP 30/11/19)
+# 4.1.13 [BUGFIX] handle undef QUANTIFICATION.FOCUS in &getItemInfo (PP 25/11/19)
+# 4.1.12 [ENHANCEMENT] &getItemInfo no longer fails if item was deleted from DB & [BUGFIX] in &toStringVariableModifications to handle undef $altNames (PP 08/11/19)
+# 4.1.11 [FEATURE] &printAjaxManageSaveProteins handles multi-PTMs & Add/Remove/Replace option (PP 31/10/19)
+# 4.1.10 [FEATURE] Add new sub getMonoMassFromFormula (VL 07/10/19)
+# 4.1.9 [FEATURE] &cleanNumericalParameters handles negatif/fraction numbers (PP 09/09/19)
+# 4.1.8 [ENHANCEMENT] Turn undef parameters into empty string in &cleanParameters (VL 03/09/19)
+# 4.1.7 [FEATURE] Add more options in &formatDate (PP 28/07/19)
+# 4.1.6 [ENHANCEMENT] Removed un-necessary check  for lockeditem in navigation tree functions (PP 27/08/19)
+# 4.1.5 [ENHANCEMENT] Refactor printTree function based on the old version to avoid dependencies brought by lock experiment system (VS 13/08/19)
+# 4.1.4 [FIX] Retrieve properly sample's metadata info from getItemInfo (VS 08/08/19)
+# 4.1.3 [FEATURE] Handles experiment lock system (VS 08/08/19)
+# 4.1.2 [BUGFIX] createMatchGroup : set visibility array to avoid null values in DB on msf data import (VS 08/07/19)
+# 4.1.1 [FEATURE] createMatchGroup : includes the new protein visibility mode (VS 04/07/19)
+# 4.1.0 [MODIF] createMatchGroup : now used by all scripts building match groups (VS 03/07/19)
+# 4.0.9 [FEATURE] New protein visibility mode in applyVisibilityRule (VS 02/07/19)
+# 4.0.8 Add a new visibility status for proteins with max peptides number within a match group (VS 01/07/19)
+# 4.0.7.1 [FEATURE] DB-based protein annotation is now a optional (parameter) in &getProtInfo & update in &getSearchParam for multi-groups MaxQuant (PP 22/08/19)
+# 4.0.7 Uses new &promsConfig::getMascotServers function (PP 25/06/19)
 # 4.0.6 [Fix] bug in &getProtInfo when called with multiple analyses (PP 21/06/19)
 # 4.0.5 &decodeVarMod now handles out of range PTM position with a '!' (PP 18/06/19)
 # 4.0.4 Add Metadata handling in &getSearchParam (VS 25/05/19)

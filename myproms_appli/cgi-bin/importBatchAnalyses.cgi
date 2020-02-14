@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# importBatchAnalyses.cgi         2.8.2                                        #
+# importBatchAnalyses.cgi         2.8.3                                        #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -123,13 +123,13 @@ A.file:hover,A.badFile:hover{color:#FF6600; text-decoration:none;}
 		print "</DIV>\n";
 		my $agent = LWP::UserAgent->new(agent=>'libwww-perl myproms@curie.fr');
 		$agent->timeout(360);
-		if ($mascotServers{$mascotServer}[1]) { # proxy settings
-			if ($mascotServers{$mascotServer}[1] eq 'no') {$agent->no_proxy($mascotServers{$mascotServer}[0]);}
-			else {$agent->proxy('http', $mascotServers{$mascotServer}[1]);}
+		if ($mascotServers{$mascotServer}{proxy}) { # proxy settings
+			if ($mascotServers{$mascotServer}{proxy} eq 'no') {$agent->no_proxy($mascotServers{$mascotServer}{url});}
+			else {$agent->proxy('http', $mascotServers{$mascotServer}{proxy});}
 		}
 		else {$agent->env_proxy;}
         #push @{$agent->requests_redirectable},'POST';
-        my $response = $agent->post("$mascotServers{$mascotServer}[0]/cgi/myproms4datFiles.pl", $params);
+        my $response = $agent->post("$mascotServers{$mascotServer}{url}/cgi/myproms4datFiles.pl", $params);
 		while (my $wait = $response->header('Retry-After')) {
 			sleep $wait;
 			$response = $agent->get($response->base);
@@ -269,42 +269,43 @@ parent.document.fileAccessForm.mascotAction.value='get'; // switch search to get
 			my $newDatFile="$batchFilesDir/$file";
 			my ($popTargetFile,$popDecoyFile)=("$batchFilesDir/.percolator/$file.target.pop","$batchFilesDir/.percolator/$file.decoy.pop");
 			unless (-e $newDatFile) {
-				if ($mascotServers{$mascotServer}[2]) { # Mascot is on same computer or NFS
-					$mascotServers{$mascotServer}[2]=~s/\/\Z//; # remove end '/' if any
+				if ($mascotServers{$mascotServer}{data_local_path}) { # Mascot is on same computer or NFS
+					$mascotServers{$mascotServer}{data_local_path}=~s/\/\Z//; # remove end '/' if any
 					$filePath=~s/^\.+//; # remove cd up
 					$filePath=~s/^\///; # remove starting '/'
-					if ($mascotServers{$mascotServer}[3]) { # symbolic link (no copy)
-						symlink("$mascotServers{$mascotServer}[2]/$filePath",$newDatFile);
+					if ($mascotServers{$mascotServer}{link_files}) { # symbolic link (no copy)
+						symlink("$mascotServers{$mascotServer}{data_local_path}/$filePath",$newDatFile);
 					}
 					else { # copy
-						copy("$mascotServers{$mascotServer}[2]/$filePath",$newDatFile);
+						copy("$mascotServers{$mascotServer}{data_local_path}/$filePath",$newDatFile);
 					}
 					# Copy *.pop files for percolator
 					my @infos=split(/\//,$filePath);
 					my @date=split('',$infos[2]);
 					my ($year,$month)=(join('',($date[0],$date[1],$date[2],$date[3])),join('',($date[4],$date[5])));
-					opendir(CACHEDIR,"$mascotServers{$mascotServer}[2]/data/cache/$year/$month");
+					my $mainCacheDir="$mascotServers{$mascotServer}{data_local_path}/cache/$year/$month"; # "$mascotServers{$mascotServer}[2]/data/cache/$year/$month"
+					opendir(CACHEDIR,$mainCacheDir);
 					my $foundFile=0;
 					while ((my $cacheDir=readdir(CACHEDIR))) {
-						next if $cacheDir =~ /^\.\.?$/; # skip . and ..
-						opendir(DATDIR,"$mascotServers{$mascotServer}[2]/data/cache/$year/$month/$cacheDir") if -d "$mascotServers{$mascotServer}[2]/data/cache/$year/$month/$cacheDir";
+						next if ($cacheDir =~ /^\.+$/ || ! -d "$mainCacheDir/$cacheDir"); # skip . and ..
+						opendir(DATDIR,"$mainCacheDir/$cacheDir");
 						while ((my $file=readdir(DATDIR))) {
 							next if $cacheDir =~ /^\.\.?$/; # skip . and ..
 							if ($file =~ /$infos[3].*\.target\.pop/) {
-								if ($mascotServers{$mascotServer}[3]) {
-									symlink("$mascotServers{$mascotServer}[2]/data/cache/$year/$month/$cacheDir/$file",$popTargetFile);
+								if ($mascotServers{$mascotServer}{link_files}) {
+									symlink("$mainCacheDir/$cacheDir/$file",$popTargetFile);
 								}
 								else{
-									copy("$mascotServers{$mascotServer}[2]/data/cache/$year/$month/$cacheDir/$file",$popTargetFile);
+									copy("$mainCacheDir/$cacheDir/$file",$popTargetFile);
 								}
 								$foundFile++;
 							}
 							elsif($file =~ /$infos[3].*\.decoy\.pop/){
-								if ($mascotServers{$mascotServer}[3]) {
-									symlink("$mascotServers{$mascotServer}[2]/data/cache/$year/$month/$cacheDir/$file",$popDecoyFile);
+								if ($mascotServers{$mascotServer}{link_files}) {
+									symlink("$mainCacheDir/$cacheDir/$file",$popDecoyFile);
 								}
 								else{
-									copy("$mascotServers{$mascotServer}[2]/data/cache/$year/$month/$cacheDir/$file",$popDecoyFile);
+									copy("$mainCacheDir/$cacheDir/$file",$popDecoyFile);
 								}
 								$foundFile++;
 							}
@@ -317,9 +318,9 @@ parent.document.fileAccessForm.mascotAction.value='get'; // switch search to get
 				}
 				else { # Mascot is on another computer -> http
 					my $agent = LWP::UserAgent->new(agent=>'libwww-perl myproms@curie.fr');
-					if ($mascotServers{$mascotServer}[1]) { # proxy settings
-						if ($mascotServers{$mascotServer}[1] eq 'no') {$agent->no_proxy($mascotServers{$mascotServer}[0]);}
-						else {$agent->proxy('http', $mascotServers{$mascotServer}[1]);}
+					if ($mascotServers{$mascotServer}{proxy}) { # proxy settings
+						if ($mascotServers{$mascotServer}{proxy} eq 'no') {$agent->no_proxy($mascotServers{$mascotServer}{url});}
+						else {$agent->proxy('http', $mascotServers{$mascotServer}{proxy});}
 					}
 					else {$agent->env_proxy;}
 					#$agent->mirror("$mascotServers{$mascotServer}[0]/cgi/myproms4datFiles.pl?ACT=get&DAT=$filePath",$newDatFile);
@@ -330,7 +331,7 @@ parent.document.fileAccessForm.mascotAction.value='get'; // switch search to get
 						my $prevProgress=0;
 						my $fileLength;
 						my $bytesReceived = 0;
-						$agent->request(HTTP::Request->new(GET => "$mascotServers{$mascotServer}[0]/cgi/myproms4datFiles.pl?ACT=get&DAT=$filePath"),
+						$agent->request(HTTP::Request->new(GET => "$mascotServers{$mascotServer}{url}/cgi/myproms4datFiles.pl?ACT=get&DAT=$filePath"),
 							sub {
 								my ($chunk, $res) = @_;
 								print DAT $chunk;
@@ -360,7 +361,7 @@ parent.document.fileAccessForm.mascotAction.value='get'; // switch search to get
 					###> Percolator part : retrieve the *.pop files from cache folder
 					open(TARGET,">$popTargetFile") or $okFile=0;
 					if ($okFile) {
-						$agent->request(HTTP::Request->new(GET => "$mascotServers{$mascotServer}[0]/cgi/myproms4datFiles.pl?ACT=get&DAT=$filePath&POP=target"),
+						$agent->request(HTTP::Request->new(GET => "$mascotServers{$mascotServer}{url}/cgi/myproms4datFiles.pl?ACT=get&DAT=$filePath&POP=target"),
 							sub {
 								my ($chunk, $res) = @_;
 								print TARGET $chunk;
@@ -389,7 +390,7 @@ parent.document.fileAccessForm.mascotAction.value='get'; // switch search to get
 					}
 					open(DECOY,">$popDecoyFile") or $okFile=0;
 					if ($okFile) {
-						$agent->request(HTTP::Request->new(GET => "$mascotServers{$mascotServer}[0]/cgi/myproms4datFiles.pl?ACT=get&DAT=$filePath&POP=decoy"),
+						$agent->request(HTTP::Request->new(GET => "$mascotServers{$mascotServer}{url}/cgi/myproms4datFiles.pl?ACT=get&DAT=$filePath&POP=decoy"),
 							sub {
 								my ($chunk, $res) = @_;
 								print DECOY $chunk;
@@ -2105,12 +2106,12 @@ function updateDisableStatus() { // needed after '<< BACK' button
 	foreach my $mascotServer (keys %mascotServers) {
 		my $agent = LWP::UserAgent->new(agent=>'libwww-perl myproms@curie.fr');
 		$agent->timeout(360);
-		if ($mascotServers{$mascotServer}[1]) { # proxy settings
-			if ($mascotServers{$mascotServer}[1] eq 'no') {$agent->no_proxy($mascotServers{$mascotServer}[0]);}
-			else {$agent->proxy('http', $mascotServers{$mascotServer}[1]);}
+		if ($mascotServers{$mascotServer}{proxy}) { # proxy settings
+			if ($mascotServers{$mascotServer}{proxy} eq 'no') {$agent->no_proxy($mascotServers{$mascotServer}{url});}
+			else {$agent->proxy('http', $mascotServers{$mascotServer}{proxy});}
 		}
 		else {$agent->env_proxy;}
-		my $response = $agent->get("$mascotServers{$mascotServer}[0]/cgi/myproms4datFiles.pl?ACT=log");
+		my $response = $agent->get("$mascotServers{$mascotServer}{url}/cgi/myproms4datFiles.pl?ACT=log");
 		while (my $wait = $response->header('Retry-After')) {
 			sleep $wait;
 			$response = $agent->get($response->base);
@@ -2319,6 +2320,7 @@ sub updateWaitBox {
 }
 
 ####>Revision history<####
+# 2.8.3 Uses new &promsConfig::getMascotServers function (PP 25/06/19)
 # 2.8.2 Modification of merge-file string (GA 08/01/19)
 # 2.8.1 Creates batch/<userID> at start up if not exists (PP 04/12/18)
 # 2.8.0 Added Shared directory as file source (requires promsMod 3.7.5+) & msf display update (PP 03/11/17)
