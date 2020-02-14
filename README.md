@@ -4,14 +4,18 @@ Mass spectrometry(MS)-based proteomics data management and analysis software.
 Go to **myProMS** [home page](http://myproms-demo.curie.fr) for more information about the software and access an online **demo** version.
 myProMS can run on any operating system compatible with [Docker](https://www.docker.com).
 
+## Version
+Current version is 3.9.1.
+Check [releases](https://github.com/bioinfo-pf-curie/myproms/releases) for versions history.
+
 ## License
 myProMS is freely available under [CeCILL license](LICENSE).
 
 ## Requirements
 * Docker: [https://www.docker.com](https://www.docker.com)
 Two Docker images are required:
-  * [myproms/myproms\_base:1.2.7](https://hub.docker.com/r/myproms/myproms_base): Tools and system dependencies.
-  * [mysql:5.7](https://hub.docker.com/_/mysql): For database management).
+  * [myproms/myproms\_base:1.3.2](https://hub.docker.com/r/myproms/myproms_base): Tools and system dependencies.
+  * [mysql:5.5](https://hub.docker.com/_/mysql): For database management).
 These images will be automatically pulled at first launch of the server.
 * Git: [https://git-scm.com](https://git-scm.com) - *Recommanded*
 
@@ -26,13 +30,13 @@ This repository contains:
 2. Open a console.
 3. Pull the required docker images (optional):
 ```
-docker pull myproms/myproms_base:1.2.7
-docker pull mysql:5.7
+docker pull myproms/myproms_base:1.3.2
+docker pull mysql:5.5
 ```
 4. Create a home directory for your docker projects (optional):
 ```
 mkdir docker
-cd path/to/docker
+cd docker
 ```
 5. Retrieve myproms **repository** from GitHub:  
 `git clone --depth 1 https://github.com/bioinfo-pf-curie/myproms myproms` - *Recommanded*  
@@ -83,7 +87,7 @@ The default port used to access the myProMS server with your browser is set to `
 An email contact is displayed on myProMS startup page. The default is `myproms@curie.fr`. You recommand using a contact local to your institute instead.
 
 ## Data persistence
-Because Docker containers are created/deleted each time you start/shut down the myProMS Server, all data are stored outside these containers through mounted [volumes](https://docs.docker.com/storage/volumes/) to insure they are not lost when the server is shut down.
+Because Docker containers are created/deleted each time you start/shut down the myProMS Server, all data are stored outside these containers through mounted [volumes](https://docs.docker.com/storage/volumes/) to insure data persistence.
 * **MySQL database** data are stored in the directory `path/to/myproms/myproms_db`
 * **Flat file** data are stored in the directory `path/to/myproms/myproms_data`
 
