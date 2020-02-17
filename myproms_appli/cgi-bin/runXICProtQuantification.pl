@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# runXICProtQuantification.pl       2.14.0                                     #
+# runXICProtQuantification.pl       2.14.1                                     #
 # Component of site myProMS Web Server                                         #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
@@ -736,7 +736,7 @@ my %pepID2QuantifSetSILAC; # PP 25/10/17: used to better compute %usedPeptideSet
 if (!$referenceMode || $referenceMode eq 'REF') {
 	my $entityStrg=($algoType=~/^(TDA|DIA)$/)? 'fragment' : 'peptide';
 	open(FILESTAT,">>$fileStat") || die "Error while opening $fileStat";
-	print FILESTAT "1/$numSteps Generating data files (1/4 Retrieving$referenceStrg $entityStrg intensity data)";
+	print FILESTAT "1/$numSteps Generating data files (1/4 Retrieving$referenceStrg $entityStrg intensity data)\n";
 	close FILESTAT;
 }
 my %pepQuantifValues;
@@ -807,7 +807,7 @@ else { # MS1 XIC
 &checkForErrors($dbh);
 
 open(FILESTAT,">>$fileStat") || die "Error while opening $fileStat";
-print FILESTAT "1/$numSteps Generating data files (2/4 Retrieving$referenceStrg identification data)";
+print FILESTAT "1/$numSteps Generating data files (2/4 Retrieving$referenceStrg identification data)\n";
 close FILESTAT;
 my %recreatedVarMods; # to prevent re-creating same varMod multiple times
 my %proteinLength; # Only if sites to be recreated at protein C-term
@@ -1113,7 +1113,7 @@ $sthGetPepData->finish;
 #%pepQuantifValues=(); # hoping to free memory
 
 open(FILESTAT,">>$fileStat") || die "Error while opening $fileStat";
-print FILESTAT "1/$numSteps Generating data files (3/4 Processing$referenceStrg dataset)";
+print FILESTAT "1/$numSteps Generating data files (3/4 Processing$referenceStrg dataset)\n";
 close FILESTAT;
 	
 ##>Filter fully cut peptides included in missed-cut (if $pepMissedCleavage==-1). Match is CROSS-ANALYSIS!
@@ -1294,7 +1294,7 @@ if ($normProtUsage) {
 ####> Printing data table<####
 ##############################
 open(FILESTAT,">>$fileStat") || die "Error while opening $fileStat";
-print FILESTAT "1/$numSteps Generating data files (4/4 Printing$referenceStrg dataset to file)";
+print FILESTAT "1/$numSteps Generating data files (4/4 Printing$referenceStrg dataset to file)\n";
 close FILESTAT;
 my $protValidity=($referenceMode eq 'NORM')? 0 : 1;
 my (%infiniteRatioProteins,%noSuperRatioProteins); # populated by &checkInfiniteRatios as globals (infinite ratio proteins are allowed in data table but stats are ignored)
@@ -3843,6 +3843,7 @@ sub generateReferenceProtFromQuantif { # globals: %promsPath,%quantifParameters,
 # TODO: Make clear choice for labeled quantif done with PEP_INTENSITY algo: treat as 100% Label-Free or mixed LF/Label ?????
 # TODO: Move label-free peptide matching check further downstream for compatibility with PTM quantif
 ####>Revision history<####
+# 2.14.1 [BUGFIX] Added forgotten newlines in progress status output (PP 16/02/20) 
 # 2.14.0 [FEATURE] Job split and parallel launch for Abundance (PP 07/02/20)
 # 2.13.1 [BUGFIX] in python command for LFQ (PP 28/01/20)
 # 2.13.0 [FEATURE] Compatible with DIA and Protein Abundance by myProMS (PP 27/12/19)
