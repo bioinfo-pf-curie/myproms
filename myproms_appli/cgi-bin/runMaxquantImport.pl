@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# runMaxquantImport.pl       2.0.3                                             #
+# runMaxquantImport.pl       2.0.8                                             #
 # Component of site myProMS Web Server                                         #
 # Authors: P. Poullet, G. Arras, S. Liva (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
@@ -53,22 +53,25 @@ use File::Copy qw(copy move); # Core module
 use File::Spec::Functions qw(splitpath); # Core module
 use promsConfig;
 use promsMod;
-#exit;
+use promsQuantif;
+# exit;
 
 #######################
 ####>Configuration<####
 #######################
 my %promsPath=&promsConfig::getServerInfo('no_user');
 my $MAX_DB=3;
-my ($experimentID,$jobID)=@ARGV;
+my ($experimentID,$jobID,$onCluster)=@ARGV;
 $experimentID=&promsMod::cleanNumericalParameters($experimentID);
 
 my $currentQuantifDir="$promsPath{tmp}/quantification/current";
 my $tmpFilesDir="$promsPath{tmp}/quantification/$jobID";
 my $fileStat="$tmpFilesDir/status_$experimentID.out";
-&addToFileStat("Started ".strftime("%H:%M:%S %d/%m/%Y",localtime)."\n");
+my $timeStamp=strftime("%H:%M:%S %d/%m/%Y",localtime);
+&addToFileStat("Started $timeStamp\n");
 my $detailFile="maxquant_import_$experimentID.log";
 open(LOG,">$tmpFilesDir/$detailFile") || die "Error while opening $tmpFilesDir/$detailFile";
+print LOG "Started $timeStamp";
 
 my ($userID,$projectID,@databankIDs,$excludeCON,$matchGroupType,$importProtQuantif,$archiveFile); # $paramGrIdx,
 my $contaminantDB=0; # default
@@ -1119,7 +1122,7 @@ $sthInsOE->finish;
 
 my $designStrg=($numLabelTypes==1)? 'Design' : 'Designs';
 my $stateStrg=($numStates==1)? 'State' : 'States';
-print LOG " -$numLabelTypes $designStrg and $numStates $stateStrg generated.\n";
+print LOG " -$numLabelTypes $designStrg and $numStates $stateStrg generated (".strftime("%H:%M:%S %d/%m/%Y",localtime).").\n";
 
 #$dbh->disconnect; close LOG; die "END"; ########## DEBUG
 
@@ -1127,7 +1130,7 @@ print LOG " -$numLabelTypes $designStrg and $numStates $stateStrg generated.\n";
 ####>Protein Quantification(s)<####
 ###################################
 # *** NOTE: Global(all samples together) intensities are not recorded: Not useful and require a single global design for all quantifs of all labeling types ***
-my (%quantifParamIDs,%requiredParams,@protQuantifList,%recordedParams);
+my (%quantifParamIDs,%requiredParams,@protQuantifList,%protIntQuantifs,%recordedParams);
 my ($MQMethID,$ratioQuantMethID);
 my $numProtQuantif=0;
 #my  $isobarCorrectedStrg=($labeling eq 'TMT')? 'not corrected' : 'corrected'; # for isobaric only. *******WARNING: Could be controlled by a parameter rather than by isobaric label type!!!********
@@ -1167,7 +1170,7 @@ if ($importProtQuantif) {
 			);
 			#my @noRatioParamCodes=('MQ_INT','MQ_IBAQ','MQ_LFQ','MQ_SC','PEPTIDES','RAZ_UNI_PEP','UNIQUE_PEP');
 			#my @ratioParamCodes=('RATIO_RAW','RATIO_NORM','RATIO_VAR','PEPTIDES','RAZ_UNI_PEP','UNIQUE_PEP','NUM_PEP_USED');
-			my @stateIntensParamCodes=($isobarModifInfo{$paramGr})? ('ISOBAR:MQ_INT') : ('MQ_INT','MQ_IBAQ','MQ_LFQ','MQ_SC');
+			my @stateIntensParamCodes=($isobarModifInfo{$paramGr})? ('ISOBAR:MQ_INT') : ('MQ_INT','MQ_IBAQ','MQ_LFQ','MQ_SC'); # MQ_INT must be 1st -> $measStrg
 			my @ratioParamCodes=('RATIO_RAW','RATIO','RATIO_VAR','NUM_PEP_USED');
 			my @allStatesParamCodes=('PEPTIDES','RAZ_UNI_PEP','UNIQUE_PEP');
 
@@ -1183,6 +1186,7 @@ if ($importProtQuantif) {
 				$sthInsQ->execute($MQMethID,$designID,$quantifName,'protein',$quantifAnnot) || die $sthInsQ->errstr();
 				my $quantifID=$dbh->last_insert_id(undef,undef,'QUANTIFICATION','ID_QUANTIFICATION');
 				push @protQuantifList,$quantifID;
+				$protIntQuantifs{$quantifID}=1;
 				$sthInsParQ->execute($peptideQuantifID{$paramGr},$quantifID) || die $sthInsParQ->errstr();
 				my %linkedAna;
 				my $targetPos=0;
@@ -1392,12 +1396,13 @@ $sthInsAQ->finish;
 $sthInsQ->finish;
 $dbh->commit;
 #$dbh->rollback; # DEBUG
+$dbh->disconnect; # Release connection
 
 print LOG " -",(scalar @designGroups)," peptide and $numProtQuantif protein Quantifications to be imported.\n";
 #print "Done.</FONT><BR>\n";
 
 
-#$dbh->disconnect; exit; # DEBUG
+#exit; # DEBUG
 
 ########################
 ####>msmms.txt file<####
@@ -1443,7 +1448,7 @@ if (-e "$tmpFilesDir/$msmsFile") {
 		close($fhavalue);
 		delete($anaInfo{$rawName}{'INFILE'})
 	}
-	print LOG " Done.\n";
+	print LOG " Done (".strftime("%H:%M:%S %d/%m/%Y",localtime).").\n";
 }
 
 
@@ -1453,12 +1458,17 @@ if (-e "$tmpFilesDir/$msmsFile") {
 ###> TODO : check DECOY + FDR + MAX_RANK for ANALYSIS
 &addToFileStat("3/$numSteps Reading evidence file\n");
 print LOG "3/$numSteps Reading evidence file...";
+
+###>Filter "Only identified by site"
+my %onlyBySite;
+&filterOnlyIdentifiedBySite(\%onlyBySite); # uses proteinGroups.txt
+
 open (EVIDENCE,"$tmpFilesDir/$evidenceFile")  || die "Unable to open $tmpFilesDir/$evidenceFile";
 #my @evidenceColumns=('Sequence','Length','Modifications','Modified sequence','Missed cleavages','Proteins','Leading proteins','Leading razor protein',
 #                     'Raw file','Charge','m/z','Mass','Mass Error [ppm]','Mass Error [Da]','Retention time','Calibrated retention time',
 #                     'PEP','MS/MS Count','MS/MS Scan Number','Score','Intensity','Peptide ID');
 my (%evidenceColNum,%pepInfo,%queryNum,%pepVmod);
-my (%evidence2peptide,%maxProtMatch,%actualSeq2seq,%protDbRank,%matchList,%bestScore,%bestQuery,%proteinRank); #,%bestScorebad
+my (%evidence2peptide,%maxProtMatch,%actualSeq2seq,%protDbRank,%matchList,%bestScore,%proteinRank); #,%bestScorebad ## ,%bestQuery
 my (%seq2posString,%peptideXIC,%isGhost,%featureCount);
 my %raw2UsedIdentifiers;
 my %skipPeptide; # in case Contaminants are excluded
@@ -1502,8 +1512,9 @@ while (my $line=<EVIDENCE>) {
 #	$skipThisPeptide=1;
 #}
 #my $protRank=1;
-my ($numTrueGood,$numCon)=(0,0);
+	my ($numTrueGood,$numCon)=(0,0);
 	foreach my $rawIdentifier (split(/;/,$proteinList)) {
+		last if $onlyBySite{$rawIdentifier};
 		my $identifier=$rawIdentifier; # default
 		$raw2UsedIdentifiers{$rawIdentifier}=$rawIdentifier; # default
 		if ($identifier =~ /REV__/) {
@@ -1513,15 +1524,15 @@ my ($numTrueGood,$numCon)=(0,0);
 		#elsif ($excludeCON && $identifier=~/CON__/) {
 		#	$matchCON=1;
 		#}	
-#elsif ($skipThisPeptide) {
-#	$matchGood=1;
-#}
-elsif ($excludeCON && $identifier=~/CON__/) {
-	$numCon++;
-	$matchGood=1;
-}
+		#elsif ($skipThisPeptide) {
+		#	$matchGood=1;
+		#}
+		elsif ($excludeCON && $identifier=~/CON__/) {
+			$numCon++;
+			$matchGood=1;
+		}
 		else {
-$numTrueGood++;
+			$numTrueGood++;
 			$matchGood=1;
 			my $tmpIdenfitier;
 			foreach my $dbID (@databankIDs) {
@@ -1621,18 +1632,19 @@ if ($excludeCON && $numCon && !$numTrueGood) { # matches only CON__
 	my $etString=($parameters[$evidenceColNum{uc('MS/MS Scan Number')}] =~ /\d/)? "et$parameters[$evidenceColNum{'CALIBRATED RETENTION TIME'}];sc$parameters[$evidenceColNum{'MS/MS SCAN NUMBER'}];":"et$parameters[$evidenceColNum{'CALIBRATED RETENTION TIME'}];";
 	$actualSeq2seq{$actualSequence}=$bearSequence;
 	#if ($matchGood) {#}
-	my $validStatus=0;
+	##my $validStatus=0;
+	(my $validStatus,$isGhost{$analysisID}{ $queryNum{$analysisID} })=($score)? (1,1) : (0,0);
 	if (!$bestScore{$analysisID} || !defined($bestScore{$analysisID}{$actualSequence}) || $bestScore{$analysisID}{$actualSequence} < $score) {
-		$validStatus=1 if $score;
-		if ($bestScore{$analysisID}{$actualSequence}) { # > 0 (also $score > 0) Set previous best as ghost!
-			my $prevBestQueryNum=$bestQuery{$analysisID}{$actualSequence};
-			$isGhost{$analysisID}{$prevBestQueryNum}=1;
-			$pepInfo{$analysisID}{$prevBestQueryNum}[12]=0; # validStatus
-		}
+		##$validStatus=1 if $score;
+		##if ($bestScore{$analysisID}{$actualSequence}) { # > 0 (also $score > 0) Set previous best as ghost!
+		##	my $prevBestQueryNum=$bestQuery{$analysisID}{$actualSequence};
+		##	$isGhost{$analysisID}{$prevBestQueryNum}=1;
+		##	$pepInfo{$analysisID}{$prevBestQueryNum}[12]=0; # validStatus
+		##}
 		$bestScore{$analysisID}{$actualSequence}=$score; # ranked by descending scores in file <= NOT TRUE (PP 25/10/19)
-		$bestQuery{$analysisID}{$actualSequence}=$queryNum{$analysisID};
+		##$bestQuery{$analysisID}{$actualSequence}=$queryNum{$analysisID};
 	}
-	$isGhost{$analysisID}{ $queryNum{$analysisID} }=1 unless $validStatus;
+	##$isGhost{$analysisID}{ $queryNum{$analysisID} }=1 unless $validStatus;
 	#$validStatus=1 if ($score && !$bestScore{$analysisID}{$actualSequence}); # if there is no score, then, it is a ghost peptide
 	@{$pepInfo{$analysisID}{ $queryNum{$analysisID} }}=($actualSequence,$bearSequence,$parameters[$evidenceColNum{uc('Length')}],$queryNum{$analysisID},$score,$missedCut,$massExp,$parameters[$evidenceColNum{uc('Mass')}],$parameters[$evidenceColNum{uc('m/z')}],$massErrorDa,$charge,$etString,$validStatus,$pepDataStrg); # ,$parameters[$evidenceColNum{uc('MS/MS Count')}]
 	@{$evidence2peptide{$parameters[$evidenceColNum{uc('id')}]}}=($analysisID,$queryNum{$analysisID},$actualSequence);
@@ -1734,6 +1746,9 @@ if ($excludeCON && $numCon && !$numTrueGood) { # matches only CON__
 }
 close EVIDENCE;
 
+####>Reconnectecting to DB<####
+$dbh=&promsConfig::dbConnect('no_user');
+
 ##>Update FDR info
 my $sthUpAna=$dbh->prepare("UPDATE ANALYSIS SET FALSE_DISCOVERY=? WHERE ID_ANALYSIS=?");
 foreach my $analysisID (keys %queryNum) { # %maxProtMatch
@@ -1749,7 +1764,7 @@ foreach my $analysisID (keys %queryNum) { # %maxProtMatch
 }
 $sthUpAna->finish;
 undef %queryNum;
-print LOG " Done.\n";
+print LOG " Done (".strftime("%H:%M:%S %d/%m/%Y",localtime).").\n";
 
 &addToFileStat("4/$numSteps Preprocessing protein list\n");
 print LOG "4/$numSteps Preprocessing protein list...";
@@ -1776,7 +1791,9 @@ while (my ($protID,$identifier,$maxVis)=$sthP->fetchrow_array) {
 }
 $sthP->finish;
 print LOG '/.';
+
 $dbh->do("DELETE FROM PROTEIN WHERE ID_PROJECT=$projectID AND IDENTIFIER IS NULL") || $dbh->errstr; # in case of error in previous process (rare!)
+$dbh->commit;
 #my $insProt=$dbh->prepare("INSERT INTO PROTEIN (ID_PROTEIN,ID_PROJECT) VALUES (?,$projectID)") || $dbh->errstr;
 ##>Counting new proteins
 my %newProteins;
@@ -1826,12 +1843,13 @@ foreach my $identifier (keys %matchList) {
 ##	}
 ##}
 
-print LOG " Done.\n";
+print LOG " Done (".strftime("%H:%M:%S %d/%m/%Y",localtime).").\n";
 
 &addToFileStat("5/$numSteps Scanning databank(s)\n");
 print LOG "5/$numSteps Scanning databank(s)...";
 my (%contMatchList,%protDes,%protMW,%protOrg,%protLength);
 my (@anaIDs)=sort{$a<=>$b} keys %bestScore;
+my @contextData = (-2, \@anaIDs, $onCluster);
 my $prevRefMatchList;
 my $dbRank=0;
 my $annotFromDB=10; # flag for &promsMod::getProInfo
@@ -1866,7 +1884,7 @@ foreach my $dbID (@databankIDs) {
 #print '.';
 	#my $prefix=($dbID==$contaminantDB)? 'CON__' : undef;
 	#&promsMod::getProtInfo('silent',$dbh,$dbID,\@anaIDs,\%protDes,\%protMW,\%protOrg,\%protLength,\%{$matchList{$dbRank}},undef,$prefix);
-	&promsMod::getProtInfo('quiet',$dbh,$dbID,\@anaIDs,\%protDes,\%protMW,\%protOrg,\%protLength,undef,$refMatchList,undef,$annotFromDB,$prefix) if scalar keys %{$refMatchList};
+	&promsMod::getProtInfo('quiet',$dbh,$dbID,\@contextData,\%protDes,\%protMW,\%protOrg,\%protLength,undef,$refMatchList,undef,$annotFromDB,$prefix) if scalar keys %{$refMatchList};
 	$prevRefMatchList=$refMatchList;
 #print '.';
 }
@@ -1876,8 +1894,9 @@ unless ($contaminantDB) {
 	}
 }
 undef %contMatchList;
-print LOG " Done.\n";
+print LOG " Done (".strftime("%H:%M:%S %d/%m/%Y",localtime).").\n";
 
+$dbh->disconnect; # Not needed for a while...
 
 ###> Compute Match Info based on analysis.fasta files
 &addToFileStat("6/$numSteps Processing peptide/protein match data\n");
@@ -1895,25 +1914,25 @@ foreach my $analysisID (@anaIDs) {
 				my $newIdentifier=$1;
 				if ($sequence && $maxProtMatch{$analysisID}{$identifier}) { # test
 					$sequenceList{$identifier}=$sequence;
-if (!$numMatches{$analysisID} || !$numMatches{$analysisID}{$identifier}) {	
-					foreach my $actualSequence (keys %{$maxProtMatch{$analysisID}{$identifier}}) {
-						my $pepSeq=$actualSeq2seq{$actualSequence};
-						#my ($seqBefore,$resEnd)=($sequence=~/(.*)$pepSeq(\w?)/);
-						if (!$numMatches{$analysisID}{$identifier}{$pepSeq}) { # !$numMatches{$analysisID} || !$numMatches{$analysisID}{$identifier} || 
-							while ($sequence=~/(\w?)$pepSeq(\w?)/g) { # potential multiple matches
-								my ($resBeg,$resEnd)=($1,$2);
-								my $startPos=$-[0] + 1;
-								my $endPos=$+[0];
-								if ($resBeg) {$startPos++;}
-								else {$resBeg='-';}
-								if ($resEnd) {$endPos--;}
-								else {$resEnd='-';}
-				#@{$matchInfos{$analysisID}{$identifier}{$actualSequence}{$startPos}}=($resBeg,$resEnd,$endPos);
-								@{$numMatches{$analysisID}{$identifier}{$pepSeq}{$startPos}}=($resBeg,$resEnd,$endPos);
+					if (!$numMatches{$analysisID} || !$numMatches{$analysisID}{$identifier}) {	
+						foreach my $actualSequence (keys %{$maxProtMatch{$analysisID}{$identifier}}) {
+							my $pepSeq=$actualSeq2seq{$actualSequence};
+							#my ($seqBefore,$resEnd)=($sequence=~/(.*)$pepSeq(\w?)/);
+							if (!$numMatches{$analysisID}{$identifier}{$pepSeq}) { # !$numMatches{$analysisID} || !$numMatches{$analysisID}{$identifier} || 
+								while ($sequence=~/(\w?)$pepSeq(\w?)/g) { # potential multiple matches
+									my ($resBeg,$resEnd)=($1,$2);
+									my $startPos=$-[0] + 1;
+									my $endPos=$+[0];
+									if ($resBeg) {$startPos++;}
+									else {$resBeg='-';}
+									if ($resEnd) {$endPos--;}
+									else {$resEnd='-';}
+						#@{$matchInfos{$analysisID}{$identifier}{$actualSequence}{$startPos}}=($resBeg,$resEnd,$endPos);
+									@{$numMatches{$analysisID}{$identifier}{$pepSeq}{$startPos}}=($resBeg,$resEnd,$endPos);
+								}
 							}
 						}
 					}
-}
 				}
 				$identifier=$newIdentifier;
 				$sequence='' if defined($identifier);
@@ -1932,35 +1951,35 @@ if (!$numMatches{$analysisID} || !$numMatches{$analysisID}{$identifier}) {
 
 		if ($sequence && $maxProtMatch{$analysisID}{$identifier}) {
 			$sequenceList{$identifier}=$sequence;
-if (!$numMatches{$analysisID} || !$numMatches{$analysisID}{$identifier}) {			
-			foreach my $actualSequence (keys %{$maxProtMatch{$analysisID}{$identifier}}) {
-				my $pepSeq=$actualSeq2seq{$actualSequence};
-				if (!$numMatches{$analysisID}{$identifier}{$pepSeq}) { # !$numMatches{$analysisID} || !$numMatches{$analysisID}{$identifier} || 
-					while ($sequence=~/(\w?)$pepSeq(\w?)/g) { # potential multiple matches
-						my ($resBeg,$resEnd)=($1,$2);
-						my $startPos=$-[0] + 1;
-						my $endPos=$+[0];
-						if ($resBeg) {$startPos++;}
-						else {$resBeg='-';}
-						if ($resEnd) {$endPos--;}
-						else {$resEnd='-';}
-						#@{$matchInfos{$analysisID}{$identifier}{$actualSequence}{$startPos}}=($resBeg,$resEnd,$endPos);
-						@{$numMatches{$analysisID}{$identifier}{$pepSeq}{$startPos}}=($resBeg,$resEnd,$endPos);
+			if (!$numMatches{$analysisID} || !$numMatches{$analysisID}{$identifier}) {			
+				foreach my $actualSequence (keys %{$maxProtMatch{$analysisID}{$identifier}}) {
+					my $pepSeq=$actualSeq2seq{$actualSequence};
+					if (!$numMatches{$analysisID}{$identifier}{$pepSeq}) { # !$numMatches{$analysisID} || !$numMatches{$analysisID}{$identifier} || 
+						while ($sequence=~/(\w?)$pepSeq(\w?)/g) { # potential multiple matches
+							my ($resBeg,$resEnd)=($1,$2);
+							my $startPos=$-[0] + 1;
+							my $endPos=$+[0];
+							if ($resBeg) {$startPos++;}
+							else {$resBeg='-';}
+							if ($resEnd) {$endPos--;}
+							else {$resEnd='-';}
+							#@{$matchInfos{$analysisID}{$identifier}{$actualSequence}{$startPos}}=($resBeg,$resEnd,$endPos);
+							@{$numMatches{$analysisID}{$identifier}{$pepSeq}{$startPos}}=($resBeg,$resEnd,$endPos);
+						}
 					}
 				}
 			}
-}
 		}
 		unlink "$promsPath{peptide}/proj_$projectID/ana_$analysisID/analysis.fasta"; # no longer needed
     }
 }
-print LOG " Done.\n";
+print LOG " Done (".strftime("%H:%M:%S %d/%m/%Y",localtime).").\n";
 #die "DEBUG";
 
 ###> Read peptide file to get context and be able to write MATCH_MULTI and MATCH_INFO pos,AA-1,AA+1
 ###> 2nd step : create a Design, Condition, Observation, etc.
 &addToFileStat("7/$numSteps Reading peptide file\n");
-print LOG "7/$numSteps Reading peptide file";
+print LOG "7/$numSteps Reading peptide file...";
 my (%peptideColNum,%pepProteins);
 open (PEPTIDE,"$tmpFilesDir/$peptideFile") || die "Unable to open $tmpFilesDir/$peptideFile";
 $counter=0;
@@ -1976,15 +1995,16 @@ while (my $line=<PEPTIDE>) {
 		}
 		next;
 	}
-next if $skipPeptide{$parameters[$evidenceColNum{uc('Sequence')}]};
+	next if $skipPeptide{$parameters[$evidenceColNum{uc('Sequence')}]};
 	#'Proteins'
 	#'Evidence IDs' --> Get the evidence that gave this peptide
 	my $rawRazorProtein=$parameters[$peptideColNum{'Leading razor protein'}];
 	$rawRazorProtein =~ s/REV__/DECOY_/;
 	my $razorProtein = $raw2UsedIdentifiers{$rawRazorProtein} || $rawRazorProtein;
 	foreach my $rawIdentifier ( split(/;/,$parameters[$peptideColNum{'Proteins'}]) ) { # Be careful : CON__ prefix stands for contaminants and REV__ prefix stands for decoy/reverse db
+		last if $onlyBySite{$rawIdentifier};
 		#my $matchGood=($rawIdentifier !~ /REV__/ && ($rawIdentifier !~ /CON__/ || !$excludeCON))? 1 : 0;
-my $matchGood=($rawIdentifier =~ /REV__/)? 0 : 1;
+		my $matchGood=($rawIdentifier =~ /REV__/)? 0 : 1;
 		$rawIdentifier =~ s/REV__/DECOY_/;
 		my $identifier=$raw2UsedIdentifiers{$rawIdentifier} || $rawIdentifier;
 		foreach my $evID (split(/;/,$parameters[$peptideColNum{'Evidence IDs'}])) {
@@ -2001,16 +2021,16 @@ my $matchGood=($rawIdentifier =~ /REV__/)? 0 : 1;
 			#	}
 			#	else {@{$numMatches{$analysisID}{$identifier}{$pepSeq}{0}}=('X','X',0);}
 			#}
-if ($identifier eq $razorProtein && $peptideColNum{'Start position'}) { # info available in file from v~1.5 only for $razorProtein
-	%{$numMatches{$analysisID}{$identifier}{$pepSeq}}=(); # reset in case initialized with fasta file
-	my $startPos=$parameters[$peptideColNum{'Start position'}];
-	my $endPos=($peptideColNum{'End position'})? $parameters[$peptideColNum{'End position'}] : $startPos + length($pepSeq)-1;
-	@{$numMatches{$analysisID}{$identifier}{$pepSeq}{$startPos}}=($parameters[$peptideColNum{'Amino acid before'}],$parameters[$peptideColNum{'Amino acid after'}],$endPos);
-}
-elsif (!$numMatches{$analysisID} || !$numMatches{$analysisID}{$identifier} || !$numMatches{$analysisID}{$identifier}{$pepSeq}) {
-	#@{$numMatches{$analysisID}{$identifier}{$pepSeq}{0}}=('X','X',0); # non-razor not mapped in fasta file
-	@{$numMatches{$analysisID}{$identifier}{$pepSeq}{1}}=('X','X',length($pepSeq)); # non-razor not mapped in fasta file
-}
+			if ($identifier eq $razorProtein && $peptideColNum{'Start position'}) { # info available in file from v~1.5 only for $razorProtein
+				%{$numMatches{$analysisID}{$identifier}{$pepSeq}}=(); # reset in case initialized with fasta file
+				my $startPos=$parameters[$peptideColNum{'Start position'}];
+				my $endPos=($peptideColNum{'End position'})? $parameters[$peptideColNum{'End position'}] : $startPos + length($pepSeq)-1;
+				@{$numMatches{$analysisID}{$identifier}{$pepSeq}{$startPos}}=($parameters[$peptideColNum{'Amino acid before'}],$parameters[$peptideColNum{'Amino acid after'}],$endPos);
+			}
+			elsif (!$numMatches{$analysisID} || !$numMatches{$analysisID}{$identifier} || !$numMatches{$analysisID}{$identifier}{$pepSeq}) {
+				#@{$numMatches{$analysisID}{$identifier}{$pepSeq}{0}}=('X','X',0); # non-razor not mapped in fasta file
+				@{$numMatches{$analysisID}{$identifier}{$pepSeq}{1}}=('X','X',length($pepSeq)); # non-razor not mapped in fasta file
+			}
 		}
 	}
 	if ($counter>10000) {
@@ -2020,7 +2040,10 @@ elsif (!$numMatches{$analysisID} || !$numMatches{$analysisID}{$identifier} || !$
 }
 close PEPTIDE;
 undef %evidence2peptide;
-print LOG " Done.\n";
+print LOG " Done (".strftime("%H:%M:%S %d/%m/%Y",localtime).").\n";
+
+####>Reconnectecting to DB<####
+$dbh=&promsConfig::dbConnect('no_user');
 
 print LOG "8/$numSteps Recording peptide data:\n"; # SLOW!!!!!!!!!!!!!
 ###> Store Peptide Information
@@ -2088,13 +2111,14 @@ foreach my $analysisID (sort{$a<=>$b} keys %pepInfo) {
 	#print '.100%' if $currPC < 100;
 	print LOG " Done.\n";
 	$dbh->commit;
+	sleep 3;
 }
 $sthInsPep->finish;
 $sthInsPM->finish;
 undef %isGhost;
 undef %featureCount;
 undef %skipPeptide;
-print LOG " Done.\n";
+print LOG " Done (".strftime("%H:%M:%S %d/%m/%Y",localtime).").\n";
 
 
 print LOG "9/$numSteps Recording protein data:\n";
@@ -2107,8 +2131,7 @@ my $sthAtt=$dbh->prepare("INSERT INTO PEPTIDE_PROTEIN_ATTRIB (ID_PEPTIDE,ID_PROT
 ##>MQ match groups
 my (%MQmatchGroup,%MQvisibility);
 if ($matchGroupType eq 'MaxQuant') {
-	#&createMaxQuantMatchGroups($protVisibility,\%MQmatchGroup,\%MQvisibility,\%projectProt,\%bestProtVis); # same for all analyses
-	&createMaxQuantMatchGroups($protVisibility,\%MQmatchGroup,\%MQvisibility,\%matchList,\%bestProtVis,\%raw2UsedIdentifiers); # same for all analyses
+	&createMaxQuantMatchGroups($protVisibility,\%MQmatchGroup,\%MQvisibility,\%matchList,\%bestProtVis,\%raw2UsedIdentifiers,\%onlyBySite); # same for all analyses
 }
 my @newAnaMapping;
 my %protTopMG; # prot is in top of a match group in project
@@ -2190,7 +2213,7 @@ foreach my $analysisID (sort{$a<=>$b} keys %maxProtMatch) {
 					my $validStatus=$pepIDs{$analysisID}{$actualSequence}{$peptideID};
 					#$end=$beg+length($pepSeq)-1; # Length recorded before $pepIDs{$analysisID}{$actualSequence}{$peptideID}
 					#my $isSpecific=($specificSequences{$analysisID}{$pepSeq})? 1 : undef;
-					if ($validStatus==0) { # for Ghost Peptides,
+					if ($validStatus==0) { # for Ghost peptides,
 						$sthAtt->execute($peptideID,$projectProt{$identifier},$analysisID,-abs($beg),-abs($end),$flAA_Nter.$flAA_Cter,$isSpecific) || die $sthAtt->errstr;
 					}
 					else {
@@ -2259,6 +2282,7 @@ foreach my $analysisID (sort{$a<=>$b} keys %maxProtMatch) {
 	
 	$dbh->commit;
 	print LOG " Done.\n";
+	sleep 3;
 }
 $sthInsProt->finish;
 $insAP->finish;
@@ -2270,7 +2294,7 @@ undef %actualSeq2seq;
 undef %protDbRank;
 undef %matchList;
 undef %bestScore;
-undef %bestQuery;
+##undef %bestQuery;
 undef %proteinRank;
 undef %bestProtVis;
 undef %newProteins;
@@ -2285,12 +2309,12 @@ undef %pepIDs;
 undef %maxProtScore;
 undef %MQmatchGroup;
 undef %MQvisibility;
-print LOG " Done.\n";
+print LOG " Done (".strftime("%H:%M:%S %d/%m/%Y",localtime).").\n";
 
 #$dbh->disconnect; exit; # DEBUG
 
 
-my $sthUpQuantif=$dbh->prepare("UPDATE QUANTIFICATION SET STATUS=1,UPDATE_DATE=NOW() WHERE ID_QUANTIFICATION=?");
+my $sthUpQuantif=$dbh->prepare("UPDATE QUANTIFICATION SET QUANTIF_ANNOT=CONCAT(QUANTIF_ANNOT,?),STATUS=1,UPDATE_DATE=NOW() WHERE ID_QUANTIFICATION=?");
 
 #######################################
 ####> Peptide quantification data <####
@@ -2298,169 +2322,168 @@ my $sthUpQuantif=$dbh->prepare("UPDATE QUANTIFICATION SET STATUS=1,UPDATE_DATE=N
 #$importPepQuantif=0; # DEBUG
 if ($importPepQuantif) {
 
-&addToFileStat("10/$numSteps Recording XIC data: ...\n");
-print LOG "10/$numSteps Recording peptide XIC data:\n";
-mkdir "$promsPath{quantification}/project_$projectID" unless -e "$promsPath{quantification}/project_$projectID";
-$anaCounter=0;
-#foreach my $pepQuantifID (values %ana2pepQuantification) {#}
-foreach my $paramGr (sort{$a<=>$b} keys %peptideQuantifID) {
-	my $pepQuantifID=$peptideQuantifID{$paramGr};
-	
-	###>Opening peptide quantif data file(s)<###
-	my %pepQuantHandle;
-	my $quantifDir="$promsPath{quantification}/project_$projectID/quanti_$pepQuantifID";
-	mkdir $quantifDir;
-	if ($labeling{$paramGr} eq 'FREE') {
-		open($pepQuantHandle{0},">$quantifDir/peptide_quantification.txt") || die $!;
-		print {$pepQuantHandle{0}} "ID_QUANTIF_PARAMETER\tID_PEPTIDE\tQUANTIF_VALUE\n";
-	}
-	else {
-		foreach my $colLabel (@{$labelList{$paramGr}}) {
-			my $targetPos=$label2targetPos{$paramGr}{$colLabel};
-			open($pepQuantHandle{$targetPos},">$quantifDir/peptide_quantification_$targetPos.txt") || die $!;
-			print {$pepQuantHandle{$targetPos}} "ID_QUANTIF_PARAMETER\tID_PEPTIDE\tQUANTIF_VALUE\n";
+	&addToFileStat("10/$numSteps Recording XIC data: ...\n");
+	print LOG "10/$numSteps Recording peptide XIC data:\n";
+	mkdir "$promsPath{quantification}/project_$projectID" unless -e "$promsPath{quantification}/project_$projectID";
+	$anaCounter=0;
+	#foreach my $pepQuantifID (values %ana2pepQuantification) {#}
+	foreach my $paramGr (sort{$a<=>$b} keys %peptideQuantifID) {
+		my $pepQuantifID=$peptideQuantifID{$paramGr};
+		
+		###>Opening peptide quantif data file(s)<###
+		my %pepQuantHandle;
+		my $quantifDir="$promsPath{quantification}/project_$projectID/quanti_$pepQuantifID";
+		mkdir $quantifDir;
+		if ($labeling{$paramGr} eq 'FREE') {
+			open($pepQuantHandle{0},">$quantifDir/peptide_quantification.txt") || die $!;
+			print {$pepQuantHandle{0}} "ID_QUANTIF_PARAMETER\tID_PEPTIDE\tQUANTIF_VALUE\n";
 		}
-	}
-	
-	##>List of analyses with peptide XIC data in current parameter group
-	my @anaList;
-	foreach my $anaName (@{$group2AnaName{$paramGr}}) {
-		my $analysisID=$anaInfo{$anaName}{'ID_ANALYSIS'};
-		push @anaList,$analysisID if $peptideXIC{$analysisID};
-	}
-	###>SILAC<###
-	if ($labeling{$paramGr} eq 'SILAC') {
-		my $sthAddVP=$dbh->prepare("INSERT INTO PEPTIDE (ID_ANALYSIS,PEP_SEQ,PEP_LENGTH,MISS_CUT,CHARGE,ELUTION_TIME,DATA,VALID_STATUS,QUERY_NUM,PEP_RANK) VALUES (?,?,?,?,?,?,?,0,0,0)");
-		my $sthAddVPM=$dbh->prepare("INSERT INTO PEPTIDE_MODIFICATION (ID_PEPTIDE,ID_MODIFICATION,MODIF_TYPE,POS_STRING,REF_POS_STRING) VALUES (?,?,'V',?,?)");
-		my $sthUpPep=$dbh->prepare("UPDATE PEPTIDE SET DATA=CONCAT(DATA,?) WHERE ID_PEPTIDE=?");
-		foreach my $analysisID (sort{$a<=>$b} @anaList) { # keys %peptideXIC
-			$anaCounter++;
-			$counter=0;
-			&addToFileStat("10/$numSteps Recording $labeling{$paramGr} XIC data: Analysis $anaCounter/$numAnalyses\n");
-			print LOG " -$anaNames{$analysisID} ($anaCounter/$numAnalyses) $labeling{$paramGr}...";
-			my $qsetNum=0;
-			foreach my $queryNum (sort{$a<=>$b} keys %{$peptideXIC{$analysisID}}) {
-				next unless $peptideXIC{$analysisID}{$queryNum}{'XIC'}; # no quantif data all
-				$qsetNum++;
-				foreach my $colLabel (@{$labelList{$paramGr}}) {
+		else {
+			foreach my $colLabel (@{$labelList{$paramGr}}) {
+				my $targetPos=$label2targetPos{$paramGr}{$colLabel};
+				open($pepQuantHandle{$targetPos},">$quantifDir/peptide_quantification_$targetPos.txt") || die $!;
+				print {$pepQuantHandle{$targetPos}} "ID_QUANTIF_PARAMETER\tID_PEPTIDE\tQUANTIF_VALUE\n";
+			}
+		}
+		
+		##>List of analyses with peptide XIC data in current parameter group
+		my @anaList;
+		foreach my $anaName (@{$group2AnaName{$paramGr}}) {
+			my $analysisID=$anaInfo{$anaName}{'ID_ANALYSIS'};
+			push @anaList,$analysisID if $peptideXIC{$analysisID};
+		}
+		###>SILAC<###
+		if ($labeling{$paramGr} eq 'SILAC') {
+			my $sthAddVP=$dbh->prepare("INSERT INTO PEPTIDE (ID_ANALYSIS,PEP_SEQ,PEP_LENGTH,MISS_CUT,CHARGE,ELUTION_TIME,DATA,VALID_STATUS,QUERY_NUM,PEP_RANK) VALUES (?,?,?,?,?,?,?,0,0,0)");
+			my $sthAddVPM=$dbh->prepare("INSERT INTO PEPTIDE_MODIFICATION (ID_PEPTIDE,ID_MODIFICATION,MODIF_TYPE,POS_STRING,REF_POS_STRING) VALUES (?,?,'V',?,?)");
+			my $sthUpPep=$dbh->prepare("UPDATE PEPTIDE SET DATA=CONCAT(DATA,?) WHERE ID_PEPTIDE=?");
+			foreach my $analysisID (sort{$a<=>$b} @anaList) { # keys %peptideXIC
+				$anaCounter++;
+				$counter=0;
+				&addToFileStat("10/$numSteps Recording $labeling{$paramGr} XIC data: Analysis $anaCounter/$numAnalyses\n");
+				print LOG " -$anaNames{$analysisID} ($anaCounter/$numAnalyses) $labeling{$paramGr}...";
+				my $qsetNum=0;
+				foreach my $queryNum (sort{$a<=>$b} keys %{$peptideXIC{$analysisID}}) {
+					next unless $peptideXIC{$analysisID}{$queryNum}{'XIC'}; # no quantif data all
+					$qsetNum++;
+					foreach my $colLabel (@{$labelList{$paramGr}}) {
+						$counter++;
+						if ($counter > 500) {
+							print LOG '.';
+							$counter=0;
+						}
+						next unless $peptideXIC{$analysisID}{$queryNum}{'XIC'}{$colLabel};
+						my $targetPos=$label2targetPos{$paramGr}{$colLabel};
+						if ($isotopeLabelInfo{$paramGr} && $isotopeLabelInfo{$paramGr}{$colLabel} && (!$peptideXIC{$analysisID}{$queryNum}{'TRUE_PEP_LABEL'} || $peptideXIC{$analysisID}{$queryNum}{'TRUE_PEP_LABEL'} ne $colLabel) ) {
+							#my $pepID=$peptideXIC{$analysisID}{$queryNum}{'ID_PEPTIDE'};
+							my ($actualSequence,@data)=@{$pepInfo{$analysisID}{$queryNum}}; # @data=(pepSeq,Length,$anaID,$score,$missCut,$massExp,$Mass,$mz,$massError,$charge,$et,$vamidStatus,$data,$specCount)
+							my $pepSeq=$data[0];
+							###> Create a Ghost Peptide
+							my $isSpecific=($specificSequences{$analysisID}{$pepSeq})? 1 : undef;
+							$sthAddVP->execute($analysisID,$pepSeq,$data[1],$data[4],$data[9],$data[10],"QSET=$qsetNum");
+							my $vpPepID=$dbh->last_insert_id(undef,undef,'PEPTIDE','ID_PEPTIDE');
+							###> Add modifications
+							my $posString='';
+							###> Label ones
+							foreach my $modID (keys %{$isotopeLabelInfo{$paramGr}{$colLabel}}) {
+								#if ($isotopeLabelInfo{$paramGr}{$colLabel}{$modID}{'*'}) {
+								#	$posString='*';
+								#}
+								#elsif ($isotopeLabelInfo{$paramGr}{$colLabel}{$modID}{'='}) {
+								#	$posString='=';
+								#}
+								#else {
+								#	my @aas=split(//,$pepSeq);
+								#	my @pos;
+								#	for (my $i = 0 ; $i <= $#aas ; $i++) {
+								#		push @pos,$i+1 if $isotopeLabelInfo{$paramGr}{$colLabel}{$modID}{$aas[$i]}; # or $labelModifSpecificity{$paramGr}{$modID}{$aas[$i]}
+								#	}
+								#	next unless scalar @pos; # eg "Arg10;Lys8" only 1 of the 2 modifs will match!
+								#	$posString=join('.',@pos);
+								#}
+								my $posString=&getModifPosString($pepSeq,$isotopeLabelInfo{$paramGr}{$colLabel}{$modID});
+								next unless $posString; # eg "Arg10;Lys8" only 1 of the 2 modifs will match!
+								$sthAddVPM->execute($vpPepID,$modID,$posString,undef);
+							}
+							###> Regular ones (vmod like oxidation, acetylation,...)
+							foreach my $vmod (keys %{$pepVmod{$analysisID}{$queryNum}}) {
+								$sthAddVPM->execute($vpPepID,$anaVmods{$analysisID}{$vmod},$seq2posString{$actualSequence}{$vmod},$pepVmod{$analysisID}{$queryNum}{$vmod}[0]); # use same site probability as validated peptide (good, bad?)
+							}
+							###> Create a link to PEPTIDE_PROTEIN_ATTRIB with this ghost peptide
+							foreach my $protID (keys %{$ppa{$peptideXIC{$analysisID}{$queryNum}{'ID_PEPTIDE'}}}) {
+								my ($beg,$end,$matchInfo)=@{$ppa{$peptideXIC{$analysisID}{$queryNum}{'ID_PEPTIDE'}}{$protID}};
+								$sthAtt->execute($vpPepID,$protID,$analysisID,-abs($beg),-abs($end),$matchInfo,$isSpecific);
+							}
+							###> Add quantification for this specific Ghost peptide
+							print {$pepQuantHandle{$targetPos}} "$areaParamID{$paramGr}\t$vpPepID\t$peptideXIC{$analysisID}{$queryNum}{XIC}{$colLabel}\n";
+							#print "$quantiSILAC{$analysisID},$areaParamID,$vpPepID,$peptideXIC{$analysisID}{$queryNum}{\"XIC $colLabel\"},$labelInfos{$analysisID}{$colLabel}{'TARGET_POS'}<BR>\n";
+						}
+						else { # No modification ID (Light label) or Label used by true peptide
+							#print "$quantiSILAC{$analysisID},$areaParamID,$peptideXIC{$analysisID}{$queryNum}{'ID_PEPTIDE'},$peptideXIC{$analysisID}{$queryNum}{\"XIC $colLabel\"},$labelInfos{$analysisID}{$colLabel}{'TARGET_POS'}<BR>";
+							print {$pepQuantHandle{$targetPos}} "$areaParamID{$paramGr}\t$peptideXIC{$analysisID}{$queryNum}{ID_PEPTIDE}\t$peptideXIC{$analysisID}{$queryNum}{XIC}{$colLabel}\n";
+							#my ($data)=$dbh->selectrow_array("SELECT DATA FROM PEPTIDE WHERE ID_PEPTIDE=$peptideXIC{$analysisID}{$queryNum}{'ID_PEPTIDE'}");
+							#$data.="##QSET=$qsetNum";
+							$sthUpPep->execute("##QSET=$qsetNum",$peptideXIC{$analysisID}{$queryNum}{'ID_PEPTIDE'});
+						}
+					}
+				}
+				$dbh->commit;
+				print LOG " Done.\n";
+			}
+			$sthAddVP->finish;
+			$sthAddVPM->finish;
+			$sthUpPep->finish;
+		}
+		###>iTRAQ or TMT <###
+		elsif ($isobarModifInfo{$paramGr}) { # $labeling=~/ITRAQ|TMT/
+			foreach my $analysisID (sort{$a<=>$b} @anaList) { # keys %peptideXIC
+				$anaCounter++;
+				$counter=0;
+				&addToFileStat("10/$numSteps Recording $labeling{$paramGr} XIC data: Analysis $anaCounter/$numAnalyses\n");
+				print LOG " -$anaNames{$analysisID} ($anaCounter/$numAnalyses) $labeling{$paramGr}...";
+				foreach my $queryNum (sort{$a<=>$b} keys %{$peptideXIC{$analysisID}}) {
+					next unless $peptideXIC{$analysisID}{$queryNum}{'XIC'}; # no quantif data all
+					foreach my $repIdx (@{$labelList{$paramGr}}) { #(sort{$a<=>$b} keys %{$peptideXIC{$analysisID}{$queryNum}{XIC}}) <<<<<<<<<<<<<<<
+						next unless $peptideXIC{$analysisID}{$queryNum}{'XIC'}{$repIdx}; # skip 0/undef values
+						$counter++;
+						if ($counter > 500) {
+							print LOG '.';
+							$counter=0;
+						}
+						my $targetPos=$repIdx+1;
+						print {$pepQuantHandle{$targetPos}} "$intensityParamID{$paramGr}\t$peptideXIC{$analysisID}{$queryNum}{ID_PEPTIDE}\t$peptideXIC{$analysisID}{$queryNum}{XIC}{$repIdx}\n";
+					}
+				}
+				print LOG " Done.\n";
+			}
+		}
+		###>Label-free<###
+		elsif ($labeling{$paramGr} eq 'FREE') {
+			foreach my $analysisID (sort{$a<=>$b} @anaList) { # keys %peptideXIC
+				$anaCounter++;
+				$counter=0;
+				&addToFileStat("10/$numSteps Recording Label-free XIC data: Analysis $anaCounter/$numAnalyses\n");
+				print LOG " -$anaNames{$analysisID} ($anaCounter/$numAnalyses) $labeling{$paramGr}...";
+				foreach my $queryNum (sort{$a<=>$b} keys %{$peptideXIC{$analysisID}}) {
 					$counter++;
 					if ($counter > 500) {
 						print LOG '.';
 						$counter=0;
 					}
-					next unless $peptideXIC{$analysisID}{$queryNum}{'XIC'}{$colLabel};
-					my $targetPos=$label2targetPos{$paramGr}{$colLabel};
-					if ($isotopeLabelInfo{$paramGr} && $isotopeLabelInfo{$paramGr}{$colLabel} && (!$peptideXIC{$analysisID}{$queryNum}{'TRUE_PEP_LABEL'} || $peptideXIC{$analysisID}{$queryNum}{'TRUE_PEP_LABEL'} ne $colLabel) ) {
-						#my $pepID=$peptideXIC{$analysisID}{$queryNum}{'ID_PEPTIDE'};
-						my ($actualSequence,@data)=@{$pepInfo{$analysisID}{$queryNum}}; # @data=(pepSeq,Length,$anaID,$score,$missCut,$massExp,$Mass,$mz,$massError,$charge,$et,$vamidStatus,$data,$specCount)
-						my $pepSeq=$data[0];
-						###> Create a Ghost Peptide
-						my $isSpecific=($specificSequences{$analysisID}{$pepSeq})? 1 : undef;
-						$sthAddVP->execute($analysisID,$pepSeq,$data[1],$data[4],$data[9],$data[10],"QSET=$qsetNum");
-						my $vpPepID=$dbh->last_insert_id(undef,undef,'PEPTIDE','ID_PEPTIDE');
-						###> Add modifications
-						my $posString='';
-						###> Label ones
-						foreach my $modID (keys %{$isotopeLabelInfo{$paramGr}{$colLabel}}) {
-							#if ($isotopeLabelInfo{$paramGr}{$colLabel}{$modID}{'*'}) {
-							#	$posString='*';
-							#}
-							#elsif ($isotopeLabelInfo{$paramGr}{$colLabel}{$modID}{'='}) {
-							#	$posString='=';
-							#}
-							#else {
-							#	my @aas=split(//,$pepSeq);
-							#	my @pos;
-							#	for (my $i = 0 ; $i <= $#aas ; $i++) {
-							#		push @pos,$i+1 if $isotopeLabelInfo{$paramGr}{$colLabel}{$modID}{$aas[$i]}; # or $labelModifSpecificity{$paramGr}{$modID}{$aas[$i]}
-							#	}
-							#	next unless scalar @pos; # eg "Arg10;Lys8" only 1 of the 2 modifs will match!
-							#	$posString=join('.',@pos);
-							#}
-							my $posString=&getModifPosString($pepSeq,$isotopeLabelInfo{$paramGr}{$colLabel}{$modID});
-							next unless $posString; # eg "Arg10;Lys8" only 1 of the 2 modifs will match!
-							$sthAddVPM->execute($vpPepID,$modID,$posString,undef);
-						}
-						###> Regular ones (vmod like oxidation, acetylation,...)
-						foreach my $vmod (keys %{$pepVmod{$analysisID}{$queryNum}}) {
-							$sthAddVPM->execute($vpPepID,$anaVmods{$analysisID}{$vmod},$seq2posString{$actualSequence}{$vmod},$pepVmod{$analysisID}{$queryNum}{$vmod}[0]); # use same site probability as validated peptide (good, bad?)
-						}
-						###> Create a link to PEPTIDE_PROTEIN_ATTRIB with this ghost peptide
-						foreach my $protID (keys %{$ppa{$peptideXIC{$analysisID}{$queryNum}{'ID_PEPTIDE'}}}) {
-							my ($beg,$end,$matchInfo)=@{$ppa{$peptideXIC{$analysisID}{$queryNum}{'ID_PEPTIDE'}}{$protID}};
-							$sthAtt->execute($vpPepID,$protID,$analysisID,-abs($beg),-abs($end),$matchInfo,$isSpecific);
-						}
-						###> Add quantification for this specific Ghost peptide
-						print {$pepQuantHandle{$targetPos}} "$areaParamID{$paramGr}\t$vpPepID\t$peptideXIC{$analysisID}{$queryNum}{XIC}{$colLabel}\n";
-						#print "$quantiSILAC{$analysisID},$areaParamID,$vpPepID,$peptideXIC{$analysisID}{$queryNum}{\"XIC $colLabel\"},$labelInfos{$analysisID}{$colLabel}{'TARGET_POS'}<BR>\n";
-					}
-					else { # No modification ID (Light label) or Label used by true peptide
-						#print "$quantiSILAC{$analysisID},$areaParamID,$peptideXIC{$analysisID}{$queryNum}{'ID_PEPTIDE'},$peptideXIC{$analysisID}{$queryNum}{\"XIC $colLabel\"},$labelInfos{$analysisID}{$colLabel}{'TARGET_POS'}<BR>";
-						print {$pepQuantHandle{$targetPos}} "$areaParamID{$paramGr}\t$peptideXIC{$analysisID}{$queryNum}{ID_PEPTIDE}\t$peptideXIC{$analysisID}{$queryNum}{XIC}{$colLabel}\n";
-						#my ($data)=$dbh->selectrow_array("SELECT DATA FROM PEPTIDE WHERE ID_PEPTIDE=$peptideXIC{$analysisID}{$queryNum}{'ID_PEPTIDE'}");
-						#$data.="##QSET=$qsetNum";
-						$sthUpPep->execute("##QSET=$qsetNum",$peptideXIC{$analysisID}{$queryNum}{'ID_PEPTIDE'});
-					}
-
+					print {$pepQuantHandle{0}} "$areaParamID{$paramGr}\t$peptideXIC{$analysisID}{$queryNum}{ID_PEPTIDE}\t$peptideXIC{$analysisID}{$queryNum}{XIC}{NONE}\n" if $peptideXIC{$analysisID}{$queryNum}{'XIC'};
 				}
+				print LOG " Done.\n";
 			}
-			#$dbh->commit;
-			print LOG " Done.\n";
 		}
-		$sthAddVP->finish;
-		$sthAddVPM->finish;
-		$sthUpPep->finish;
-	}
-	###>iTRAQ or TMT <###
-	elsif ($isobarModifInfo{$paramGr}) { # $labeling=~/ITRAQ|TMT/
-		foreach my $analysisID (sort{$a<=>$b} @anaList) { # keys %peptideXIC
-			$anaCounter++;
-			$counter=0;
-			&addToFileStat("10/$numSteps Recording $labeling{$paramGr} XIC data: Analysis $anaCounter/$numAnalyses\n");
-			print LOG " -$anaNames{$analysisID} ($anaCounter/$numAnalyses) $labeling{$paramGr}...";
-			foreach my $queryNum (sort{$a<=>$b} keys %{$peptideXIC{$analysisID}}) {
-				next unless $peptideXIC{$analysisID}{$queryNum}{'XIC'}; # no quantif data all
-				foreach my $repIdx (@{$labelList{$paramGr}}) { #(sort{$a<=>$b} keys %{$peptideXIC{$analysisID}{$queryNum}{XIC}}) <<<<<<<<<<<<<<<
-					next unless $peptideXIC{$analysisID}{$queryNum}{'XIC'}{$repIdx}; # skip 0/undef values
-					$counter++;
-					if ($counter > 500) {
-						print LOG '.';
-						$counter=0;
-					}
-					my $targetPos=$repIdx+1;
-					print {$pepQuantHandle{$targetPos}} "$intensityParamID{$paramGr}\t$peptideXIC{$analysisID}{$queryNum}{ID_PEPTIDE}\t$peptideXIC{$analysisID}{$queryNum}{XIC}{$repIdx}\n";
-				}
-			}
-			print LOG " Done.\n";
-		}
-	}
-	###>Label-free<###
-	elsif ($labeling{$paramGr} eq 'FREE') {
-		foreach my $analysisID (sort{$a<=>$b} @anaList) { # keys %peptideXIC
-			$anaCounter++;
-			$counter=0;
-			&addToFileStat("10/$numSteps Recording Label-free XIC data: Analysis $anaCounter/$numAnalyses\n");
-			print LOG " -$anaNames{$analysisID} ($anaCounter/$numAnalyses) $labeling{$paramGr}...";
-			foreach my $queryNum (sort{$a<=>$b} keys %{$peptideXIC{$analysisID}}) {
-				$counter++;
-				if ($counter > 500) {
-					print LOG '.';
-					$counter=0;
-				}
-				print {$pepQuantHandle{0}} "$areaParamID{$paramGr}\t$peptideXIC{$analysisID}{$queryNum}{ID_PEPTIDE}\t$peptideXIC{$analysisID}{$queryNum}{XIC}{NONE}\n" if $peptideXIC{$analysisID}{$queryNum}{'XIC'};
-			}
-			print LOG " Done.\n";
-		}
-	}
 
-	foreach my $targetPos (keys %pepQuantHandle) {close $pepQuantHandle{$targetPos};}
+		foreach my $targetPos (keys %pepQuantHandle) {close $pepQuantHandle{$targetPos};}
 
-	$sthUpQuantif->execute($pepQuantifID);
-	
-	$dbh->commit;
+		$sthUpQuantif->execute('',$pepQuantifID);
+		
+		$dbh->commit;
 
-}
-print LOG " Done.\n";
+	}
+	print LOG " Done (".strftime("%H:%M:%S %d/%m/%Y",localtime).").\n";
 
 } # END of $importPepQuantif
 
@@ -2481,10 +2504,18 @@ if ($importProtQuantif) {
 	&addToFileStat("11/$numSteps Importing protein quantification data\n");
 	print LOG "11/$numSteps Importing protein quantification data from proteinGroups file...";
 	my $pepTotStg=($pepUsed eq 'razor')? 'Peptide counts (razor+unique)' : ($pepUsed eq 'unique')? 'Peptide counts (unique)' : 'Peptide counts (all)';
-	my $sthInsProtQ=$dbh->prepare("INSERT INTO PROTEIN_QUANTIFICATION (ID_PROTEIN,ID_QUANTIFICATION,ID_QUANTIF_PARAMETER,QUANTIF_VALUE,TARGET_POS) VALUES (?,?,?,?,?)");
+	
+	#my $sthInsProtQ=$dbh->prepare("INSERT INTO PROTEIN_QUANTIFICATION (ID_PROTEIN,ID_QUANTIFICATION,ID_QUANTIF_PARAMETER,QUANTIF_VALUE,TARGET_POS) VALUES (?,?,?,?,?)");
+	my (%dbhLite,%sthInsProtQ);
+	foreach my $quantifID (@protQuantifList) {
+		my $quantifDir="$promsPath{quantification}/project_$projectID/quanti_$quantifID";
+		$dbhLite{$quantifID}=&promsQuantif::dbCreateProteinQuantification($quantifID,$quantifDir);
+		$sthInsProtQ{$quantifID}=$dbhLite{$quantifID}->prepare("INSERT INTO PROTEIN_QUANTIFICATION (ID_PROTEIN,ID_QUANTIF_PARAMETER,QUANTIF_VALUE,TARGET_POS) VALUES (?,?,?,?)");
+	}
+	
 	open (PROTEIN,"$tmpFilesDir/$proteinGroupsFile") || die "Unable to open $tmpFilesDir/$proteinGroupsFile";
 
-	my %proteinColNum;
+	my (%proteinColNum,%usedQuantifParams);
 	$counter=0;
 	while (my $line=<PROTEIN>) {
 		$line=~s/\s+$//; # chomp is not enough <- Windows
@@ -2506,9 +2537,10 @@ if ($importProtQuantif) {
 		my @pepTotal=split(/;/,$parameters[$proteinColNum{$pepTotStg}]);
 		my @identifiers; #=split(/;/,$parameters[$proteinColNum{'Majority protein IDs'}]); # 'Protein IDs'
 		foreach my $rawIdentifier (split(/;/,$parameters[$proteinColNum{'Majority protein IDs'}])) {
+			last if $onlyBySite{$rawIdentifier};
 			push @identifiers,$raw2UsedIdentifiers{$rawIdentifier} || $rawIdentifier;
 		}
-		next unless $projectProt{$identifiers[0]}; # Skip "dirty" lines... (PP 10/11/16)
+		next if (!$identifiers[0] || !$projectProt{$identifiers[0]}); # Skip "Only identified by site" & "dirty" lines... (PP 10/11/16)
 		my %selProtFromMQgroup;
 		$selProtFromMQgroup{$projectProt{$identifiers[0]}}=$pepTotal[0] if $protTopMG{$identifiers[0]}; # must be top of a MG in >= 1 MQ ana (bestVis=2) Should be always true for this identifier # if $projectProt{$identifiers[0]};
 		for (my $i=1; $i<=$#identifiers; $i++){
@@ -2518,7 +2550,7 @@ if ($importProtQuantif) {
 		foreach my $paramText (keys %recordedParams) {  # %{$designInfo{'Quantification'}}
 			next unless $proteinColNum{$paramText};
 			my $ncol = $proteinColNum{$paramText};
-next unless $ncol>=0; # ?
+			next unless $ncol>=0; # ?
 			$parameters[$ncol]=~s/;.+//; # Global 'Peptide counts xxx' column ('X;Y;Z;..') is used when no design. Only 1st value is kept (PP 08/11/16)
 			next if (!$parameters[$ncol] || $parameters[$ncol] eq 'NaN' || $parameters[$ncol] == 0); # avoid to store 0 values in myProMS db
 			foreach my $refQuantif (@{$recordedParams{$paramText}}) {
@@ -2540,8 +2572,10 @@ next unless $ncol>=0; # ?
 				next unless $paramOK;
 				my $usedTargetPos=$targetPos || undef; # 0 -> undef
 				foreach my $protID (keys %selProtFromMQgroup) {
-					$sthInsProtQ->execute($protID,$qID,$quantifParamIDs{$qCode},$parameters[$ncol],$usedTargetPos);
+					#$sthInsProtQ->execute($protID,$qID,$quantifParamIDs{$qCode},$parameters[$ncol],$usedTargetPos);
+					$sthInsProtQ{$qID}->execute($protID,$quantifParamIDs{$qCode},$parameters[$ncol],$usedTargetPos);
 				}
+				$usedQuantifParams{$qID}{$qCode}=1 if $protIntQuantifs{$qID}; # to record in quantifAnnot
 			}
 		}
 
@@ -2552,13 +2586,27 @@ next unless $ncol>=0; # ?
 		}
 	}
 	close PROTEIN;
-	$sthInsProtQ->finish;
+	#$sthInsProtQ->finish;
 	
 	foreach my $quantifID (@protQuantifList) {
-		$sthUpQuantif->execute($quantifID);
+		$sthInsProtQ{$quantifID}->finish;
+		$dbhLite{$quantifID}->commit;
+		$dbhLite{$quantifID}->disconnect;
+
+		#>Recording measures used<#
+		my $measStrg='';
+		if ($usedQuantifParams{$quantifID}) {
+			foreach my $paramCode ('MQ_INT','MQ_IBAQ','MQ_LFQ','MQ_SC') {
+				next unless $usedQuantifParams{$quantifID}{$paramCode};
+				$measStrg.=';' if $measStrg;
+				$measStrg.=$paramCode;
+			}
+			$measStrg='::ABUND_MEASURES='.$measStrg if $measStrg;
+		}
+		$sthUpQuantif->execute($measStrg,$quantifID); # measStrg='' if RATIO
 	}
 	$dbh->commit;
-	print LOG " Done.\n";
+	print LOG " Done (".strftime("%H:%M:%S %d/%m/%Y",localtime).").\n";
 
 }
 $sthUpQuantif->finish;
@@ -2585,7 +2633,7 @@ foreach my $quantifID (sort{$a<=>$b} values %peptideQuantifID,@protQuantifList) 
 	}
 	$firstQuantifID=$quantifID unless $firstQuantifID;
 }
-print LOG " Done.\n";
+print LOG " Done (".strftime("%H:%M:%S %d/%m/%Y",localtime).").\n";
 close LOG;
 move("$tmpFilesDir/$detailFile","$promsPath{quantification}/project_$projectID/quanti_$firstQuantifID/$detailFile");
 #sleep 2;
@@ -2629,6 +2677,33 @@ sub getModifPosString {
 	return join('.',(@posEnds,sort{$a<=>$b} @posRes));
 }
 
+##########################################
+####<Filter "Only identified by site">####
+##########################################
+sub filterOnlyIdentifiedBySite {
+	my ($refOnlyBySite)=@_;
+	open (PROTEIN,"$tmpFilesDir/$proteinGroupsFile") || die "Unable to open $tmpFilesDir/$proteinGroupsFile";
+	my ($allProtColumnIdx,$onlyBySiteColumnIdx)=(1,0);
+	while (my $line=<PROTEIN>) {
+		my @parameters=split(/ *\t */,$line); # remove starting/trailing spaces
+		if ($.==1) { # 1st line of the file
+			my $ncol=0;
+			foreach my $colName (@parameters) {
+				if ($colName eq 'Proteins IDs') {$allProtColumnIdx=$ncol;} # all proteins in match group
+				elsif ($colName eq 'Only identified by site') {$onlyBySiteColumnIdx=$ncol;}
+				$ncol++;
+			}
+			next;
+		}
+		last if !$onlyBySiteColumnIdx;
+		next unless $parameters[$onlyBySiteColumnIdx]; # Fully identified
+		foreach my $rawIdentifier (split(/;/,$parameters[$allProtColumnIdx])) {
+			$refOnlyBySite->{$rawIdentifier}=1;
+		}
+	}
+	close PROTEIN;
+}
+
 ################################
 ####<Generates Match Groups>####
 ################################
@@ -2636,7 +2711,6 @@ sub createMatchGroups {
 	my ($analysisID,$protVisibility,$refBestProtVis,$refMaxScore,$refMaxProtMatch,$refProteinRank)=@_;
 	my (%matchGroup,%visibility);
 	my $numGroup=0;
-#print "$analysisID\n";
 	my @sortedIdentifiers=(sort{scalar (keys %{$refMaxProtMatch->{$analysisID}{$b}})<=>scalar (keys %{$refMaxProtMatch->{$analysisID}{$a}}) || $refMaxScore->{$analysisID}{$b}<=>$refMaxScore->{$analysisID}{$a} || $refProteinRank->{$a}<=>$refProteinRank->{$b} || $a cmp $b} keys %{$refMaxProtMatch->{$analysisID}});
 	my $counter=0;
 	foreach my $i (0..$#sortedIdentifiers) {
@@ -2644,7 +2718,7 @@ sub createMatchGroups {
 		$matchGroup{$sortedIdentifiers[$i]}=++$numGroup;
         $visibility{$sortedIdentifiers[$i]}=2; # Reference protein
 		$refBestProtVis->{$sortedIdentifiers[$i]}=2; # update bestVis
-#next; # SKIP grouping!!!
+	#next; # SKIP grouping!!!
 		foreach my $j ($i+1..$#sortedIdentifiers) {
            next if $matchGroup{$sortedIdentifiers[$j]}; # already assigned to a match group
 			##<Comparing peptide contents of identifier#1 and identifier#2>## All peptides must match!
@@ -2671,8 +2745,8 @@ sub createMatchGroups {
 	return(\%matchGroup,\%visibility);
 }
 sub createMaxQuantMatchGroups {
-	my ($protVisibility,$refMQmatchGroup,$refMQvisibility,$refmatchList,$refBestProtVis,$refRaw2UsedIdentifiers)=@_;
-	print "&nbsp;-Applying MaxQuant match group rules...";
+	my ($protVisibility,$refMQmatchGroup,$refMQvisibility,$refmatchList,$refBestProtVis,$refRaw2UsedIdentifiers,$refOnlyBySite)=@_;
+	print LOG "&nbsp;-Applying MaxQuant match group rules...";
 	open (PROTEIN,"$tmpFilesDir/$proteinGroupsFile") || die "Unable to open $tmpFilesDir/$proteinGroupsFile";
 	my $counter=0;
 	my $mgNum=0;
@@ -2682,40 +2756,41 @@ sub createMaxQuantMatchGroups {
 		if ($.==1) { # 1st line of the file
 			my $ncol=0;
 			foreach my $colName (@parameters) {
-				if ($colName eq 'Proteins IDs') {$allProtColumnIdx=$ncol;}
-				elsif ($colName eq 'Majority protein IDs') {$topProtColumnIdx=$ncol;}
+				if ($colName eq 'Proteins IDs') {$allProtColumnIdx=$ncol;} # all proteins in match group
+				elsif ($colName eq 'Majority protein IDs') {$topProtColumnIdx=$ncol;} # most abundant proteins in match group (contain half of MG peptides)
 				$ncol++;
 			}
 			next;
 		}
 		#my @topIdentifiers=split(/;/,$parameters[$topProtColumnIdx]);
-my $topIdentifier;
+		my $topIdentifier;
 		foreach my $rawIdentifier (split(/;/,$parameters[$topProtColumnIdx])) {
+			last if $refOnlyBySite->{$rawIdentifier}; # skip "Only identified by site"
 			next if $rawIdentifier =~/REV__/;
 			#$rawIdentifier =~ s/REV__/DECOY_/; # shouldn't be useful since DECOY are not in %{$refmatchList}
 			my $identifier=$refRaw2UsedIdentifiers->{$rawIdentifier} || $rawIdentifier;
-if ($refmatchList->{$identifier}) { # good prot +/- CON__ depending on $excludeCON
-	$topIdentifier=$identifier;
-	last;
-}
+			if ($refmatchList->{$identifier}) { # good prot +/- CON__ depending on $excludeCON
+				$topIdentifier=$identifier;
+				last;
+			}
 		}
 		next unless $topIdentifier; # Skip entire CON__-only MG if $excludeCON
 		#next unless $refmatchList->{$topIdentifiers[0]}; # Skip "dirty" lines... (PP 10/11/16)
 		$mgNum++;
 		foreach my $rawIdentifier (split(/;/,$parameters[$allProtColumnIdx])) {
 			my $identifier=$refRaw2UsedIdentifiers->{$rawIdentifier} || $rawIdentifier;
-next unless $refmatchList->{$identifier};
+			next unless $refmatchList->{$identifier};
 			$refMQmatchGroup->{$identifier}=$mgNum;
 			$refMQvisibility->{$identifier}=($identifier eq $topIdentifier)? 2 : ($protVisibility && defined($refBestProtVis->{$identifier}) && ($refBestProtVis->{$identifier}==2 || ($protVisibility==2 && $refBestProtVis->{$identifier})))? 1 : 0;
 		}
 		$counter++;
 		if ($counter >= 250) {
-			print '.';
+			print LOG '.';
 			$counter=0;
 		}
 	}
 	close PROTEIN;
-	print " Done.\n";
+	print LOG " Done.\n";
 }
 
 ###########################################################
@@ -2797,6 +2872,11 @@ sub getModIDforReporterIon { # Modification with corresponding Unimod ID as chec
 
 
 ####>Revision history<####
+# 2.0.8 [FEATURE] "Only identified by site" exclusion & more commits and disconnects to prevent database lock timeout (PP 26/05/21)
+# 2.0.7 [BUGFIX] Change getProtInfo call to add cluster parameter (VL 11/05/21)
+# 2.0.6 [UPDATE] Records measures used for protein intensity quantifications (PP 04/12/20)
+# 2.0.5 [UPDATE] Uses SQLite database to store protein quantification data (PP 07/07/20)
+# 2.0.4 [BUGFIX] Ghost status is now only based on score=0 and no longer on lower-scoring status (PP 27/04/20)
 # 2.0.3 [BUGFIX] Minor fix to define contaminant DB parse rules (PP 12/02/20)
 # 2.0.2 [CHANGE] Minor change in $contaminantDB initialization (PP 10/01/20)
 # 2.0.1 [BUGFIX] Right number of parameterGroups detected in mqpar.xml & good 2nd+ PTM position in peptides (PP 25/10/19)

@@ -1,8 +1,8 @@
 /*=============================================================================*/
-/*                  myProMS database v3.5.14                                   */
-/* MySQL script for required starting values of myProMS v3.9 database          */
+/*                  myProMS database v3.5.18                                   */
+/* MySQL script for required starting values of myProMS v3.9.3 database        */
 /* Requires MySQL 5+                                                           */
-/* Patrick Poullet    15/01/2020                                               */
+/* Patrick Poullet    04/06/2021                                               */
 /* Command:                                                                    */
 /* >mysql -u <DB_USER> -p -D <DB_NAME> -h <DB_HOST> < myproms_start_values.sql */
 /*=============================================================================*/
@@ -102,6 +102,7 @@ INSERT INTO IDENTIFIER (ID_IDENTIFIER,ID_SPECIES,NAME,CODE,RESRC_NAME,RESRC_URL,
 /* Loading table MODIFICATION                                   */
 /*==============================================================*/
 INSERT INTO MODIFICATION (ID_MODIFICATION,UNIMOD_ACC,PSI_MS_NAME,INTERIM_NAME,DES,SYNONYMES,COMPOSITION,MONO_MASS,AVGE_MASS,SPECIFICITY,DISPLAY_CODE,DISPLAY_COLOR,IS_SUBST,IS_LABEL,VALID_STATUS) VALUES
+(-1,-1,'Free residues','None','Fake modification for free residues','','F.res',0,0,'C','_','000000',0,0,0),
 (1,35,'Oxidation','Hydroxylation','Oxidation or Hydroxylation','','O',15.9949,15.9994,'C,D,F,G;*,H,K,M,N,P,R,W,Y','O','FF0000',0,0,1),
 (2,1,'Acetyl','Acetyl','Acetylation','','H(2) C(2) O',42.0106,42.0367,'S,T,=,K,Y,-,H,C','A','00CC00',0,0,1),
 (3,4,'Carbamidomethyl','Carbamidomethyl','Iodoacetamide derivative','##Carboxyamidomethylation##Iodoacetamide##Iodoacetamide##','H(3) C(2) N O',57.0215,57.0513,'S,T,=,K,Y,E,H,D,C','C','FF9900',0,0,1),
@@ -130,7 +131,8 @@ INSERT INTO QUANTIFICATION_METHOD (ID_QUANTIFICATION_METHOD,NAME,CODE,DES) VALUE
 (11,'TMT','TMT','Tandem mass tag'),
 (12,'TDA','TDA','Targeted data acquisition (PRM,SRM,MRM)'),
 (13,'Prot. Ruler','PROT_RULER','Proteomic Ruler'),
-(14,'Prot. abundance','PROT_ABUNDANCE', 'Protein or site abundance');
+(14,'Prot. abundance','PROT_ABUNDANCE', 'Protein or site abundance'),
+(15, 'Hydrophobicity', 'HYDRO', 'Hydrophobicity Value');
 
 
 /*==============================================================*/
@@ -164,12 +166,13 @@ INSERT INTO QUANTIFICATION_PARAMETER (ID_QUANTIF_PARAMETER,ID_QUANTIFICATION_MET
 (19,2,'Adj. Normality p-value','NORM_PVAL_ADJ','Adjusted p-value for normality test of peptide ratios distribution'),
 (20,2,'T-test power','TTEST_POWER','Power of T-test used when peptide ratios distribution is normal'),
 /*(21,2,'Sign. change','SIG_CHANGE','Change in protein abundance is significant'),*/
+(21,2,'# ident. pep. used','NUM_TRUE_USED','Number of non-MBWR peptides used for protein quantification'),
 (22,2,'# pep. total','NUM_PEP_TOTAL','Number of peptides provided for protein ratio calculation'),
 (23,2,'Mean repl.','MEAN_STATE','Average of replicates for selected state'),
-(24,2,'Variation coeff.','COEF_VAR_STATE','Variation coefficient between replicates for selected state'),
+/*(24,2,'Variation coeff.','COEF_VAR_STATE','Variation coefficient between replicates for selected state'),
 (25,2,'Var. coeff. exclusion','COEF_VAR_EXCL','Exclusion based on coefficient of variation'),
 (26,2,'Ratio exclusion','RATIO_EXCL','Exclusion based on ratio p-value'),
-(27,2,'Excluded','EXCL','Excluded from statistics'),
+(27,2,'Excluded','EXCL','Excluded from statistics'),*/
 (28,2,'# dist. pep. used','DIST_PEP_USED','Number of distinct peptides used for protein ratio calculation'),
 (81,2,'Peptides','PEPTIDES','Number of peptides sequences'),
 (82,2,'Razor + unique','RAZ_UNI_PEP','Number of razor + unique peptides'),
@@ -229,8 +232,26 @@ INSERT INTO QUANTIFICATION_PARAMETER (ID_QUANTIF_PARAMETER,ID_QUANTIFICATION_MET
 (144,14,'LFQ','MY_LFQ','Label-free quantification'),
 (145,14,'# dist. pep. used','DIST_PEP_USED','Number of distinct peptides used for protein abundance calculation'),
 (146,14,'# pep. used','NUM_PEP_USED','Number of peptides used for protein abundance calculation'),
-(147,14,'# pep. total','NUM_PEP_TOTAL','Number of peptides provided for protein abundance calculation');
-
+(147,14,'# pep. total','NUM_PEP_TOTAL','Number of peptides provided for protein abundance calculation'),
+(148,14,'# ident. pep. used','NUM_TRUE_USED','Number of non-MBWR peptides used for protein quantification'),
+(149,14,'Peptides geo. mean','GEO_MEAN_INT','Geometric mean of peptides intensity'),
+(150,14,"Molar percentage","MOL_PERCENT","Molar percentage of protein in sample"),
+(151,14,"Molar amount","MOL","Amount of protein (mmol) in sample"),
+(152,14,"Molar concentration","MOL_CONC","Molar concentration (mmol/mL) of the protein in sample"),
+(153,14,"Mass percentage","MASS_PERCENT","Mass percentage of the protein in sample"),
+(154,14,"Mass","MASS","Mass of protein (μg) in sample"),
+(155,14,"Mass concentration","MASS_CONC","Mass concentration (μg/mL) of the protein in sample"),
+(156,14,'CI 2.5% mol. pct.','CI_INF_MOL_PCT','Lower bound of the 95% confidence interval of molar percentage'),
+(157,14,'CI 97.5% mol. pct..','CI_SUP_MOL_PCT','Upper bound of the 95% confidence interval of molar percentage'),
+(158,14,'CI 2.5% mol.','CI_INF_MOL','Lower bound of the 95% confidence interval for molar amount or concentration'),
+(159,14,'CI 97.5% mol.','CI_SUP_MOL','Upper bound of the 95% confidence interval for molar amount or concentration'),
+(160,14,'CI 2.5% mass pct.','CI_INF_MASS_PCT','Lower bound of the 95% confidence interval of mass percentage'),
+(161,14,'CI 97.5%  mass pct.','CI_SUP_MASS_PCT','Upper bound of the 95% confidence interval of mass percentage'),
+(162,14,'CI 2.5% mass','CI_INF_MASS','Lower bound of the 95% confidence interval for mass amount or concentration'),
+(163,14,'CI 97.5%  mass','CI_SUP_MASS','Upper bound of the 95% confidence interval for mass amount or concentration'),
+(164,14,'Geom. Std. Deviation','GEO_SD','Geometric standard deviation between replicates within states'),
+(165,14,'Geom. Var. Coeff.','GEO_CV','Geometric coefficient of variation between replicates within states'),
+(170,15,'Hydrophobicity Index','HI','Peptide sequence Hydrophobicity Index (%ACN)');
 
 /*==============================================================*/
 /* Loading table REFERENCE_RT                                   */

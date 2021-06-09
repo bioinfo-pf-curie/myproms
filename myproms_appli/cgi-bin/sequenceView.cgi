@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# sequenceView.cgi     3.3.4	                                               #
+# sequenceView.cgi     3.5.3                                                   #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Displays detailed information on a protein:                                  #
@@ -52,7 +52,7 @@ use phosphoRS;
 use List::Util qw(max);
 #use LWP::UserAgent;
 
-#print header(-'content-encoding'=>'no'); warningsToBrowser(1); # DEBUG
+# print header(-'content-encoding'=>'no'); warningsToBrowser(1); # DEBUG
 #######################
 ####>Configuration<####
 #######################
@@ -68,6 +68,7 @@ my %convertPos2Text=('-'=>'Protein N-term','='=>'Any N-term','+'=>'Protein C-ter
 my $proteinID=&promsMod::cleanNumericalParameters(param('id_prot'));
 if (param('AJAX')) {
 	if (param('AJAX') eq 'connProt') {&ajaxUpdateConnectedProteins;}
+	elsif (param('AJAX') eq 'tablePepDist') {&ajaxTableConnectedProteins;}
 	elsif (param('AJAX') eq 'vmodPep') {&ajaxDisplayVarModPeptides;}
 	elsif (param('AJAX') eq 'searchInteract') {&ajaxSearchInteractors;}
 	elsif (param('AJAX') eq 'quantifList') {&ajaxGetQuantificationList;}
@@ -87,7 +88,7 @@ my $showAllAna=param('showAllAna') || 0;
 my $dbh=&promsConfig::dbConnect;
 
 ####>General info on project<####
-my (@tempAnalysesID)=(param('id_ana'))? split(/,/,param('id_ana')) : $dbh->selectrow_array("SELECT ID_ANALYSIS FROM ANALYSIS_PROTEIN WHERE ID_PROTEIN=$proteinID LIMIT 0,1") ; # if no analysis was sent, take the first ID_ANALYSIS returned by this SELECT query
+my (@tempAnalysesID)=(param('id_ana'))? split(/,/,param('id_ana')) : $dbh->selectrow_array("SELECT ID_ANALYSIS FROM ANALYSIS_PROTEIN WHERE ID_PROTEIN=$proteinID LIMIT 1") ; # if no analysis was sent, take the first ID_ANALYSIS returned by this SELECT query
 @tempAnalysesID=&promsMod::cleanNumericalParameters(@tempAnalysesID);
 my $strgAnaList=join(",",@tempAnalysesID);
 my $itemType=&promsMod::getItemType('ANALYSIS');
@@ -217,9 +218,9 @@ my $sthValPep=$dbh->prepare(qq
 	FROM PEPTIDE P
 	LEFT JOIN PEPTIDE_MODIFICATION PM ON P.ID_PEPTIDE=PM.ID_PEPTIDE
 	JOIN PEPTIDE_PROTEIN_ATTRIB PPA ON P.ID_PEPTIDE=PPA.ID_PEPTIDE
-	WHERE P.ID_ANALYSIS=? AND ID_PROTEIN=$validProtID $ghostFilterStrg GROUP BY P.ID_PEPTIDE ORDER BY ABS(PEP_BEG),ABS(PEP_END),P.ID_PEPTIDE|
+	WHERE P.ID_ANALYSIS=? AND ID_PROTEIN=$validProtID $ghostFilterStrg GROUP BY P.ID_PEPTIDE,PEP_BEG ORDER BY ABS(PEP_BEG),ABS(PEP_END),P.ID_PEPTIDE|
 );
-my (%peptideInfo,%pep_occurrence,%phosphoRsData,%maxQuantProb);
+my (%peptideInfo,%pep_occurrence,%phosphoRsData,%ptmScoreProb);
 my (@pep_beg,@pep_end,@id_peptide,@flanking_AA,%pep_specificity);
 my (%pepAna,%pepFile);
 
@@ -256,19 +257,20 @@ foreach my $analysisID (@analysesID){
 				# PhosphoRS #
 				$phosphoRsData{$pepID} = $1 if ($pepData && $pepData =~ /PRS=([^##]+)/);
 
-				# MaxQuant probalities #
-				if ($fileFormat{$analysisID} eq 'MAXQUANT.DIR') {
+				# MaxQuant/Spectronaut probalities #
+				if ($fileFormat{$analysisID} =~ /MAXQUANT.DIR|SPECTRONAUT.XLS|SEQUEST.PDM/) {
+					my $softwarePTMShort = ($fileFormat{$analysisID} eq 'MAXQUANT.DIR') ? 'MQ' : ($fileFormat{$analysisID} eq 'SPECTRONAUT.XLS') ? 'SPC' : 'PTMRS';
 					while ($varModCode=~/(\d+):([^&]+)/g) {
 						my ($modID,$modPosStrg)=($1,$2);
-						if ($refModInfo && $refModInfo=~/(^|&)$modID:[^&#]*##PRB_MQ=([^&#]+)/) {
+						if ($refModInfo && $refModInfo=~/(^|&)$modID:[^&#]*##PRB_$softwarePTMShort=([^&#]+)/) {
 							my $modProbStrg=$2;
 							while ($modProbStrg =~ /([^,:]+):([^,]+)/g) {
-								push @{$maxQuantProb{$pepID}{$modID}},[$1,$2];
+								push @{$ptmScoreProb{$pepID}{$modID}},[$1,$2];
 							}
 						}
-						elsif ($data[6]) { # score
+						elsif ($data[6] && $fileFormat{$analysisID} !~ /SPECTRONAUT|SEQUEST/) { # score
 							foreach my $pos (split(/\./,$modPosStrg)) {
-								push @{$maxQuantProb{$pepID}{$modID}},[$pos,1]; # set to 100%
+								push @{$ptmScoreProb{$pepID}{$modID}},[$pos,1]; # set to 100%
 							}
 						}
 					}
@@ -550,6 +552,7 @@ my @sthAnaParents=($dbh->prepare($parentsQuery1),$dbh->prepare($parentsQuery2));
 
 ###>Analyses where protein is validated<###
 #my $numConnProt=0;
+my $existGhostPeptides=0;
 if ($validProtID) {
 	my $sthVal;
 	if ($showAllAna) {
@@ -562,7 +565,6 @@ if ($validProtID) {
 	my $sthGr1=$dbh->prepare("SELECT COUNT(*) FROM ANALYSIS_PROTEIN WHERE MATCH_GROUP=? AND ID_ANALYSIS=?");
 	my $sthGr2=$dbh->prepare("SELECT MAX(NUM_PEP) FROM ANALYSIS_PROTEIN WHERE MATCH_GROUP=? AND ID_ANALYSIS=? AND ID_PROTEIN != $validProtID");
 	my $sthGr3=$dbh->prepare("SELECT ALIAS,NUM_PEP FROM ANALYSIS_PROTEIN,PROTEIN WHERE ANALYSIS_PROTEIN.ID_PROTEIN=PROTEIN.ID_PROTEIN AND VISIBILITY=2 AND MATCH_GROUP=? AND ID_ANALYSIS=?");
-	$sthVal->execute;
 	my $sthPepVMod=$dbh->prepare("SELECT DISTINCT ID_MODIFICATION FROM PEPTIDE_PROTEIN_ATTRIB PPA,PEPTIDE_MODIFICATION PM WHERE PPA.ID_PEPTIDE=PM.ID_PEPTIDE AND PPA.ID_ANALYSIS=? AND ID_PROTEIN=$validProtID"); # AND VALID_STATUS > 0 include ghost
 	my $sthGhostPep=$dbh->prepare("SELECT COUNT(*) FROM (SELECT PEP_SEQ,GROUP_CONCAT(DISTINCT PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&')
 									FROM PEPTIDE P
@@ -570,6 +572,7 @@ if ($validProtID) {
 									JOIN PEPTIDE_PROTEIN_ATTRIB PPA ON P.ID_PEPTIDE=PPA.ID_PEPTIDE
 									WHERE P.ID_ANALYSIS=? AND ID_PROTEIN=$validProtID AND VALID_STATUS=0 GROUP BY P.ID_PEPTIDE) AS PEP"); # should use DISTINCT or Not?
 
+	$sthVal->execute;
 	while (my ($anaID,$anaName,$anaPos,$msType,$anaValid,$conf,$vis,$numPep,$matchGr,$pepSpec,$pepCov,$sampID)=$sthVal->fetchrow_array) {
 		$pepCov='?' unless $pepCov;
 		foreach my $sthPar (@sthAnaParents) { # 2 parent paths are possible
@@ -603,13 +606,14 @@ if ($validProtID) {
 			$groupClass='matchGroupOK';
 		}
 		#if ($conf) { # Not a ghost protein => look for ghost peptides
-		$numPep=0 if !$conf;
+		$numPep=0 if !$conf; # num pep in ANALYSIS_PROTEIN correspond to ghosts only! (TODO: change this behavior by storing 0 instead?)
 			$sthGhostPep->execute($anaID);
 			my ($numGhostPep)=$sthGhostPep->fetchrow_array;
-			$numPep.="+<FONT class=\"virtualProt\" onmouseover=\"popup('Peptides retrieved from XIC extraction')\" onmouseout=\"popout()\">$numGhostPep</FONT>" if $numGhostPep;
+			#$numPep.="+<SPAN id=\"ghostSPAN_$anaID\" class=\"virtualProt\" onmouseover=\"popup('Peptides retrieved from XIC extraction')\" onmouseout=\"popout()\">$numGhostPep</SPAN>" if $numGhostPep;
 		#}
-		@{$analysisInfo{$anaID}}=($anaName,$anaPos,$conf,$vis,$matchGr,$groupBest,$msType,$anaValid,1,$numPep,$pepSpec,$pepCov,$groupClass); # [8]=1: prot is validated in ana
-
+		@{$analysisInfo{$anaID}}=($anaName,$anaPos,$conf,$vis,$matchGr,$groupBest,$msType,$anaValid,1,[$numPep,$numGhostPep],$pepSpec,$pepCov,$groupClass); # [8]=1: prot is validated in ana
+		$existGhostPeptides=1 if $numGhostPep;
+		
 		###>> Get PTM of all peptides for this protein in this $anaID
 		$sthPepVMod->execute($anaID);
 		while (my ($modID)=$sthPepVMod->fetchrow_array) {
@@ -652,7 +656,7 @@ if ($showAllAna) {
 			@{$analysisParents{$anaID}}=$sthPar->fetchrow_array;
 			last if $analysisParents{$anaID}[0];
 		}
-		@{$analysisInfo{$anaID}}=($anaName,$anaPos,2,1,0,'',$msType,$anaValid,0,"$numPep/$maxPep",'-','-',$protID);  # [8]=0: prot is not validated in ana
+		@{$analysisInfo{$anaID}}=($anaName,$anaPos,2,1,0,'',$msType,$anaValid,0,["$numPep/$maxPep",0],'-','-',$protID);  # [8]=0: prot is not validated in ana
 	}
 	#foreach my $sthPar (@sthAnaParents) {$sthPar->finish;}
 	$sthNoValP->finish;
@@ -663,7 +667,10 @@ foreach my $sthPar (@sthAnaParents) {
 
 
 ####>Quantifications<#### finding list of designs in project
-my $sthDsg=$dbh->prepare("SELECT D.ID_DESIGN,E.DISPLAY_POS,E.NAME,D.NAME FROM EXPERIMENT E,DESIGN D WHERE E.ID_EXPERIMENT=D.ID_EXPERIMENT AND E.ID_PROJECT=$projectID");
+my $sthDsg=$dbh->prepare("SELECT DISTINCT D.ID_DESIGN,E.DISPLAY_POS,E.NAME,D.NAME FROM EXPERIMENT E
+							INNER JOIN DESIGN D ON E.ID_EXPERIMENT=D.ID_EXPERIMENT
+							INNER JOIN QUANTIFICATION Q ON D.ID_DESIGN=Q.ID_DESIGN
+							WHERE E.ID_PROJECT=$projectID");
 my %designs;
 $sthDsg->execute;
 while (my ($designID,@desInfo)=$sthDsg->fetchrow_array) {
@@ -683,7 +690,7 @@ my %geneInfo;
 #	$sthCR->finish;
 #}
 if ($masterProtID) {
-	my $sthGN=$dbh->prepare("SELECT MI.VALUE FROM MASTERPROT_IDENTIFIER MI,IDENTIFIER I WHERE ID_MASTER_PROTEIN=$masterProtID AND MI.ID_IDENTIFIER=I.ID_IDENTIFIER AND I.CODE='GN' ORDER BY RANK");
+	my $sthGN=$dbh->prepare("SELECT MI.VALUE FROM MASTERPROT_IDENTIFIER MI,IDENTIFIER I WHERE ID_MASTER_PROTEIN=$masterProtID AND MI.ID_IDENTIFIER=I.ID_IDENTIFIER AND I.CODE='GN' ORDER BY IDENT_RANK");
 	$sthGN->execute;
 	while (my ($geneName)=$sthGN->fetchrow_array) {
 		push @{$geneInfo{'GN'}},$geneName;
@@ -697,7 +704,7 @@ if ($masterProtID) {
 my %isoformProteins;
 if ($masterProtID) {
 	#my $sthAlias=$dbh->prepare("SELECT P.ID_PROTEIN,ID_ANALYSIS,ALIAS,MAX(VISIBILITY),MW,PROT_DES,ORGANISM FROM PROTEIN P,ANALYSIS_PROTEIN AP WHERE P.ID_PROTEIN=AP.ID_PROTEIN AND ID_MASTER_PROTEIN=$masterProtID AND ID_PROJECT=$projectID ORDER BY GROUP BY P.ID_PROTEIN");
-	my $sthAlias=$dbh->prepare("SELECT ID_PROTEIN,ID_ANALYSIS,ALIAS,MAX(CONF_LEVEL),MAX(VISIBILITY),MW,PROT_DES,ORGANISM FROM (SELECT P.ID_PROTEIN,ID_ANALYSIS,ALIAS,CONF_LEVEL,VISIBILITY,MW,PROT_DES,ORGANISM FROM PROTEIN P,ANALYSIS_PROTEIN AP WHERE P.ID_PROTEIN=AP.ID_PROTEIN AND ID_MASTER_PROTEIN=$masterProtID AND ID_PROJECT=$projectID ORDER BY VISIBILITY DESC) AS TMP_RESULTS GROUP BY ID_PROTEIN");
+	my $sthAlias=$dbh->prepare("SELECT ID_PROTEIN,MIN(ID_ANALYSIS),ALIAS,MAX(CONF_LEVEL),MAX(VISIBILITY),MW,PROT_DES,ORGANISM FROM (SELECT P.ID_PROTEIN,ID_ANALYSIS,ALIAS,CONF_LEVEL,VISIBILITY,MW,PROT_DES,ORGANISM FROM PROTEIN P,ANALYSIS_PROTEIN AP WHERE P.ID_PROTEIN=AP.ID_PROTEIN AND ID_MASTER_PROTEIN=$masterProtID AND ID_PROJECT=$projectID ORDER BY VISIBILITY DESC) AS TMP_RESULTS GROUP BY ID_PROTEIN");
 	$sthAlias->execute;
 	while (my ($protID,@protData)=$sthAlias->fetchrow_array) {
 		#next if $protID==$validProtID;
@@ -708,7 +715,7 @@ if ($masterProtID) {
 ####>Cross references<####
 my (%crossReference,%crossRefInfo,@uniprotItem);
 if ($masterProtID) {
-	my $sthXref=$dbh->prepare("SELECT I.ID_IDENTIFIER,MI.RANK,MI.VALUE,I.CODE,I.NAME,I.RESRC_URL,I.RESRC_NAME FROM MASTERPROT_IDENTIFIER MI,IDENTIFIER I WHERE ID_MASTER_PROTEIN=$masterProtID AND MI.ID_IDENTIFIER=I.ID_IDENTIFIER ORDER BY I.ID_IDENTIFIER,RANK");
+	my $sthXref=$dbh->prepare("SELECT I.ID_IDENTIFIER,MI.IDENT_RANK,MI.VALUE,I.CODE,I.NAME,I.RESRC_URL,I.RESRC_NAME FROM MASTERPROT_IDENTIFIER MI,IDENTIFIER I WHERE ID_MASTER_PROTEIN=$masterProtID AND MI.ID_IDENTIFIER=I.ID_IDENTIFIER ORDER BY I.ID_IDENTIFIER,IDENT_RANK");
 	$sthXref->execute;
 	while (my ($identID,$rank,$identValue,$identCode,$identName,$identURL,$resrcName)=$sthXref->fetchrow_array) {
 		next unless $identURL;
@@ -735,8 +742,8 @@ $dbh->disconnect;
 #      Starting HTML      #
 ###########################
 my ($protVistaScript,$protVistaLink)=($disabProtVista)? ('','') : (
-	"<SCRIPT src=\"http://ebi-uniprot.github.io/CDN/protvista/protvista.js\"></SCRIPT>\n",
-	"<LINK href=\"http://ebi-uniprot.github.io/CDN/protvista/css/main.css\" rel=\"stylesheet\"/>\n"
+	"<SCRIPT src=\"https://ebi-uniprot.github.io/CDN/protvista/protvista.js\"></SCRIPT>\n",
+	"<LINK href=\"https://ebi-uniprot.github.io/CDN/protvista/css/main.css\" rel=\"stylesheet\"/>\n"
 );
 print header(-'content-encoding'=>'no',-charset=>'UTF-8');
 warningsToBrowser(1); # writes PERL warnings as HTML comments <!-- --> must be activated after header
@@ -747,6 +754,8 @@ print qq
 $protVistaLink
 <STYLE type="text/css">
 .selectedAna {color:#DD0000;}
+.selectedProt {color:#DD0000;}
+.visibleProt {font-weight:bold;}
 .hidden {visibility:hidden;}
 .matchGroupOK {background-color:#50DD50;}
 .matchGroupEQ {background-color:#DDDD00;}
@@ -765,7 +774,7 @@ print qq
 .popup {background-color:#FFFFFF;border:solid 3px #999999;padding:5px;box-shadow:10px 10px 20px #808080;position:absolute;display:none;} //z-index:999; <- conflits with mouseover popup
 </STYLE>
 $protVistaScript
-<SCRIPT LANGUAGE="JavaScript">
+<SCRIPT type="text/javascript">
 |;
 &promsMod::popupInfo();
 my $varModCall=($currProtStatus)? 'sequenceView' : 'listRanks';
@@ -861,11 +870,11 @@ function updateAnalysesList(showAll) {
 	document.anaList.showAllAna.value=showAll;
 	document.anaList.submit();
 }
-function graphicalView2(field) {
-	if (testCheckbox(field,'Protein')==0) {return;}
-	document.protList.largWindow.value=(document.body)? document.body.clientWidth : window.innerWidth;
-	document.protList.graphView.value=opener.graphView;
-	document.protList.submit();
+function graphicalView2(myForm) {
+	if (testCheckbox(myForm.chkProt,'Proteins')==0) {return;}
+	myForm.largWindow.value=(document.body)? document.body.clientWidth : window.innerWidth;
+	myForm.graphView.value=opener.graphView;
+	myForm.submit();
 }
 function drawSpectrum(pepId,pepInfo) {
 	if (pepId != selectedPep \|\| spectWin.closed) {
@@ -911,7 +920,7 @@ function editVarModification(vmodId,seqLength) {
 function startValidation(anaID) {
 	opener.promsFrame.location="$promsPath{cgi}/startValidation.cgi?ID="+anaID+"&SEL=$identifier";
 }
-function testCheckbox(field,label) {
+function testCheckbox(field,label,minChecked=1) {
 	var checked=0;
 	if (field.length) {
 		for (i=0; i < field.length; i++) {
@@ -921,8 +930,8 @@ function testCheckbox(field,label) {
 	else {
 		if (field.checked==true) {checked++;}
 	}
-	if (checked==0) {
-		alert('You must select at least 1 '+label);
+	if (checked < minChecked) {
+		alert('You must select at least '+minChecked+' '+label);
 	}
 	return checked;
 }
@@ -956,6 +965,22 @@ var selectedVarModId;
 
 // AJAX --->
 var XHR=null;
+
+function ajaxDisplayPeptideQuantifications(myButton) {
+	var ghostDiv=document.getElementById('ghostDIV');
+	if (ghostDiv.style.display != 'none') {
+		myButton.value='+';
+		ghostDiv.style.display='none';
+		return;
+	}
+	myButton.value='-';
+	ghostDiv.innerHTML='Bonjour Patrick';
+	ghostDiv.style.display='block';
+}
+function ajaxUpdateGhostCount() {
+	
+}
+
 var selectedImg;
 function ajaxGetProteinsMatchGroup(anaID) {
 	if (selectedImg) {selectedImg.src='$promsPath{images}/plus.gif';}
@@ -1056,7 +1081,7 @@ function ajaxGetConnectedProteins(proteinID) {
 	if (!XHR) {
 		return false;
 	}
-	XHR.open("GET","$promsPath{cgi}/sequenceView.cgi?AJAX=connProt&projectID=$projectID&id_prot="+proteinID,true);
+	XHR.open("GET","$promsPath{cgi}/sequenceView.cgi?AJAX=connProt&projectID=$projectID&id_ana=$strgAnaList&id_prot="+proteinID,true);
 	XHR.onreadystatechange=function() {
 		if (XHR.readyState==4 && XHR.responseText) {
 			listConnectedProteins(XHR.responseText);
@@ -1064,6 +1089,39 @@ function ajaxGetConnectedProteins(proteinID) {
 	}
 	XHR.send(null);
 }
+function ajaxTablePeptideDistribution(myForm,selAnaStrg) {
+	if (testCheckbox(myForm.chkProt,'Proteins',2) < 2) {return;}
+	var tableDiv=document.getElementById('tableDistribDIV');
+	tableDiv.innerHTML='&nbsp;&nbsp;&nbsp;<IMG src="$promsPath{images}/scrollbarGreen.gif">';
+	//Extracting selected connected proteins
+	var connProt=[];
+	const chkLength=myForm.chkProt.length;
+	for (let i=0; i<chkLength; i++) {
+		if (myForm.chkProt[i].checked) {
+			let anaProtId=myForm.chkProt[i].value.split(':');
+			connProt.push(anaProtId.pop()); // protID is last element of array
+		}
+	}
+	//If XHR object already exists, the request is canceled & the object is deleted
+	if(XHR && XHR.readyState != 0){
+		XHR.abort();
+		delete XHR;
+	}
+	//Creation of the XMLHTTPRequest object
+	XHR = getXMLHTTP();
+	if (!XHR) {
+		return false;
+	}
+	XHR.open("GET","$promsPath{cgi}/sequenceView.cgi?AJAX=tablePepDist&projectID=$projectID&id_prot=$proteinID&id_ana="+selAnaStrg+"&id_conn_prot="+connProt.join(','),true);
+	XHR.onreadystatechange=function() {
+		if (XHR.readyState==4 && XHR.responseText) {
+			tableDiv.innerHTML=XHR.responseText;
+			tableDiv.scrollIntoView({block:"start",inline:"nearest",behavior:"smooth"});
+		}
+	}
+	XHR.send(null);
+}
+
 function ajaxGetInteractors(uniAC) {
 	//check if query already performed
 	if (interactSearchWasPerformed) {
@@ -1363,6 +1421,7 @@ if ($idType eq 'valid') {
 
 my $mgPopupStrg=qq
 |<TABLE><TR><TH colspan=\\'2\\' nowrap>Confidence in visibility assignment</TH></TR><TR><TD class=\\'matchGroupOK\\'>&nbsp;&nbsp;</TD><TD>Reliable</TD></TR><TR><TD class=\\'matchGroupEQ\\'>&nbsp;&nbsp;</TD><TD>Potential ambiguity</TD></TR><TR><TD class=\\'matchGroupNO\\'>&nbsp;&nbsp;</TD><TD>Non-optimal</TD></TR><TR><TD class=\\'matchGroupBAD\\'>&nbsp;&nbsp;</TD><TD>Contradicted by peptide distribution</TD></TR></TABLE>|;
+my $ghostPepStrg=''; #TODO: ($existGhostPeptides)? "&nbsp;<INPUT type=\"button\" value=\"+\" class=\"font11\" onclick=\"ajaxDisplayPeptideQuantifications(this);\" onmouseover=\"popup('<B>Select peptide extractions</B>')\" onmouseout=\"popout()\"/><DIV id=\"ghostDIV\" style=\"display:none\"></DIV>" : '';
 print qq
 |</DIV></TD></TR></TABLE></TD></TR></TABLE>
 <DIV id="analysisDIV" style="display:none;margin-left:20px">
@@ -1381,7 +1440,7 @@ print qq
 <TR bgcolor="$color2">
 <TH class="rbBorder" align=left>&nbsp;&nbsp;Parents in Project&nbsp;&nbsp;</TH>
 <TH class="rbBorder" align=left>&nbsp;&nbsp;Analysis&nbsp;&nbsp</TH>
-<TH class="rbBorder">&nbsp;&nbsp;Peptides&nbsp;&nbsp;</TH>
+<TH class="rbBorder">&nbsp;&nbsp;Peptides$ghostPepStrg&nbsp;&nbsp;</TH>
 <TH class="rbBorder" nowrap>&nbsp;&nbsp;Spec.<FONT style="font-size: 9px;"> (%)</FONT>&nbsp;&nbsp;</TH>
 <TH class="rbBorder" nowrap>&nbsp;&nbsp;Cov.<FONT style="font-size: 9px;"> (%)</FONT>&nbsp;&nbsp;</TH>
 <TH class="bBorder" nowrap>&nbsp;&nbsp;&nbsp;<A href="void(null)" onmouseover="popup('$mgPopupStrg')" onmouseout="popout()">Match group<SUP>*</SUP></A>&nbsp;&nbsp;&nbsp</TH>
@@ -1480,7 +1539,9 @@ foreach my $anaID (sort{$analysisParents{$a}[0]<=>$analysisParents{$b}[0] || $an
 	print "&nbsp;&nbsp;</TD>\n";
 
 	##>Peptides
-	print "<TH>$analysisInfo{$anaID}[9]";
+	my ($numPep,$numGhost)=@{$analysisInfo{$anaID}[9]};
+	print "<TH>$numPep";
+	print "+<SPAN id=\"ghostSPAN_$anaID\" class=\"virtualProt\" onmouseover=\"popup('Peptides retrieved from XIC extraction')\" onmouseout=\"popout()\">$numGhost</SPAN>" if $numGhost;
 	if ($valStat<2 && $analysisInfo{$anaID}[2] && $projectAccess=~/bioinfo|mass|manag|super/) { # can enter in validation mode (not for virtual prot!)
 		print "&nbsp;<A href=\"javascript:startValidation($anaID);\" onmouseover=\"popup('Click to access all identification data of <B>$identifier</B> in this Analysis')\" onmouseout=\"popout()\"><IMG class=\"button\" src=\"$promsPath{images}/good.gif\"></A>";
 	}
@@ -2088,14 +2149,13 @@ print qq
 			print "$flkAA_Nter.";
 		}
 		#if ($analysisInfo{$analysisID}[6] eq 'MIS' && -e $pepFile) {#} # && ($projectAccess eq 'bioinfo' || $projectAccess eq 'mass' || $projectAccess =~ /super/)
-
 		if ($pepFile{$pepAna{$id_peptide[$i]}} && -e $pepFile{$pepAna{$id_peptide[$i]}} && ($peptideInfo{$id_peptide[$i]}[4] || ($fileFormat{$pepAna{$id_peptide[$i]}} eq 'MAXQUANT.DIR' && $elutTimeStrg=~/sc\d+/))) { # not if ghost peptide (except some MAXQUANT)
 			my $pepInfo;
 			if ($currProtStatus) { # validated protein
 				$pepInfo="pep_$id_peptide[$i]_$peptideInfo{$id_peptide[$i]}[1]_$peptideInfo{$id_peptide[$i]}[2]"; # pep_pepID_qNum_rank
 			}
 			else {$pepInfo="seq_$id_peptide[$i]";} # non-validated protein
-			if (($fileFormat{$analysesID[0]} !~ /TDM.PEP.XML|TDM.XML:NoSpec/ && $peptideInfo{$id_peptide[$i]}[6]) || $fileFormat{$analysesID[0]} =~ /SKYLINE\.(?:CSV|SKY)/ || $fileFormat{$analysesID[0]} =~ /OPENSWATH\.TSV/ ||$fileFormat{$analysesID[0]} =~ /SPECTRONAUT\.XLS/ ) { # no score => no MSMS data (MaxQuant)
+			if (($fileFormat{$analysesID[0]} !~ /TDM.PEP.XML|TDM.XML:NoSpec/ && $peptideInfo{$id_peptide[$i]}[6]) || $fileFormat{$analysesID[0]} =~ /SKYLINE\.(?:CSV|SKY)/ || $fileFormat{$analysesID[0]} =~ /OPENSWATH\.TSV/ || $fileFormat{$analysesID[0]} =~ /SPECTRONAUT\.XLS/ ) { # no score => no MSMS data (MaxQuant)
 				print "<A id=\"$id_peptide[$i]\" href=\"javascript:drawSpectrum('$id_peptide[$i]','$pepInfo')\" onmouseover=\"popup('$pepComments<BR>Click to display <B>Fragmentation Spectrum</B>.')\" onmouseout=\"popout()\">"; # unless $fileFormat{$analysesID[0]}=~/TDM.PEP.XML|TDM.XML:NoSpec/;
 			}
 			else {
@@ -2111,25 +2171,27 @@ print qq
 		print ".$flkAA_Cter" if $flkAA_Cter;
 		if ($peptideInfo{$id_peptide[$i]}[3]) { # var mods
 			$peptideInfo{$id_peptide[$i]}[3]=~s/([:.])-1/$1?/g; # if unknown position, -1 has to be removed
-			# MaxQuant probabilities #
-			my $mqProbStrg='';
-			if ($maxQuantProb{$id_peptide[$i]}) {
-				$mqProbStrg='<B>MaxQuant probabilities:</B>';
-				foreach my $modID (sort{lc($varModNames{$a}) cmp lc($varModNames{$b})} keys %{$maxQuantProb{$id_peptide[$i]}}) {
-					$mqProbStrg.="<BR>&bull;$varModNames{$modID}:";
-					foreach my $refPos (@{$maxQuantProb{$id_peptide[$i]}{$modID}}) {
+			
+			# MaxQuant/Spectronaut probabilities #
+			my $ptmProbStrg='';
+			if ($ptmScoreProb{$id_peptide[$i]}) {
+				my $softwarePTM = ($fileFormat{$analysesID[0]} eq 'MAXQUANT.DIR') ? 'MaxQuant' : ($fileFormat{$analysesID[0]} =~ /SPECTRONAUT\.XLS/) ? 'Spectronaut' : 'PtmRS';
+				$ptmProbStrg="<B>$softwarePTM probabilities:</B>";
+				foreach my $modID (sort{lc($varModNames{$a}) cmp lc($varModNames{$b})} keys %{$ptmScoreProb{$id_peptide[$i]}}) {
+					$ptmProbStrg.="<BR>&bull;$varModNames{$modID}:";
+					foreach my $refPos (@{$ptmScoreProb{$id_peptide[$i]}{$modID}}) {
 						my $posStrg=$convertPos2Text{$refPos->[0]} || $refPos->[0];
-						$mqProbStrg.="<BR>&nbsp;&nbsp;-$posStrg:".&promsMod::MaxQuantProbIcon($refPos->[1],{text=>'&nbsp;'.($refPos->[1]*100).'%&nbsp;',inPopup=>1});
+						$ptmProbStrg.="<BR>&nbsp;&nbsp;-$posStrg:".&promsMod::PTMProbIcon($refPos->[1],{text=>'&nbsp;'.($refPos->[1]*100).'%&nbsp;',inPopup=>1});
 					}
 				}
 			}
 			if ($projectAccess=~/bioinfo|mass|manag|super/) {
-				$mqProbStrg.='<BR>' if $mqProbStrg;
-				print "<A id=\"vmod_$id_peptide[$i]\" style=\"font-size:8pt\" href=\"javascript:editVarModification('vmod_$id_peptide[$i]',",length($peptideInfo{$id_peptide[$i]}[0]),")\" onmouseover=\"popup('${mqProbStrg}Click to edit modifications <B>position</B>.')\" onmouseout=\"popout()\">$peptideInfo{$id_peptide[$i]}[3]</A>";
+				$ptmProbStrg.='<BR>' if $ptmProbStrg;
+				print "<A id=\"vmod_$id_peptide[$i]\" style=\"font-size:8pt\" href=\"javascript:editVarModification('vmod_$id_peptide[$i]',",length($peptideInfo{$id_peptide[$i]}[0]),")\" onmouseover=\"popup('${ptmProbStrg}Click to edit modifications <B>position</B>.')\" onmouseout=\"popout()\">$peptideInfo{$id_peptide[$i]}[3]</A>";
 			}
 			else {
 				print "<FONT style=\"font-size:8pt\"";
-				print " onmouseover=\"popup('$mqProbStrg')\" onmouseout=\"popout()\"" if $mqProbStrg;
+				print " onmouseover=\"popup('$ptmProbStrg')\" onmouseout=\"popout()\"" if $ptmProbStrg;
 				print "> $peptideInfo{$id_peptide[$i]}[3]</FONT>"; # var mods
 			}
 			# PhosphoRS #
@@ -2297,97 +2359,253 @@ sub getProtSequence {
 
 sub ajaxUpdateConnectedProteins {
 	my $projectID=&promsMod::cleanNumericalParameters(param('projectID')); # only if ajax call
+	my @analysesID=&promsMod::cleanNumericalParameters(split(',',param('id_ana')));
+	my $selAnaStrg=join(',',@analysesID);
 
 	###<Connecting to database>###
 	my $dbh=&promsConfig::dbConnect;
+	$dbh->do("SET SESSION group_concat_max_len = 1000000"); # for GROUP_CONCAT in &getNumberConnectedProteins
+	
+	my %connnectedProteins=('PROJECT'=>{},'ANALYSIS'=>{});
+	&getNumberConnectedProteins($dbh,$proteinID,undef,$connnectedProteins{PROJECT});
+	&getNumberConnectedProteins($dbh,$proteinID,$selAnaStrg,$connnectedProteins{ANALYSIS});
 
-	my %connnectedProteins;
-	&getNumberConnectedProteins($dbh,$proteinID,$projectID,\%connnectedProteins);
-
-	my $sthProtInfo=$dbh->prepare("SELECT ALIAS,MW,PROT_DES,ORGANISM FROM PROTEIN WHERE ID_PROTEIN=?");
-	my $sthProtAna=$dbh->prepare("SELECT ID_ANALYSIS,VISIBILITY,CONF_LEVEL FROM ANALYSIS_PROTEIN WHERE ID_PROTEIN=? ORDER BY VISIBILITY DESC,NUM_PEP DESC,SCORE DESC,CONF_LEVEL DESC");
-	foreach my $protID (keys %connnectedProteins) {
-		$sthProtInfo->execute($protID);
-		@{$connnectedProteins{$protID}}=$sthProtInfo->fetchrow_array;
-		$sthProtAna->execute($protID);
-		my ($bestAnaVis,$bestAnaConfLevel)=(0,0);
-		my @anaList;
-		while (my ($anaID,$visibility,$confLevel)=$sthProtAna->fetchrow_array) {
-			push @anaList,$anaID;
-			unless ($bestAnaVis) {
-				$bestAnaVis=$visibility;
-				$bestAnaConfLevel=$confLevel;
-			}
-		}
-		push @{$connnectedProteins{$protID}},($bestAnaVis,$bestAnaConfLevel,\@anaList);
-
+	my $sthProtInfo=$dbh->prepare("SELECT ID_PROTEIN,ALIAS,MW,PROT_DES,ORGANISM FROM PROTEIN WHERE ID_PROTEIN IN (".join(',',keys %{$connnectedProteins{PROJECT}}).")");
+	$sthProtInfo->execute;
+	while (my ($protID,@protInfo)=$sthProtInfo->fetchrow_array) {
+		@{$connnectedProteins{PROJECT}{$protID}}=@protInfo;
+		@{$connnectedProteins{ANALYSIS}{$protID}}=@protInfo if $connnectedProteins{ANALYSIS}{$protID};
 	}
 	$sthProtInfo->finish;
+	my $sthProtAna=$dbh->prepare("SELECT ID_ANALYSIS,VISIBILITY,CONF_LEVEL FROM ANALYSIS_PROTEIN WHERE ID_PROTEIN=? ORDER BY VISIBILITY DESC,NUM_PEP DESC,SCORE DESC,CONF_LEVEL DESC");
+	foreach my $protID (keys %{$connnectedProteins{PROJECT}}) {
+		$sthProtAna->execute($protID);
+		my ($bestProjVis,$bestProjConfLevel,$bestAnaVis,$bestAnaConfLevel)=(0,0,0,0);
+		my (@projAnaList,@anaAnalist);
+		#my $isInAnaList=0;
+		while (my ($anaID,$visibility,$confLevel)=$sthProtAna->fetchrow_array) {
+			push @projAnaList,$anaID;
+			unless ($bestProjVis) {
+				$bestProjVis=$visibility;
+				$bestProjConfLevel=$confLevel;
+			}
+			if (grep {$_==$anaID} @analysesID) {
+				#$isInAnaList=1;
+				push @anaAnalist,$anaID;
+				unless ($bestAnaVis) {
+					$bestAnaVis=$visibility;
+					$bestAnaConfLevel=$confLevel;
+				}
+			}
+		}
+		push @{$connnectedProteins{PROJECT}{$protID}},($bestAnaVis,$bestAnaConfLevel,\@projAnaList);
+		push @{$connnectedProteins{ANALYSIS}{$protID}},($bestAnaVis,$bestAnaConfLevel,\@anaAnalist) if $connnectedProteins{ANALYSIS}{$protID}; #$isInAnaList;
+	}
 	$sthProtAna->finish;
 	$dbh->disconnect;
 
 	###<HTML>###
-	print header(-charset=>'UTF-8');
+	print header(-type=>'text/plain',-charset=>'UTF-8');
 	warningsToBrowser(1);
 
-	# Ref protein
-	my ($refProtAlias,$refMass,$refProtDes,$refSpecies,$refBestAnaVis,$refBestAnaConf,$refRefAnaList)=@{$connnectedProteins{$proteinID}};
-	my ($refClass,$refPopup)=&promsMod::getProteinClass($refBestAnaConf,$refBestAnaVis);
-	my $chkRefValueStrg=join(':',@{$refRefAnaList}).':'.$proteinID;
-	if ($refMass) {$refMass=sprintf "%.1f",$refMass/1000;} else {$refMass='-';}
-	print qq
-|<FORM name="protList" action="./graphicalView.cgi" method="post" target="ProteinWindow">
+	foreach my $scope ('ANALYSIS','PROJECT') {
+		# Ref protein
+		my ($refProtAlias,$refMass,$refProtDes,$refSpecies,$refBestAnaVis,$refBestAnaConf,$refRefAnaList)=@{$connnectedProteins{$scope}{$proteinID}};
+		my ($refClass,$refPopup)=&promsMod::getProteinClass($refBestAnaConf,$refBestAnaVis);
+		my $chkRefValueStrg=join(':',@{$refRefAnaList}).':'.$proteinID;
+		if ($refMass) {$refMass=sprintf "%.1f",$refMass/1000;} else {$refMass='-';}
+		my ($scopeTitle,$formName)=($scope eq 'PROJECT')? ('Project-wide','projProtList') : ('In selected Analyses','anaProtList');
+		my $tableViewStrg=($scope eq 'PROJECT' || scalar keys %{$connnectedProteins{$scope}} == 1)? '' : "<INPUT type=\"button\" value=\"Table view\" onclick=\"ajaxTablePeptideDistribution(document.anaProtList,'$selAnaStrg')\"/>";
+		print qq
+|<FONT class="title3">$scopeTitle:</FONT><BR>
+<FORM name="$formName" action="./graphicalView.cgi" method="post" target="ProteinWindow">
 <INPUT type="hidden" name="what" value="checkbox">
 <INPUT type="hidden" name="id_item" value="$projectID">
 <INPUT type="hidden" name="item" value="project">
 <INPUT type="hidden" name="largWindow">
 <INPUT type="hidden" name="graphView">
-<INPUT type="button" class="font11" value="Check / Unckeck All" onclick="check(document.protList.chkProt)"><INPUT type="button" value="Peptide Distribution" onclick="graphicalView2(document.protList.chkProt)"/>
+<INPUT type="button" class="font11" value="Check / Unckeck All" onclick="check(document.$formName.chkProt)">&nbsp;<B>Peptide distribution:</B>$tableViewStrg<INPUT type="button" value="Graphical view" onclick="graphicalView2(document.$formName)"/>
 <TABLE border=0 cellspacing=0>
 <TR bgcolor=$color2><TH class="rbBorder">Protein</TH><TH class="rbBorder" nowrap>&nbsp;MW<FONT style="font-size:9px;"> kDa</FONT>&nbsp;</TH><TH class="bBorder" width=550>Description - Species</TH></TR>
 <TR class="list" bgcolor="$color1" valign="top">
-<TD nowrap><INPUT type="checkbox" name="chkProt" value="$chkRefValueStrg"/><FONT class="$refClass" color="#DD0000">$refProtAlias</FONT></TD>
+<TD nowrap><INPUT type="checkbox" name="chkProt" value="$chkRefValueStrg"/><FONT class="$refClass selectedProt">$refProtAlias</FONT></TD>
 <TD class="$refClass" align="center">$refMass</TD><TD>&nbsp;$refProtDes <FONT class="org">$refSpecies</FONT></TD>
 </TR>
 |;
-	my $bgColor=$color2;
-	foreach my $protID (sort{lc($connnectedProteins{$a}[0]) cmp lc($connnectedProteins{$b}[0])} keys %connnectedProteins) {
-		next if $protID==$proteinID;
-		my ($protAlias,$mass,$protDes,$species,$bestAnaVis,$bestAnaConf,$refAnaList)=@{$connnectedProteins{$protID}};
-		print "<TR class=\"list\" bgcolor=\"$bgColor\" valign=\"top\">\n";
-		# Protein & analyses
-		my $chkValueStrg=join(':',@{$refAnaList}).':'.$protID;
-		my ($pClass,$pPopup)=&promsMod::getProteinClass($bestAnaConf,$bestAnaVis);
-		print "<TD nowrap><INPUT type=\"checkbox\" name=\"chkProt\" value=\"$chkValueStrg\"/><A class=\"$pClass\" href=\"javascript:sequenceView($refAnaList->[0],$protID,'valid',opener.top.showMSdata)\" onmouseover=\"popup('$pPopup')\" onmouseout=\"popout()\">$protAlias</A></TD>";
-		# MW
-		if ($mass) {$mass=sprintf "%.1f",$mass/1000;}
-		else {$mass='-';}
-		print "<TD class=\"$pClass\" align=\"center\">$mass</TD>";
-		# Desc Species
-		print "<TD>&nbsp;$protDes <FONT class=\"org\">$species</FONT></TD></TR>\n";
-		$bgColor=($bgColor eq $color1)? $color2 : $color1;
+		my $bgColor=$color2;
+		foreach my $protID (sort{lc($connnectedProteins{$scope}{$a}[0]) cmp lc($connnectedProteins{$scope}{$b}[0])} keys %{$connnectedProteins{$scope}}) {
+			next if $protID==$proteinID;
+			my ($protAlias,$mass,$protDes,$species,$bestAnaVis,$bestAnaConf,$refAnaList)=@{$connnectedProteins{$scope}{$protID}};
+			print "<TR class=\"list\" bgcolor=\"$bgColor\" valign=\"top\">\n";
+			# Protein & analyses
+			my $chkValueStrg=join(':',@{$refAnaList}).':'.$protID;
+			my ($pClass,$pPopup)=&promsMod::getProteinClass($bestAnaConf,$bestAnaVis);
+			print "<TD nowrap><INPUT type=\"checkbox\" name=\"chkProt\" value=\"$chkValueStrg\"/><A class=\"$pClass\" href=\"javascript:sequenceView($refAnaList->[0],$protID,'valid',opener.top.showMSdata)\" onmouseover=\"popup('$pPopup')\" onmouseout=\"popout()\">$protAlias</A></TD>";
+			# MW
+			if ($mass) {$mass=sprintf "%.1f",$mass/1000;}
+			else {$mass='-';}
+			print "<TD class=\"$pClass\" align=\"center\">$mass</TD>";
+			# Desc Species
+			print "<TD>&nbsp;$protDes <FONT class=\"org\">$species</FONT></TD></TR>\n";
+			$bgColor=($bgColor eq $color1)? $color2 : $color1;
+		}
+		print "</TABLE>\n";
+		print "<DIV id=\"tableDistribDIV\"></DIV>\n" if $scope eq 'ANALYSIS';
+		print "</FORM>\n";
 	}
-	print qq
-|</TABLE>
-</FORM>
-|;
 }
 
 sub getNumberConnectedProteins { # ghost peptides are also used!!!
-	my ($dbh,$validProtID,$projectID,$refConnProt)=@_;
-	my $sthProtPep=$dbh->prepare("SELECT ID_PEPTIDE FROM PEPTIDE_PROTEIN_ATTRIB WHERE ID_PROTEIN=$validProtID");
-	my $sthConnProt=$dbh->prepare("SELECT ID_PROTEIN FROM PEPTIDE_PROTEIN_ATTRIB WHERE ID_PEPTIDE=?");
-	#my $sthProtPep=$dbh->prepare("SELECT DISTINCT PEP_SEQ FROM PEPTIDE PEP,PEPTIDE_PROTEIN_ATTRIB PPA WHERE PPA.ID_PEPTIDE=PEP.ID_PEPTIDE AND ID_PROTEIN=$validProtID");
-	#my $sthConnProt=$dbh->prepare("SELECT DISTINCT PPA.ID_PROTEIN FROM PEPTIDE PEP,PEPTIDE_PROTEIN_ATTRIB PPA, PROTEIN PRO WHERE PPA.ID_PEPTIDE=PEP.ID_PEPTIDE AND PRO.ID_PROTEIN=PPA.ID_PROTEIN AND ID_PROJECT=$projectID AND PEP_SEQ=?");
-	$sthProtPep->execute;
-	while (my ($pepSeq)=$sthProtPep->fetchrow_array) {
-		$sthConnProt->execute($pepSeq);
-		while (my ($protID)=$sthConnProt->fetchrow_array) {
-			@{$refConnProt->{$protID}}=(); # includes $validProtID!!!
-		}
+	my ($dbh,$validProtID,$anaStrg,$refConnProt)=@_;
+	my $anaQuery=($anaStrg)? "AND ID_ANALYSIS IN ($anaStrg)" : '';
+	my ($pepStrg)=$dbh->selectrow_array("SELECT GROUP_CONCAT(ID_PEPTIDE),ID_PROTEIN FROM PEPTIDE_PROTEIN_ATTRIB WHERE ID_PROTEIN=$validProtID $anaQuery GROUP BY ID_PROTEIN");
+	my $sthConnProt=$dbh->prepare("SELECT DISTINCT ID_PROTEIN FROM PEPTIDE_PROTEIN_ATTRIB WHERE ID_PEPTIDE IN ($pepStrg)");
+	$sthConnProt->execute;
+	while (my ($protID)=$sthConnProt->fetchrow_array) {
+		@{$refConnProt->{$protID}}=(); # includes $validProtID!!!
 	}
 	$sthConnProt->finish;
-	$sthProtPep->finish;
+}
+
+sub ajaxTableConnectedProteins {
+	my $projectID=&promsMod::cleanNumericalParameters(param('projectID'));
+	my @analysesID=&promsMod::cleanNumericalParameters(split(',',param('id_ana')));
+	my $selAnaStrg=join(',',@analysesID);
+	my @connectProtID=&promsMod::cleanNumericalParameters(split(',',param('id_conn_prot')));
+	my $selConnProtStrg=join(',',@connectProtID);
+	
+	my $dbh=&promsConfig::dbConnect;
+	if (scalar @analysesID > 1) { # reorder according to project hierarchy (not always the case when called from quantif)
+		($selAnaStrg,$projectID)=$dbh->selectrow_array("SELECT GROUP_CONCAT(A.ID_ANALYSIS ORDER BY E.DISPLAY_POS,S.DISPLAY_POS,A.DISPLAY_POS),ID_PROJECT FROM ANALYSIS A
+															INNER JOIN SAMPLE S ON A.ID_SAMPLE=S.ID_SAMPLE
+															INNER JOIN EXPERIMENT E ON S.ID_EXPERIMENT=E.ID_EXPERIMENT
+															WHERE ID_ANALYSIS IN ($selAnaStrg)
+															GROUP BY E.ID_PROJECT");
+		@analysesID=split(',',$selAnaStrg);
+	}
+	
+	my (%peptideLinks,%peptideStatus,%peptideModif,%varModName,%isProteotypic);
+	my $sthPep=$dbh->prepare("SELECT P.ID_PEPTIDE,P.ID_ANALYSIS,GROUP_CONCAT(DISTINCT PPA.ID_PROTEIN,':',ABS(PEP_BEG)),PEP_SEQ,GROUP_CONCAT(DISTINCT PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),CHARGE,VALID_STATUS,MAX(IFNULL(IS_SPECIFIC,0))
+								FROM PEPTIDE P
+								LEFT JOIN PEPTIDE_MODIFICATION PM ON P.ID_PEPTIDE=PM.ID_PEPTIDE
+								INNER JOIN PEPTIDE_PROTEIN_ATTRIB PPA ON P.ID_PEPTIDE=PPA.ID_PEPTIDE
+								WHERE P.ID_ANALYSIS IN ($selAnaStrg) AND PPA.ID_PROTEIN IN ($selConnProtStrg)
+								GROUP BY P.ID_PEPTIDE");
+	$sthPep->execute;
+	while (my ($pepID,$anaID,$protStrg,$pepSeq,$modCode,$charge,$pepStatus,$isSpecific)=$sthPep->fetchrow_array) {
+		next unless $protStrg=~/(^|,)$proteinID:/;
+		my $vMod=($modCode)? &promsMod::decodeVarMod($dbh,$pepSeq,$modCode,\%varModName) : 'None';
+		#$vMod=~s/ //g; # make it shorter
+		$modCode='-' unless $modCode;
+		foreach my $protData (split(',',$protStrg)) {
+			my ($protID,$pepBeg)=split(':',$protData);
+			$peptideLinks{$pepSeq}{$anaID}{$protID}=$pepBeg;
+		}
+		$peptideModif{$pepSeq}{$anaID}{$modCode}=$vMod;
+		$isProteotypic{"$pepSeq:$anaID"}=1 if $isSpecific;
+		$peptideStatus{"$pepSeq:$anaID:MSMS"}=0 unless defined $peptideStatus{"$pepSeq:$anaID:MSMS"}; # true
+		$peptideStatus{"$pepSeq:$anaID:MBWR"}=0 unless defined $peptideStatus{"$pepSeq:$anaID:MBWR"}; # ghost
+		my $statusCode=($pepStatus)? 'MSMS' : 'MBWR';
+		$peptideStatus{"$pepSeq:$anaID:$statusCode"}++;
+	}
+	$sthPep->finish;
+	
+	my %proteinVisibility;
+	my $sthProtVis=$dbh->prepare("SELECT ID_PROTEIN,ID_ANALYSIS,VISIBILITY FROM ANALYSIS_PROTEIN WHERE ID_ANALYSIS IN ($selAnaStrg) AND ID_PROTEIN IN ($selConnProtStrg)");
+	$sthProtVis->execute;
+	while (my ($protID,$anaID,$vis)=$sthProtVis->fetchrow_array) {
+		$proteinVisibility{$protID}{$anaID}=$vis;
+	}
+	$sthProtVis->finish;
+	
+	my %proteinAlias;
+	my $sthProtAlias=$dbh->prepare("SELECT ID_PROTEIN,ALIAS FROM PROTEIN WHERE ID_PROTEIN IN ($selConnProtStrg)");
+	$sthProtAlias->execute;
+	while (my ($protID,$alias)=$sthProtAlias->fetchrow_array) {
+		$proteinAlias{$protID}=$alias;
+	}
+	$sthProtAlias->finish;
+	
+	my %analysisInfo;
+	my $sthAna=$dbh->prepare("SELECT A.ID_ANALYSIS,A.NAME,CONCAT(E.NAME,' > ',S.NAME) FROM ANALYSIS A
+							 INNER JOIN SAMPLE S ON A.ID_SAMPLE=S.ID_SAMPLE
+							 INNER JOIN EXPERIMENT E ON S.ID_EXPERIMENT=E.ID_EXPERIMENT
+							 WHERE A.ID_ANALYSIS IN ($selAnaStrg)");
+	$sthAna->execute;
+	while (my ($anaID,@anaInfo)=$sthAna->fetchrow_array) {
+		@{$analysisInfo{$anaID}}=@anaInfo;
+	}
+	$sthAna->finish;
+	
+	$dbh->disconnect;
+	
+	###<HTML>###
+	print header(-type=>'text/plain',-charset=>'UTF-8');
+	warningsToBrowser(1);
+	
+	print qq
+|<BR>
+<FONT class="title3">Distribution peptides matching <FONT class="selectedProt">$proteinAlias{$proteinID}</FONT> among selected proteins</FONT>
+<TABLE border=0 cellspacing=0>
+<THEAD>
+<TR bgcolor=$color2><TH class="rbBorder" rowspan=2 nowrap>&nbsp;Distinct peptide sequence&nbsp;</TH>
+|;
+	foreach my $anaID (@analysesID) {
+		my $thClass=($anaID==$analysesID[-1])? 'bBorder' : 'rbBorder';
+		print "<TH colspan=\"3\" class=\"$thClass\" onmouseover=\"popup('$analysisInfo{$anaID}[1]')\" onmouseout=\"popout()\">&nbsp;$analysisInfo{$anaID}[0]&nbsp;</TH>\n";
+	}
+	print "</TR><TR bgcolor=$color2>\n";
+	foreach my $anaID (@analysesID) {
+		my $thClass=($anaID==$analysesID[-1])? 'bBorder' : 'rbBorder';
+		print qq
+|<TH class="rbBorder">&nbsp;PTMs&nbsp;</TH>
+<TH class="rbBorder" nowrap onmouseover="popup('Number of ions formally identified by <B>MSMS</B> +<BR>Number of ions rescued by <B>MBWR</B> (Match Between or Within Run)')" onmouseout="popout()">&nbsp;# Ions<SUP>?</SUP>&nbsp;</TH>
+<TH class="$thClass" nowrap onmouseover="popup('<IMG src=\\\'$promsPath{images}/good.gif\\\'>: Proteotypic')" onmouseout="popout()">&nbsp;Proteins<SUP>?</SUP>&nbsp;</TH>
+|;
+	}
+	print qq
+|</TR>
+</THEAD>
+<TBODY>
+|;
+	
+	my $bgColor=$color2;
+	foreach my $pepSeq (sort{$a cmp $b} keys %peptideLinks) {
+		print "<TR bgcolor=$bgColor><TH class=\"rBorder\" align=left valign=top>&nbsp;$pepSeq&nbsp;</TH>\n";
+		foreach my $anaID (@analysesID) {
+			my $protTdClassStrg=($anaID==$analysesID[-1])? '' : 'class="rBorder"';
+			if ($peptideLinks{$pepSeq}{$anaID}) {
+				print "<TD nowrap valign=top>";
+				my $firstVM=1;
+				foreach my $vMod (values %{$peptideModif{$pepSeq}{$anaID}}) {
+					print '<BR>' unless $firstVM;
+					my $shortVM=&promsMod::resize($vMod,10);
+					if ($shortVM eq $vMod) {print "&nbsp;$vMod&nbsp;";}
+					else {
+						print "&nbsp;<SPAN onmouseover=\"popup('$vMod')\" onmouseout=\"popout()\">$shortVM</SPAN>&nbsp;";
+					}
+					$firstVM=0;
+				}
+				print "</TD>";
+				my $stClass=($peptideStatus{"$pepSeq:$anaID:MSMS"})? 'visibleProt' : '';
+				print "<TD align=center valign=top class=\"$stClass\">",$peptideStatus{"$pepSeq:$anaID:MSMS"},"+",$peptideStatus{"$pepSeq:$anaID:MBWR"},"</TD>";
+				print "<TD $protTdClassStrg valign=top>";
+				foreach my $protID (sort{lc($proteinAlias{$a}) cmp lc($proteinAlias{$b})} keys %{$peptideLinks{$pepSeq}{$anaID}}) {
+					my $selClass=($protID==$proteinID)? 'selectedProt' : '';
+					my $visClass=($proteinVisibility{$protID}{$anaID})? 'visibleProt' : '';
+					print "&nbsp;<FONT class=\"$selClass $visClass\" onmouseover=\"popup('<B>Position:</B>$peptideLinks{$pepSeq}{$anaID}{$protID}')\" onmouseout=\"popout()\">$proteinAlias{$protID}</FONT>";
+					print "<IMG src=\"$promsPath{images}/good.gif\">" if $isProteotypic{"$pepSeq:$anaID"};
+					print "&nbsp;<BR>";
+				}
+				print "</TD>\n";
+			}
+			else {print "<TD $protTdClassStrg colspan=3 align=center>-</TD>\n";}
+		}
+		print "</TR>\n";
+		$bgColor=($bgColor eq $color1)? $color2 : $color1;
+	}
+	print "</TBODY></TABLE>\n";
+	exit;
 }
 
 sub ajaxDisplayVarModPeptides {
@@ -2405,7 +2623,7 @@ sub ajaxDisplayVarModPeptides {
 	}
 
 	##<HTML CODE>###
-	print header(-charset=>'UTF-8');
+	print header(-type=>'text/plain',-charset=>'UTF-8');
 	warningsToBrowser(1);
 	print qq
 |<INPUT type="button" class="font11" value="Close" onclick="document.getElementById('vmodPeptideDIV').style.display='none'"/>
@@ -2520,23 +2738,25 @@ sub ajaxDisplayVarModPeptides2 {
 		if ($PRS) {
 			&phosphoRS::printIcon($PRS);
 		}
-		#<MaxQuant
-		if ($fileFormat eq 'MAXQUANT.DIR') {
-			my @maxQuantProb;
-			if ($refModInfo && $refModInfo=~/(^|&)$varModID:[^&#]*##PRB_MQ=([^&#]+)/) {
+		#<MaxQuant/Spectronaut
+		if ($fileFormat =~ /MAXQUANT.DIR|SPECTRONAUT.XLS/) {
+			my @ptmProb;
+			my $softwarePTMShort = ($fileFormat eq 'MAXQUANT.DIR') ? 'MQ' : 'SPC';
+			my $softwarePTM = ($fileFormat eq 'MAXQUANT.DIR') ? 'MaxQuant' : 'Spectronaut';
+			if ($refModInfo && $refModInfo=~/(^|&)$varModID:[^&#]*##PRB_$softwarePTMShort=([^&#]+)/) {
 				my $modProbStrg=$2;
 				while ($modProbStrg =~ /([^,:]+):([^,]+)/g) {
-					push @maxQuantProb,[$1,$2];
+					push @ptmProb,[$1,$2];
 				}
 			}
 			elsif ($score) {
 				my ($b,$modPosStrg)=$vModCode=~/(^|&)$varModID:([^&]+)/;
 				foreach my $pos (split(/\./,$modPosStrg)) {
-					push @maxQuantProb,[$pos,1]; # set to 100%
+					push @ptmProb,[$pos,1]; # set to 100%
 				}
 			}
-			foreach my $refPos (@maxQuantProb) {
-				print &promsMod::MaxQuantProbIcon($refPos->[1],{popupText=>"MaxQuant probability for pos. <B>$refPos->[0]</B>: <B>".($refPos->[1]*100).'%</B>'});
+			foreach my $refPos (@ptmProb) {
+				print &promsMod::PTMProbIcon($refPos->[1],{popupText=>"$softwarePTM probability for pos. <B>$refPos->[0]</B>: <B>".($refPos->[1]*100).'%</B>'});
 			}
 		}
 		if ($score) {$score=sprintf "%.2f",$score;}
@@ -2557,7 +2777,7 @@ sub ajaxDisplayVarModPeptides2 {
 }
 
 sub ajaxGetQuantificationList {
-#print header(-'content-encoding'=>'no',-charset=>'UTF-8');
+#print header(-type=>'text/plain',-charset=>'UTF-8');
 	require promsQuantif;
 	my %proteinQuantifFamilies=&promsQuantif::getProteinQuantifFamilies;
 	my $dbh=&promsConfig::dbConnect;
@@ -2565,20 +2785,28 @@ sub ajaxGetQuantificationList {
 	my @itemID=&promsMod::cleanNumericalParameters(split(',',$itemIdStrg));
 
 	my (%quantifList,%anaQuantifs); # ,%modifications
-	my (%quantifValues,%quantifInfo,%dispModifSites,%quantifHierarchy,%quantifPos);
-	my @sthQuantifs;
-	if ($item eq 'design') { # Ratio/MQ quantifs
-		my $projectID=&promsMod::getProjectID($dbh,$itemID[0],'design');
+	my (%quantifValues,%quantifInfo,%dispModifSites,%quantifHierarchy,%labelChannels,%quantifPos);
+	my $projectID;
+	#my @sthQuantifs;
+	my $sthQuantif;
+	if ($item eq 'design') { # Ratio/MQ/Abund quantifs
+		$projectID=&promsMod::getProjectID($dbh,$itemID[0],'design');
 		my @userInfo=&promsMod::getUserInfo($dbh,$userID,$projectID);
 		my $statusStrg=($userInfo[1] eq 'bio' || $userInfo[1] eq 'manag')? '= 1' : ($userInfo[1] eq 'mass')? 'IN (1,2)' : '>=1'; # visibility filter
-		$sthQuantifs[0]=$dbh->prepare("SELECT DISTINCT QM.CODE,Q.ID_QUANTIFICATION,PQ.TARGET_POS,PQ.ID_QUANTIF_PARAMETER
+		#$sthQuantifs[0]=$dbh->prepare("SELECT DISTINCT QM.CODE,Q.ID_QUANTIFICATION,PQ.TARGET_POS,PQ.ID_QUANTIF_PARAMETER
+		#								FROM QUANTIFICATION Q
+		#								INNER JOIN PROTEIN_QUANTIFICATION PQ ON Q.ID_QUANTIFICATION=PQ.ID_QUANTIFICATION
+		#								INNER JOIN QUANTIFICATION_METHOD QM ON Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD
+		#								WHERE Q.ID_DESIGN=$itemID[0] AND PQ.ID_PROTEIN=$proteinID AND Q.STATUS $statusStrg AND TARGET_POS IS NOT NULL");
+		$sthQuantif=$dbh->prepare("SELECT DISTINCT QM.CODE,Q.ID_QUANTIFICATION,Q.ID_DESIGN,Q.QUANTIF_ANNOT
 										FROM QUANTIFICATION Q
-										INNER JOIN PROTEIN_QUANTIFICATION PQ ON Q.ID_QUANTIFICATION=PQ.ID_QUANTIFICATION
 										INNER JOIN QUANTIFICATION_METHOD QM ON Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD
-										WHERE Q.ID_DESIGN=$itemID[0] AND PQ.ID_PROTEIN=$proteinID AND Q.STATUS $statusStrg AND TARGET_POS IS NOT NULL");
+										INNER JOIN ANA_QUANTIFICATION AQ ON Q.ID_QUANTIFICATION=AQ.ID_QUANTIFICATION
+										INNER JOIN ANALYSIS_PROTEIN AP ON AQ.ID_ANALYSIS=AP.ID_ANALYSIS 
+										WHERE Q.ID_DESIGN=$itemID[0] AND AP.ID_PROTEIN=$proteinID AND Q.FOCUS='protein' AND Q.STATUS $statusStrg AND AP.VISIBILITY >= 1");	
 	}
 	else { # internal-analysis
-		my ($analysisStrg,$projectID);
+		my $analysisStrg;
 		if ($itemID[0]==0) {
 			my $sthAna=$dbh->prepare("SELECT ID_ANALYSIS FROM ANALYSIS_PROTEIN WHERE ID_PROTEIN=$proteinID");
 			my @analysisList;
@@ -2597,40 +2825,62 @@ sub ajaxGetQuantificationList {
 		my $statusStrg=($userInfo[1] eq 'bio' || $userInfo[1] eq 'manag')? '= 1' : ($userInfo[1] eq 'mass')? 'IN (1,2)' : '>=1'; # visibility filter
 		
 		#<Ratio-quantifs
-		$sthQuantifs[0]=$dbh->prepare("SELECT DISTINCT QM.CODE,Q.ID_QUANTIFICATION,PQ.TARGET_POS
-										FROM ANA_QUANTIFICATION AQ,QUANTIFICATION Q,PROTEIN_QUANTIFICATION PQ,QUANTIFICATION_METHOD QM
-										WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION=PQ.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD
-										AND Q.ID_DESIGN IS NULL AND PQ.ID_PROTEIN=$proteinID AND Q.STATUS $statusStrg AND TARGET_POS IS NOT NULL AND AQ.ID_ANALYSIS IN ($analysisStrg)");
-		#<Non-ratio quantifs (SIN,EMPAI)
-		$sthQuantifs[1]=$dbh->prepare("SELECT DISTINCT QM.CODE,Q.ID_QUANTIFICATION,1
-										FROM ANA_QUANTIFICATION AQ,QUANTIFICATION Q,PROTEIN_QUANTIFICATION PQ,QUANTIFICATION_METHOD QM
-										WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION=PQ.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD
-										AND Q.ID_DESIGN IS NULL AND PQ.ID_PROTEIN=$proteinID AND Q.STATUS $statusStrg AND QM.CODE IN ('SIN','EMPAI') AND AQ.ID_ANALYSIS IN ($analysisStrg)");
+		#$sthQuantifs[0]=$dbh->prepare("SELECT DISTINCT QM.CODE,Q.ID_QUANTIFICATION,PQ.TARGET_POS
+		#								FROM ANA_QUANTIFICATION AQ,QUANTIFICATION Q,PROTEIN_QUANTIFICATION PQ,QUANTIFICATION_METHOD QM
+		#								WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION=PQ.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD
+		#								AND Q.ID_DESIGN IS NULL AND PQ.ID_PROTEIN=$proteinID AND Q.STATUS $statusStrg AND TARGET_POS IS NOT NULL AND AQ.ID_ANALYSIS IN ($analysisStrg)");
+		##<Non-ratio quantifs (SIN,EMPAI)
+		#$sthQuantifs[1]=$dbh->prepare("SELECT DISTINCT QM.CODE,Q.ID_QUANTIFICATION,1
+		#								FROM ANA_QUANTIFICATION AQ,QUANTIFICATION Q,PROTEIN_QUANTIFICATION PQ,QUANTIFICATION_METHOD QM
+		#								WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION=PQ.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD
+		#								AND Q.ID_DESIGN IS NULL AND PQ.ID_PROTEIN=$proteinID AND Q.STATUS $statusStrg AND QM.CODE IN ('SIN','EMPAI') AND AQ.ID_ANALYSIS IN ($analysisStrg)");
+		$sthQuantif=$dbh->prepare("SELECT DISTINCT QM.CODE,Q.ID_QUANTIFICATION,Q.ID_DESIGN,Q.QUANTIF_ANNOT
+										FROM QUANTIFICATION Q
+										INNER JOIN QUANTIFICATION_METHOD QM ON Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD
+										INNER JOIN ANA_QUANTIFICATION AQ ON Q.ID_QUANTIFICATION=AQ.ID_QUANTIFICATION
+										INNER JOIN ANALYSIS_PROTEIN AP ON AQ.ID_ANALYSIS=AP.ID_ANALYSIS 
+										WHERE Q.ID_DESIGN IS NULL AND AP.ID_PROTEIN=$proteinID AND Q.FOCUS='protein' AND Q.STATUS $statusStrg AND AP.VISIBILITY >= 1 AND AQ.ID_ANALYSIS IN ($analysisStrg)");
 	}
 
 	###<Fetching quantifs>###
-	my $ratioParamID;
-	foreach my $sthQuantif (@sthQuantifs) {
-		$sthQuantif->execute;
-		while (my ($code,$quantifID,$targetPos,$quantifParamID)=$sthQuantif->fetchrow_array) { # anaID only for internal quantifs
-			if ($code eq 'PROT_RATIO_PEP') {
-				unless ($ratioParamID) {
-					($ratioParamID)=$dbh->selectrow_array("SELECT QP.ID_QUANTIF_PARAMETER FROM QUANTIFICATION_PARAMETER QP,QUANTIFICATION_METHOD QM WHERE QP.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD AND QM.CODE='PROT_RATIO_PEP' AND QP.CODE='RATIO'");
-				}
-				next if $quantifParamID != $ratioParamID; # this prevents non-ratio target_pos to be included (state mean, ...)
+	#my $ratioParamID=$dbh->selectrow_array("SELECT QP.ID_QUANTIF_PARAMETER FROM QUANTIFICATION_PARAMETER QP,QUANTIFICATION_METHOD QM WHERE QP.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD AND QM.CODE='PROT_RATIO_PEP' AND QP.CODE='RATIO'");
+	#foreach my $sthQuantif (@sthQuantifs) {
+	#	$sthQuantif->execute;
+	#	while (my ($code,$quantifID,$targetPos,$quantifParamID)=$sthQuantif->fetchrow_array) { # anaID only for internal quantifs
+	#		if ($code eq 'PROT_RATIO_PEP') {
+	#			unless ($ratioParamID) {
+	#				($ratioParamID)=$dbh->selectrow_array("SELECT QP.ID_QUANTIF_PARAMETER FROM QUANTIFICATION_PARAMETER QP,QUANTIFICATION_METHOD QM WHERE QP.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD AND QM.CODE='PROT_RATIO_PEP' AND QP.CODE='RATIO'");
+	#			}
+	#			next if $quantifParamID != $ratioParamID; # this prevents non-ratio target_pos to be included (state mean, ...)
+	#		}
+	#		my $quantifFamily=($code=~/_RATIO_|TNPQ/)? 'RATIO' : $code;
+	#		push @{$quantifList{$quantifFamily}},$quantifID."_".$targetPos;
+	#	}
+	#	$sthQuantif->finish;
+	#}
+	$sthQuantif->execute;
+	while (my ($code,$quantifID,$designID,$quantifAnnot)=$sthQuantif->fetchrow_array) { # anaID only for internal quantifs
+		my %usedTargetPos;
+		if ($designID) { # && ($code ne 'MQ' || $quantifAnnot !~ /^LABEL=FREE/)
+			$quantifAnnot=~s/::/£/g; # easier for regexp below
+			my $infoStrg='';
+			if ($code=~/_RATIO_|TNPQ/) {
+				($infoStrg)=$quantifAnnot =~ /£RATIOS=([^£]+)/;
 			}
-			my $quantifFamily=($code=~/_RATIO_|TNPQ/)? 'RATIO' : $code;
-			push @{$quantifList{$quantifFamily}},$quantifID."_".$targetPos;
-			#my $modifStrg=$modifID || $multiModifStrg;
-			#if ($modifStrg) {
-			#	foreach my $modifID (split(',',$modifStrg)) {
-			#		@{$modifications{$modifID}}=();
-			#	}
-			#}
+			else { # non-ratio
+				($infoStrg)=$quantifAnnot =~ /£STATES=([^£]+)/;
+			}
+			my $numTgtPos=scalar(split(/;/,$infoStrg));
+			foreach my $targetPos (1..$numTgtPos) {$usedTargetPos{$targetPos}=1;}
+			
 		}
-		$sthQuantif->finish;
+		else {$usedTargetPos{1}=1;} # SIN,EMPAI
+		my $quantifFamily=($code=~/_RATIO_|TNPQ/)? 'RATIO' : $code;
+		foreach my $targetPos (keys %usedTargetPos) {push @{$quantifList{$quantifFamily}},$quantifID."_".$targetPos;}
 	}
+	$sthQuantif->finish;
 
+	my %usedMeasures;
 	###<Fetching ratio-quantification data>###
 	if ($quantifList{'RATIO'}) { # RATIO
 		my %parameters=(QUANTIF_FAMILY=>'RATIO',VIEW=>'',SITE_DISPLAY=>'html',NUM_PEP_CODE=>'NUM_PEP_USED',QUANTIF_LIST=>$quantifList{'RATIO'}); # VIEW & NUM_PEP_CODE only for RATIO
@@ -2660,11 +2910,17 @@ sub ajaxGetQuantificationList {
 			@{$quantifHierarchy{$quantif}}=($quantifPath,$ratioName,$ratioPos);
 		}
 	}
-	if ($quantifList{'MQ'}) {
-		my %parameters=(QUANTIF_FAMILY=>'MQ',VIEW=>'',MEASURE=>['MQ_INT','MQ_IBAQ','MQ_LFQ'],NUM_PEP_CODE=>'PEPTIDES',QUANTIF_LIST=>$quantifList{'MQ'});
-		&promsQuantif::fetchQuantificationData($dbh,\%parameters,\%quantifInfo,\%quantifValues,\%dispModifSites,undef,{$proteinID=>1});
-		foreach my $quantif (@{$quantifList{'MQ'}}) {
-			my ($quantifID,$ratioPos)=split('_',$quantif);
+	foreach my $quantifFamily ('MQ','PROT_ABUNDANCE') {
+		next unless $quantifList{$quantifFamily};
+		my $numPepCode=($quantifFamily eq 'MQ')? 'PEPTIDES' : 'NUM_PEP_USED';
+		my @measures;
+		foreach my $refMeasInfo (@{$proteinQuantifFamilies{'MEASURES'}{$quantifFamily}}) {push @measures,$refMeasInfo->[0];}
+		my %parameters=(QUANTIF_FAMILY=>$quantifFamily,VIEW=>'',SITE_DISPLAY=>'html',MEASURE=>\@measures,NUM_PEP_CODE=>$numPepCode,QUANTIF_LIST=>$quantifList{$quantifFamily});
+		#['MQ_INT','MQ_IBAQ','MQ_LFQ']
+		#['SUM_INT','MEDIAN_INT','MEAN_INT','GEO_MEAN_INT','MY_LFQ']
+		%{$usedMeasures{$quantifFamily}}=&promsQuantif::fetchQuantificationData($dbh,\%parameters,\%quantifInfo,\%quantifValues,\%dispModifSites,undef,{$proteinID=>1});
+		foreach my $quantif (@{$quantifList{$quantifFamily}}) {
+			my ($quantifID,$targetPos)=split('_',$quantif);
 			my $quantifPath;
 			$quantifPos{$quantif}='1';
 			foreach my $refParent (@{$quantifInfo{$quantifID}[3]}) {
@@ -2675,15 +2931,26 @@ sub ajaxGetQuantificationList {
 				$quantifPos{$quantif}.=sprintf "%03d",$refParent->{'POS'} if $refParent->{'ITEM'} eq 'EXPERIMENT';
 			}
 			$quantifPos{$quantif}.=sprintf "%05d",$quantifID; # samp,ana,quantif generated together
-			@{$quantifHierarchy{$quantif}}=($quantifPath,$quantifInfo{$quantifID}[0]);
+			my $quantifName=$quantifInfo{$quantifID}[0];
+			if ($quantifFamily eq 'PROT_ABUNDANCE') {
+				my ($condID)=(split(/,/,$quantifInfo{$quantifID}[1]->{'STATES'}[$targetPos-1]))[-1]; # id flags removed by &promsQuantif::extractQuantificationParameters
+				my $stateName=$quantifInfo{$quantifID}[2]->{$condID}{'NAME'};
+				$quantifName.='&nbsp;:&nbsp;'.$stateName;
+			}
+			@{$quantifHierarchy{$quantif}}=($quantifPath,$quantifName,$targetPos);
+			if ($quantifInfo{$quantifID}[1]{'LABEL'}[0] ne 'FREE') {
+				my $targetIdx=$targetPos-1;
+				my $stateID=(split(/,/,$quantifInfo{$quantifID}[1]{STATES}[$targetIdx]))[-1];
+				$labelChannels{$quantif}=$quantifInfo{$quantifID}[2]{$stateID}{'NAME'}; # to be added state name to quantif name (<=>labelchannel)
+			}
 		}
 	}
 	foreach my $quantifFamily ('EMPAI','SIN') { # all measures are fetched
 		if ($quantifList{$quantifFamily}) {
 			my %parameters=(QUANTIF_FAMILY=>$quantifFamily,VIEW=>'',NUM_PEP_CODE=>'',QUANTIF_LIST=>$quantifList{$quantifFamily});
-			&promsQuantif::fetchQuantificationData($dbh,\%parameters,\%quantifInfo,\%quantifValues,\%dispModifSites,undef,{$proteinID=>1});
+			%{$usedMeasures{$quantifFamily}}=&promsQuantif::fetchQuantificationData($dbh,\%parameters,\%quantifInfo,\%quantifValues,undef,undef,{$proteinID=>1});
 			foreach my $quantif (@{$quantifList{$quantifFamily}}) {
-				my ($quantifID,$ratioPos)=split('_',$quantif);
+				my ($quantifID,$targetPos)=split('_',$quantif);
 				my $quantifPath;
 				$quantifPos{$quantif}='1';
 				foreach my $refParent (@{$quantifInfo{$quantifID}[3]}) {
@@ -2693,7 +2960,7 @@ sub ajaxGetQuantificationList {
 					$quantifPath.=$refParent->{'NAME'};
 					$quantifPos{$quantif}.=sprintf "%03d",$refParent->{'POS'}; # 1 -> 001 (eg EXP1+SAMP1+ANA1=1001001001001 < EXP1+SAMP2+ANA1=1001001002001)
 				}
-				@{$quantifHierarchy{$quantif}}=($quantifPath,$quantifInfo{$quantifID}[0]);
+				@{$quantifHierarchy{$quantif}}=($quantifPath,$quantifInfo{$quantifID}[0],$targetPos);
 			}
 		}
 	}
@@ -2711,17 +2978,26 @@ sub ajaxGetQuantificationList {
 	$dbh->disconnect;
 
 	###<Display results>###
-	print header(-charset=>'UTF-8');
+	print header(-type=>'text/plain',-charset=>'UTF-8');
 	warningsToBrowser(1);
 
-	foreach my $quantifFamily (sort keys %quantifList) { # RATIO | MQ | EMPAI | SIN
+	foreach my $quantifFamily ('RATIO','PROT_ABUNDANCE','MQ','EMPAI','SIN') {
+		next unless $quantifList{$quantifFamily};
+		my $okFam=0;
+		foreach my $quantif (@{$quantifList{$quantifFamily}}) {
+			if ($quantifValues{$quantif}) {
+				$okFam=1;
+				last;
+			}
+		}
+		next unless $okFam;
 		print "<FONT class=\"title3\">&bull;$proteinQuantifFamilies{NAME}{$quantifFamily}:<FONT>\n";
 		if ($quantifFamily eq 'RATIO') {
 			print qq
 |<TABLE border=0 cellspacing=0>
 <TR bgcolor="$color2">
 <TH class="rbBorder" align="left">&nbsp;Quantification&nbsp;</TH>
-<TH class="rbBorder" nowrap>&nbsp;Modification&nbsp;</TH>
+<TH class="rbBorder" nowrap>&nbsp;Site&nbsp;</TH>
 <TH class="rbBorder">&nbsp;Ratio&nbsp;</TH>
 <TH class="rbBorder">&nbsp;p-value&nbsp;</TH>
 <TH class="bBorder">&nbsp;Peptides&nbsp;</TH>
@@ -2730,6 +3006,7 @@ sub ajaxGetQuantificationList {
 			$bgColor=$color1;
 			my $prevQuantifName='';
 			foreach my $quantif (sort{lc($quantifHierarchy{$a}[0]) cmp lc($quantifHierarchy{$b}[0]) || $quantifHierarchy{$a}[2]<=>$quantifHierarchy{$b}[2] || &promsMod::sortSmart($a,$b)} @{$quantifList{$quantifFamily}}) {
+				next unless $quantifValues{$quantif}; # protein has no data in this quantif
 				my $quantifNameStrg=($prevQuantifName eq $quantifHierarchy{$quantif}[0])? "<FONT style=\"visibility:hidden\">$quantifHierarchy{$quantif}[0]&nbsp;:&nbsp;</FONT>" : "$quantifHierarchy{$quantif}[0]&nbsp;:&nbsp;";
 				$prevQuantifName=$quantifHierarchy{$quantif}[0];
 				next if $quantifHierarchy{$quantif}[1] eq '/'; # Some quantitation went wrong and there are no quantitation ratios computed !
@@ -2766,44 +3043,81 @@ sub ajaxGetQuantificationList {
 			}
 			print "</TABLE>\n<BR>";
 		}
-
-		else { # MQ,EMPAI,SIN
+		else { # MQ,EMPAI,SIN,PROT_ABUNDANCE
 			print qq
 |<TABLE border=0 cellspacing=0>
 <TR bgcolor="$color2">
 <TH class="rbBorder" align="left">&nbsp;Quantification&nbsp;</TH>
 |;
-			if ($quantifFamily eq 'MQ') {print "<TH class=\"rbBorder\">&nbsp;Intensity&nbsp;</TH><TH class=\"rbBorder\">&nbsp;iBAQ&nbsp;</TH><TH class=\"rbBorder\">&nbsp;LFQ&nbsp;</TH>";}
-			elsif ($quantifFamily eq 'EMPAI') {print "<TH class=\"rbBorder\">&nbsp;emPAI&nbsp;</TH><TH class=\"rbBorder\">&nbsp;emPAI (Mol %)&nbsp;</TH><TH class=\"rbBorder\">&nbsp;emPAI (Mr %)&nbsp;</TH>";}
-			elsif ($quantifFamily eq 'SIN') {print "<TH class=\"rbBorder\">&nbsp;SI<SUB>N</SUB>&nbsp;</TH>";}
+			print "<TH class=\"rbBorder\" nowrap>&nbsp;Site&nbsp;</TH>\n" if $quantifFamily eq 'PROT_ABUNDANCE';
+			#if ($quantifFamily eq 'PROT_ABUNDANCE') {print "<TH class=\"rbBorder\">&nbsp;Sum&nbsp;</TH><TH class=\"rbBorder\">&nbsp;Median&nbsp;</TH><TH class=\"rbBorder\">&nbsp;Mean&nbsp;</TH><TH class=\"rbBorder\">&nbsp;Geo. Mean&nbsp;</TH><TH class=\"rbBorder\">&nbsp;LFQ&nbsp;</TH>";}
+			#elsif ($quantifFamily eq 'MQ') {print "<TH class=\"rbBorder\">&nbsp;Intensity&nbsp;</TH><TH class=\"rbBorder\">&nbsp;iBAQ&nbsp;</TH><TH class=\"rbBorder\">&nbsp;LFQ&nbsp;</TH>";}
+			#elsif ($quantifFamily eq 'EMPAI') {print "<TH class=\"rbBorder\">&nbsp;emPAI&nbsp;</TH><TH class=\"rbBorder\">&nbsp;emPAI (Mol %)&nbsp;</TH><TH class=\"rbBorder\">&nbsp;emPAI (Mr %)&nbsp;</TH>";}
+			#elsif ($quantifFamily eq 'SIN') {print "<TH class=\"rbBorder\">&nbsp;SI<SUB>N</SUB>&nbsp;</TH>";}
+			foreach my $refMeasInfo (@{$proteinQuantifFamilies{'MEASURES'}{$quantifFamily}}) {
+				next unless $usedMeasures{$quantifFamily}{$refMeasInfo->[0]}; # measure is not used at all
+				print "<TH class=\"rbBorder\">&nbsp;$refMeasInfo->[1]&nbsp;</TH>";
+			}
 			print "<TH class=\"bBorder\">&nbsp;Peptides&nbsp;</TH></TR>\n";
-			
+			my $numPepCode=($quantifFamily eq 'PROT_ABUNDANCE')? 'NUM_PEP_USED' : 'PEPTIDES';
 			$bgColor=$color1;
 			my $prevParentsName='';
-			foreach my $quantif (sort{$quantifPos{$a}<=>$quantifPos{$b} || lc($quantifHierarchy{$a}[0]) cmp lc($quantifHierarchy{$b}[0]) || lc($quantifHierarchy{$a}[1]) cmp lc($quantifHierarchy{$b}[1])} @{$quantifList{$quantifFamily}}) {
+			foreach my $quantif (sort{$quantifPos{$a}<=>$quantifPos{$b} || lc($quantifHierarchy{$a}[0]) cmp lc($quantifHierarchy{$b}[0]) || lc($quantifHierarchy{$a}[1]) cmp lc($quantifHierarchy{$b}[1]) || $quantifHierarchy{$a}[2]<=>$quantifHierarchy{$b}[2]} @{$quantifList{$quantifFamily}}) {
+				next unless $quantifValues{$quantif}; # protein has no data in this quantif
 				my $quantifNameStrg=($prevParentsName eq $quantifHierarchy{$quantif}[0])? "<FONT style=\"visibility:hidden\">$quantifHierarchy{$quantif}[0]&nbsp;>&nbsp;</FONT>" : "$quantifHierarchy{$quantif}[0]&nbsp;>&nbsp;";
 				$prevParentsName=$quantifHierarchy{$quantif}[0];
+				my ($isModifQuantif,$siteStrg,$numPepStrg)=(0,'','');
+				my ($quantifID,$targetPos)=split('_',$quantif);
+				if ($quantifFamily eq 'PROT_ABUNDANCE') {
+					$siteStrg.="<TH align=\"right\">";
+					if ($quantifInfo{$quantifID}[4]) { # modif quantif
+						$isModifQuantif=1;
+						foreach my $modProtID (keys %{$quantifValues{$quantif}}) {
+							$siteStrg.="-$dispModifSites{$modProtID}&nbsp;<BR>";
+							$numPepStrg.='&nbsp;'.$quantifValues{$quantif}{$modProtID}{$numPepCode}.'&nbsp;<BR>';
+						}
+					}
+					else {$siteStrg.="&nbsp;-&nbsp;"}
+					$siteStrg.="</TH>\n";
+				}
+				$numPepStrg='&nbsp;'.$quantifValues{$quantif}{$proteinID}{$numPepCode}.'&nbsp;' unless $numPepStrg; # if not PROT_ABUNDANCE with sites
 				my $quantifValueStrg='';
-				if ($quantifFamily eq 'MQ') {
-					my $intensity=$quantifValues{$quantif}{$proteinID}{MQ_INT} || '-';
-					my $iBaq=$quantifValues{$quantif}{$proteinID}{MQ_IBAQ} || '-';
-					my $lfq=$quantifValues{$quantif}{$proteinID}{MQ_LFQ} || '-';
-					$quantifValueStrg="<TH align=\"right\">&nbsp;$intensity&nbsp;</TH><TH align=\"right\">&nbsp;$iBaq&nbsp;</TH><TH align=\"right\">&nbsp;$lfq&nbsp;</TH>";
+				foreach my $refMeasInfo (@{$proteinQuantifFamilies{'MEASURES'}{$quantifFamily}}) {
+					my $measCode=$refMeasInfo->[0];
+					next unless $usedMeasures{$quantifFamily}{$measCode}; # measure is not used at all
+					$quantifValueStrg.="<TH align=\"right\">";
+					if ($isModifQuantif) {
+						foreach my $modProtID (keys %{$quantifValues{$quantif}}) {
+							my $measValue=$quantifValues{$quantif}{$modProtID}{$measCode} || '-';
+							$quantifValueStrg.="&nbsp;$measValue&nbsp;<BR>";
+						}
+					}
+					else {
+						my $measValue=$quantifValues{$quantif}{$proteinID}{$measCode} || '-';
+						$quantifValueStrg.="&nbsp;$measValue&nbsp;";
+					}
+					$quantifValueStrg.="</TH>";
 				}
-				elsif ($quantifFamily eq 'EMPAI') {
-					my $empai=(defined($quantifValues{$quantif}{$proteinID}{EMPAI}))? $quantifValues{$quantif}{$proteinID}{EMPAI} : '-';
-					my $empaiMol=(defined($quantifValues{$quantif}{$proteinID}{EMPAI_MOL}))? $quantifValues{$quantif}{$proteinID}{EMPAI_MOL} : '-';
-					my $empaiMr=(defined($quantifValues{$quantif}{$proteinID}{EMPAI_MR}))? $quantifValues{$quantif}{$proteinID}{EMPAI_MR} : '-';
-					$quantifValueStrg="<TH align=\"right\">&nbsp;$empai&nbsp;</TH><TH align=\"right\">&nbsp;$empaiMol&nbsp;</TH><TH align=\"right\">&nbsp;$empaiMr&nbsp;</TH>";
-				}
-				elsif ($quantifFamily eq 'SIN') {
-					my $sin=$quantifValues{$quantif}{$proteinID}{SIN_SIN} || '-';
-					$quantifValueStrg="<TH align=\"right\">&nbsp;$sin&nbsp;</TH>";
-				}
-				#my $quantifValue=sprintf '%.2e',$quantifValues{$quantifID};
+				#elsif ($quantifFamily eq 'MQ') {
+				#	my $intensity=$quantifValues{$quantif}{$proteinID}{MQ_INT} || '-';
+				#	my $iBaq=$quantifValues{$quantif}{$proteinID}{MQ_IBAQ} || '-';
+				#	my $lfq=$quantifValues{$quantif}{$proteinID}{MQ_LFQ} || '-';
+				#	$quantifValueStrg="<TH align=\"right\">&nbsp;$intensity&nbsp;</TH><TH align=\"right\">&nbsp;$iBaq&nbsp;</TH><TH align=\"right\">&nbsp;$lfq&nbsp;</TH>";
+				#}
+				#elsif ($quantifFamily eq 'EMPAI') {
+				#	my $empai=(defined($quantifValues{$quantif}{$proteinID}{EMPAI}))? $quantifValues{$quantif}{$proteinID}{EMPAI} : '-';
+				#	my $empaiMol=(defined($quantifValues{$quantif}{$proteinID}{EMPAI_MOL}))? $quantifValues{$quantif}{$proteinID}{EMPAI_MOL} : '-';
+				#	my $empaiMr=(defined($quantifValues{$quantif}{$proteinID}{EMPAI_MR}))? $quantifValues{$quantif}{$proteinID}{EMPAI_MR} : '-';
+				#	$quantifValueStrg="<TH align=\"right\">&nbsp;$empai&nbsp;</TH><TH align=\"right\">&nbsp;$empaiMol&nbsp;</TH><TH align=\"right\">&nbsp;$empaiMr&nbsp;</TH>";
+				#}
+				#elsif ($quantifFamily eq 'SIN') {
+				#	my $sin=$quantifValues{$quantif}{$proteinID}{SIN_SIN} || '-';
+				#	$quantifValueStrg="<TH align=\"right\">&nbsp;$sin&nbsp;</TH>";
+				#}
+				my $stateStrg=($labelChannels{$quantif})? '&nbsp;>&nbsp;'.$labelChannels{$quantif} : ''; # MQ with labeling only
 				print qq
 |<TR bgcolor="$bgColor" class="list">
-<TH nowrap align="left" valign=top>&nbsp;$quantifNameStrg$quantifHierarchy{$quantif}[1]&nbsp;</TH>$quantifValueStrg<TH>&nbsp;$quantifValues{$quantif}{$proteinID}{PEPTIDES}&nbsp;</TH></TR>
+<TH nowrap align="left" valign=top>&nbsp;$quantifNameStrg$quantifHierarchy{$quantif}[1]$stateStrg&nbsp;$siteStrg</TH>$quantifValueStrg<TH>$numPepStrg</TH></TR>
 |;
 				$bgColor=($bgColor eq $color1)? $color2 : $color1;
 			}
@@ -2837,6 +3151,15 @@ sub ajaxDisplayProtFullDesc {
 }
 
 ####>Revision history<####
+# 3.5.3 [UPDATE] For MySQL8 compatibility (PP 20/01/21)
+# 3.5.2 [BUGFIX] Increased group_concat size in &ajaxUpdateConnectedProteins to prevent retrieval of truncated peptide ids string (PP 17/08/20)
+# 3.5.1 [BUGFIX] Add forgotten State name for Abundance quantif (PP 12/08/20)
+# 3.5.0 [ENHANCEMENT] Uses quantification data from SQLite file & handles Protein Abundance (PP 09/07/20)
+# 3.4.3 [FEATURE] Handles PtmRS PTMs probabilities displaying (VS 06/06/20)
+# 3.4.2 [FEATURE] Handles Spectronaut PTMs probabilities displaying (VS 06/06/20)
+# 3.4.1 [ENHANCEMENT] Analyses are ordered based on projet hierarchy in peptide distribution table (PP 10/04/20)
+# 3.4.0 [FEATURE] New option for detailed peptide distribution among a selected set of proteins (PP 10/04/20)
+# 3.3.5 [UPDATE] Changed RANK field to IDENT_RANK for compatibility with MySQL 8 (PP 04/03/20) 
 # 3.3.4 [MODIF] Minor modif on skyline fileFormat to be consistent with handling of .sky files (VL 20/11/19)
 # 3.3.3 [FEATURE] Applies Quantification visibility filter (PP 30/09/19)
 # 3.3.2 [MODIF] Display peptide score with precision to the thousandth (%.3f) when relevant (VL 12/09/19)

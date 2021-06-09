@@ -1,6 +1,6 @@
 #!/usr/local/bin/perl -w
 ################################################################################
-# startMotifAnalysis.cgi       1.1.1                                           #
+# startMotifAnalysis.cgi       1.1.2                                           #
 # Authors: P. Poullet, S.Liva  (Institut Curie)         					   #
 # Contact: myproms@curie.fr                                                    #
 # Fetch and provide proteins and parameters for Motif enrichment analysis      #
@@ -61,6 +61,11 @@ my $expID = &promsMod::cleanNumericalParameters(param('id_exp'));
 my $projectID=&promsMod::getProjectID($dbh,$expID,'EXPERIMENT');
 my $ajax = param('AJAX') || "";
 my $idModification=&promsMod::cleanNumericalParameters(param('modif')) || 0; # 'MODIF' used only when called startExploratoryAnalysis.cgi through AJAX
+
+####>Fetching user information<####
+my @userInfo = &promsMod::getUserInfo($dbh, $userID, $projectID);
+my $projectAccess = ${$userInfo[2]}{$projectID};
+my $projectGuestAccess = ($projectAccess eq 'guest')? 1 : 0;
 
 if ($ajax eq 'displayListModif') {
 	&ajaxDisplayListModif($idModification);
@@ -300,8 +305,8 @@ var modifInfo = {};
 foreach my $modID (sort{$a <=> $b} keys %modifInfo) {
 	print "modifInfo[$modID]='$modifInfo{$modID}[1]';\n";
 }
-print qq|
-//AJAX
+print qq
+|// AJAX
 var XHR = null;
 function getXMLHTTP() {
     var xhr = null;
@@ -354,14 +359,14 @@ function ajaxDisplayData(item) {
 	var modID=document.getElementById('modif').value;
 	createOptionResidues(modID);
 
-	//Ajax
-	//If XHR object already exists, the request is canceled & the object is deleted
+	// Ajax
+	// If XHR object already exists, the request is canceled & the object is deleted
 	if (XHR && XHR.readyState != 0) {
 		XHR.abort();
 		delete XHR;
 	}
 
-	//Creation of the XMLHTTPRequest object
+	// Creation of the XMLHTTPRequest object
 	XHR = getXMLHTTP();
 	if ( !XHR ) {
 		return false;
@@ -381,7 +386,7 @@ function ajaxDisplayData(item) {
 		quantifDiv.innerHTML='<INPUT type="radio" name="background" id="quant" value="quanti">&nbsp;quantification selected&nbsp;<BR>'
 	}
 	else {
-		//if (document.getElementById('FG_FILTER').style.display = ''){document.getElementById('FG_FILTER').style.display='none';}
+		// if (document.getElementById('FG_FILTER').style.display = ''){document.getElementById('FG_FILTER').style.display='none';}
 		document.getElementById('FG_FILTER').style.display='none';
 
 		XHR.open("GET","./startMotifAnalysis.cgi?AJAX=displayListModif&modif="+modID+"&id_exp=$expID",false);
@@ -399,13 +404,13 @@ function ajaxDisplayBackground (modID) {
 
 	var quantifDiv=document.getElementById('displayQuantif');
 
-	//Ajax
-	//If XHR object already exists, the request is canceled & the object is deleted
+	// Ajax
+	// If XHR object already exists, the request is canceled & the object is deleted
 	if (XHR && XHR.readyState != 0) {
 		XHR.abort();
 		delete XHR;
 	}
-	//Creation of the XMLHTTPRequest object
+	// Creation of the XMLHTTPRequest object
 	XHR = getXMLHTTP();
 	if ( !XHR ) {
 		return false;
@@ -466,7 +471,16 @@ function checkForm(myForm) {
 </HEAD>
 <BODY background="$promsPath{images}/bgProMS.gif">
 <CENTER><FONT class="title">Motif Enrichment Analysis</FONT><BR><BR><BR>
-<FORM name="motifAnaForm" method="POST" onsubmit="return(checkForm(this));">
+|;
+
+if ($projectGuestAccess) {  # Guest users cannot start motif analysis
+	print qq
+|<FONT class="title2">Your guest status does not allow you to start a Motif Analysis.<BR>You may only check the results of existing analyses.</FONT>
+|;
+
+} else {
+	print qq
+|<FORM name="motifAnaForm" method="POST" onsubmit="return(checkForm(this));">
 <INPUT type="hidden" name="id_exp" value="$expID">
 <TABLE border="0" bgcolor="$darkColor" >
 	<TR>
@@ -477,11 +491,12 @@ function checkForm(myForm) {
 		<TH align="right" class="title2" nowrap>Modification :</TH>
 		<TD bgcolor=$lightColor>
 		  <SELECT  name="modif" id="modif" class="title2" onchange="displayForegroundMenu(this.value)">
-			<OPTION value="">-= Select =-</OPTION>|;
-foreach my $modID (keys %allModif) {
-	print "<OPTION value=\"$modID\">$allModif{$modID}</OPTION>\n";
-}
-print qq
+			<OPTION value="">-= Select =-</OPTION>
+|;
+	foreach my $modID (keys %allModif) {
+		print "<OPTION value=\"$modID\">$allModif{$modID}</OPTION>\n";
+	}
+	print qq
 |		  </SELECT>
 		</TD>
 	</TR>
@@ -535,7 +550,11 @@ print qq
 	</TR>
 </TABLE>
 </FORM>
-</CENTER>
+|;
+}
+
+print qq
+|</CENTER>
 </BODY>
 |;
 
@@ -836,6 +855,7 @@ sub fetchProtMod {
 
 
 ####>Revision history<####
+# 1.1.2 [BUGFIX] Disable creation of analysis for guest users (VL 28/01/21)
 # 1.1.1 [ENHANCEMENT] Removed useless data ref in &promsQuantif::fetchQuantificationData (PP 15/07/19)
 # 1.1.0 Improved check of form submission and code (PP 04/04/19)
 # 1.0.2 change character -> residue (SL 14/03/18)

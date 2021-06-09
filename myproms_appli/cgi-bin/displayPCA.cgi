@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# displayPCA.cgi       1.2.6                                                   #
+# displayPCA.cgi       1.2.21                                                  #
 # Authors: P. Poullet, S.Liva (Institut Curie)      	                       #
 # Contact: myproms@curie.fr                                                    #
 # display and store the results of PCA analysis        	                       #
@@ -57,7 +57,7 @@ use utf8; # Tells Perl that characters are UTF8. Necessary for Excel export to w
 #######################
 ####>Configuration<####
 #######################
-#print header(-'content-encoding'=>'no',-charset=>'utf-8'); warningsToBrowser(1); # DEBUG
+#print header(-'content-encoding'=>'no',-charset=>'utf-8'); warningsToBrowser(1); # DEBUG (WARNING affects highlighting match)
 my %promsPath=&promsConfig::getServerInfo;
 my $userID=$ENV{'REMOTE_USER'};
 my ($explorID,$experimentID) = &promsMod::cleanNumericalParameters(param('explorID'),param('experimentID'));
@@ -79,35 +79,25 @@ my $disabSave=($projectAccess eq 'guest')? ' disabled' : '';
 
 
 #my $selQuantifModif=0;
-my ($quantifListStrg,%quantificationIDs); # also needed by &changeDimensions
-#my $sthSelExplorQuantif = $dbh -> prepare("SELECT Q.ID_QUANTIFICATION,TARGET_POS,ID_MODIFICATION FROM EXPLORANA_QUANTIF EA,QUANTIFICATION Q WHERE EA.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND ID_EXPLORANALYSIS = $explorID ORDER BY ID_QUANTIFICATION,TARGET_POS");
-#$sthSelExplorQuantif -> execute;
-#while (my($quantifID, $targetPos, $modifID) = $sthSelExplorQuantif -> fetchrow_array) {
-#    $quantifListStrg.=':' if $quantifListStrg;
-#    $quantifListStrg.=$quantifID."_".$targetPos;
-#    $quantificationIDs{$quantifID}=1;
-#	$selQuantifModif=$modifID if $modifID;
-#}
-#$sthSelExplorQuantif -> finish;
-
+my $quantifListStrg='';
+my %quantificationIDs;
 my $isPtmQuantif=0;
 my %ptmUsed;
-my $sthSelExplorQuantif=$dbh->prepare("SELECT Q.ID_QUANTIFICATION,GROUP_CONCAT(DISTINCT TARGET_POS ORDER BY TARGET_POS SEPARATOR '_'),CONCAT(COALESCE(Q.ID_MODIFICATION,'0'),',',COALESCE(GROUP_CONCAT(DISTINCT MQ.ID_MODIFICATION SEPARATOR ','),'0'))
+
+$dbh->do("SET SESSION group_concat_max_len = 1000000");
+my $sthSelExplorQuantif=$dbh->prepare("SELECT Q.ID_QUANTIFICATION,GROUP_CONCAT(TARGET_POS ORDER BY TARGET_POS SEPARATOR '_'),Q.ID_MODIFICATION,GROUP_CONCAT(DISTINCT MQ.ID_MODIFICATION ORDER BY MQ.MODIF_RANK SEPARATOR ',')
 								FROM QUANTIFICATION Q
 								LEFT JOIN MULTIMODIF_QUANTIFICATION MQ ON Q.ID_QUANTIFICATION=MQ.ID_QUANTIFICATION
 								INNER JOIN EXPLORANA_QUANTIF EQ ON EQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION
 								WHERE ID_EXPLORANALYSIS=? GROUP BY Q.ID_QUANTIFICATION");
-$sthSelExplorQuantif -> execute($explorID);
-while (my($quantifID,$targetPos,$ptmStrg) = $sthSelExplorQuantif -> fetchrow_array) {
+$sthSelExplorQuantif->execute($explorID);
+while (my ($quantifID,$targetPosStrg,$quantifModID,$multiModifStrg) = $sthSelExplorQuantif->fetchrow_array) {
     $quantifListStrg.=':' if $quantifListStrg;
-    $quantifListStrg.=$quantifID."_".$targetPos;
+    $quantifListStrg.=$quantifID."_".$targetPosStrg;
     $quantificationIDs{$quantifID}=1;
-    next if $ptmStrg eq '0,0'; # no PTM quantif
-    foreach my $modID (split(',',$ptmStrg)) {
-        $ptmUsed{$modID}=1 if $modID;
-    }
+	($isPtmQuantif,my $isMultiModifQuantif)=&promsQuantif::getQuantifModificationInfo($dbh,$quantifModID,$multiModifStrg,{},\%ptmUsed);
 }
-$sthSelExplorQuantif -> finish;
+$sthSelExplorQuantif->finish;
 
 my $featureItems='Proteins';
 if (scalar keys %ptmUsed) {
@@ -175,7 +165,7 @@ while (my ($goID,$name,$aspectStrg,$parentGoID) = $sthGO -> fetchrow_array) {
 $sthGO -> finish;
 
 ##PATHWAY ANALYSES
-my $sthPA=$dbh->prepare("SELECT ID_PATHWAY_ANALYSIS, ID_CATEGORY, NAME, PARAM_STRG FROM PATHWAY_ANALYSIS WHERE ID_EXPERIMENT=$experimentID AND STATUS>0");
+my $sthPA=$dbh->prepare("SELECT ID_PATHWAY_ANALYSIS, ID_CATEGORY, NAME, PARAM_STRG FROM PATHWAY_ANALYSIS WHERE ID_EXPERIMENT=$experimentID AND STATUS>0 AND ANALYSIS_TYPE='PATHWAY'");
 $sthPA->execute;
 while (my ($pathID, $catID, $name, $paramStrg)=$sthPA->fetchrow_array) {
     $catID = (!$catID)? "" : $catID;
@@ -228,7 +218,7 @@ print qq
 <SCRIPT src="$promsPath{html}/js/other/canvg.js"></SCRIPT>
 <SCRIPT src="$promsPath{html}/js/other/svgfix-0.2.js"></SCRIPT>
 <SCRIPT src="$promsPath{html}/js/other/rgbcolor.js"></SCRIPT>
-<SCRIPT language="JavaScript">
+<SCRIPT type="text/javascript">
 |;
 &promsMod::popupInfo();
 print qq
@@ -250,17 +240,6 @@ function displayFull3D() {
 	myForm.submit();
 	full3dWindow.focus();
 }
-
-function toggleValueDistribution() {
-	var graph = document.getElementById('valueDistribution');
-	var isDisplayed = (graph.style.display == '');
-	graph.style.display = (isDisplayed) ? 'none' : '';
-	
-	
-	var displayButton = document.getElementById('valueDistributionButton');
-	displayButton.innerHTML = (isDisplayed) ? 'Display values distribution' : 'Hide values distribution';
-}
-
 function editDeleteHighligth(name, action, newName) {
     if (action=='delete') {
         var pos = annotSetObject[name].position;
@@ -487,7 +466,7 @@ function ajaxPropDecorateGraph(params,saved,jobRank) {
                 var selData=selPropInfo.split(':'); // property:O:propID
                 var propInfo=propValueData.split(':=:'); // propID:selected value
                 var hlName=(selData[1]=='O')? propValueText+' ['+propName+']' : propName+': '+propValueText; // propInfo[1]+' ['+propName+']';
-                if (addHighlighting(PCA,hlName,colorList[colorIndex],{'-1':XHR.responseText.split(';')},'^###(\$\|%)')) {
+				if (addHighlighting(PCA,hlName,colorList[colorIndex],{'-1':XHR.responseText.split(';')},'^###(\$\|%)')) {
                     rank++;
                     annotSetObject[hlName] = {
 						color:colorList[colorIndex],
@@ -505,7 +484,9 @@ function ajaxPropDecorateGraph(params,saved,jobRank) {
                 }
             }
             else {alert('No match found!');}
-			if (jobRank) {jobProcessed=jobRank;}
+			
+			/* Launch next job (if any) */
+			launchNextJob(jobRank);
         }
     }
     XHR.send(paramStrg);
@@ -578,11 +559,11 @@ function ajaxUpdateGoTermList(goIdStrg) {
 }
 
 function ajaxGoDecorateGraph(termValue,termTxt) { // called ajax call to showProtQuantification.cgi
-	ajaxMyGoDecorateGraph([termValue,termTxt]); // parameter conversion required for compatibility with restoreSavedHighlightings
+	ajaxMyGoDecorateGraph([termValue,termTxt]); // parameter conversion required for compatibility with highlightPCA()
 }
 function ajaxMyGoDecorateGraph(params,saved,jobRank) {
 	var [termValue,termTxt]=params;
-    var binArray=new Array();
+    var binArray=[];
     binArray=termValue.split(',');
     var nbElem=binArray.length;
 
@@ -626,7 +607,9 @@ function ajaxMyGoDecorateGraph(params,saved,jobRank) {
                 if (!saved) document.getElementById('saveButton').style.display = '';
             }
             else {colorIndex--;}
-			if (jobRank) {jobProcessed=jobRank;}
+			
+			/* Launch next job (if any) */
+			launchNextJob(jobRank);
         }
     }
     XHR.send(null);
@@ -685,7 +668,9 @@ function ajaxListDecorateGraph(params,saved,jobRank) {
                 else {colorIndex--;}
             }
             else {alert('List is empty!');}
-			if (jobRank) {jobProcessed=jobRank;}
+			
+			/* Launch next job (if any) */
+			launchNextJob(jobRank);
         }
     }
     XHR.send(null);
@@ -704,7 +689,7 @@ function ajaxGetPathwayList(pathID) {
     if (!XHR) {
         return false;
     }
-    XHR.open("GET","$promsPath{cgi}/runAndDisplayPathwayAnalysis.cgi?AJAX=ajaxGetPathway&FROM=PCA&ID="+pathID,true);
+    XHR.open("GET","$promsPath{cgi}/displayPathwayAnalysis.cgi?AJAX=ajaxGetPathway&FROM=PCA&ID="+pathID,true);
     XHR.onreadystatechange=function() {
         if (XHR.readyState==4 && XHR.responseText) {
             termsDiv.innerHTML=XHR.responseText;
@@ -726,7 +711,7 @@ function ajaxGetPathwayProteinsList(params,saved,jobRank) {
     if (!XHR) {
         return false;
     }
-    XHR.open("GET","$promsPath{cgi}/runAndDisplayPathwayAnalysis.cgi?AJAX=ajaxListProt&ID="+pathID+"&FROM=PCA&reactNumber="+value,true);
+    XHR.open("GET","$promsPath{cgi}/displayPathwayAnalysis.cgi?AJAX=ajaxListProt&ID="+pathID+"&FROM=PCA&reactNumber="+value,true);
     XHR.onreadystatechange=function() {
         if (XHR.readyState==4 && XHR.responseText) {
             colorIndex++;
@@ -738,7 +723,9 @@ function ajaxGetPathwayProteinsList(params,saved,jobRank) {
                 if (!saved) document.getElementById('saveButton').style.display = '';
             }
             else {colorIndex--;}
-			if (jobRank) {jobProcessed=jobRank;}
+			
+			/* Launch next job (if any) */
+			launchNextJob(jobRank);
         }
     }
     XHR.send(null);
@@ -883,15 +870,16 @@ while (<CONTRIB>) {
     next if $. == 1;
     chomp;
     my ($dim, $contribValue) = split("\t",$_);
-    last if ($. > 4 && $contribValue < 5);
+    #last if ($. > 4 && $contribValue < 5);
     $dimContribution{$dim} = sprintf"%.2f",$contribValue;
+	last if $. == 11; # 10th dim max
 }
-close (CONTRIB);
+close CONTRIB;
 my $numDimensions=scalar keys %dimContribution;
 my $stringPCA=&changeDimensions(1,2,3,'true'); # 1st dim, 2nd dim, 3rd dim, true:, transpo or not
 my $pcaTarget=($pcaType=~/^quantif/)? 'Quantifications' : $featureItems; #'Proteins';
 print qq
-|<SCRIPT language="JavaScript">
+|<SCRIPT type="text/javascript">
 var colorList = ['#0000FF','#4AA02C','#F660AB','#FBB917','#8AFB17','#9A9A9A','#7E2217','#95B9C7','#E18B6B'];
 var colorIndex = -1;
 var PCA;
@@ -915,16 +903,28 @@ print qq
     PCA.addDataAsString('$stringPCA');
     PCA.draw();
 }
-function highlightPCA() {
+function highlightPCA(jobRank=1) {
+	if (jobList[jobRank]) {
+		let [hlFunction,params]=jobList[jobRank];
+		hlFunction(params,true,jobRank);
+	}
+}
+function launchNextJob(jobRank) {
+	if (jobRank) {
+		jobRank++; // next job
+		if (jobList[jobRank]) {highlightPCA(jobRank);}
+	}
+}
+var jobList={};
 |;
 
 ###>Restoring saved highlights<###
-my $sthSelectAnnot = $dbh -> prepare("SELECT NAME, RANK, ANNOT_TYPE, ANNOT_LIST FROM ANNOTATIONSET WHERE ID_EXPLORANALYSIS = $explorID ORDER BY RANK");
+my $sthSelectAnnot = $dbh -> prepare("SELECT NAME,ANNOT_RANK,ANNOT_TYPE,ANNOT_LIST FROM ANNOTATIONSET WHERE ID_EXPLORANALYSIS = $explorID ORDER BY ANNOT_RANK");
 my $sthProperty=$dbh->prepare("SELECT NAME FROM PROPERTY WHERE ID_PROPERTY=?");
 $sthSelectAnnot -> execute;
 my $jobRank=0;
 while (my ($name, $rank, $annotType, $annotList) = $sthSelectAnnot -> fetchrow_array) {
-$jobRank++;
+	$jobRank++;
     #my ($color, $selValue) = split("=", $annotList);
     if ($pcaType=~/^quantif/) {
         #print "displayParamLabel('$annotType','$annotList','$name',true);\n";
@@ -936,8 +936,8 @@ $jobRank++;
             $sthProperty -> execute($propID);
             my ($propName)=$sthProperty -> fetchrow_array;
             next unless $propName; # to be safe in case property has been deleted
-            #print "\tajaxPropDecorateGraph('$annotList','$propValueText','$annotType:$propID','$propName',true);\n";
-			print "\trestoreSavedHighlightings($jobRank,ajaxPropDecorateGraph,['$annotList','$propValueText','$annotType:$propID','$propName']);\n";
+			#print "\trestoreSavedHighlightings($jobRank,ajaxPropDecorateGraph,['$annotList','$propValueText','$annotType:$propID','$propName']);\n";
+			print "jobList[$jobRank]=[ajaxPropDecorateGraph,['$annotList','$propValueText','$annotType:$propID','$propName']];\n";
         }
     }
     elsif ($pcaType =~ /^prot/ && $annotType=~ /^prot:/) {
@@ -946,19 +946,19 @@ $jobRank++;
             $termText=~ s/\s+$//;
             $name=~s/^#//; # remove GOanaID tag
             my $termValue=$name;
-            #print "\tajaxGoDecorateGraph('$termValue','$termText',true);\n";
-			print "\trestoreSavedHighlightings($jobRank,ajaxMyGoDecorateGraph,['$termValue','$termText']);\n";
+			#print "\trestoreSavedHighlightings($jobRank,ajaxMyGoDecorateGraph,['$termValue','$termText']);\n";
+			print "jobList[$jobRank]=[ajaxMyGoDecorateGraph,['$termValue','$termText']];\n";
          }
         elsif ($annotType eq 'prot:LIST') {
             my ($listID)=($name=~/^#(\d+)/); # extract cat ID
-            #print "\tajaxListDecorateGraph($listID,true);\n";
-			print "\trestoreSavedHighlightings($jobRank,ajaxListDecorateGraph,[$listID]);\n";
+			#print "\trestoreSavedHighlightings($jobRank,ajaxListDecorateGraph,[$listID]);\n";
+			print "jobList[$jobRank]=[ajaxListDecorateGraph,[$listID]];\n";
         }
         elsif ($annotType eq 'prot:PA') {
             $name=~s/^#//;
             my ($pathID, $reactNumber)=split(",", $name);
-            #print "\tajaxGetPathwayProteinsList('$reactNumber',$pathID,'$annotList',true);\n";
-			print "\trestoreSavedHighlightings($jobRank,ajaxGetPathwayProteinsList,['$reactNumber',$pathID,'$annotList']);\n";
+			#print "\trestoreSavedHighlightings($jobRank,ajaxGetPathwayProteinsList,['$reactNumber',$pathID,'$annotList']);\n";
+			print "jobList[$jobRank]=[ajaxGetPathwayProteinsList,['$reactNumber',$pathID,'$annotList']];\n";
         }
     }
 }
@@ -968,25 +968,19 @@ $sthProperty -> finish;
 $dbh -> disconnect;
 my ($selQuantif,$selQuantifSc,$selProt,$selProtSc)=($pcaType eq 'quantif')? ('selected','','','') : ($pcaType eq 'quantif_sc')? ('','selected','','') : ($pcaType eq 'prot')? ('','','selected','') : ('','','','selected');
 print qq
-|}
-var jobProcessed=0;
-function restoreSavedHighlightings(jobRank,hlFunction,params) {
-	if (jobProcessed==jobRank-1) { // Good to go
-		hlFunction(params,true,jobRank);
-	}
-	else { // wait & try again
-		setTimeout(function(){restoreSavedHighlightings(jobRank,hlFunction,params);},500);
-	}
-}
-</SCRIPT>
+|</SCRIPT>
 <TABLE cellspacing=0>
     <TR class="row_0">
-        <TH class="title3" nowrap>&nbsp;PCA on:
+        <TH class="title3" nowrap>&nbsp;PCA type:
             <SELECT class="title3" name="selectPCA" onchange="displayPCAdata(this.value)">
+			<!-- Protein/site PCAs are no longer computed
                 <OPTION value="quantif" $selQuantif>Quantifications</OPTION>
                 <OPTION value="quantif_sc" $selQuantifSc>Quantifications [scaled PCA]</OPTION>
                 <OPTION value="prot" $selProt>$featureItems</OPTION>
                 <OPTION value="prot_sc" $selProtSc>$featureItems [scaled PCA]</OPTION>
+			-->
+				<OPTION value="quantif" $selQuantif>Unscaled</OPTION>
+                <OPTION value="quantif_sc" $selQuantifSc>Scaled</OPTION>
             </SELECT>
         </TH>
         <TH nowrap>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Show:</TH>
@@ -1146,17 +1140,6 @@ print qq
 							<INPUT type="button" id="saveButton" style="font-weight:bold;display:none" onclick="ajaxSaveAnnotations()" value="Save highlights"$disabSave>
 							<SPAN id="saveSPAN" class="title3" style="color:#FFF;background-color:#387D38;padding:1px 7px;display:none">Highlights saved !</SPAN>
 						</TH></TR>
-|;
-
-my $distribPlotPath = "$promsPath{explorAna_html}/project_$projectID/$explorID/";
-print qq |
-						<TR><TH>
-							<button id='valueDistributionButton' onclick='toggleValueDistribution();' />Display values distribution</button><br/>
-							<img src='$distribPlotPath/valueDistribution.png' id='valueDistribution' style='display:none' />
-						</TH></TR>
-| if(-e "$pathToFile/valueDistribution.png");
-
-print qq |
 					</TABLE>
 	</TD>
     </TR>
@@ -1221,8 +1204,8 @@ sub changeDimensions {
 #		$sthProt=$dbh->prepare("SELECT ALIAS FROM PROTEIN WHERE ID_PROTEIN=?");
 #    }
 	
- my $oldSingleModID=(keys %ptmUsed)[0]; # in case of old single PTM-site format
- my %protIdList;
+	my $oldSingleModID=(keys %{$ptmUsed{NAME}})[0]; # in case of old single PTM-site format
+	my %protIdList;
     my %coordFiles=(prot=>'protCoordinates.txt',prot_sc=>'protCoordinates_sc.txt',quantif=>'quantifCoordinates.txt',quantif_sc=>'quantifCoordinates_sc.txt');
     my @coord;
 	my $coordIdx=0;
@@ -1234,12 +1217,12 @@ sub changeDimensions {
         my (@infoLine) = split("\t", $lineCoord);
         my $alias;
         if ($pcaType=~/^prot/) {
-			my ($protID,$modStrg)=split('-',$infoLine[0]);
+			my ($protID,$modStrg)=($infoLine[0]=~/^(\d+)-?(.*)/);
 			#unless ($protList{$protID}) {
 			#	$sthProt->execute($protID);
 			#	($protList{$protID})=$sthProt->fetchrow_array;
 			#}
-			if ($modStrg && $modStrg !~ /^\d+:/) { # no starting modifID => old single PTM format
+			if ($modStrg && $modStrg !~ /^-?\d+:/) { # no starting modifID => old single PTM format // potential Free res (-1:...)
 				$modStrg=$oldSingleModID.':'.$modStrg;
 				$infoLine[0]=$protID.'-'.$modStrg;
 			}
@@ -1277,33 +1260,35 @@ sub changeDimensions {
     close(COORD);
 	#$sthProt->finish if $pcaType=~/^prot/;
 
-if ($return eq 'true' && $pcaType=~/^prot/) {
-	
-	my %quantifModifInfo;
-	if ($isPtmQuantif) {
-		my @quantifModifs=keys %ptmUsed;
-		&promsQuantif::getQuantifModificationInfo($dbh,\@quantifModifs,\%quantifModifInfo);
-	}
-	
-	my $protIdStrg=join(',',keys %protIdList);
-	my $sthProt=$dbh->prepare("SELECT ID_PROTEIN,ALIAS FROM PROTEIN WHERE ID_PROTEIN IN ($protIdStrg)");
-	$sthProt->execute;
-	while (my ($protID,$alias)=$sthProt->fetchrow_array) {
-		foreach my $refModCode (@{$protIdList{$protID}}) {
-			my ($coordIdx,$modCode)=@{$refModCode};
-			my $proteinName;
-			if ($modCode) {
-				my ($formatCode,$displayCode)=&promsQuantif::formatProteinModificationSites($modCode,\%quantifModifInfo,'text');
-				$proteinName=$alias.'-'.$displayCode;
+	if ($return eq 'true' && $pcaType=~/^prot/) {
+		
+		# my %quantifModifInfo;
+		# if ($isPtmQuantif) {
+		# 	my @quantifModifs=keys %ptmUsed;
+		# 	&promsQuantif::getQuantifModificationInfo($dbh,\@quantifModifs,\%quantifModifInfo);
+		# }
+		
+		my $protIdStrg=join(',',keys %protIdList);
+		my $sthProt=$dbh->prepare("SELECT ID_PROTEIN,ALIAS FROM PROTEIN WHERE ID_PROTEIN IN ($protIdStrg)");
+		$sthProt->execute;
+		while (my ($protID,$alias)=$sthProt->fetchrow_array) {
+			foreach my $refModCode (@{$protIdList{$protID}}) {
+				my ($coordIdx,$modCode)=@{$refModCode};
+				my $proteinName;
+				if ($modCode) {
+					#my ($formatCode,$displayCode)=&promsQuantif::formatProteinModificationSites($modCode,\%quantifModifInfo,'text');
+					my $displayCode=&promsQuantif::displayModificationSites($modCode,$ptmUsed{DISPLAY},'text');
+                    $proteinName=$alias.'-'.$displayCode;
+				}
+				else {$proteinName=$alias;}
+				$coord[$coordIdx]=~s/^$protID/$proteinName/;
 			}
-			else {$proteinName=$alias;}
-			$coord[$coordIdx]=~s/^$protID/$proteinName/;
 		}
+		$sthProt->finish;
 	}
-	$sthProt->finish;
-}
 
     my $stringScale = join(";",@coord);
+	$stringScale=~s/'/./g; $stringScale=~s/"/./g;
     if ($return eq 'false') {print $stringScale;}
     else {return $stringScale;}
 }
@@ -1518,7 +1503,7 @@ sub ajaxSaveAnnotations {
     }
 
     my ($annotSetID) = $dbh -> selectrow_array("SELECT MAX(ID_ANNOTATIONSET) FROM ANNOTATIONSET");
-    my $sthInsertAnnot = $dbh -> prepare("INSERT INTO ANNOTATIONSET(ID_ANNOTATIONSET,ID_EXPLORANALYSIS,NAME,RANK,ANNOT_TYPE,ANNOT_LIST) values (?,$explorID,?,?,?,?)");
+    my $sthInsertAnnot = $dbh -> prepare("INSERT INTO ANNOTATIONSET(ID_ANNOTATIONSET,ID_EXPLORANALYSIS,NAME,ANNOT_RANK,ANNOT_TYPE,ANNOT_LIST) VALUES (?,$explorID,?,?,?,?)");
 
     if (param('string')) {
         my @annotList;
@@ -1630,14 +1615,14 @@ sub fetchProteinsFromDimFile { # GLOBALS: $dbh,$pathToFile,$isPtmQuantif,%ptmUse
 	my ($dim,$siteDisplayFormat,$refProtData,$refSelList)=@_;
 	
 	###>Get PTM info if any<###
-	my %quantifModifInfo;
-	if ($isPtmQuantif) {
-		my @quantifModifs=keys %ptmUsed;
-		&promsQuantif::getQuantifModificationInfo($dbh,\@quantifModifs,\%quantifModifInfo);
-	}
+	# my %quantifModifInfo;
+	# if ($isPtmQuantif) {
+	# 	my @quantifModifs=keys %ptmUsed;
+	# 	&promsQuantif::getQuantifModificationInfo($dbh,\@quantifModifs,\%quantifModifInfo);
+	# }
 
     my %protIdList;
-    my $oldSingleModID=(keys %ptmUsed)[0]; # in case of old single PTM-site format
+    my $oldSingleModID=(keys %{$ptmUsed{NAME}})[0]; # in case of old single PTM-site format
 
     my $protFile="$pathToFile/quantifProtDim$dim";
     $protFile.=($pcaType eq 'quantif_sc')? '_sc.txt' : '.txt';
@@ -1647,8 +1632,8 @@ sub fetchProteinsFromDimFile { # GLOBALS: $dbh,$pathToFile,$isPtmQuantif,%ptmUse
         chomp;
         my ($modProtID,$correl,$pValue)=split(/\t/,$_);
         next unless $modProtID;
-		my ($protID,$modStrg)=split('-',$modProtID); # modCode is null for whole protein quantif
-        if ($modStrg && $modStrg !~ /^\d+:/) {
+		my ($protID,$modStrg)=($modProtID=~/^(\d+)-?(.*)/); # modCode is null for whole protein quantif
+        if ($modStrg && $modStrg !~ /^-?\d+:/) { # potential Free res (-1:...)
 			$modStrg=$oldSingleModID.':'.$modStrg;
 			$modProtID=$protID.'-'.$modStrg;
 		}
@@ -1663,7 +1648,7 @@ sub fetchProteinsFromDimFile { # GLOBALS: $dbh,$pathToFile,$isPtmQuantif,%ptmUse
 	if (scalar keys %protIdList > 0) {
 		my $protIdStrg=join(',',keys %protIdList);
 		my ($GNidentID)=$dbh->selectrow_array("SELECT ID_IDENTIFIER FROM IDENTIFIER WHERE CODE='GN'");
-		my $sthProtInfo=$dbh->prepare("SELECT P.ID_PROTEIN,ALIAS,MW,PROT_DES,ORGANISM,GROUP_CONCAT(DISTINCT MI.VALUE ORDER BY RANK SEPARATOR ',')
+		my $sthProtInfo=$dbh->prepare("SELECT P.ID_PROTEIN,ALIAS,MW,PROT_DES,ORGANISM,GROUP_CONCAT(DISTINCT MI.VALUE ORDER BY IDENT_RANK SEPARATOR ',')
 										FROM PROTEIN P
 										LEFT JOIN MASTERPROT_IDENTIFIER MI ON P.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN AND MI.ID_IDENTIFIER=$GNidentID
 										WHERE P.ID_PROTEIN IN ($protIdStrg) GROUP BY P.ID_PROTEIN");
@@ -1677,8 +1662,9 @@ sub fetchProteinsFromDimFile { # GLOBALS: $dbh,$pathToFile,$isPtmQuantif,%ptmUse
 				my $modProtID=$protID;
 				my $protLabel=$alias;
 				if ($modCode) {
-					my ($formatCode,$displayCode)=&promsQuantif::formatProteinModificationSites($modCode,\%quantifModifInfo,$siteDisplayFormat);
-					$protLabel.='-'.$displayCode;
+					#my ($formatCode,$displayCode)=&promsQuantif::formatProteinModificationSites($modCode,\%quantifModifInfo,$siteDisplayFormat);
+					my $displayCode=&promsQuantif::displayModificationSites($modCode,$ptmUsed{DISPLAY},$siteDisplayFormat);
+                    $protLabel.='-'.$displayCode;
 					$modProtID.='-'.$modCode;
 				}
 				$refProtData->{$modProtID}[0]=$protLabel;
@@ -1717,9 +1703,12 @@ sub displayFull3D {
 	
 	####>Processing data<####
 	my @pointLabels=split(';',$pointLabelStrg);
-	my (%id2Index,@idList,%coord,%traces,%usedMatched);
+	my (%id2Index,@idList,%coord,%traces,%usedMatched,%norm2id);
 	foreach my $pointStrg (split(';',$pointDataStrg)) {
 		my ($id,$x,$y,$z)=split(',',$pointStrg);
+		#$id=~s/%.+//; # remove normalizing quantif if any (WARNING: highlight will not work if based on normalizing quantif)
+		($id,my $norm)=split('%',$id);
+		$norm2id{$norm}=$id if $norm;
 		push @{$coord{x}},$x;
 		push @{$coord{y}},$y;
 		push @{$coord{z}},$z;
@@ -1736,9 +1725,11 @@ sub displayFull3D {
 		my ($name,$pos,$color,$matchStrg)=split('&&',$highlight);
 		my @matched;
 		foreach my $match (split(';',$matchStrg)) {
-			next unless defined($id2Index{$match}); # eg for GO: corresponding prot IDs are not used in PCA
-			$usedMatched{$match}{$pos}=1;
-			push @matched,$match;
+			#next unless defined($id2Index{$match}); # eg for GO: corresponding prot IDs are not used in PCA
+			my $trueMatch=(defined($id2Index{$match}))? $match : ($norm2id{$match} && defined($id2Index{$norm2id{$match}}))? $norm2id{$match} : undef;
+			next unless $trueMatch;
+			$usedMatched{$trueMatch}{$pos}=1;
+			push @matched,$trueMatch;
 		}
 		%{$traces{$pos}}=(name=>$name,color=>$color,matched=>\@matched);
 	}
@@ -1770,7 +1761,7 @@ sub displayFull3D {
 </HEAD>
 <BODY background="$promsPath{images}/bgProMS.gif">
 
-<SCRIPT src="$promsPath{html}/js/plotly/plotly-gl3d-1.47.4.min.js"></SCRIPT>
+<SCRIPT src="$promsPath{html}/js/plotly/plotly-gl3d-1.47.4.js"></SCRIPT>
 <!--
 <SCRIPT src="https://cdn.plot.ly/plotly-gl3d-latest.min.js"></SCRIPT>
 -->
@@ -1906,6 +1897,21 @@ sub displayFull3D {
 }
 
 ####>Revision history<####
+# 1.2.21 [BUGFIX] Minor fix in display format used in &promsQuantif::displayModificationSites (PP 28/04/21)
+# 1.2.20 [UPDATE] Compatibility with Free residues quantifications (PP 04/12/20)
+# 1.2.19 [MODIF] Adapt query on PATHWAY_ANALYSIS to avoid GSEA entries (VL 18/11/20)
+# 1.2.18 [BUGFIX] Correct calls to script runAndDisplayPathwayAnalysis replaced by displayPathwayAnalysis (VL 18/11/20)
+# 1.2.17 [BUGFIX] Fixed truncated GROUP_CONCAT (PP 11/09/20)
+# 1.2.16 [ENHANCEMENT] Better AJAX calls chaining during saved highlightings restoration (PP 03/09/20)
+# 1.2.15 [CHANGE] Modified path to plotly script since it was changed to allow PCA 3D displaying when using a VPN browser access (VS 21/08/20)
+# 1.2.14 [CHANGE] Code change to use new &promsQuantif::getQuantifModificationInfo (PP 02/07/20)
+# 1.2.13 [BUGFIX] Remove forgotten temporary dev command (PP 27/04/20)
+# 1.2.12 [BUGFIX] in 3D view highlighting for site quantifs with protein-level normalization (PP 22/04/20)
+# 1.2.11 [ENHANCEMENT] Clean ' and " from strings given to JS (PP 23/03/20)
+# 1.2.10 [CHANGE] Max # dimensions set to 10 regardless of contribution (PP 22/03/20)
+# 1.2.9 [UPDATE] Changed RANK field to (ANNOT/IDENT)_RANK for compatibility with MySQL 8 (PP 04/03/20) 
+# 1.2.8 [BUGFIX] in SQL query leading to truncated list of TARGET_POS when too many in same quantif (PP 22/02/20)
+# 1.2.7 [CHANGE] Removed protein/site PCAs options and values distribution chart (PP 21/02/20)
 # 1.2.6 [ENHANCEMENT] Better management of quantification parameters for ajaxListProt (PP 07/01/20)
 # 1.2.5 [BUGFIX] in SQL query requiring GROUP_CONCAT for TARGET_POS & [UX] Smooth scroll to list of proteins (PP 20/11/19)
 # 1.2.4 [ENHANCEMENT] Multi-site support (PP 28/10/19)

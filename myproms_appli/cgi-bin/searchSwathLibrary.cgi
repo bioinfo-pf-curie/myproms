@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# searchSwathLibrary.cgi         1.0.10                                         #
+# searchSwathLibrary.cgi         1.1.0                                         #
 # Authors: M. Le Picard (Institut Curie)                                       #
 # Contact: myproms@curie.fr                                                    #
 #Search peptide in the libraries available in myProMS                          #
@@ -51,10 +51,10 @@ use File::Basename;
 use XML::Simple;
 use promsMod;
 use LWP::UserAgent;
-use Data::Dumper;
 use String::Util qw(trim);
 use File::Compare;
 use promsMod;
+
 my %promsPath=&promsConfig::getServerInfo;
 my ($lightColor,$darkColor)=&promsConfig::getRowColors;
 my $bgColor=$lightColor;
@@ -92,7 +92,8 @@ if ($specie){$specieLatinName=$dbh->selectrow_array("SELECT SCIENTIFIC_NAME FROM
 else{$specieLatinName=param('speciesList');}
 
 ##Library path
-my $searchFile="$promsPath{swath_lib}/SwLib_$libraryID/$selectLibraryName.sptxt";
+my $spcLibFormat = $dbh->selectrow_array("SELECT IF(PARAM_STRG LIKE '%Spectronaut%', 'SPC', 'TPP') FROM SWATH_LIB WHERE ID_SWATH_LIB=$libraryID");
+my $searchFile = ($spcLibFormat eq 'TPP') ? "$promsPath{swath_lib}/SwLib_$libraryID/$selectLibraryName.sptxt" : "$promsPath{swath_lib}/SwLib_$libraryID/$selectLibraryName.tsv";
 
 
 if (param('selectprot')){&searchLibrary(param('selectprot'),param('accessionList'),param('sequenceProt'));exit;}
@@ -109,6 +110,11 @@ print qq
 <TITLE>Search</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
 <STYLE type="text/css">
+.drawViewPept:hover {
+    text-decoration: underline;
+    cursor: pointer;
+}
+
 .row1{background-color:$lightColor;}
 .row2{background-color:$darkColor;}
 .overlapRes0 {color:black;}
@@ -184,11 +190,11 @@ print qq
     function pepView(pepId,sequence,irt,massObs,massExp,libID) {
         if (pepId != selectedPep \|\| spectWin.closed) {
             var call='lib';
-            var typefile='sptxt';
+            var typefile= ('$spcLibFormat' == 'TPP') ? 'sptxt' : 'tsv';
             var file='$searchFile';
             var irt=irt;
             selectPeptide(pepId);
-            var paramString="file="+file+"&CALL="+call+"&TYPE="+typefile+"&SEQUENCE="+sequence+"&irt="+irt+"&massObs="+massObs+"&massExp="+massExp+"&libID="+libID;
+            var paramString="file="+file+"&CALL="+call+"&TYPE="+typefile+"&SEQUENCE="+encodeURIComponent(sequence)+"&irt="+irt+"&massObs="+massObs+"&massExp="+massExp+"&libID="+libID;
             spectWin=window.open("$promsPath{cgi}/peptide_view.cgi?"+paramString,'SpectrumWindow','width=950,height=950,location=no,resizable=yes,scrollbars=yes');
         }
         spectWin.focus();
@@ -292,7 +298,7 @@ if (param('submit')){
                     limit=>10
                 };
             }   
-            #print Dumper $params;
+
             my $agent = LWP::UserAgent->new(); #env_proxy => 1
             $agent->proxy('http','http://www-cache.curie.fr:3128/');
             push @{$agent->requests_redirectable}, 'POST';
@@ -469,7 +475,7 @@ sub listMatchProt{
         $genes=join(', ',@geneName);
     }
     
-    my $peptideNumber=`grep -c $uniAC $searchFile`;
+    my $peptideNumber= ($spcLibFormat eq 'TPP') ? `grep -c $uniAC $searchFile` : `grep $uniAC $searchFile | cut -f4 | sort | uniq | wc -l`;
     chomp $peptideNumber;
    
     ####>Recovering AC numbers and sequence of the protein
@@ -513,146 +519,273 @@ sub searchLibrary{
     my (@begPeptide,@endPeptide,%proteinList);
     my (%peptideInfo,%posBegPep);
     my $seqPB=0;
-    while ($line=<INFILE>){
-        if ($line=~/^Name:(.*)/){
-            ($peptide,$charge,$sequencePeptide,$masseTot,$masseParent,$protID,$specificity,$irt,$modification)=('','','','','','','','','');
-            my @pepInfo=split("[/\]",$1);
-            ($peptide=$pepInfo[0])=~s/\s//g;
-            #$peptide=~s/\s//g;
-            #my @peptideModif=split(/n*\[\w*\]/,$peptide);
-            #if ($peptide=~m/n*\[\w*\]/) {$sequencePeptide=join("",@peptideModif); }
-            
-            if ($peptide=~m/n*\[\d*\]/) {($sequencePeptide=$peptide)=~s/n|\[\d*\]//g;}
-            else{$sequencePeptide=$peptide;}
-            $charge=$pepInfo[1];
-        }
-        elsif (substr($line,0,3) eq "MW:") {$masseTot=substr($line,4,-1);}
-        elsif (substr($line,0,12) eq "PrecursorMZ:") {$masseParent=substr($line,13,-1); }
-        elsif (substr($line,0,8) eq "Comment:") {
-            my @comment=split(' ',$line);
-            foreach my $com (@comment){
-                if(substr($com,0,4) eq "iRT="){
-                    my @irtLine=split(",",substr($com,4));
-                    $irt=$irtLine[0];
-                    $irt=$irt*1;
-                }
-                elsif(substr($com,0,5) eq "Mods="){
-                    my %modList;
-                    if (substr($com,0,6) eq "Mods=0") {$modification="-";}
-                    else{
-                        my $var=substr($com,5);
-                        my @result=&promsMod::convertVarModStringSwath($var);
-                        if (scalar @result ==1) {
-                            my @resTab=split(/!/,$result[0]);
-                            if ($resTab[2] eq "=") {$modification=$resTab[0]." ("."N-term".")";}
-                            else{$modification=" @ ".$resTab[0]." (".$resTab[1].":".$resTab[2].")";}   
-                        }
+    if($spcLibFormat eq 'TPP') {
+        while ($line=<INFILE>){
+            if ($line=~/^Name:(.*)/){
+                ($peptide,$charge,$sequencePeptide,$masseTot,$masseParent,$protID,$specificity,$irt,$modification)=('','','','','','','','','');
+                my @pepInfo=split("[/\]",$1);
+                ($peptide=$pepInfo[0])=~s/\s//g;
+                #$peptide=~s/\s//g;
+                #my @peptideModif=split(/n*\[\w*\]/,$peptide);
+                #if ($peptide=~m/n*\[\w*\]/) {$sequencePeptide=join("",@peptideModif); }
+                
+                if ($peptide=~m/n*\[\d*\]/) {($sequencePeptide=$peptide)=~s/n|\[\d*\]//g;}
+                else{$sequencePeptide=$peptide;}
+                $charge=$pepInfo[1];
+            }
+            elsif (substr($line,0,3) eq "MW:") {$masseTot=substr($line,4,-1);}
+            elsif (substr($line,0,12) eq "PrecursorMZ:") {$masseParent=substr($line,13,-1); }
+            elsif (substr($line,0,8) eq "Comment:") {
+                my @comment=split(' ',$line);
+                foreach my $com (@comment){
+                    if(substr($com,0,4) eq "iRT=") {
+                        my @irtLine=split(",",substr($com,4));
+                        $irt=$irtLine[0];
+                        $irt=$irt*1;
+                    }
+                    elsif(substr($com,0,5) eq "Mods=") {
+                        my %modList;
+                        if (substr($com,0,6) eq "Mods=0") {$modification="-";}
                         else{
-                            foreach my $res (@result){
-                                my @resTab=split(/!/,$res);
-                                if ($resTab[2] eq "=") {
-                                    $modList{$resTab[0]}{"N-term"}{""}=1;
-                                }
-                                else{$modList{$resTab[0]}{"$resTab[1]:"}{$resTab[2]}=1;}
-                            }
-                            foreach my $varMod (keys(%modList)){
-                                foreach my $res (keys ($modList{$varMod})){
-                                    if ($modification eq "") {
-                                        $modification=" @ ".$varMod." ($res".join(".",keys($modList{$varMod}{$res})).")";
-                                    }
-                                    else{
-                                        $modification=$modification." @ ".$varMod." ($res".join(".",keys($modList{$varMod}{$res})).")";
-                                    }
-                                }
-                            }
-                        }
-                    }    
-                }
-                elsif (substr($com,0,8) eq "Protein=") {
-                    my (@protIDs,@protList);
-                    if ($split==0) {
-                        @protIDs=split(/\//,substr($com,8));
-                        if ("@protIDs"=~/$searchProt/){$protID=$searchProt;}
-                        else{
-                            foreach my $ac (@accessList){
-                                if ("@protIDs"=~/$ac/) {$protID=$ac;}
-                            }
-                        }
-                        $specificity=100/$protIDs[0];
-                        shift(@protIDs);
-                        foreach my $prot (@protIDs){
-                            if ($prot=~/(tr|sp)\|(\w*)/) {
-                                push @protList,$2;
+                            my $var=substr($com,5);
+                            my @result=&promsMod::convertVarModStringSwath($var);
+                            if (scalar @result ==1) {
+                                my @resTab=split(/!/,$result[0]);
+                                if ($resTab[2] eq "=") {$modification=$resTab[0]." ("."N-term".")";}
+                                else{$modification=" @ ".$resTab[0]." (".$resTab[1].":".$resTab[2].")";}
                             }
                             else{
-                                push @protList,$prot;
+                                foreach my $res (@result){
+                                    my @resTab=split(/!/,$res);
+                                    if ($resTab[2] eq "=") {
+                                        $modList{$resTab[0]}{"N-term"}{""}=1;
+                                    }
+                                    else{$modList{$resTab[0]}{"$resTab[1]:"}{$resTab[2]}=1;}
+                                }
+                                foreach my $varMod (keys(%modList)){
+                                    foreach my $res (keys %{$modList{$varMod}}){
+                                        if ($modification eq "") {
+                                            $modification=" @ ".$varMod." ($res".join(".",keys %{$modList{$varMod}{$res}}).")";
+                                        }
+                                        else{
+                                            $modification=$modification." @ ".$varMod." ($res".join(".",keys %{$modList{$varMod}{$res}}).")";
+                                        }
+                                    }
+                                }
                             }
-                        }
-                        $specificity = sprintf("%0.1f", $specificity);
-                        $specificity=$specificity*1;
+                        }    
                     }
-                    elsif ($split==1){
-                        @protIDs=split(/\//,substr($com,10));
-                        my @numberIDs=split(/_/,$protIDs[0]);
-                        if ("@protIDs"=~/$searchProt/) {$protID=$searchProt;}
-                        else{
-                            foreach my $ac (@protIDs){
-                                if ("@accessList"=~/$ac/ ){$protID=$ac;} 
+                    elsif (substr($com,0,8) eq "Protein=") {
+                        my (@protIDs,@protList);
+                        if ($split==0) {
+                            @protIDs=split(/\//,substr($com,8));
+                            if ("@protIDs"=~/$searchProt/){$protID=$searchProt;}
+                            else{
+                                foreach my $ac (@accessList){
+                                    if ("@protIDs"=~/$ac/) {$protID=$ac;}
+                                }
                             }
-                        }
-                        $specificity=100/$numberIDs[2];
-                        shift(@protIDs);
-                        foreach my $prot (@protIDs){
-                            if ($prot=~/(tr|sp)\|(\w*)\|/) {
-                                push @protList,$2;
+                            $specificity=100/$protIDs[0];
+                            shift(@protIDs);
+                            foreach my $prot (@protIDs){
+                                if ($prot=~/(tr|sp)\|(\w*)/) {
+                                    push @protList,$2;
+                                }
+                                else{
+                                    push @protList,$prot;
+                                }
                             }
-                            else{push @protList,$prot;}
+                            $specificity = sprintf("%0.1f", $specificity);
+                            $specificity=$specificity*1;
                         }
-                        $specificity = sprintf("%0.1f", $specificity);
-                        $specificity=$specificity*1;
-                    }
-                    if ($protID && "@accessList" =~ /$protID/) {
-                        $proteinList{"$peptide\_$charge"}=\@protList;
+                        elsif ($split==1){
+                            @protIDs=split(/\//,substr($com,10));
+                            my @numberIDs=split(/_/,$protIDs[0]);
+                            if ("@protIDs"=~/$searchProt/) {$protID=$searchProt;}
+                            else{
+                                foreach my $ac (@protIDs){
+                                    if ("@accessList"=~/$ac/ ){$protID=$ac;} 
+                                }
+                            }
+                            $specificity=100/$numberIDs[2];
+                            shift(@protIDs);
+                            foreach my $prot (@protIDs){
+                                if ($prot=~/(tr|sp)\|(\w*)\|/) {
+                                    push @protList,$2;
+                                }
+                                else{push @protList,$prot;}
+                            }
+                            $specificity = sprintf("%0.1f", $specificity);
+                            $specificity=$specificity*1;
+                        }
+                        if ($protID && "@accessList" =~ /$protID/) {
+                            $proteinList{"$peptide\_$charge"}=\@protList;
+                        }
                     }
                 }
-            }
-            if ($protID && "@accessList" =~ /$protID/) {
-                my $inversionLI=0;
-                my ($firstPosition,$lastPosition,$positionPeptide);
-                ##> match peptide sequence on protein sequence and recover peptide positions
-                if ($sequenceProtein=~m/$sequencePeptide/) {
-                    while ($sequenceProtein=~m/$sequencePeptide/g){
-                        $firstPosition=length($`)+1;
-                        $lastPosition=$firstPosition+length($sequencePeptide)-1;
-                        push @begPeptide,$firstPosition;
-                        push @endPeptide,$lastPosition;
-                        $positionPeptide=$positionPeptide."$firstPosition-$lastPosition";
+                if ($protID && "@accessList" =~ /$protID/) {
+                    my $inversionLI=0;
+                    my ($firstPosition,$lastPosition,$positionPeptide);
+                    ##> match peptide sequence on protein sequence and recover peptide positions
+                    if ($sequenceProtein=~m/$sequencePeptide/) {
+                        while ($sequenceProtein=~m/$sequencePeptide/g){
+                            $firstPosition=length($`)+1;
+                            $lastPosition=$firstPosition+length($sequencePeptide)-1;
+                            push @begPeptide,$firstPosition;
+                            push @endPeptide,$lastPosition;
+                            $positionPeptide=$positionPeptide."$firstPosition-$lastPosition";
+                        }
                     }
-                }
-                else{ #for Leucine and Isoleucine inversion
-                    my $sequencePeptideMod=$sequencePeptide;
-                    $sequencePeptideMod=~s/[IL]/[IL]/g;
-                    if ($sequenceProtein=~m/$sequencePeptideMod/ ) {
-                        $firstPosition=length($`)+1;
-                        $lastPosition=$firstPosition+length($sequencePeptide)-1;
-                        $positionPeptide=$positionPeptide."$firstPosition-$lastPosition";
-                        $inversionLI=1;
-                        push @begPeptide,$firstPosition;
-                        push @endPeptide,$lastPosition;
+                    else{ #for Leucine and Isoleucine inversion
+                        my $sequencePeptideMod=$sequencePeptide;
+                        $sequencePeptideMod=~s/[IL]/[IL]/g;
+                        if ($sequenceProtein=~m/$sequencePeptideMod/ ) {
+                            $firstPosition=length($`)+1;
+                            $lastPosition=$firstPosition+length($sequencePeptide)-1;
+                            $positionPeptide=$positionPeptide."$firstPosition-$lastPosition";
+                            $inversionLI=1;
+                            push @begPeptide,$firstPosition;
+                            push @endPeptide,$lastPosition;
+                        }
                     }
+                    $posBegPep{$peptide}=$firstPosition;
+                    push @{$peptideInfo{$peptide}{$charge}{"$modification\_$irt"}},$inversionLI;
+                    push @{$peptideInfo{$peptide}{$charge}{"$modification\_$irt"}},$positionPeptide;
+                    push @{$peptideInfo{$peptide}{$charge}{"$modification\_$irt"}},$masseParent;
+                    push @{$peptideInfo{$peptide}{$charge}{"$modification\_$irt"}},$masseTot;
+                    push @{$peptideInfo{$peptide}{$charge}{"$modification\_$irt"}},$specificity;
+                    
                 }
-                $posBegPep{$peptide}=$firstPosition;
-                push @{$peptideInfo{$peptide}{$charge}{"$modification\_$irt"}},$inversionLI;
-                push @{$peptideInfo{$peptide}{$charge}{"$modification\_$irt"}},$positionPeptide;
-                push @{$peptideInfo{$peptide}{$charge}{"$modification\_$irt"}},$masseParent;
-                push @{$peptideInfo{$peptide}{$charge}{"$modification\_$irt"}},$masseTot;
-                push @{$peptideInfo{$peptide}{$charge}{"$modification\_$irt"}},$specificity;
-                
             }
         }
+    } elsif($spcLibFormat eq 'SPC') {
+        # Parse header to retrieve specific columns
+        my $line=<INFILE>;
+        my @headers = split(/[,;\t\s]/, $line);
+        my (%colName2Index, %massMods);
+        foreach my $i (0 .. $#headers) {
+            $colName2Index{$headers[$i]} = $i;
+        }
+        
+        my $accessListStrPattern = join('|', @accessList);
+        while (($line=<INFILE>)) {
+            my @lineContent = split(/[\t]/, $line);
+            next unless($lineContent[$colName2Index{'ProteinGroups'}] =~ /($accessListStrPattern)/);
+            
+            my $protID = $1;
+            my ($peptide,$charge,$sequencePeptide,$peptideInt,$massTot,$massParent,$specificity,$irt,$modification)=('','','','','','','','','');
+            my ($firstPosition,$lastPosition,$positionPeptide);
+            
+            $sequencePeptide = $lineContent[$colName2Index{'StrippedPeptide'}];
+            $peptideInt = $lineContent[$colName2Index{'IntModifiedPeptide'}];
+            $peptideInt = substr($peptideInt, 1, -1) if($peptideInt);
+            $peptide = $lineContent[$colName2Index{'ModifiedPeptide'}];
+            $peptide = substr($peptide, 1, -1) if($peptide);
+            $charge = $lineContent[$colName2Index{'PrecursorCharge'}];
+            
+            $irt = $lineContent[$colName2Index{'iRT'}];
+            if($irt) {
+                $irt =~ s/,/\./;
+                $irt = sprintf("%0.1f", $irt);
+            }
+            
+            # Modifications
+            my @result=&promsMod::convertVarModStringSpectronaut($peptide);
+            my (%modList, %varMods);
+            if (scalar @result ==1) {
+                my @resTab=split(/!/,$result[0]);
+
+                if(!$massMods{$resTab[0]}) {
+                    my $modID=&promsMod::getModificationIDfromString($dbh,$resTab[0],$resTab[1],undef);       #fetching modification ID
+                    ($massMods{$resTab[0]})=$dbh->selectrow_array("SELECT MONO_MASS FROM MODIFICATION WHERE ID_MODIFICATION=$modID");
+                }
+
+                if ($resTab[1] eq "=") {
+                    $modification=$resTab[0]." ("."N-term".")";
+                    $varMods{"="} = $massMods{$resTab[0]};
+                } else{
+                    $modification = " @ ".$resTab[0]." (".$resTab[1].":".$resTab[2].")";
+                    $varMods{$resTab[2]} = $massMods{$resTab[0]};
+                }
+            } else {
+                foreach my $res (@result){
+                    my @resTab=split(/!/,$res);
+                    
+                    if(!$massMods{$resTab[0]}) {
+                        my $modID=&promsMod::getModificationIDfromString($dbh,$resTab[0],$resTab[1],undef);       #fetching modification ID
+                        ($massMods{$resTab[0]})=$dbh->selectrow_array("SELECT MONO_MASS FROM MODIFICATION WHERE ID_MODIFICATION=$modID");
+                    }
+                    
+                    if ($resTab[1] eq "=") {
+                        $modList{$resTab[0]}{"N-term"}{""}=1;
+                        $varMods{"="} = $massMods{$resTab[0]};
+                    }
+                    else{
+                        $modList{$resTab[0]}{"$resTab[1]:"}{$resTab[2]}=1;
+                        $varMods{$resTab[2]} = $massMods{$resTab[0]};
+                    }
+                }
+                foreach my $varMod (keys(%modList)){
+                    foreach my $res (keys %{$modList{$varMod}}){
+                        if ($modification eq "") {
+                            $modification=" @ ".$varMod." ($res".join(".",keys %{$modList{$varMod}{$res}}).")";
+                        }
+                        else{
+                            $modification=$modification." @ ".$varMod." ($res".join(".",keys %{$modList{$varMod}{$res}}).")";
+                        }
+                    }
+                }
+            }
+            
+            next if($peptideInfo{$peptideInt}{$charge}{"$modification\_$irt"});
+            
+            $massParent = $lineContent[$colName2Index{'PrecursorMz'}];
+            $massParent =~ s/,/\./;
+            $massParent = sprintf("%0.4f", $massParent) if($massParent);
+            
+            $masseTot = &promsMod::mrCalc($sequencePeptide, \%varMods);
+            $masseTot = sprintf("%0.4f", $masseTot) if($masseTot);
+            
+            my @protList = split(/;/, $lineContent[$colName2Index{'ProteinGroups'}]);
+            $specificity = (1/scalar @protList)*100;
+            $specificity = sprintf("%0.1f", $specificity) if($specificity);
+            my $inversionLI = 0;
+            
+            
+            ##> match peptide sequence on protein sequence and recover peptide positions
+            if ($sequenceProtein=~m/$sequencePeptide/) {
+                while ($sequenceProtein=~m/$sequencePeptide/g){
+                    $firstPosition=length($`)+1;
+                    $lastPosition=$firstPosition+length($sequencePeptide)-1;
+                    push @begPeptide,$firstPosition;
+                    push @endPeptide,$lastPosition;
+                    $positionPeptide=$positionPeptide."$firstPosition-$lastPosition";
+                }
+            }
+            else{ #for Leucine and Isoleucine inversion
+                my $sequencePeptideMod=$sequencePeptide;
+                $sequencePeptideMod=~s/[IL]/[IL]/g;
+                if ($sequenceProtein=~m/$sequencePeptideMod/ ) {
+                    $firstPosition=length($`)+1;
+                    $lastPosition=$firstPosition+length($sequencePeptide)-1;
+                    $positionPeptide=$positionPeptide."$firstPosition-$lastPosition";
+                    $inversionLI=1;
+                    push @begPeptide,$firstPosition;
+                    push @endPeptide,$lastPosition;
+                }
+            }
+            
+            push @{$peptideInfo{$peptideInt}{$charge}{"$modification\_$irt"}},$inversionLI;
+            push @{$peptideInfo{$peptideInt}{$charge}{"$modification\_$irt"}},$positionPeptide;
+            push @{$peptideInfo{$peptideInt}{$charge}{"$modification\_$irt"}},$massParent;
+            push @{$peptideInfo{$peptideInt}{$charge}{"$modification\_$irt"}},$masseTot;
+            push @{$peptideInfo{$peptideInt}{$charge}{"$modification\_$irt"}},$specificity;
+            $proteinList{"$peptideInt\_$charge"}=\@protList;
+            $posBegPep{$peptideInt}=$firstPosition;
+        }
     }
+            
     close INFILE;
-    
     my $trClass='row1';
     
     my $buttonName=$nbSearch."BUTTON";
@@ -684,7 +817,7 @@ sub searchLibrary{
     |;
     my $nbPeptide=1;
     foreach my $peptide (sort {$posBegPep{$a} <=> $posBegPep{$b} || lc($a) cmp lc($b) || $a cmp $b} keys %peptideInfo){
-        (my $pepseq=$peptide)=~s/n|\[\d*\]//g;
+        (my $pepseq=$peptide)=~s/n|\[[+-]?\d*\]|//g; # OpenSwath + Spectronaut Format
         foreach my $charge (sort keys %{$peptideInfo{$peptide}}){
             foreach my $peptideInfo (keys %{$peptideInfo{$peptide}{$charge}}){
                 my ($modification,$irt)=split(/_/,$peptideInfo);
@@ -702,7 +835,7 @@ sub searchLibrary{
                 print qq
                 |<TR class=\"$trClass\" >
                 <TD align="rigth" class="padtab" valign="center">&nbsp;$nbPeptide&nbsp;</TD>
-                <TD align="left" class="padtab" valign="center">&nbsp;<A id="$nbPeptide" href="javascript:pepView('$nbPeptide','$peptide\_$charge\_$mod','$irt','$masseParent','$masseTot','$libraryID')" onmouseover="popup('Click to display <B>Fragmentation Spectrum</B>.')" onmouseout="popout()">|; if ($inversionLI==1) {print "<FONT class=\"overlapRes2\"><B>$pepseq</B></FONT>*";$seqPB=1;}else{print "<B>$pepseq</B>";} print qq |</A>&nbsp;</TD>
+                <TD align="left" class="padtab" valign="center">&nbsp;<span id="$nbPeptide" class="drawViewPept" onclick="pepView('$nbPeptide','$peptide\_$charge\_$mod','$irt','$masseParent','$masseTot','$libraryID')" onmouseover="popup('Click to display <B>Fragmentation Spectrum</B>.')" onmouseout="popout()">|; if ($inversionLI==1) {print "<FONT class=\"overlapRes2\"><B>$pepseq</B></FONT>*";$seqPB=1;}else{print "<B>$pepseq</B>";} print qq |</span>&nbsp;</TD>
                 <TD align="center" class="padtab" valign="center">&nbsp;$modification&nbsp;</TD>
                 <TD align="center" class="padtab" valign="center">&nbsp;|; if ($positionPeptide eq "") {print "No match on the protein."}else{print $positionPeptide} print qq | &nbsp;</TD>
                 <TD align="center" class="padtab" valign="center">&nbsp;$masseParent&nbsp;</TD>
@@ -849,10 +982,8 @@ sub searchLibrary{
     $dbh->disconnect;
 }
 
-
-
-
 ####>Revision history<####
+# 1.1.0 [ENHANCEMENT] Handles Spectronaut library format (VS 02/10/20)
 # 1.0.10 Minor modif (MLP 19/12/17)
 # 1.0.9 Add modification to allow the search of proteins for libraries with no uniprot ID (MLP 22/03/17)
 # 1.0.8 Minor modif (MLP 31/01/17)

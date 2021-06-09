@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# selectOption.cgi    2.7.3													   #
+# selectOption.cgi    2.7.4													   #
 # Authors: P. Poullet, G. Arras & F. Yvon (Institut Curie)                     #
 # Contact: myproms@curie.fr                                                    #
 # Generates list of options available to user                                  #
@@ -359,7 +359,7 @@ function selectOption(selectedButton) {
 		top.promsFrame.resultFrame.location="$promsPath{cgi}/startExploratoryAnalysis.cgi?ID=$experimentID";
 	}
 	else if (action == 'monitor'){
-		var monitorWindow=window.open("$promsPath{cgi}/monitorJobs.cgi?filterDateNumber=1&filterDateType=DAY&filterStatus=Queued&filterStatus=Running",'monitorJobsWindow','width=1000,height=500,scrollbars=yes,resizable=yes');
+		var monitorWindow=window.open("$promsPath{cgi}/monitorJobs.cgi?filterDateNumber=1&filterDateType=DAY&filterStatus=Queued&filterStatus=Running&filterProject=$projectID",'monitorJobsWindow','width=1000,height=500,scrollbars=yes,resizable=yes');
 	}
 	//else if (action == 'mergeUniprotIDs') {
 	//	top.promsFrame.resultFrame.location="$promsPath{cgi}/mergeUniprotIDs.cgi?ID=$itemID";
@@ -743,6 +743,7 @@ sub startExploratoryAnalyses {
 #}
 
 ####>Revision history<####
+# 2.7.4 [MINOR] Added project selection when opening monitor jobs windows (VS 02/09/20)
 # 2.7.3 [CHANGES] Removed support for 2D-gel and spot (PP 21/01/20)
 # 2.7.2 [CHANGES] Set same name for all monitor window so it does not open multiple instances of it (VS 08/01/20)
 # 2.7.1 [CHANGES] Go to summary if monitor button is focused on page changing (VS 08/01/20)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# storeProjectItem.cgi         3.1.0                                           #
+# storeProjectItem.cgi         3.1.4                                           #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Stores/updates project items                                                 #
@@ -49,6 +49,7 @@ use promsConfig;
 use promsMod;
 use strict;
 use File::Copy;
+use File::Basename;
 
 #######################
 ####>Configuration<####
@@ -61,12 +62,10 @@ my $userID=$ENV{'REMOTE_USER'};
 ####>Watching a databank scan<#### For distant Mascot server. Called by promsMod::getProtInfo in verbose mode
 ##################################
 if (param('WATCH')) {
-	my $analysisID=param('ITEM_ID');
 	my $numProteins=param('MAXPROT');
 	my $dbSize=param('DBSIZE');
-	my $anaParentDir=param('DIR');
-	my $fastaFile="$anaParentDir/ana_$analysisID/analysis.fasta";
-	my $endFile="$anaParentDir/ana_$analysisID/end.txt";
+	my $fastaFile=param('FASTA');
+	my $endFile=dirname($fastaFile).'/end.txt';
 	print header(-'content-encoding'=>'no'); warningsToBrowser(1);
 	print qq
 |<HTML>
@@ -78,14 +77,22 @@ if (param('WATCH')) {
 	my $numEntries=0;
 	my $prevRatio=0;
 	print "<FONT class=\"title3\">0%";
-	while (!-e $fastaFile) {sleep 1;} # wait for fasta if not created yet
-	my $sleepTime=1+($dbSize/250000); $sleepTime=5 if $sleepTime>5;
+	my $waitCount=0;
+	while (!-e $fastaFile) { # wait for fasta if not created yet
+		sleep 2;
+		$waitCount++;
+		if ($waitCount > 45) {die "$fastaFile not found!";} # 90 sec max
+	}
+	my $sleepTime=5; #1+($dbSize/250000); $sleepTime=5 if $sleepTime>5;
+	$waitCount=0;
 	while (!-e $endFile && $prevRatio<100) {
 		$numEntries=`grep -c '>' $fastaFile`;
 		my $newRatio=10*(int(0.5+(10*$numEntries/$numProteins)));
-		for (my $pc=$prevRatio+10;$pc<=$newRatio;$pc+=10) {print "...$pc%";}
+		for (my $pc=$prevRatio+10;$pc<=$newRatio;$pc+=10) {print "...$pc%"; $waitCount=0;}
 		$prevRatio=$newRatio;
 		sleep $sleepTime;
+		$waitCount++;
+		if ($waitCount > 60) {die "Update has stopped or is too slow!";} # 5 min max between updates
 	}
 	for (my $pc=$prevRatio+10;$pc<=100;$pc+=10) {print "...$pc%";}
 	unlink $endFile;
@@ -356,7 +363,7 @@ else { # action = edit or reval
 					$sthDI->finish;
 				}
 				else { # info in master protein
-					my $sthMI=$dbh->prepare("SELECT VALUE,ID_PROTEIN FROM PROTEIN P,MASTERPROT_IDENTIFIER MI WHERE ID_PROJECT=$itemID AND ID_IDENTIFIER=$newMapping AND P.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN AND RANK=1");
+					my $sthMI=$dbh->prepare("SELECT VALUE,ID_PROTEIN FROM PROTEIN P,MASTERPROT_IDENTIFIER MI WHERE ID_PROJECT=$itemID AND ID_IDENTIFIER=$newMapping AND P.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN AND IDENT_RANK=1");
 					$sthMI->execute;
 					while (my ($mapIdent,$protID)=$sthMI->fetchrow_array) {
 						$sthUpP->execute($mapIdent,$protID);
@@ -405,7 +412,8 @@ else { # action = edit or reval
 		$dbh->do("DELETE FROM USER_EXPERIMENT_LOCK WHERE ID_EXPERIMENT=$itemID") || die $dbh->errstr();
 		$dbh->commit;
 		foreach my $lockUser (@lockUsers) {
-			$dbh->do("INSERT INTO USER_EXPERIMENT_LOCK VALUES ($itemID, '$lockUser', '$lockMsg')") || die $dbh->errstr();
+			$dbh->do("INSERT INTO USER_EXPERIMENT_LOCK (ID_USER, ID_EXPERIMENT, LOCK_MSG) VALUES ('$lockUser', $itemID, '$lockMsg')") || die $dbh->errstr();
+			$dbh->commit;
 		}
 	}
 	
@@ -669,33 +677,48 @@ sub processMetadata {
 }
 
 sub goBack {
+
+	my $blockStr = '';
+	if($item eq 'METADATA') {
+		$blockStr = qq |
+			top.promsFrame.selectedAction='edit';
+			top.promsFrame.optionFrame.selectOption();
+		|;
+	} elsif($item eq 'project' || $item eq 'gel2d') {
+		$blockStr = qq |
+			top.promsFrame.location="$promsPath{cgi}/openProject.cgi?ID=$projectID&branchID=$item:$itemStartingID&ACT=open"; // top.promsFrame but ! parent in case new project!
+		|;
+	} elsif($targetFrame eq 'navFrame') {
+		if ($item eq 'spot') {
+			$blockStr = qq |
+				// reload navFrame in case modified sample association
+				parent.navFrame.location="$promsPath{cgi}/openProject.cgi?ID=$projectID&branchID=gel2d:$gelID&itemBranchID=$item:$itemID&ACT=nav&VIEW="+parent.navFrame.view;
+			|;
+		} else {
+			$blockStr = qq |
+				parent.navFrame.location="$promsPath{cgi}/openProject.cgi?ID=$projectID&branchID=$item:$itemStartingID&ACT=nav&VIEW="+parent.navFrame.view;
+			|;
+		}
+	} else {
+		$blockStr = qq |
+			//itemFrame
+			parent.itemFrame.location="$promsPath{cgi}/openProject.cgi?ID=$projectID&GEL=gel2d:$gelID&branchID=$item:$itemStartingID&ACT=gel";
+		|;
+	}
+
 	print qq |
 	<SCRIPT LANGUAGE="JavaScript">
 		top.promsFrame.selectedAction='summary';
-		
-		if('$item' == 'METADATA') {
-			top.promsFrame.selectedAction='edit';
-			top.promsFrame.optionFrame.selectOption();
-		}
-		else if ('$item'=='project' \|\| ('$item'=='gel2d' && !parent.itemFrame)) {
-			top.promsFrame.location="$promsPath{cgi}/openProject.cgi?ID=$projectID&branchID=$item:$itemStartingID&ACT=open"; // top.promsFrame but ! parent in case new project!
-		}
-		else if ('$targetFrame'=='navFrame') {
-			if ('$item'=='spot') { // reload navFrame in case modified sample association
-				parent.navFrame.location="$promsPath{cgi}/openProject.cgi?ID=$projectID&branchID=gel2d:$gelID&itemBranchID=$item:$itemID&ACT=nav&VIEW="+parent.navFrame.view;
-			}
-			else {
-				parent.navFrame.location="$promsPath{cgi}/openProject.cgi?ID=$projectID&branchID=$item:$itemStartingID&ACT=nav&VIEW="+parent.navFrame.view;
-			}
-		}
-		else { //itemFrame
-			parent.itemFrame.location="$promsPath{cgi}/openProject.cgi?ID=$projectID&GEL=gel2d:$gelID&branchID=$item:$itemStartingID&ACT=gel";
-		}
+		$blockStr
 	</SCRIPT>
 	|;
 }
 
 ####>Revision history<####
+# 3.1.4 [BUGFIX] Refactoring of goBack function to avoid uninitialized variables (VS 26/04/2021)
+# 3.1.3 [CHANGE] Changed "WATCH" block and associated parameters to handle analysis/msfConvert context (PP 05/10/20)
+# 3.1.2 [UPDATE] Changed RANK field to IDENT_RANK for compatibility with MySQL 8 (PP 04/03/20) 
+# 3.1.1 [BUGFIX] Add fields in user lock creation query (VS 21/02/20)
 # 3.1.0 [BUGFIX] Validating a metadata without value in edition mode deleted all files (VS 15/11/19)
 # 3.0.9 [BUGFIX] Handles spaces in file annotation items (VS 30/10/19)
 # 3.0.8 [FEATURE] Handles lock system for experiments (VS 08/08/19)

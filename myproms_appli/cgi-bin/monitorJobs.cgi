@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# monitorJobs.cgi       1.0.8                                                  #
+# monitorJobs.cgi       1.1.16                                                 #
 # Authors: V. Sabatet (Institut Curie)                                         #
 # Contact: myproms@curie.fr                                                    #
 # Monitors all jobs (Quantifications, Libraries, PhosphoRS, DIA, TDA)          #
@@ -67,27 +67,45 @@ my $LIMIT_STORAGE = "1 MONTH"; # Store for a selected amount of time (matching m
 my $REFRESH_TIME_INTERVAL = 5; # Refresh time interval (seconds)
 
 my %quantifProcesses = (
-    'XICMCQ'               => 'Ext. ion chrom.',
-    'EMPAI'                => 'emPAI',
-    'SIN'                  => 'SI<SUB>N</SUB>',
-    'XICCORR'              => 'XIC correction',
-    'DESIGN'               => 'Protein ratio','PROT_RATIO_PEP'=>'Protein ratio',
-    'DESIGN:SimpleRatio'   => 'Protein ratio','DESIGN:SuperRatio'=>'Super ratio',
-    'DESIGN:myProMS'       => 'Protein ratio',
-    'DESIGN:PEP_INTENSITY' => 'Protein ratio (Peptide intensity)',
-    'DESIGN:PEP_RATIO'     => 'Protein ratio (Peptide ratio)',
-    'DESIGN:MSstats'       => 'DIA-based Protein ratio (MSstats)',
-    'DESIGN:TDA'           => 'TDA (PRM/SRM/MRM)',
-    'DESIGN:SSPA'          => 'SSP Analysis',
-    'DESIGN:PROT_RULER'    => 'Proteomic Ruler'
+    'XICMCQ'                     => 'Ext. ion chrom.',
+    'EMPAI'                      => 'emPAI',
+    'SIN'                        => 'SI<SUB>N</SUB>',
+    'XICCORR'                    => 'XIC correction',
+    'DESIGN'                     => 'Protein ratio',
+    'DESIGN:SimpleRatio'         => 'Protein ratio',
+    'DESIGN:SuperRatio'          => 'Super ratio',
+    'PROT_RATIO_PEP'             => 'Protein ratio',
+    'DESIGN:myProMS'             => 'Protein ratio',
+    'DESIGN:PEP_INTENSITY'       => 'Protein ratio (Peptide intensity)',
+    'DESIGN:PEP_INTENSITY:Abund' => 'Protein Abundance (DDA)',
+    'DESIGN:PEP_RATIO'           => 'Protein ratio (Peptide ratio)',
+    'DESIGN:MSstats'             => 'DIA-based Protein ratio (MSstats)',
+    'DESIGN:DIA'                 => 'DIA-based Protein ratio (myProMS)',
+    'DESIGN:DIA:Abund'           => 'DIA-based Protein Abundance',
+    'DESIGN:TDA'                 => 'TDA (PRM/SRM/MRM)',
+    'DESIGN:SSPA'                => 'SSP Analysis',
+    'DESIGN:PROT_RULER'          => 'Proteomic Ruler',
+    'HYDRO'                      => 'Peptides Hydrophobicity'
 ); #'SILAC'=>'SILAC','ITRAQ'=>'iTRAQ', 'DESIGN:SWATH/MSstats'=>'SWATH-based Protein ratio (MSstats)',
+
 my %filters = (
     "STATUS" => (param('filterStatus')) ? [param('filterStatus')] : [],
     "TYPE" => (param("filterType")) ? [param("filterType")] : [],
     "USER" => (param("filterUser")) ? [param("filterUser")] : [],
+    "PROJECT" => (param("filterProject")) ? [param("filterProject")] : [],
     "DATE" => (param("filterDateNumber") && param("filterDateNumber") > 0 && param("filterDateType")) ? param("filterDateNumber")." ".param("filterDateType") : '',
     "ID" => (param("filterID")) ? [split(',', promsMod::cleanParameters(param("filterID")))] : [],
 );
+
+# If grouped types exists, split them (i.e. Protein Ratio = DESIGN:myProMS;DESIGN;DESIGN:SimpleRatio;DESIGN:SuperRatio)
+if($filters{"TYPE"}) {
+    my @splittedTypes;
+    foreach my $filterType (@{$filters{"TYPE"}}) {
+        push(@splittedTypes, split(';', $filterType));
+    }
+    $filters{"TYPE"} = \@splittedTypes;
+}
+    
 my $realTime = (param('realTime')) ? param('realTime') : 0;
 my $dbh = &promsConfig::dbConnect;
 
@@ -133,7 +151,7 @@ print qq |
             }
             
             table.jobMeta tr td {
-                padding: 0 15px 0 15px;
+                padding: 2 15px 2 15px;
             }
             
             div.project {
@@ -168,8 +186,22 @@ print qq |
                 min-width: 100px;
             }
             
+            table#filtersTable {
+                margin: auto;
+            }
+            
             table#filtersTable td {
-                padding-right: 15px;
+                text-align: center;
+                vertical-align: top;
+            }
+            
+            table#filtersTable tr > th {
+                padding-bottom: 7px;
+            }
+            
+            select {
+                resize: vertical;
+                max-height: 160px;
             }
         </style>
         <script type="text/javascript">
@@ -183,9 +215,18 @@ print qq |
                 if (errorDiv.style.display == 'none') {
                     errorDiv.style.display = '';
                     noJobErrorUpdate[errorDivID] = 1;
+                    
+                    // Stop job status monitoring
+                    if(timeOut !== undefined) {
+                        clearTimeout(timeOut);
+                    }
                 } else {
                     errorDiv.style.display = 'none';
                     delete noJobErrorUpdate[errorDivID];
+                    
+                    if(Object.keys(noJobErrorUpdate).length == 0) {
+                        timeOut = setTimeout('ajaxMonitorJobs()', $REFRESH_TIME_INTERVAL*1000);
+                    }
                 }
             }
             
@@ -314,6 +355,8 @@ print qq |
     ###################################################
     my $statusStr = "filterStatus=".join('&filterStatus=', @{$filters{STATUS}});
     my $typeStr = "filterType=".join('&filterType=', @{$filters{TYPE}});
+    my $userStr = "filterUser=".join('&filterUser=', @{$filters{USER}});
+    my $projectStr = "filterProject=".join('&filterProject=', @{$filters{PROJECT}});
     my $dateStr = $filters{DATE};
     my $idStr = join(',', @{$filters{ID}});
     
@@ -388,7 +431,7 @@ print qq |
             //Creation of the XMLHTTPRequest object
             var XHR = getXMLHTTP();
             if (!XHR) { return false; }
-            XHR.open("GET","./monitorJobs.cgi?AJAX=update&$statusStr&$typeStr&filterID=$idStr&filterDate=$dateStr&realTime=" + realTime, true);
+            XHR.open("GET","./monitorJobs.cgi?AJAX=update&$statusStr&$typeStr&filterID=$idStr&filterDate=$dateStr&$userStr&$projectStr&realTime=" + realTime, true);
             XHR.onreadystatechange=function() {
                 if (XHR.readyState==4) {
                     updateJobsStatus(XHR.responseText);
@@ -404,23 +447,37 @@ print qq |
         <span class="title">Jobs Monitoring</span>&nbsp;&nbsp;&nbsp;
         <input type="button" value="Close window" onclick="window.close()" />
         <br/><br/>
+  |;
   
-        <form action='./monitorJobs.cgi' method='GET' />
-            <table id='filtersTable'>
-                <tr>
-                    <td style='font-weight:bold;font-size:14px'>Filter jobs :</td>
-                
-    |;
-
     # Filter by Date
     my $filterDateNumberSelected = (param("filterDateNumber")) ? param("filterDateNumber") : '';
     my $filterDateTypeSelected = (param("filterDateType")) ? param("filterDateType") : '';
     my @filterDateTypes = ('HOUR', 'DAY', 'WEEK', 'MONTH');
+  
     print qq |
-        <td>
-            <label for='filterDateNumber'>From last</label>
-            <input id='filterDateNumber' name='filterDateNumber' type="text" pattern="\\d*" maxlength="3" size='2' value='$filterDateNumberSelected'>
-            <select name='filterDateType'>
+    <fieldset id="filtersFieldSet" style="margin: 20px auto 45px auto; width:70%;">
+        <legend><b>Filter jobs:</b></legend>
+        
+        <form action='./monitorJobs.cgi' method='GET' style="margin: 7px 0 7px 0;">
+            <table id='filtersTable'>
+                <tr>
+                    <th style='font-size:14px; min-width: 140px;'><label for='filterDateNumber'>From last</label></th>
+                    <th style='font-size:14px; min-width: 110px;'><label for='filterStatus'>Status</label></th>
+                    <th style='font-size:14px; min-width: 295px;'><label for='filterType'>Type</label></th>
+    |; 
+    
+    if($userStatus =~ /bioinfo|mass|manag/) {
+        print "<th style='font-size:14px; min-width: 180px;'><label for='filterUser'>User</label></th>";
+        print "<th style='font-size:14px; min-width: 180px;'><label for='filterProject'>Project</label></th>";
+    }
+    
+    print qq |
+                    <th></th>
+                </tr>
+                <tr>
+                    <td>
+                        <input type="number" id='filterDateNumber' name='filterDateNumber' min="0" max="99" size="2" style="width: 45px;" onKeyUp="if(parseInt(this.value)>parseInt(this.max)){this.value=this.max;}else if(parseInt(this.value)<parseInt(this.min)){this.value=this.min;}" value='$filterDateNumberSelected'>
+                        <select name='filterDateType'>
     |;
     
     
@@ -431,22 +488,29 @@ print qq |
     }
     
     print qq |
-            </select>
-        </td>
+                        </select>
+                    </td>
     |;
 
-    # Filter by Status
-    my (@status, @types, @projects, @userIDs, @userNames);
-    my ($status, $types, $projects, $userIDs, $userNames) = $dbh->selectrow_array("SELECT GROUP_CONCAT(DISTINCT J.STATUS), GROUP_CONCAT(DISTINCT TYPE), GROUP_CONCAT(DISTINCT NAME), GROUP_CONCAT(DISTINCT J.ID_USER), GROUP_CONCAT(DISTINCT UL.USER_NAME) FROM JOB_HISTORY J LEFT JOIN PROJECT P ON P.ID_PROJECT=J.ID_PROJECT INNER JOIN USER_LIST UL ON UL.ID_USER=J.ID_USER") or die "Couldn't prepare statement: " . $dbh->errstr;
+    my (@projectsID, @projectsName, @userIDs, @userNames);
+    my (@status, @types, @projects, @users);
+    my ($status, $types, $projects, $users) = $dbh->selectrow_array("SELECT GROUP_CONCAT(DISTINCT J.JOB_STATUS), GROUP_CONCAT(DISTINCT TYPE), GROUP_CONCAT(DISTINCT J.ID_PROJECT, ';', NAME), GROUP_CONCAT(DISTINCT J.ID_USER, ';', UL.USER_NAME) FROM JOB_HISTORY J LEFT JOIN PROJECT P ON P.ID_PROJECT=J.ID_PROJECT INNER JOIN USER_LIST UL ON UL.ID_USER=J.ID_USER") or die "Couldn't prepare statement: " . $dbh->errstr;
     @status = ('Queued', 'Running', 'Done', 'Stopped', 'Error');
     @types = split(',', $types) if($types);
-    @projects = split(',', $projects) if($projects);
-    @userIDs = split(',', $userIDs) if($userIDs);
-    @userNames = split(',', $userNames) if($userNames);
-    
+    if ($projects) {
+        @projects = split(',', $projects);
+        @projectsID = map((split(';', $_))[0], @projects);
+        @projectsName = map((split(';', $_))[1], @projects);
+    }
+    if ($users) {
+        @users = split(',', $users) ;
+        @userIDs = map((split(';', $_))[0], @users);
+        @userNames = map((split(';', $_))[1], @users);
+    }
+
+    # Filter by Status
     print qq |
                     <td>
-                        <label for='filterStatus' style='position: relative; bottom: 27px;'>Status</label>
                         <select name='filterStatus' id='filterStatus' multiple>
     |;
     
@@ -466,22 +530,41 @@ print qq |
     # Filter by Type
     print qq |
                     <td>
-                        &nbsp;&nbsp;<label for='filterType' style='position: relative; bottom: 27px;'>Type</label>
                         <select name='filterType' id='filterType' multiple>
     |;
 
     push(@types, ('Import', 'Quantification'));
     @types = sort(@types);
-    
+    my %jobTypes;
+    my $category = "";
     $allSelected = (scalar @{$filters{TYPE}} == 0) ? 'selected' : '';
-    print("<option value='' $allSelected>All</option>");
-    foreach my $type (@types) {
-        print("<option value='$type'");
-        my $typeEscaped = quotemeta($type);
-        print(" selected") if(grep( /^$typeEscaped$/, @{$filters{TYPE}}));
-        print(">".$type."</option>\n");
+    foreach my $type (sort @types) {
+        if($type =~ /([^[]+)\[(.+?)\]/) {
+            $category = $1;
+            my $typeDesc = $2;
+            $category =~ s/^\s+|\s+$//;
+            $typeDesc = $quantifProcesses{$typeDesc} if($category eq "Quantification" && $quantifProcesses{$typeDesc});
+            push(@{$jobTypes{($category) ? $category : "Others"}{$typeDesc}}, $type);
+        } else {
+            %{$jobTypes{$type}} = ();
+        }
     }
     
+    print("<option value='' $allSelected>All</option>");
+    foreach my $category (sort keys %jobTypes) {
+        print("<option value='$category'");
+        print(" selected") if($category && grep( /^$category$/, @{$filters{TYPE}}));
+        print(">".$category."</option>\n");
+        foreach my $typeDesc (sort {lc $a cmp lc $b} keys %{$jobTypes{$category}}) {
+            my $types = join(';', @{$jobTypes{$category}{$typeDesc}});
+            print("<option value='$types'");
+            my $regex = quotemeta($types);
+            $regex =~ s/;/\$|^/;
+            print(" selected") if($regex && grep( /^$regex$/, @{$filters{TYPE}}));
+            print(">&nbsp;&nbsp;&nbsp;&nbsp;".$typeDesc."</option>\n");
+        }
+    }
+        
     print qq |
                         </select>
                     </td>
@@ -490,10 +573,13 @@ print qq |
     if($userStatus =~ /bioinfo|mass|manag/) {
         print qq |
                     <td>
-                        <select name='filterUser' multiple>
+                        <select id='filterUser' name='filterUser' multiple>
         |;
-    
-        my $allSelected = (scalar @{$filters{USER}} == 0) ? 'selected' : '';
+        
+        my @indices = sort { $userNames[$a] cmp $userNames[$b] }  0 .. $#userNames;
+        @userIDs = @userIDs[@indices];
+        @userNames = @userNames[@indices];
+        $allSelected = (scalar @{$filters{USER}} == 0) ? 'selected' : '';
         print("<option value='' $allSelected>All</option>");
         for(my $i=0; $i < scalar @userIDs; $i++) {
             my ($userID, $userName) = ($userIDs[$i], $userNames[$i]);
@@ -505,14 +591,34 @@ print qq |
         print qq |
                         </select>
                     </td>
+                    <td>
+                        <select id='filterProject' name='filterProject' multiple>
+        |;
+    
+        $allSelected = (scalar @{$filters{PROJECT}} == 0) ? 'selected' : '';
+        print("<option value='' $allSelected>All</option>");
+        @indices = sort { $projectsName[$a] cmp $projectsName[$b] }  0 .. $#projectsName;
+        @projectsName = @projectsName[@indices];
+        @projectsID = @projectsID[@indices];
+        for(my $i=0; $i < scalar @projectsID; $i++) {
+            my ($projectID, $projectName) = ($projectsID[$i], $projectsName[$i]);
+            print("<option value='$projectID'");
+            print(" selected") if(grep( /^$projectID/, @{$filters{PROJECT}}));
+            print(">".$projectName."</option>\n");
+        }
+                    
+        print qq |
+                        </select>
+                    </td>
         |;    
     }
     
     print qq |
-                    <td><input type='submit' value='Apply filters'/></td>
+                    <td style='vertical-align: middle;'><input type='submit' value='Apply filters'/></td>
                 </tr>
             </table>
         </form>
+    </fieldset>
     |;
 
 
@@ -634,9 +740,11 @@ sub ajaxUpdateJobsStatus {
         # Get status + error messages of current job
         my ($error, $status) = ('', '');
         my $startedTime = Time::Piece->strptime("$job{startedDate}", "%Y-%m-%d %H:%M:%S");
-        my $now = Time::Piece->new()+3600; # Shift of +1 hours to correspond to GMT+2
+        my $now = Time::Piece->new()+3600; # Shift of +2 hours to correspond to GMT+1
+        if($now > 1585447200 && $now < 1603584000) {
+            $now+=3600;
+        }
         my $timeDiff = ($now - $startedTime)->pretty;
-        my %clusterInfo = &promsConfig::getClusterInfo;
         my $clusterError = ''; #(-s "$job{srcPath}/PBSerror.txt") ? $clusterInfo{'checkError'}->("$job{srcPath}/PBSerror.txt") : '';
         
         # Check cluster jobs for completion/errors
@@ -661,7 +769,7 @@ sub ajaxUpdateJobsStatus {
         }
         
         if($newStatus) {
-            my $newInfos = "STATUS='$newStatus'";
+            my $newInfos = "JOB_STATUS='$newStatus'";
             if($newStatus ne 'Running') {
                 my $endedStr = 'NOW()'; # Put local current time as default ending of other options fail
                 if($job{'infos'}{'maxEnd'} && $job{'infos'}{'minStart'}) { # Get cluster job end time if it was run on server (more precise)
@@ -703,8 +811,12 @@ sub getJobStatus {
     
     my ($status, $error, $warning) = ('', '', '');
     my %job = %{$jobRef};
-    my %clusterInfo = &promsConfig::getClusterInfo;
-    my $clusterError = (-s "$job{srcPath}/PBSerror.txt") ? $clusterInfo{'checkError'}->("$job{srcPath}/PBSerror.txt") : '';
+    my %clusterInfo;
+    my $clusterError='';
+    if ($job{'processID'} =~ /^C/) { # job is on cluster
+        %clusterInfo = &promsConfig::getClusterInfo;
+        $clusterError = (-s "$job{srcPath}/PBSerror.txt") ? $clusterInfo{'checkError'}->("$job{srcPath}/PBSerror.txt") : '';
+    }
     
     if($job{status} eq 'Stopped') {
         return ('[ <b>Stopped</b> ]', '');
@@ -712,9 +824,9 @@ sub getJobStatus {
         if(-s $job{logPath} && `tail -1 $job{logPath}` !~ /Ended/) {
             $warning = 'Job ended on cluster prematurely. Check server logs for potential errors.';
         }
-    } elsif($job{status} ne 'Done' && -s $job{logPath} && `tail -1 $job{logPath}` =~ /Ended/) {
+    } elsif($job{status} ne 'Done' && -s $job{logPath} && `tail -2 $job{logPath}` =~ /Ended/) {
         return ('[ <b>Done</b> ]', '');
-    } elsif($job{status} ne 'Error' && ($job{infos}{clusterError} || $clusterError || $job{infos}{"exceededMem"} || $job{infos}{"exceededTime"} || (!$job{processID} && $job{startedDate}))) {
+    } elsif($job{status} ne 'Error' && ($job{infos}{clusterError} || $clusterError || $job{infos}{"exceededMem"} || $job{infos}{"exceededTime"})) {
         open(ERROR, '>', $job{"errorPath"}) or die "Could not open file '$job{errorPath}' $!";
         
         if($job{'infos'}{'exceededTime'}) {
@@ -728,14 +840,6 @@ sub getJobStatus {
             } else {
                 $status .= "Job ended on cluster with error status";
                 print ERROR " ($job{infos}{clusterError}), check server logs.";
-            }
-        } elsif(!$job{processID} && $job{startedDate}) {
-            my $startJob = Time::Piece->strptime($jobRef->{startedDate}, '%Y-%m-%d %H:%M:%S')->strftime("%s");;
-            my $currentTime = localtime->epoch;
-            my $timeDiffSec = $currentTime-$startJob;
-            
-            if($timeDiffSec > 30) {
-                print ERROR "Job could not be started on cluster. Check server logs";
             }
         }
         
@@ -782,14 +886,20 @@ sub getJobStatus {
     } elsif($allLogFile =~ /warning/i) {
         $warning = `tail -1 $job{logPath}`;
         chomp $warning;
-        my $stat = `tail -2 $job{logPath}`;
-        chomp $stat;
-        my $qWarning = quotemeta($warning);
-        ($status .= $stat) =~ s/$qWarning//;
+        my $stats = `tail -2 $job{logPath} | head -1`;
+        chomp $stats;
+        if($stats !~ /Ended/) {
+            $status = $stats;
+        }
     }
     
-    # Check for errors    
-    $error = `cat $job{errorPath}` if(-s $job{errorPath}); # Error file : $prsHomeDir/current/$anaID\_$job{dirName}\_error.txt
+    # Check for errors
+    if ($job{'processID'} =~ /^C/) { # job is on cluster
+       $error = $clusterInfo{'checkError'}->($job{'errorPath'});
+    }
+    else {
+        $error = `cat $job{errorPath}` if(-s $job{'errorPath'}); # Error file : $prsHomeDir/current/$anaID\_$job{dirName}\_error.txt
+    }
     if($job{status} ne 'Queued') {
         $status = " -> ".$status if($job{status} =~ /Running|Error/ && $status);
         $status = ($error) ? "<b>Error</b>".$status : "<b>$job{status}</b>".$status;
@@ -799,10 +909,10 @@ sub getJobStatus {
     if($error) {
         chomp($error);
         $error =~ s/\n/<br\/>/g;
-        $status .= " <INPUT type=\"button\" value=\"Show/Hide message\" onclick=\"viewError('error:$job{ID}')\">";
+        $status .= " <INPUT type=\"button\" class='errorButton' value=\"Show/Hide message\" onclick=\"viewError('error:$job{ID}')\">";
     } elsif($warning) {
         $status.= " <FONT color=\"red\"><B>**WARNING**</B></FONT> " if($warning);
-        $status .= " <INPUT type=\"button\" value=\"Show/Hide message\" onclick=\"viewError('error:$job{ID}')\">";
+        $status .= " <INPUT type=\"button\" class='warningButton' value=\"Show/Hide message\" onclick=\"viewError('error:$job{ID}')\">";
         $error = "Warning : $warning" if($warning);
     }
     
@@ -813,7 +923,7 @@ sub getJobs {
     my @jobs;
     my ($filtersRef) = @_;
 
-    my $getJobsQuery = "SELECT J.ID_JOB, J.ID_USER, J.ID_PROJECT, J.ID_JOB_CLUSTER, J.TYPE, J.STATUS, J.FEATURES, J.SRC_PATH, J.LOG_PATH, J.ERROR_PATH, J.STARTED, J.ENDED, IFNULL(UL.USER_NAME, 'Unknown'), IFNULL(P.NAME, 'Global') FROM JOB_HISTORY J LEFT JOIN USER_LIST UL ON UL.ID_USER=J.ID_USER LEFT JOIN PROJECT P ON P.ID_PROJECT=J.ID_PROJECT WHERE 1";
+    my $getJobsQuery = "SELECT J.ID_JOB, J.ID_USER, J.ID_PROJECT, J.ID_JOB_CLUSTER, J.TYPE, J.JOB_STATUS, J.FEATURES, J.SRC_PATH, J.LOG_PATH, J.ERROR_PATH, J.STARTED, J.ENDED, IFNULL(UL.USER_NAME, 'Unknown'), IFNULL(P.NAME, 'Global') FROM JOB_HISTORY J LEFT JOIN USER_LIST UL ON UL.ID_USER=J.ID_USER LEFT JOIN PROJECT P ON P.ID_PROJECT=J.ID_PROJECT WHERE 1";
     
     if($filtersRef->{ID} && @{$filtersRef->{ID}}) {
         if($filtersRef->{MULTI}) {
@@ -822,12 +932,13 @@ sub getJobs {
             $getJobsQuery .= " AND J.ID_JOB IN('".join("','", @{$filtersRef->{ID}})."')";
         }
     } else {
-        $getJobsQuery .= " AND J.STATUS IN ('".join("','", @{$filtersRef->{STATUS}})."') " if($filtersRef->{STATUS} && @{$filtersRef->{STATUS}});
+        $getJobsQuery .= " AND J.JOB_STATUS IN ('".join("','", @{$filtersRef->{STATUS}})."') " if($filtersRef->{STATUS} && @{$filtersRef->{STATUS}});
         $getJobsQuery .= " AND J.ID_USER IN ('".join("','", @{$filtersRef->{USER}})."') " if($filtersRef->{USER} && @{$filtersRef->{USER}});
+        $getJobsQuery .= " AND J.ID_PROJECT IN ('".join("','", @{$filtersRef->{PROJECT}})."') " if($filtersRef->{PROJECT} && @{$filtersRef->{PROJECT}});
         
         my $filtersTypeStr = (defined $filtersRef->{TYPE}) ? join("|", @{$filtersRef->{TYPE}}) : '';
-        $filtersTypeStr =~ s/\[/\\\\[/;
-        $filtersTypeStr =~ s/\]/\\\\]/;
+        $filtersTypeStr =~ s/\[/\\\\[/g;
+        $filtersTypeStr =~ s/\]/\\\\]/g;
         $getJobsQuery .= " AND TYPE REGEXP '$filtersTypeStr'" if($filtersRef->{TYPE} && @{$filtersRef->{TYPE}});
         
         if($filtersRef->{DATE}) {
@@ -840,7 +951,6 @@ sub getJobs {
         }
     }
     $getJobsQuery .= " ORDER BY J.ID_PROJECT, Year(STARTED) DESC, Month(STARTED) DESC, Day(STARTED) DESC, Hour(STARTED) DESC, Minute(STARTED) DESC, J.TYPE, ID_JOB";
-
     my $sthJobs = $dbh->prepare($getJobsQuery);
     $sthJobs->execute();
     while (my ($ID, $userID, $projectID, $processID, $type, $status, $features, $srcPath, $logPath, $errorPath, $startedDate, $endDate, $userName, $projectName) = $sthJobs->fetchrow_array) {
@@ -921,7 +1031,7 @@ sub ajaxStopJob {
         my $allJobsID = '';
         my $dbh=&promsConfig::dbConnect;
         
-        $dbh->do("UPDATE JOB_HISTORY SET STATUS='Stopped' WHERE ID_JOB IN ('".join("', '", split(',', param('jobID')))."')"); # Set job status to stopped
+        $dbh->do("UPDATE JOB_HISTORY SET JOB_STATUS='Stopped' WHERE ID_JOB IN ('".join("', '", split(',', param('jobID')))."')"); # Set job status to stopped
         $dbh->commit;
         
         foreach my $jobRef (@jobs) {
@@ -967,7 +1077,7 @@ sub cleanJobData {
         my $quantiType = $job{features}{"TYPE"};
         if ($quantiID && $quantiType ne 'XICCORR' && $job{status} !~ /Done/) { # quantif is recorded in DB BUT all data still in temp dir
             my $projID = ($job{projectID}) ? $job{projectID} : &promsMod::getProjectID($dbh, $quantiID, 'quantification');
-            &promsQuantif::deleteQuantification($dbh, $projID, $quantiID, 1);
+            &promsQuantif::deleteQuantification($dbh, $projID, $quantiID, {KEEP_HISTORY=>1});
             $dbh->commit;
         }
         
@@ -988,6 +1098,14 @@ sub cleanJobData {
         }
     } elsif($job{type} eq 'Phospho') {
         system("rm -f $promsPath{tmp}/phosphoRS/current/*$job{ID}*");
+    } elsif($job{type} =~ /Functional Analysis/) {  # Only GSEA for now
+        my $gseaID = $job{features}{"ID_GSEA"};
+        if ($gseaID && $job{status} !~ /Done/) { # analysis recorded in DB but data still in temp dir
+            my $projID = ($job{projectID}) ? $job{projectID} : &promsMod::getProjectID($dbh, $gseaID, 'PATHWAY_ANALYSIS');
+            $dbh->do("DELETE FROM PATHWAYANA_QUANTIFICATION WHERE ID_PATHWAY_ANALYSIS=$gseaID") || die $dbh->errstr();
+            $dbh->do("DELETE FROM PATHWAY_ANALYSIS WHERE ID_PATHWAY_ANALYSIS=$gseaID") || die $dbh->errstr();
+            $dbh->commit;
+        }
     }
     
     ## Delete job directory
@@ -1297,7 +1415,7 @@ sub printJob {
         my $quantifType = '';
         $quantifType = $job{features}{TYPE} if($job{features}{TYPE});
         $quantifType .= ":".$job{features}{ALGO_TYPE} if($job{features}{ALGO_TYPE});
-        my $quantifName = 'Not found';
+        my $quantifName = 'Not available';
         
         if(-e "$job{srcPath}/quantif_info.txt") {
             open (INFO,"$job{srcPath}/quantif_info.txt");
@@ -1309,16 +1427,14 @@ sub printJob {
                 }
             }
             close INFO;
-        } elsif($job{features}{QUANTIFICATION_NAME}) {
-            $quantifName = $job{features}{QUANTIFICATION_NAME};
         }
     
-        my $quantiItemType = (uc($quantifType) !~ /DESIGN/ && uc($quantifType) ne 'XICMCQ') ? 'Analysis' : "Quantification";
+        my $quantiItemType = (uc($quantifType) !~ /DESIGN|XICMCQ|HYDRO/) ? 'Analysis' : "Quantification";
         my $quantifTypeStr = ($quantifProcesses{$quantifType}) ? $quantifProcesses{$quantifType} : "Unknown ($quantifType)";
 
         push(@columns, "$quantiItemType name");
         
-        if (uc($quantifType) !~ /DESIGN/ && uc($quantifType) ne 'XICMCQ') { # MassChroQ=XIC
+        if (uc($quantifType) !~ /DESIGN|XICMCQ|HYDRO/) { # MassChroQ=XIC
             #>Analyses quantif
             my $sthQN = $dbh->prepare("SELECT NAME FROM QUANTIFICATION WHERE ID_QUANTIFICATION=?");
             my $anaName = '-';
@@ -1353,7 +1469,7 @@ sub printJob {
             $quantName = join(' > ', @quantHierarchy);
             $quantName .= ' > '.$quantifName if ($job{features}{"ID_QUANTIFICATION"} <= 0 && $quantifName); # no quantifID yet
             
-            if($quantName eq 'Not found' && $quantifName) {
+            if($quantName eq 'Not available' && $quantifName) {
                 $quantName = $quantifName;
             }
             
@@ -1365,7 +1481,7 @@ sub printJob {
         
     # All import types (DIA/TDA/TPP/MaxQuant)
     }
-    elsif($job{type} =~ /Import/) {
+    elsif($job{type} =~ /Import|Spectral Library/) {
         my $processType = '';
         
         if($job{type} =~ /Import \[(.+)\]/) {
@@ -1385,38 +1501,85 @@ sub printJob {
             
             $processType = "Import MaxQuant data";
         }
-        elsif ($job{type} =~ /OpenSwath|TDA|TPP/) { # DIA / TDA import
-            my ($libName, $libDesc) = ('' , '');
+        elsif ($job{type} =~ /OpenSwath|TDA|TPP|Spectronaut/) { # DIA / TDA import
+            my ($libName, $desc) = ('' , '');
             my $software = $job{features}{'SOFTWARE'};
             my $libID = $job{features}{"ID_LIBRARY"};
-            my $isDIA = 0;
-            if($libID) {
-                $isDIA = ($software !~ /Skyline/) ? 1 : 0; # GET LIBID (DIA) / DBID (TDA)
-                if($isDIA) {
-                    ($libName) = $dbh->selectrow_array("SELECT NAME FROM SWATH_LIB WHERE ID_SWATH_LIB=$libID");
-                } else {
-                    $libName = $dbh->selectrow_array("SELECT NAME FROM DATABANK WHERE ID_DATABANK=$libID");
+            my @libIDs = ($libID) ? split(/,/, $libID) : ();
+            my $dbID = $job{features}{"ID_DATABANK"};
+            my @dbIDs = ($dbID) ? split(/,/, $dbID) : ();
+            my $useLib = 0;
+            my @ids = (@libIDs) ? @libIDs : (@dbIDs) ? @dbIDs : ();
+            if(@ids) {
+                $useLib = ($software !~ /Skyline/ && @libIDs) ? 1 : 0; # GET LIBID (DIA) / DBID (TDA)
+                foreach my $id (@ids) {
+                    my $name;
+                    if($useLib) {
+                        ($name) = $dbh->selectrow_array("SELECT NAME FROM SWATH_LIB WHERE ID_SWATH_LIB=$id");
+                    } else {
+                        ($name) = $dbh->selectrow_array("SELECT NAME FROM DATABANK WHERE ID_DATABANK=$id");
+                    }
+                    
+                    if($name) {
+                        $libName .= "<br/>" if($libName);
+                        $libName .= $name;
+                    }
                 }
+                
+                $desc = ($useLib) ? (scalar @ids == 1) ? "Library" : "Libraries" : (scalar @ids == 1) ? "Databank" : "Databanks";
             }
             
             push(@columns, 'Software');
-            push(@values, $software);
+            push(@values, ucfirst(lc($software)));
             
-            $libDesc = ($isDIA) ? "Library" : "Databank";
             if($libName) {
-                push(@columns, "$libDesc Name");
+                push(@columns, "$desc Name");
                 push(@values, $libName);
             }
             
-            if($job{type} =~ /TPP/) {
+            my $resultFile = $job{features}{"RESULT_FILE"};
+            if($job{type} =~ /Spectronaut|OpenSwath/ && $resultFile) {
+                push(@columns, 'Result file');
+                push(@values, $resultFile);
+            } elsif($job{type} =~ /TPP|Spectronaut/ && $job{type} =~ /Spectral Library/) {
                 $processType = ($job{features}{"ACTION"} =~ /add/) ? 'Creating spectral library' : 'Updating spectral library';
             }
         }
         
         $title .= $processType;
     }
+
+    # Functional Analysis (only GSEA for now)
+    elsif($job{type} =~ /Functional Analysis/) {
+        my ($funcAnaID, $parentQuantifID);
+        my $funcAnaName = 'Not found';
+        my $funcAnaType = '';
+        $funcAnaType = $job{features}{TYPE} if ($job{features}{TYPE});
+
+        if ($funcAnaType eq 'GSEA') {
+            $funcAnaID = $job{features}{ID_GSEA};
+            $parentQuantifID = $job{features}{ID_PARENT_QUANTIF};
+            $funcAnaName = $job{features}{GSEA_NAME};
+        }
+        push(@columns, "$funcAnaType name");
+        push(@values, $funcAnaName);
+
+        if ($funcAnaType eq 'GSEA') {
+            push(@columns, "Parent quantification");
+            my ($quantifFullName, @quantifHierarchy);
+            my @parQuantifInfo = &promsMod::getItemInfo($dbh, 'QUANTIFICATION', $parentQuantifID);
+            foreach my $i (1..$#parQuantifInfo) {
+                push @quantifHierarchy, $parQuantifInfo[$i]{'NAME'};
+            }
+            $quantifFullName = join(' > ', @quantifHierarchy);
+            # TODO optimize name displaying ?
+            $quantifFullName = substr($quantifFullName, 0, 20)."...".substr($quantifFullName, length($quantifFullName)-60) if(length($quantifFullName) > 85);
+            push(@values, $quantifFullName);
+        }
+
+        $title .= "Functional Analysis method: $funcAnaType";
+    }
     $title .= "&nbsp;&nbsp;-&nbsp;&nbsp;Launched by user : $job{userName}" if($job{userName});
-    
     
     # Print table header if it is a new job
     if(!$currentlyInJob) {
@@ -1426,7 +1589,7 @@ sub printJob {
                 <TABLE class='jobMeta' cellspacing=0>
                     <thead>
                         <TR bgcolor="$darkColor">
-                            <TH class="rbBorder manageCol" style='min-width:176px' align='center'>Manage</TH>
+                            <TH class="rbBorder manageCol" style='min-width:176px'>Manage</TH>
         |;
         
         # Print job type-specific columns
@@ -1449,7 +1612,7 @@ sub printJob {
     my $act = ($job{"status"} !~ /Done|Error|Stopped/) ? 'stop' : 'delete';
     print qq |
                     <TR bgcolor="$rowColor">
-                        <TD style='text-align:center'>
+                        <TD style='text-align:center' valign='top'>
                             <button id='delete:$job{ID}' onclick="deleteJob('$job{ID}', '$act')"><!--<i class="fa fa-trash" aria-hidden="true"></i>-->$deleteButtonStr</button>
     |;
     
@@ -1462,10 +1625,10 @@ sub printJob {
     
     # Print job type-specific information
     foreach my $value (@values) {
-        print qq |      <TD nowrap align='center' >&nbsp;&nbsp;$value&nbsp;&nbsp;</TD> |;
+        print qq |      <TD nowrap align='center' valign='top'>&nbsp;&nbsp;$value&nbsp;&nbsp;</TD> |;
     }
     
-    print qq |          <TD nowrap align='center'> |;
+    print qq |          <TD nowrap align='center' valign='top'> |;
     
     # Print last common information
     if($job{endDate} && $job{status} !~ /Queued|Running/) {
@@ -1484,7 +1647,7 @@ sub printJob {
                             <span id="updated:$job{ID}"></span>
                         </TD>
                         <TD nowrap style="padding:5px">
-                            <SPAN id="status:$job{ID}" style='text-align:center; display:block;'>$status</SPAN>
+                            <SPAN id="status:$job{ID}" style='text-align:left; display:block;'>$status</SPAN>
                             <DIV id="error:$job{ID}" style="display:none"><FIELDSET><LEGEND><B>Message :</B></LEGEND>$error</FIELDSET></DIV>
                         </TD>    
                     </TR>
@@ -1503,7 +1666,25 @@ sub printJob {
 }
 
 ####>Revision history<####
-# 1.0.8 [FIX] Switch to GET method to submit filter form so that there are no refresh validation popup (VS 29/11/19)
+# 1.1.16 [ENHANCEMENT] Use $clusterInfo{checkError}->() to filter out irrelevant cluster warnings from job error file (PP 04/06/21)
+# 1.1.15 [FEATURE] Add Hydrophobicity jobs (VL 15/02/21)
+# 1.1.14 [BUGFIX] Remove tracking of unstarted jobs on cluster that may caused jobs to fail (VS 08/03/21) 
+# 1.1.13 [FEATURE] Add display and deletion of Functional Analysis [GSEA] jobs (VL 04/11/20)
+# 1.1.12 [MINOR] Remove QUANTIFICATION_NAME from JOB_HISTORY table (VS 09/02/21)
+# 1.1.11 [BUGFIX] Fix SQL query to match IDs and names independently from group_concat sort (VL 01/12/20)
+# 1.1.10 [ENHANCEMENT] Extend categories to abundance quantifications for job monitoring (VL 19/11/20)
+# 1.1.9 [ENHANCEMENT] Improved spectral library building displaying (VS 22/10/20)
+# 1.1.8 [MINOR] Changed remaining JOB_HISTORY.STATUS to JOB_HISTORY.JOB_STATUS + Remove typo (VS 09/09/20)
+# 1.1.7 [UPDATE] Changed JOB_HISTORY.STATUS to JOB_HISTORY.JOB_STATUS (PP 28/08/20)
+# 1.1.6 [ENHANCEMENT] Added project filtering (VS 02/09/20)
+# 1.1.5 [ENHANCEMENT] Improved filters displaying (VS 26/08/20)
+# 1.1.4 [ENHANCEMENT] Added Spectronaut import job monitoring (VS 06/06/20)
+# 1.1.3 [ENHANCEMENT] Uses hash reference for passing extra parameters to &promsQuantif::deleteQuantification (PP 03/06/20)
+# 1.1.2 [ENHANCEMENT] Makes job type more readable in filtering section (VS 27/04/20)
+# 1.1.1 [BUGFIX] Fix multiple job types filtering (VS 24/04/20)
+# 1.1.0 [BUGFIX] Fix processing time computation (VS 07/04/20)
+# 1.0.9 [CHANGE] Does not refresh page if any error details are displayed (VS 29/03/20)
+# 1.0.8 [BUGFIX] Switch to GET method to submit filter form so that there are no refresh validation popup (VS 29/11/19)
 # 1.0.7 [ENHANCEMENT] Add 'user' filter for non-guest users (VS 29/11/19)
 # 1.0.6 [MINOR] Do not clean data on job stopping (VS 19/11/19)
 # 1.0.5 [ENHANCEMENT] Handles multiple values for filtering parameters (VS 18/11/19)

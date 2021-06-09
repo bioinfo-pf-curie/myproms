@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# selectAnalyses.cgi      2.6.9                                                #
+# selectAnalyses.cgi      2.7.2                                                #
 # Authors: P. Poullet, G. arras, F. Yvon, S. Liva (Institut Curie)             #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -48,7 +48,7 @@ use CGI ':standard';
 use promsConfig;
 use promsMod;
 
-#print header; warningsToBrowser(1); # DEBUG
+# print header; warningsToBrowser(1); # DEBUG
 #######################
 ####>Configuration<####
 #######################
@@ -103,7 +103,12 @@ else {
 my (%listDataBank,@itemAnalyses,@itemDesigns,%okDelete,%okRemFilter,%okActLowScores,%anaProteins,%listParam,@notReportableAna,%modifications,$numSelModifBoxes); #%listQuantif,
 
 ####>PhosphoRS<####
-my (%prsParam,%prsRunning);
+my (%prsParam,%prsRunning,%anaHasPhospho);
+my $sthPhospho;
+if ($callType eq 'phosphoRS') {
+	my ($phosphoModID)=$dbh->selectrow_array("SELECT ID_MODIFICATION FROM MODIFICATION WHERE UNIMOD_ACC=21");
+	$sthPhospho=$dbh->prepare("SELECT 1 FROM ANALYSIS_MODIFICATION WHERE ID_MODIFICATION=$phosphoModID AND ID_ANALYSIS=?");
+}
 
 ####>Recovering DBs name<####
 my $sthAD = $dbh->prepare("SELECT D.ID_DATABANK,NAME FROM ANALYSIS_DATABANK AD,DATABANK D WHERE AD.ID_DATABANK=D.ID_DATABANK AND AD.ID_ANALYSIS=?");
@@ -226,8 +231,13 @@ foreach my $sthI (@sthItem) {
 			$sthAVP->execute($anaID);
 			push @{$anaProteins{$anaID}},$sthAVP->fetchrow_array;
 
+			#>Ana Phospho
+			if ($callType eq 'phosphoRS') {
+				$sthPhospho->execute($anaID);
+				($anaHasPhospho{$anaID})=$sthPhospho->fetchrow_array;
+			}
 			#>peptidePTM (PTM distrib)
-			if ($callType eq 'peptidePTM') {
+			elsif ($callType eq 'peptidePTM') {
 				$sthCTS{MOD_ID}->execute($anaID);
 				while (my ($modID,$specif)=$sthCTS{MOD_ID}->fetchrow_array) {
 					if ($specif) {
@@ -259,7 +269,7 @@ foreach my $sthI (@sthItem) {
 			#	$okActLowScores{$anaID}=($anaData[12] && $anaData[12]==2)? 0 : 1;
 			#}
 		}
-		%{$listParam{$anaID}}=&promsMod::getSearchParam($dbh,$anaID) if ($showParam==1 || $callType eq 'phosphoRS');
+		%{$listParam{$anaID}}=&promsMod::getSearchParam($dbh,$anaID) if $showParam==1; # || $callType eq 'phosphoRS';
 
 		#>Report: check for quantifications
 		if ($callType eq 'report') {
@@ -282,7 +292,22 @@ foreach my $sthI (@sthItem) {
 				$prsParamFile = "$promsPath{valid}/ana_$anaID/PRSparam_$dataFile.txt";
 			}
 			$prsRunning{$anaID}=0; # always defined
-			if (-e $prsParamFile) {
+			if (-e "$promsPath{tmp}/phosphoRS" && -e "$promsPath{tmp}/phosphoRS/current" && glob "$promsPath{tmp}/phosphoRS/current/$anaID\_*.flag") {
+				$prsRunning{$anaID}=1;
+				#my ($errorFile)=(glob "$promsPath{tmp}/phosphoRS/current/$anaID\_*_error.txt")[0];
+				my $errorFile;
+				my $latestJob=0;
+				foreach my $file (glob "$promsPath{tmp}/phosphoRS/current/$anaID\_*_error.txt") { # keep only latest job if many
+					my ($job)=$file=~/current\/$anaID\_(\d+)/;
+					if ($job*1 > $latestJob) {
+						$latestJob=$job;
+						$errorFile=$file;
+					}
+				}
+				#if ($errorFile) {$prsRunning{$anaID}=(-s $errorFile)? -1 : 1;} # -1 => error in file
+				if ($errorFile && -s $errorFile) {$prsRunning{$anaID}=-1} # error in file
+			}
+			if ($prsRunning{$anaID} != -1 && -e $prsParamFile) {
 				open PRSparam, $prsParamFile;
 				while(<PRSparam>){
 					chomp;
@@ -291,16 +316,12 @@ foreach my $sthI (@sthItem) {
 				}
 				close PRSparam;
 			}
-			elsif (-e "$promsPath{tmp}/phosphoRS" && -e "$promsPath{tmp}/phosphoRS/current") {
-				my ($errorFile)=(glob "$promsPath{tmp}/phosphoRS/current/$anaID\_*_error.txt")[0];
-				if ($errorFile) {$prsRunning{$anaID}=(-s $errorFile)? -1 : 1;} # -1 => error in file
-			}
 		}
-
 	}
 	$sthI->finish;
 }
 $sthAD->finish;
+$sthPhospho->finish if $callType eq 'phosphoRS';
 foreach my $sthI (@sthItem) {$sthI->finish;}
 $sthVVP->finish;
 $sthAVP->finish;
@@ -461,7 +482,7 @@ print qq
 <STYLE type="text/css">
 TD.center {text-align:center} //{font-weight:bold;}
 </STYLE>
-<SCRIPT LANGUAGE="JavaScript">
+<SCRIPT type="text/javascript">
 $quantiDataJS
 function cancelAction() {
 	//top.promsFrame.selectedAction='summary'; // set default action to 'summary'
@@ -551,6 +572,13 @@ function checkall(checkStatus){
 	}
 	return true;
 }
+function revertPhosphoRS(anaID) {
+	window.location="$promsPath{cgi}/analysePhospho.cgi?deleteID="+anaID+"&branchID=$branchID";
+}
+function clearPhosphoRSerrors(anaIdList) {
+	window.location="$promsPath{cgi}/analysePhospho.cgi?branchID=$branchID&clearErrors=1&anaList="+anaIdList;
+}
+
 |;
 	}
 	elsif ($callType eq 'goQuantiAnalysis') {
@@ -613,9 +641,9 @@ function selectQuantiAndRatio(id) {
 var prevModID=0;
 function updateModifSelectionList(modID) {
 	if (prevModID) { // enable previously disabled modif
-		for (var s=1; s<=$numSelModifBoxes; s++) {
+		for (var s=1; s <= $numSelModifBoxes; s++) {
 			var curSelBox=document.getElementById('modifID_'+s);
-			for (var i=0; i< curSelBox.options.length; i++) {
+			for (var i=0; i < curSelBox.options.length; i++) {
 				if (curSelBox.options[i].value==prevModID) {
 					curSelBox.options[i].disabled=false;
 					break;
@@ -624,9 +652,9 @@ function updateModifSelectionList(modID) {
 		}
 	}
 	if (modID) {
-		for (var s=1; s<=$numSelModifBoxes; s++) {
+		for (var s=1; s <= $numSelModifBoxes; s++) {
 			var curSelBox=document.getElementById('modifID_'+s);
-			for (var i=0; i< curSelBox.options.length; i++) {
+			for (var i=0; i < curSelBox.options.length; i++) {
 				if (curSelBox.options[i].value==modID) {
 					curSelBox.options[i].disabled=true;
 					if (curSelBox.options[i].selected) {
@@ -644,7 +672,7 @@ var selModifInBox={},numSelInBox={};
 for (var i=1; i<=$numSelModifBoxes; i++) {selModifInBox[i]={};numSelInBox[i]=0;}
 function updateModifSelection(setNumber) {
 	var curSelBox=document.getElementById('modifID_'+setNumber);
-	//Fetching selected option
+	// Fetching selected option
 	var curSel={},numSel=0;
 	for (var i=0; i< curSelBox.options.length; i++) {
 		if (curSelBox.options[i].selected) {
@@ -652,7 +680,7 @@ function updateModifSelection(setNumber) {
 			numSel++;
 		}
 	}
-	//Comparing with previous list
+	// Comparing with previous list
 	if (numSel == numSelInBox[setNumber]) { // switch in option selected (possible if only 1 option is selected)
 		// remove previous selected option
 /* Commented to allow selection of same modif in different sets (PP 17/03/16)
@@ -685,7 +713,7 @@ function updateModifSelection(setNumber) {
 			break;
 		}
 	}
-	//Updating target residues
+	// Updating target residues
 	var residueSet=document.selAnaForm['residues_'+setNumber];
 	if (residueSet.length) {
 		if (numSelInBox[setNumber]) {
@@ -916,7 +944,8 @@ else {
 |;
 	} elsif ($callType eq 'export') {
 		print qq
-|<INPUT type="hidden" name="ACT" value="$callType">
+|<span style="font-weight: bold;"><INPUT type="checkbox" name="gen_design" checked> Generate Experiment Design file</span><br/><br/>
+<INPUT type="hidden" name="ACT" value="$callType">
 <INPUT type="hidden" name="id_project" value="$projectID">
 <INPUT type="hidden" name="item" value="$ITEM">
 |;
@@ -977,6 +1006,7 @@ my %itemIcones=&promsConfig::getItemIcones;
 my $bgColor=$darkColor;
 my %prevItemName;
 my $disabSubmit=' disabled';
+my @errorInPhosphoRS;
 if ($srcType eq 'ana') {
 	foreach my $refAnaData (@itemAnalyses) {
 		my ($anaID,$valStat,$msType,$dataFile,$fileFormat,$wiffFile,$taxonomy,$maxRank,$minScore,$instrument,$refDbUsed,$labeling,$lowerScores,@projHierarchy)=@{$refAnaData};
@@ -1006,8 +1036,9 @@ if ($srcType eq 'ana') {
 		##>Checkbox
 		if ($callType ne 'list') {
 			my $disabStrg = '';
-			if($callType eq 'phosphoRS'){
-				$disabStrg = ' disabled' unless ($listParam{$anaID}{'g:Variable modifications'} && $listParam{$anaID}{'g:Variable modifications'} =~ /Phospho/ && !$prsRunning{$anaID});
+			if ($callType eq 'phosphoRS') {
+				#$disabStrg = ' disabled' unless ($listParam{$anaID}{'g:Variable modifications'} && $listParam{$anaID}{'g:Variable modifications'} =~ /Phospho/ && !$prsRunning{$anaID});
+				$disabStrg = ' disabled' if (!$anaHasPhospho{$anaID} || $prsRunning{$anaID} || $prsParam{$anaID});
 			}
 			elsif ($callType eq 'goQuantiAnalysis'){
 				$disabStrg = ' disabled' unless ($quantiData{$anaID});
@@ -1068,27 +1099,28 @@ if ($srcType eq 'ana') {
 		##>phosphoRS
 		if ($callType eq 'phosphoRS') {
 			my $pRSstatus;
-			if($valStat>1){ # unavailable for phosphoRS
+			if ($valStat>1) { # unavailable for phosphoRS
 				$pRSstatus = "&nbsp;-&nbsp;";
 			}
-			elsif ($listParam{$anaID}{'g:Variable modifications'} !~ /Phospho/){
+			elsif (!$anaHasPhospho{$anaID}) { # $listParam{$anaID}{'g:Variable modifications'} !~ /Phospho/
 				$pRSstatus = "&nbsp;No phosphorylation&nbsp;";
 			}
 			else {
 				$disabSubmit = '';
 				if ($prsParam{$anaID}) {
 					$pRSstatus = "<TABLE border=0><TD>";
-					while(my ($name,$value) = each %{$prsParam{$anaID}}){
+					while (my ($name,$value) = each %{$prsParam{$anaID}}){
 						$pRSstatus .= "&nbsp;$name: $value&nbsp;\n<BR>";
 					}
 					$pRSstatus =~ s/<BR>$//;
-					$pRSstatus .= "</TD><TD align=\"center\" valign=\"center\">&nbsp;<INPUT type=\"button\" value=\"Revert\" class=\"font11\" onclick=\"window.location='$promsPath{cgi}/analysePhospho.cgi?deleteID=$anaID&branchID=$branchID';\">&nbsp;</TD></TABLE>";
+					$pRSstatus .= "</TD><TD align=\"center\" valign=\"center\">&nbsp;<INPUT type=\"button\" value=\"Revert\" class=\"font11\" onclick=\"revertPhosphoRS($anaID)\">&nbsp;</TD></TABLE>";
 				}
 				elsif ($prsRunning{$anaID}==1) {
 					$pRSstatus = '&nbsp;<FONT style="color:#00A000;font-weight:bold">On-going...</FONT>&nbsp;';
 				}
 				elsif ($prsRunning{$anaID}==-1) {
-					$pRSstatus = '&nbsp;<FONT style="color:#DD0000;font-weight:bold">Error detected</FONT>&nbsp;';
+					$pRSstatus = "&nbsp;<FONT style=\"color:#DD0000;font-weight:bold\">Error</FONT>&nbsp;<INPUT type=\"button\" value=\"Clear\" class=\"font11\" onclick=\"clearPhosphoRSerrors($anaID)\">&nbsp;";
+					push @errorInPhosphoRS,$anaID;
 				}
 				else {
 					$pRSstatus = '&nbsp;Not performed&nbsp;';
@@ -1244,6 +1276,7 @@ else {
 			($callType eq 'export')? 'Export Analyses' :
 			'';
 		print "<INPUT type=\"submit\" name=\"Submit\" value=\"$submitName\" class=\"title3\"$disabSubmit>&nbsp;&nbsp;";
+		print "<INPUT type=\"button\" value=\"Clear all errors\" class=\"title3\" onclick=\"clearPhosphoRSerrors('",join(',',@errorInPhosphoRS),"')\"/>&nbsp;&nbsp;" if ($callType eq 'phosphoRS' && scalar @errorInPhosphoRS > 1);
 	}
 	print "<INPUT type=\"button\" value=\"Cancel\" onclick=\"cancelAction();\"></TD></TR>\n";
 }
@@ -1252,6 +1285,9 @@ print "</FORM>\n" if $callType ne 'list';
 print "</BODY>\n</HTML>\n";
 
 ####>Revision history<####
+# 2.7.2 [BUGFIX] Checks only latest error file when listing Analyses PhosphoRS status (PP 22/04/21)
+# 2.7.1 [FEATURE] Option to clear PhosphoRS error & speed up loading (PP 11/02/21)
+# 2.7.0 [CHANGE] Make the generation of the experiment design file optional (VS 04/02/21)
 # 2.6.9 Fix Pathway analysis query (VS 29/03/19)
 # 2.6.8 Add export analyses possibility (VS 26/02/19)
 # 2.6.7 Add check for on-going phosphoRS analysis (PP 08/11/18)

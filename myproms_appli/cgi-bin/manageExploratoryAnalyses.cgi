@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# manageExploratoryAnalyses.cgi       1.1.8                                    #
+# manageExploratoryAnalyses.cgi       1.1.15                                   #
 # Authors: P. Poullet, S.Liva (Institut Curie)                                 #
 # Contact: myproms@curie.fr                                                    #
 # Display PCA & clustering analysis                                            #
@@ -57,13 +57,12 @@ use File::Path qw(rmtree);
 #######################
 my %promsPath=&promsConfig::getServerInfo;
 my %proteinQuantifFamilies=&promsQuantif::getProteinQuantifFamilies;
-my %features=('protQuant'=>'Protein quantifications','pepQuant'=>'Peptide quantifications','pepCount'=>'Peptide count');
+my %features=('protQuant'=>'Protein quantifications','siteQuant'=>'PTM-site quantifications','pepQuant'=>'Peptide quantifications','pepCount'=>'Peptide count');
 my %pepTypeDesc=('NUM_PEP_USED'=>'All','DIST_PEP_USED'=>'Distinct','RAZ_UNI_PEP'=>'Razor + unique','UNIQUE_PEP'=>'Unique','IDENT_PEP'=>'Identified');
 my %anaTypeDesc=('cluster'=>'Clustering','clusterPEP'=>'Clustering','PCA'=>'PCA', 'PCAPEP'=>'PCA');
 my $action = param('ACT')? param('ACT') : 'summary';
 my $explorID = param('explorID');
 my $experimentID = param('experimentID')? param('experimentID') : "";
-my $ajax = param('AJAX')? param('AJAX') : '';
 my $dbh = &promsConfig::dbConnect;
 my $projectID=&promsMod::getProjectID($dbh,$experimentID,'EXPERIMENT');
 my ($explorName,$anaType,$description,$status,$listID,$listExclusion,$filterStrg,$paramStrg) = $dbh -> selectrow_array("SELECT NAME,ANA_TYPE,DES,STATUS,ID_CATEGORY,CAT_EXCLUSION,FILTER_LIST,PARAM_LIST FROM EXPLORANALYSIS WHERE ID_EXPLORANALYSIS = $explorID");
@@ -92,7 +91,7 @@ if ($action eq "delete") {
     print qq
 |<HTML>
 <HEAD>
-<SCRIPT LANGUAGE="JavaScript">
+<SCRIPT type="text/javascript">
 top.promsFrame.selectedAction = 'summary';
 parent.itemFrame.location="$promsPath{cgi}/openProject.cgi?ACT=experiment&EXPERIMENT=experiment:$experimentID&branchID=experiment:$experimentID&VIEW=explorAna";
 </SCRIPT>
@@ -151,11 +150,12 @@ print qq
 |<HTML>
 <HEAD>
 <TITLE>ExplorAnalysis</TITLE>
-<LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">|;
+<LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
+<SCRIPT type="text/javascript">
+|;
 if ($action eq 'edit') {
     print qq
-|<SCRIPT langage="Javascript">
-function checkForm(myForm) {
+|function checkForm(myForm) {
 	if (!myForm.explorName.value) {
 		alert('A name is expected for the analysis');
 		return false;
@@ -166,8 +166,7 @@ function checkForm(myForm) {
 }
 else {
     print qq
-|<SCRIPT langage="Javascript">
-function displayQuantiList() {
+|function displayQuantiList() {
 	var quantifDiv=document.getElementById('quantiList');
 	var quantifBut=document.getElementById('buttonList')
 	if (quantifDiv.style.display == 'none') {
@@ -182,8 +181,18 @@ function displayQuantiList() {
 		//document.getElementById('buttonList').innerHTML = '<INPUT type="button" value="Display list" onclick="displayQuantiList(document.displayMenu,\\'show\\')">';
 	}
 }
+function toggleValueDistribution(displayButton) {
+	var graph = document.getElementById('valueDistribIMG');
+	var isDisplayed = (graph.style.display != 'none');
+	graph.style.display = (isDisplayed) ? 'none' : 'block';
+	displayButton.value = (isDisplayed) ? 'Display values distribution' : 'Hide values distribution';
+}
+function refreshDisplay() {
+	if (document.getElementById('quantiList').style.display==='none') {parent.optionFrame.location.reload();}
+	else {setTimeout(refreshDisplay,5000);}
+}
 |;
-	print "setTimeout(function(){parent.optionFrame.location.reload();},5000);\n" if $status==-1;
+	print "setTimeout(refreshDisplay,5000);\n" if $status==-1;
 }
 print qq
 |</SCRIPT>
@@ -195,47 +204,62 @@ print qq
 my ($light,$dark)=&promsConfig::getRowColors;
 
 my (%quantifList,%dataParams,%dataFilters,%refQuantif,%analysisList,$focusStrg,$isNormalized);
+my $featureType='protein'; # default
 if ($action eq 'summary') {
-	my $modifID;
+	my $isModifQuantif=0;
+	my %modifUsed;
+	my $numQuantifUsed=0;
 	
+    $dbh->do("SET SESSION group_concat_max_len = 1000000"); # required for quantifs with high number of targetPos
     if ($anaType eq 'PCA' || $anaType eq 'cluster') {
-        my $sthDesQuantif = $dbh -> prepare("SELECT EQ.ID_QUANTIFICATION,EQ.TARGET_POS,CONCAT(D.NAME,' > ',Q.NAME),Q.QUANTIF_ANNOT,ID_MODIFICATION FROM EXPLORANA_QUANTIF EQ
-                                                    INNER JOIN QUANTIFICATION Q ON EQ.ID_QUANTIFICATION = Q.ID_QUANTIFICATION
-                                                    INNER JOIN DESIGN D ON Q.ID_DESIGN = D.ID_DESIGN
-                                                    WHERE EQ.ID_EXPLORANALYSIS = $explorID");
+        my $sthDesQuantif = $dbh -> prepare("SELECT EQ.ID_QUANTIFICATION,GROUP_CONCAT(EQ.TARGET_POS SEPARATOR ','),CONCAT(D.NAME,' > ',Q.NAME),Q.QUANTIF_ANNOT,Q.ID_MODIFICATION,GROUP_CONCAT(DISTINCT MQ.ID_MODIFICATION ORDER BY MQ.MODIF_RANK SEPARATOR ',') FROM EXPLORANA_QUANTIF EQ
+												INNER JOIN QUANTIFICATION Q ON EQ.ID_QUANTIFICATION = Q.ID_QUANTIFICATION
+												LEFT JOIN MULTIMODIF_QUANTIFICATION MQ ON Q.ID_QUANTIFICATION=MQ.ID_QUANTIFICATION
+												INNER JOIN DESIGN D ON Q.ID_DESIGN = D.ID_DESIGN
+												WHERE EQ.ID_EXPLORANALYSIS = $explorID GROUP BY EQ.ID_QUANTIFICATION");
         $sthDesQuantif->execute;
-        while (my($quantifID,$targetPos,$quantifPath,$quantifAnnot,$modID) = $sthDesQuantif -> fetchrow_array) {
-            $modifID=$modID;
-            if ($targetPos) { # RATIO family
+        while (my ($quantifID,$targetPosStrg,$quantifPath,$quantifAnnot,$modifID,$multiModifStrg) = $sthDesQuantif -> fetchrow_array) {
+            if ($modifID || $multiModifStrg) {
+				$isModifQuantif=1;
+				if ($modifID) {$modifUsed{$modifID}++;}
+				else {
+					foreach my $modID (split(',',$multiModifStrg)) {$modifUsed{$modID}++;}
+				}
+			}
+			$numQuantifUsed++;
+            if ($targetPosStrg) {
                 my (%labelingInfo,%stateInfo);
                 &promsQuantif::extractQuantificationParameters($dbh,$quantifAnnot,\%labelingInfo,\%stateInfo);
                 if ($labelingInfo{'RATIOS'}) {
-                    my ($testCondID,$refCondID)=split(/\//,$labelingInfo{'RATIOS'}[$targetPos-1]);
-                    my $normTag='';
-                    if ($testCondID=~/%/) { # Super ratio
-                        $normTag='°';
-                        $testCondID=~s/%\d+//;
-                        $refCondID=~s/%\d+//;
-                    }
-                    $quantifList{$quantifID.'_'.$targetPos}="$quantifPath : $stateInfo{$testCondID}{NAME}$normTag/$stateInfo{$refCondID}{NAME}$normTag";
+					foreach my $targetPos (split(',',$targetPosStrg)) {
+						my ($testCondID,$refCondID)=split(/\//,$labelingInfo{'RATIOS'}[$targetPos-1]);
+						my $normTag='';
+						if ($testCondID=~/%/) { # Super ratio
+							$normTag='°';
+							$testCondID=~s/%\d+//;
+							$refCondID=~s/%\d+//;
+						}
+						$quantifList{$quantifID.'_'.$targetPos}="$quantifPath : $stateInfo{$testCondID}{NAME}$normTag/$stateInfo{$refCondID}{NAME}$normTag";
+					}
                 }
-                else { # MQ
-					my ($numBioRep,$quantiObsIDs,$condID)=split(',',$labelingInfo{'STATES'}[$targetPos-1]);
-                    $quantifList{$quantifID.'_'.$targetPos}="$quantifPath : $stateInfo{$condID}{NAME}";
+                else { # MQ|PROT_ABUN
+					foreach my $targetPos (split(',',$targetPosStrg)) {
+						my ($numBioRep,$quantiObsIDs,$condID)=split(',',$labelingInfo{'STATES'}[$targetPos-1]);
+						$quantifList{$quantifID.'_'.$targetPos}="$quantifPath : $stateInfo{$condID}{NAME}";
+					}
                 }
             }
         }
         $sthDesQuantif->finish;
 
-        my $sthNonDesQuantif=$dbh->prepare("SELECT EQ.ID_QUANTIFICATION,EQ.TARGET_POS,CONCAT(S.NAME,' > ',A.NAME,' > ',Q.NAME),QUANTIF_ANNOT,ID_MODIFICATION FROM EXPLORANA_QUANTIF EQ
+		my $sthNonDesQuantif=$dbh->prepare("SELECT EQ.ID_QUANTIFICATION,EQ.TARGET_POS,CONCAT(S.NAME,' > ',A.NAME,' > ',Q.NAME),QUANTIF_ANNOT FROM EXPLORANA_QUANTIF EQ
                                                     INNER JOIN QUANTIFICATION Q ON EQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND ID_DESIGN IS NULL
                                                     INNER JOIN ANA_QUANTIFICATION AQ ON Q.ID_QUANTIFICATION=AQ.ID_QUANTIFICATION
                                                     INNER JOIN ANALYSIS A ON AQ.ID_ANALYSIS=A.ID_ANALYSIS
                                                     INNER JOIN SAMPLE S ON A.ID_SAMPLE=S.ID_SAMPLE
                                                     WHERE EQ.ID_EXPLORANALYSIS = $explorID");
         $sthNonDesQuantif->execute;
-        while (my($quantifID,$ratioPos,$quantifPath,$quantifAnnot,$modID) = $sthNonDesQuantif -> fetchrow_array) {
-            $modifID=$modID;
+        while (my($quantifID,$ratioPos,$quantifPath,$quantifAnnot) = $sthNonDesQuantif -> fetchrow_array) {
             if ($ratioPos) { # RATIO family
                 my (%labelingInfo,%stateInfo);
                 &promsQuantif::extractQuantificationParameters($dbh,$quantifAnnot,\%labelingInfo,\%stateInfo);
@@ -264,26 +288,36 @@ if ($action eq 'summary') {
 		my ($item, $itemValue) = split("=", $param);
 		$dataParams{$item} = $itemValue;
 	}
+    $dataParams{feature}='protQuant' unless $dataParams{feature}; # empty for some ExpAna...
+    $dataParams{feature}='siteQuant' if $isModifQuantif; # overwrite protQuant values for older ExpAna
 	foreach my $filter (split("//", $filterStrg)) {
 		next if !$filter; # strg starts with //
 		my ($item, $itemValue) = split("=", $filter);
 		$dataFilters{$item}=$itemValue;
 	}
-
-    if ($dataParams{'normalization'}) {
-		foreach my $strg (split(/[;:]/, $dataParams{'normalization'})) {
-			my ($testQuant, $refQuant)=split(/%/, $strg);
-			$refQuantif{$testQuant}=$refQuant;
+	if ($isModifQuantif) {
+		$featureType='site';
+        if ($dataParams{'normalization'}) {
+            foreach my $strg (split(/[;:]/, $dataParams{'normalization'})) {
+                my ($testQuant, $refQuant)=split(/%/, $strg);
+                $refQuantif{$testQuant}=$refQuant;
+            }
+            $focusStrg='Normalized ';
+            $isNormalized=1;
+            $numQuantifUsed/=2; # exclude normalizing quantifs 
+        }
+		my $sthMod=$dbh->prepare("SELECT PSI_MS_NAME FROM MODIFICATION WHERE ID_MODIFICATION=?");
+		my @modifNames;
+  		foreach my $modifID (keys %modifUsed) {
+			if ($modifUsed{$modifID}==$numQuantifUsed) {
+				$sthMod->execute($modifID);
+				my ($modifName)=$sthMod->fetchrow_array;
+				push @modifNames,$modifName;
+			}
 		}
-		$focusStrg='Normalized ';
-		$isNormalized=1;
-    }
-	if ($modifID) {
-		my ($modifName)=$dbh->selectrow_array("SELECT PSI_MS_NAME FROM MODIFICATION WHERE ID_MODIFICATION=$modifID");
-		$focusStrg.="$modifName-Proteins";
+		$focusStrg.='<B>'.(join('/',sort{lc($a)cmp lc($b)} @modifNames)).'</B>-sites';
 	}
 	else {$focusStrg='Proteins';}
-
 }
 else { # edit
 	print qq
@@ -307,7 +341,7 @@ else {#summary
 	$description=&promsMod::HTMLcompatible($description);
 	my $measureStrg='';
 	if ($dataParams{'quantCode'}) {
-		foreach my $refMeas (@{$proteinQuantifFamilies{'MEASURES'}{$dataParams{quantFam}}}) {
+		foreach my $refMeas (@{$proteinQuantifFamilies{'MEASURES'}{$dataParams{'quantFam'}}}) {
 			if ($refMeas->[0] eq $dataParams{'quantCode'}) {
 				$measureStrg=" ($refMeas->[1])";
 				last;
@@ -343,7 +377,7 @@ print qq|
             print "&nbsp;&bull;&nbsp;Abs. fold change &ge; <B>$dataFilters{FC}</B> in at least <B>$fcOccur</B> quantification(s)&nbsp;<BR>\n";
             if ($dataFilters{'INF'} < 0) {print "&nbsp;&bull;&nbsp;Infinite ratios are treated as <B>missing values</B>&nbsp;<BR>\n";}
             else {
-                my ($infRatioStrg,$protStrg)=($dataFilters{'INF'}==100)? ('All','') : ($dataFilters{'INF'}==0)? ('No','') : ("$dataFilters{INF}%",' / protein');
+                my ($infRatioStrg,$protStrg)=($dataFilters{'INF'}==100)? ('All','') : ($dataFilters{'INF'}==0)? ('No','') : ("$dataFilters{INF}%"," / $featureType");
                 print "&nbsp;&bull;&nbsp;<B>$infRatioStrg</B> infinite ratios allowed$protStrg&nbsp;<BR>\n";
             }
             print "&nbsp;&bull;&nbsp;p-value &le; <B>$dataFilters{PV}</B> in at least <B>$pvOccur</B> quantification(s)&nbsp;<BR>\n" unless $isNormalized;
@@ -355,7 +389,7 @@ print qq|
 	
     $dataFilters{'NA'}=34 if !defined $dataFilters{'NA'}; # back compatibility with older Analyses
 	my $missingValuesStrg=($dataFilters{'NA'}==100)? 'All' : ($dataFilters{'NA'}==0)? 'No' : ($dataFilters{'NA'}==-1)? 'Not authorized' : "$dataFilters{NA}%";
-    my $focusStrg = ($anaType eq ('PCA') || $anaType eq ('cluster'))? "protein" : "peptide";
+    my $focusStrg = ($anaType eq ('PCA') || $anaType eq ('cluster'))? $featureType : "peptide";
 	print "&nbsp;&bull;&nbsp;<B>$missingValuesStrg</B> missing values allowed / $focusStrg&nbsp;<BR>\n";
     if (defined $dataFilters{'nbNA'}) {
         my $pcNA="";
@@ -365,7 +399,16 @@ print qq|
         else {
             $pcNA=sprintf "%.2f",100 * $dataFilters{'nbNA'}/($dataFilters{'nbAllProt'} * scalar (keys %analysisList));
         }
-		print "&nbsp;&bull;&nbsp;<B>$pcNA%</B> missing values ($dataFilters{'nbNA'} values imputed)&nbsp;<BR>\n";
+		print "&nbsp;&bull;&nbsp;<B>$pcNA%</B> missing values ($dataFilters{'nbNA'} values imputed)&nbsp;";
+        
+        my $missValueFile = "$promsPath{explorAna}/project_$projectID/$explorID/valueDistribution.png";
+        if (-e $missValueFile) {
+            print qq
+|<INPUT type="button" onclick="toggleValueDistribution(this)" value="Display distribution"/>
+<IMG src="$promsPath{explorAna_html}/project_$projectID/$explorID/valueDistribution.png" id="valueDistribIMG" style="display:none"/>
+|;
+        }
+        print "<BR>\n";
 	}
 	
     if ($anaType eq ('PCA') || $anaType eq ('cluster')) {
@@ -380,7 +423,7 @@ print qq|
             }
         }
         if ($dataFilters{'nbAllProt'}) {
-            print "&nbsp;&bull;&nbsp;<B>$dataFilters{nbAllProt}</B> proteins used&nbsp;<BR>\n";
+            print "&nbsp;&bull;&nbsp;<B>$dataFilters{nbAllProt}</B> $featureType","s used&nbsp;<BR>\n";
         }
         #else {
         #	print "&nbsp;&bull;$convertItem{$itemValue}<BR>";
@@ -402,34 +445,28 @@ print qq|
 |;
 	}
     
-    my $strgList = ($anaType eq ('PCA') || $anaType eq ('cluster'))? "Quantifications" : "Analyses" ;
-	print qq
+    my ($strgList,$numItemStrg) = ($anaType =~ /^(PCA|cluster)$/)? ("Quantifications",scalar keys %quantifList) : ("Analyses",scalar keys %analysisList);
+	if ($isNormalized) {
+        $numItemStrg/=2;
+        $numItemStrg="$numItemStrg x 2";
+    }
+    print qq
 |<TR><TH align=right bgcolor=$dark nowrap>Status :</TH><TD nowrap bgcolor=$light>&nbsp;&nbsp;$statusStrg</TD></TR>
-<TR><TH align=right valign="top" bgcolor=$dark nowrap>$strgList used :</TH><TD nowrap bgcolor=$light>
-	<INPUT id="buttonList" type="button" value="Show list" onclick="displayQuantiList(document.displayMenu,'show')">
+<TR><TH align=right valign="top" bgcolor=$dark nowrap>$strgList used :</TH><TD nowrap bgcolor=$light><B>$numItemStrg</B>&nbsp;<INPUT id="buttonList" type="button" value="Show list" onclick="displayQuantiList(document.displayMenu,'show')">
 	<DIV id="quantiList" style="display:none;">
 		<TABLE cellpadding=0>
 |;
-	if (keys %refQuantif) {
-		print "<TR><TH colspan=2 align=left><U>Normalization:</U></TH></TR>\n";
+	#if (keys %refQuantif) {
+		#print "<TR><TH colspan=2 align=left><U>Test:</U></TH></TR>\n";
 		my $count=0;
 		foreach my $quantifID (sort{$a cmp $b} keys %quantifList)  {
-			if ($refQuantif{$quantifID}) {
-				$count++;
-				print "<TR><TD align=right nowrap>&nbsp;#$count.</TD><TD nowrap>&nbsp;<B>$quantifList{$quantifID} - $quantifList{$refQuantif{$quantifID}}</B>&nbsp;</TD></TR>\n";
-				delete $quantifList{$quantifID};
-				delete $quantifList{$refQuantif{$quantifID}};
-			}
-		}
-		print "<TR><TH colspan=2 align=left><U>Test:</U></TH></TR>\n";
-	}
-	if (keys %quantifList) {
-		my $count=0;
-		foreach my $quantifInfo (sort{$a cmp $b} values %quantifList) {
 			$count++;
-			print "<TR><TD align=right nowrap>&nbsp;#$count.</TD><TD nowrap>&nbsp;<B>$quantifInfo</B>&nbsp;</TD></TR>\n";
+			print "<TR><TD align=right nowrap>&nbsp;#$count.</TD><TD nowrap>&nbsp;<B>$quantifList{$quantifID}";
+			print " &bull; $quantifList{$refQuantif{$quantifID}}" if $isNormalized;
+			print "</B>&nbsp;</TD></TR>\n";
 		}
-	}
+		print "<TR><TH colspan=2 align=left class=\"font11\"><I>Quantification &bull; Normalizing quantification</I></TH></TR>\n" if $isNormalized;
+
     
     if (keys %analysisList) {
         my $count=0;
@@ -458,9 +495,9 @@ elsif ($action eq 'summary' && $isAnnot) {
 |;
 	my %convertGO = ("P" => "Biological process", "C" => "Cellular component", "F" => "Molecular function");
 	my %annotSet;
-	my $sthSelectAnnotation = $dbh -> prepare("SELECT NAME,RANK,ANNOT_TYPE,ANNOT_LIST FROM ANNOTATIONSET WHERE ID_EXPLORANALYSIS = $explorID");
+	my $sthSelectAnnotation = $dbh->prepare("SELECT NAME,ANNOT_RANK,ANNOT_TYPE,ANNOT_LIST FROM ANNOTATIONSET WHERE ID_EXPLORANALYSIS = $explorID");
 	$sthSelectAnnotation -> execute;
-	while (my($annotName, $annotRank, $annotType, $annotList) = $sthSelectAnnotation -> fetchrow_array) {
+	while (my($annotName, $annotRank, $annotType, $annotList) = $sthSelectAnnotation->fetchrow_array) {
 		@{$annotSet{$annotType}{$annotName}} = ($annotRank,$annotList);
 	}
 	$sthSelectAnnotation -> finish;
@@ -627,6 +664,13 @@ print qq
 $dbh -> disconnect;
 
 ####>Revision history<####
+# 1.1.15 [ENHANCEMENT] Prevent page reload for on-going analysis if quantifications list is displayed (PP 26/04/21)
+# 1.1.14 [ENHANCEMENT] Set group_concat_max_len = 1000000 because of quantifs with high number of targetPos (PP 21/07/20)
+# 1.1.13 [BUGFIX] Fixes bug preventing display of non-normaliezd quantification list (PP 02/07/20)
+# 1.1.12 [ENHANCEMENT] Handles better normalized quantifs and missing/wrong feature in PARAM_LIST (PP 22/04/20)
+# 1.1.11 [UPDATE] Changed RANK field to ANNOT_RANK for compatibility with MySQL 8 (PP 04/03/20) 
+# 1.1.10 [BUGFIX] Handling of multi-PTM quantifications (PP 03/03/20)
+# 1.1.9 [FEATURE] Displays values distribution chart (PP 21/02/20)
 # 1.1.8 [ENHANCEMENT] Code update to match new behavior of &promsQuantif(v1.5.4)::extractQuantificationParameters for MaxQuant quantif (PP 21/11/19)
 # 1.1.7 fix little bug (SL 31/01/18)
 # 1.1.6 Compatible with peptide exploratory analysis (SL 30/11/17)

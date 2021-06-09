@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# exportLibraryProteins.cgi         1.0.0                                      #
+# exportLibraryProteins.cgi         1.1.0                                      #
 # Authors: V. Laigle (Institut Curie)                                          #
 # Contact: myproms@curie.fr                                                    #
 # Export a protein list from spectral library                                  #
@@ -58,25 +58,40 @@ my $userID=$ENV{'REMOTE_USER'};
 my $dbh=&promsConfig::dbConnect;
 
 my $libID = param('ID');
-my ($libraryName, $libVersion, $identifierType, $organism) = $dbh->selectrow_array("SELECT NAME, VERSION_NAME, IDENTIFIER_TYPE, ORGANISM FROM SWATH_LIB WHERE ID_SWATH_LIB='$libID' ") or die "Couldn't fetch library info: " . $dbh->errstr;
+my ($libraryName, $libVersion, $software, $identifierType, $organism) = $dbh->selectrow_array("SELECT NAME, VERSION_NAME, IF(PARAM_STRG LIKE '%Spectronaut%', 'Spectronaut', 'TPP') AS FORMAT, IDENTIFIER_TYPE, ORGANISM FROM SWATH_LIB WHERE ID_SWATH_LIB='$libID' ") or die "Couldn't fetch library info: " . $dbh->errstr;
 my $action=(param('submit'))? param('submit') : "";
 
 if ($action) {
     my $format = &promsMod::cleanParameters(param("exportFormat"));
 
     my $workingDir      = "$promsPath{swath_lib}/SwLib_$libID";
-    my $libFile         = "$workingDir/$libraryName.sptxt";
+    my $libFile         = ($software eq 'TPP') ? "$workingDir/$libraryName.sptxt" : "$workingDir/$libraryName.tsv";
     my $downloadFile    = "prots_$libraryName.$format";
 
     my %proteins;  # To store all proteins from the library with their info
     my %proteinsNotInProms;  # In case some proteins are not yet recorded
+    my %colName2Index; # Store header of SPC spLib file
 
     # Get all proteins from library file (including redundants)
     my @redundantProts;
     open (LIB_FILE, "<", $libFile) or die "Can't open library file $libFile : $!";
+    
+    if($software eq 'Spectronaut') {
+        my $line=<LIB_FILE>;
+        my @headers = split(/[\t]/, $line);
+        foreach my $i (0 .. $#headers) {
+            $colName2Index{$headers[$i]} = $i;
+        }
+    }
+    
     while (my $line = <LIB_FILE>) {
-        if ($line =~ /Protein=(\d+)\/(\S+)\s/ && $line !~ /Protein=(\d+)\/(?:sp|tr)\|Biognosys\|iRT/) {
-            push @redundantProts, (split('/', $2));
+        if($software eq 'TPP') {
+            if ($line =~ /Protein=(\d+)\/(\S+)\s/ && $line !~ /Protein=(\d+)\/(?:sp|tr)\|Biognosys\|iRT/) {
+                push @redundantProts, (split('/', $2));
+            }
+        } else {
+            my @lineContent = split(/[\t]/, $line);
+            push @redundantProts, (split(/;/, $lineContent[$colName2Index{'ProteinGroups'}]));
         }
     }
     close LIB_FILE;
@@ -281,4 +296,5 @@ if ($action) {
 $dbh->disconnect;
 
 ####>Revision history<####
+# 1.1.0 [ENHANCEMENT] Compatibility with Spectronaut spectral libraries (VS 22/10/2020)
 # 1.0.0 Created to allow to export proteins from swath libraries (VL 16/09/2019)

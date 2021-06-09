@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 #############################################################################
-# listGO.cgi           1.0.8                                                #
+# listGO.cgi           1.0.12                                                #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                   #
 # Contact: myproms@curie.fr                                                 #
 # Display all proteins of current item in GO terms                          #
@@ -645,7 +645,7 @@ sub displayGO {
                                     SELECT E2.ID_EXPERIMENT
                                     FROM EXPERIMENT E2
                                     INNER JOIN USER_EXPERIMENT_LOCK EU ON EU.ID_EXPERIMENT=E2.ID_EXPERIMENT
-                                    WHERE E2.ID_PROJECT=? AND EU.ID_USER='$userID'
+                                    WHERE E2.ID_PROJECT=$itemID AND EU.ID_USER='$userID'
                                 )");
         }
         $sth->execute($itemID);
@@ -708,7 +708,7 @@ sub displayGO {
 
 	# Fetching master proteins info #
 	my ($geneNameID)=$dbh->selectrow_array("SELECT ID_IDENTIFIER FROM IDENTIFIER WHERE CODE='GN'");
-	my $sthMP=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_MASTER_PROTEIN=? AND ID_IDENTIFIER=$geneNameID ORDER BY RANK");
+	my $sthMP=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_MASTER_PROTEIN=? AND ID_IDENTIFIER=$geneNameID ORDER BY IDENT_RANK");
 	foreach my $masterProtID (keys %masterProteins) {
 		$sthMP->execute($masterProtID);
 		while (my ($gene)=$sthMP->fetchrow_array) {
@@ -898,11 +898,12 @@ sub displayGO {
         my $bgColor = $color2;
         foreach my $protID (sort{ $prot{$b}{numPep} <=> $prot{$a}{numPep}} keys %{$goToProt{$node->goid}}){
             $bgColor = ($bgColor eq $color1)? $color2 : $color1;
-			my $geneStrg='-'; # default
-			my $geneName1=shift(@{$masterProteins{$prot{$protID}{masterProt}}});
-			if ($geneName1) {
-				if (scalar @{$masterProteins{$prot{$protID}{masterProt}}} > 1) {
-					$geneStrg="<A href=\"javascript:void(null)\" onmouseover=\"popup('<B><U>Synonyms:</U><BR>&nbsp;&nbsp;-".join('<BR>&nbsp;&nbsp;-',@{$masterProteins{$prot{$protID}{masterProt}}})."</FONT>')\" onmouseout=\"popout()\">$geneName1</A>";
+			my ($geneStrg,$geneName1)=('-',''),; # default
+            my $lastIdx=$#{$masterProteins{$prot{$protID}{masterProt}}};
+			if ($lastIdx >= 0) {
+				$geneName1=$masterProteins{$prot{$protID}{masterProt}}[0]; # cannot use 'shift' because array is used multiple time
+				if ($lastIdx >= 1) {
+					$geneStrg="<A href=\"javascript:void(null)\" onmouseover=\"popup('<B><U>Synonyms:</U><BR>&nbsp;&nbsp;-".join('<BR>&nbsp;&nbsp;-',@{$masterProteins{$prot{$protID}{masterProt}}}[1..$lastIdx])."</FONT>')\" onmouseout=\"popout()\">$geneName1</A>";
 				}
 				else {$geneStrg=$geneName1;}
 			}
@@ -1077,6 +1078,10 @@ sub formatGOName{
 }
 
 ####>Revision history<####
+# 1.0.12 [BUGFIX] Fix go summary running from project context (VS 09/09/20)
+# 1.0.11 [BUGFIX] Fix few bugs related to gene name displaying (PP 03/08/20)
+# 1.0.10 [BUGFIX] Fix gene name displaying when a protein did not have one (VS 22/07/20)
+# 1.0.9 [UPDATE] Changed RANK field to IDENT_RANK for compatibility with MySQL 8 (PP 04/03/20) 
 # 1.0.8 [FEATURE] Add filters and search field to retrieve specific protein(s) (VS 09/11/19)
 # 1.0.7 [FEATURE] Remove locked experiments from GO lists searches (VS 08/08/19)
 # 1.0.6 Handles project status=-1 [no auto-end validation] (PP 07/06/18)

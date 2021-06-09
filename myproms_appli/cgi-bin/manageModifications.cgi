@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# manageModifications.cgi    1.2.2                                             #
+# manageModifications.cgi    1.2.3                                             #
 # Authors: P. Poullet, G. Arras & F. Yvon (Institut Curie)                     #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -94,6 +94,7 @@ if ($action eq 'list') {
 	$sthGetModifications->execute;
     #my $modifRef = $sthGetModifications->fetchall_arrayref();
     while (my ($modID,@modData) = $sthGetModifications->fetchrow_array) {
+		next if $modID <= 0; # skip virtual modif (Free residues quantification)
 		my $used=0;
 		$sthUsedAna->execute($modID);
 		if ($sthUsedAna->fetchrow_array) {$used=1;}
@@ -316,6 +317,7 @@ elsif ($action eq 'add' || $action eq 'edit') {
 								: $dbh->prepare("SELECT ID_MODIFICATION,PSI_MS_NAME,INTERIM_NAME,SYNONYMES,MONO_MASS FROM MODIFICATION WHERE ID_MODIFICATION != ? AND (COALESCE(PSI_MS_NAME,'') != '' OR COALESCE(INTERIM_NAME,'') != '') ORDER BY PSI_MS_NAME,INTERIM_NAME");
 		$sthDestNames->execute($modificationID);
 		while (my ($modID,$psiMsName,$interimName,$altNames,$monoMass) = $sthDestNames->fetchrow_array) {
+			next if $modID <= 0; # Skip virtual modif
 			if ($psiMsName) {$psiMsName=~s/^\s+//; $psiMsName=~s/\s+$//;}
 			unless ($psiMsName) {
 				if ($interimName) {$interimName=~s/^\s+//; $interimName=~s/\s+$//;}
@@ -980,7 +982,10 @@ window.location="./manageModifications.cgi?ACT=list&LET=$startLetter";
 sub getModificationFromUnimod {
 	print header(-type=>'text/plain',-'content-encoding'=>'no',-charset=>'utf-8');
 	my ($unimodID,$modificationID)=&promsMod::cleanNumericalParameters(@_);
-	
+	unless ($unimodID) {
+		print "NO_MATCH";
+		exit;
+	}
 	my $dbh=&promsConfig::dbConnect;
 	my ($matchedModID,$mPsiName,$mInterimName)=$dbh->selectrow_array("SELECT ID_MODIFICATION,PSI_MS_NAME,INTERIM_NAME FROM MODIFICATION WHERE UNIMOD_ACC=$unimodID");
 	if ($matchedModID && $matchedModID !=$modificationID) {
@@ -994,7 +999,7 @@ sub getModificationFromUnimod {
 	my $xmlFile="$promsPath{data}/unimod_tables.xml";
 	my %vmodsInUnimod;
 	my $handler = UnimodXMLHandler->new($xmlFile,\%vmodsInUnimod);
-require XML::SAX::ParserFactory;
+	require XML::SAX::ParserFactory;
 	my $xmlparser = XML::SAX::ParserFactory->parser(Handler => $handler );
 	$xmlparser->parse_uri($xmlFile);
 
@@ -1028,6 +1033,7 @@ SPECIFICITY::$specificityString
 }
 
 ####>Revision history<####
+# 1.2.3 [UPDATE] Hide virtual modification ( <= 0, eg. for Free residue quantification) (PP 25/11/20)
 # 1.2.2 [BUGFIX] Minor change in aa specificity regex to handle '*' position (VS 30/10/19)
 # 1.2.1 [Fix] minor JavaScript bugs in form submission (PP 21/03/19)
 # 1.2.0 New specificity form to handle site context & 'Add modification' option (PP 11/02/19)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# promsImportDataManager.pm         1.0.8                                      #
+# promsImportDataManager.pm         1.0.18                                     #
 # Authors: M. Le Picard, V. Sabatet (Institut Curie)                           #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -68,7 +68,7 @@ $|=1; # buffer flush (allows instant printing)
 my (%projectProt, %proteinLength, %proteinDescription, %incompleteProtein, %noDescriptionProtein, %noSequenceProtein, %noMWProtein);
 
 # Protein information
-my (%protLength, %protDes, %protSeq, %protMW, %protOrg, %numMatchProt, %protCoverage);
+my (%protLength, %protDes, %protSeq, %protMW, %protOrg, %numMatchProt);
 
 sub new {
     my ($class, $userID, $projectID, $experimentID, $format, $quantiName, $quantiAnnot, $taxonomy, $instrument, $dataFile, $logFile, $dbIDRef) = @_;
@@ -115,10 +115,10 @@ sub setPeptidesInformation {
 }
 
 sub setDIAInfos {
-    my ($self, $libID, $decoyNbRef, $targetNbRef, $fdr) = @_;
-    $self->{_libID} = $libID;
-    $self->{_decoyNb} = $decoyNbRef;
-    $self->{_targetNb} = $targetNbRef;
+    my ($self, $libIDs, $decoyNbRef, $targetNbRef, $fdr) = @_;
+    $self->{_libIDs} = $libIDs;
+    $self->{_decoyNb} = ($decoyNbRef) ? $decoyNbRef : '';
+    $self->{_targetNb} = ($targetNbRef) ? $targetNbRef : '';
     $self->{_fdr} = ($fdr) ? $fdr : '';
 }
 
@@ -128,14 +128,34 @@ sub setFilesInfos {
     $self->{_sampleFileNames} = $sampleFileNamesRef;
 }
 
+sub setProtCoverage {
+    my ($self, $protCoverageRef) = @_;
+    $self->{_protCoverage} = $protCoverageRef;
+}
+
+sub setDesignExperiment {
+    my ($self, $designExperiment) = @_;
+    $self->{designExperiment} = $designExperiment;
+}
+
 sub getAnalysisID {
     my ($self) = @_;
     return $self->{analysisID};
 }
 
+sub getAnaObsID {
+    my ($self) = @_;
+    return $self->{anaObsID};
+}
+
 sub getPeptidesID {
     my ($self) = @_;
     return $self->{peptidesID};
+}
+
+sub getProteinsID {
+    my ($self) = @_;
+    return $self->{proteinsID};
 }
 
 sub getQuantiID {
@@ -179,52 +199,77 @@ sub importData {
     ##########################################################################################
     ### Inserting data into tables SAMPLE,ANALYSIS,ANALYSIS_DATABANK,ANALYSIS_MODIFICATION ###
     ##########################################################################################
-    my (%proteinID, %proteinList);
+    my (%proteinID, %proteinList, %anaObsModifs, %anaSampleID, %displayPos);
     my %promsPath=&promsConfig::getServerInfo('no_user');
     my $dbh = &promsConfig::dbConnect('no_user');
 
-    my $sthSampleID=$dbh->prepare("SELECT MAX(ID_SAMPLE) FROM SAMPLE");
     my $sthSample=$dbh->prepare("INSERT INTO SAMPLE (ID_SAMPLE,ID_EXPERIMENT,NAME,START_DATE,DISPLAY_POS,UPDATE_DATE,UPDATE_USER) VALUES (?,?,?,NOW(),?,NOW(),?)");
     my $sthAnalysis=$dbh->prepare("INSERT INTO ANALYSIS (ID_SAMPLE,NAME,START_DATE,DATA_FILE,VALID_STATUS,VALID_USER,LOWER_SCORES,FIRST_VALID_DATE,VALID_DATE,UPDATE_DATE,UPDATE_USER,WIFF_FILE,DECOY,FALSE_DISCOVERY,TAXONOMY,DISPLAY_POS,FILE_FORMAT,MS_TYPE,INSTRUMENT,VERIFIED_MG,MIN_SCORE,MAX_RANK) VALUES (?,?,NOW(),?,?,?,?,NOW(),NOW(),NOW(),?,?,?,?,?,?,?,?,?,?,?,?)");
+    my $sthObs=$dbh->prepare("INSERT INTO OBSERVATION (ID_BIOSAMPLE, ID_ANALYSIS, TARGET_POS)  VALUES (NULL, ?, ?)");
+    # my $sthAnaObsModif=$dbh->prepare("INSERT INTO OBS_MODIFICATION (ID_OBSERVATION,ID_MODIFICATION) VALUES (?,?)"); # TODO Add this insertion for PTMs Quantis
     my $sthAnaSwath=$dbh->prepare("INSERT INTO ANALYSIS_SWATH_LIB (ID_ANALYSIS,ID_SWATH_LIB,VERSION_NAME) VALUES (?,?,?)");
     my $sthAnaDB=$dbh->prepare("INSERT INTO ANALYSIS_DATABANK (ID_DATABANK,ID_ANALYSIS,DB_RANK) VALUES (?,?,?)");
     my $sthAnaMod=$dbh->prepare("INSERT INTO ANALYSIS_MODIFICATION (ID_ANALYSIS,ID_MODIFICATION,MODIF_TYPE,SPECIFICITY) VALUES (?,?,?,?)");
-    my $displayPos=$dbh->selectrow_array("SELECT MAX(DISPLAY_POS) FROM SAMPLE WHERE ID_EXPERIMENT=".$self->{_experimentID});
+    my $sampleID=$dbh->selectrow_array("SELECT MAX(ID_SAMPLE) FROM SAMPLE");
+    my $sampleDisplayPos=$dbh->selectrow_array("SELECT MAX(DISPLAY_POS) FROM SAMPLE WHERE ID_EXPERIMENT=".$self->{_experimentID});
+    $sampleDisplayPos = 0 if(!$sampleDisplayPos);
     
     $self->appendLog("Storing analysis and samples data into database.");
     
-    foreach my $analysis (sort {$a cmp $b} keys %{$self->{_analysisFileNames}}) {
+    # Insertion into SAMPLE
+    if($self->{designExperiment}) { # If a specific design should be followed, create it
+        foreach my $sample (sort { lc($a) cmp lc($b) } keys %{$self->{designExperiment}{"conditions"}}) {
+            $sthSample->execute(++$sampleID, $self->{_experimentID}, $sample, ++$sampleDisplayPos, $self->{_userID});
+
+            foreach my $analysis (sort { $a <=> $b } keys %{$self->{designExperiment}{"conditions"}{$sample}}) {
+                my %replicateInfos = %{$self->{designExperiment}{"conditions"}{$sample}{$analysis}};
+                $anaSampleID{$replicateInfos{"anaName"}} = $sampleID;
+            }
+            @{$displayPos{$sampleID}} = ($sampleDisplayPos, 0);
+        }
+    } else {
+        foreach my $analysis (sort { lc($a) cmp lc($b) } keys %{$self->{_analysisFileNames}}) {
+            my $sampleName = $self->{_sampleFileNames}{$analysis};
+            $sthSample->execute(++$sampleID, $self->{_experimentID}, $sampleName, ++$sampleDisplayPos, $self->{_userID});
+            $anaSampleID{$analysis} = $sampleID;
+            @{$displayPos{$sampleID}} = ($sampleDisplayPos, 0);
+        }
+    }
+    $sthSample->finish;
+    
+    foreach my $analysis (sort { lc($a) cmp lc($b) } keys %{$self->{_analysisFileNames}}) {
         my $analysisFile = $self->{_analysisFileNames}{$analysis};
-        my $sampleName = $self->{_sampleFileNames}{$analysis};
         my $analysisName = ($self->{_format} eq 'pkv') ? fileparse($analysisFile, qr/\.[^.]*/) : $analysis;
+        $sampleID = $anaSampleID{$analysis};
+        my $anaDisplayPos = ++$displayPos{$sampleID}[1];
         
-        $sthSampleID->execute;
-        my $sampleID = $sthSampleID->fetchrow_array;
-        $sthSampleID->finish;
-        $sampleID += 1;
-        
-        my $topPepNbDecoy = ($self->{_decoyNb}{$analysis}) ? $self->{_decoyNb}{$analysis} : 0;
-        my $topPepNbTarget = ($self->{_targetNb}{$analysis}) ? $self->{_targetNb}{$analysis} : 0;
+        my $topPepNbDecoy = ($self->{_decoyNb} && $self->{_decoyNb}{$analysis}) ? $self->{_decoyNb}{$analysis} : 0;
+        my $topPepNbTarget = ($self->{_targetNb} && $self->{_targetNb}{$analysis}) ? $self->{_targetNb}{$analysis} : 0;
 
         my $fileFormat=($self->{_format} eq 'pkv')? 'SWATH.PKV': ($self->{_format} eq 'prm')?  'SKYLINE.SKY' : ($self->{_format} eq 'openswath')? 'OPENSWATH.TSV' : 'SPECTRONAUT.XLS';
         my $msType=($self->{_format} eq 'pkv')? 'SWATH': ($self->{_format} eq 'prm')? 'TDA' : 'DIA';
         my $decoy=($self->{_format} eq 'pkv') ? "INT:SEARCH,FDR=".$self->{_fdr}.":precomputed" : '';
 
-        # Insertion into SAMPLE
-        $displayPos++;
-        $sthSample->execute($sampleID, $self->{_experimentID}, $sampleName, $displayPos, $self->{_userID});
-        $sthSample->finish;
-
         # Insertion into ANALYSIS
-        $sthAnalysis->execute($sampleID, $analysisName, $self->{_dataFile}, 2, $self->{_userID}, 0, $self->{_userID}, $analysisFile, $decoy, "$topPepNbDecoy:0:$topPepNbTarget:0", $self->{_taxonomy}, $displayPos, $fileFormat, $msType, $self->{_instrument}, 0, 0, 1);
+        $sthAnalysis->execute($sampleID, $analysisName, $self->{_dataFile}, 2, $self->{_userID}, 0, $self->{_userID}, $analysisFile, $decoy, "$topPepNbDecoy:0:$topPepNbTarget:0", $self->{_taxonomy}, $anaDisplayPos, $fileFormat, $msType, $self->{_instrument}, 0, 0, 1);
         $sthAnalysis->finish;
         my $analysisID=$dbh->last_insert_id(undef, undef, 'ANALYSIS', 'ID_ANALYSIS');
+        
+        # Insertion into OBSERVATION
+        $sthObs->execute($analysisID, 0);
+        my $obsID=$dbh->last_insert_id(undef, undef, 'OBSERVATION', 'ID_OBSERVATION');
 
+        $self->{analysisID}{$analysis} = $analysisID;
+        $self->{anaObsID}{$analysis} = $obsID;
+        
         ###Insertion into ANALYSIS_SWATH_LIB
-        if($self->{_format} ne 'prm' && $self->{_libID}) {
-            my ($versionName) = $dbh->selectrow_array("SELECT VERSION_NAME FROM SWATH_LIB WHERE ID_SWATH_LIB='".$self->{_libID}."' ") or die "Couldn't prepare statement: ". $dbh->errstr;
-            $sthAnaSwath->execute($analysisID, $self->{_libID}, $versionName);		
-            $sthAnaSwath->finish;		
+        if($self->{_format} ne 'prm' && $self->{_libIDs}) {
+            my @libID = split(/,/, $self->{_libIDs});
+            foreach my $libID (@libID) {
+                my ($versionName) = $dbh->selectrow_array("SELECT VERSION_NAME FROM SWATH_LIB WHERE ID_SWATH_LIB='$libID' ") or die "Couldn't prepare statement: ". $dbh->errstr;
+                $sthAnaSwath->execute($analysisID, $libID, $versionName);		
+            }
+            $sthAnaSwath->finish;
         }
         
         # Insertion into ANALYSIS_DATABANK
@@ -240,8 +285,10 @@ sub importData {
                 $sthAnaMod->execute($analysisID, $modifID, $modType, $aaSpecificity);
                 $sthAnaMod->finish;
             }
+            
+            #$sthAnaObsModif->execute($obsID, $modifID); # TODO Add this in quantification sites
+            #$sthAnaObsModif->finish;
         }
-        $self->{analysisID}{$analysis} = $analysisID;
 
         foreach my $protein (keys %{$self->{_assosProtPeptide}{$analysis}}) {
             $proteinList{$protein} = 1;
@@ -250,7 +297,7 @@ sub importData {
     $dbh->commit;
 
     ## Recovering protein informations
-    if($self->{_format} eq 'prm' || $self->{_format} eq 'openswath') {
+    if($self->{_format} =~ /prm|openswath|spectronaut/) {
         $self->appendLog("Recovering protein informations.");
         $self->_fetchProteinFromTDAFile();
     }
@@ -261,6 +308,7 @@ sub importData {
     $self->appendLog("Storing proteins data into database.");
     
     # Need %proteinList, %proteinID, %projectProt, %protLength, %protSeq, %protDes, %protMW, %protOrg, %noMWProtein, %noDescriptionProtein, %incompleteProtein, %noSequenceProtein)
+    my $nbProtProcessed = 0;
     my $sthProtein=$dbh->prepare("INSERT INTO PROTEIN (ID_PROJECT,ID_MASTER_PROTEIN,ALIAS,IDENTIFIER,PROT_DES,PROT_LENGTH,PROT_SEQ,MW,COMMENTS,UPDATE_DATE,UPDATE_USER,ORGANISM) VALUES (?,NULL,?,?,?,?,?,?,NULL,NULL,NULL,?)");
     foreach my $protein (keys %proteinList) {
         ## recovering the alias of the protein in terms of the project identifier
@@ -283,6 +331,7 @@ sub importData {
         if(exists $projectProt{$protein}) {
             my $sthProteinUpdate;
             $proteinID{$protein} = $projectProt{$protein};
+            $self->{proteinsID}{$protein} = $projectProt{$protein};
             
             # protein length = null (PROTEIN table)
             if (exists $incompleteProtein{$protein}) {
@@ -308,10 +357,17 @@ sub importData {
                 $sthProteinUpdate->execute($protMW{$protein}, $projectProt{$protein});
             }
         } else { # no duplicates !!
-            my $species = ($protOrg{$protein}) ? $protOrg{$protein} : $self->{_taxonomy};
+            my $species = ($protOrg{$protein}) ? $protOrg{$protein} : undef; #$self->{_taxonomy};
             $sthProtein->execute($self->{_projectID}, $alias, $protein, $protDes{$protein}, $protLength{$protein}, $protSeq{$protein}, $protMW{$protein}, $species) or die $dbh->errstr;
             my $protID = $dbh->last_insert_id(undef, undef, 'PROTEIN', 'ID_PROTEIN');
             $proteinID{$protein} = $protID;
+            $self->{proteinsID}{$protein} = $protID;
+        }
+        
+        $nbProtProcessed++;
+        if($nbProtProcessed % 5000 == 0) {
+            $self->appendLog("Storing proteins data into database ($nbProtProcessed processed)");
+            $dbh->commit;
         }
     }
     $sthProtein->finish;
@@ -330,7 +386,7 @@ sub importData {
     my $currentAnaIndex = 1;
     
     ## Fetching protein score, pep number and protein specificity
-    foreach my $analysis (sort {$a cmp $b } keys %{$self->{analysisID}}) {
+    foreach my $analysis (sort { lc($a) cmp lc($b) } keys %{$self->{analysisID}}) {
         my (%matchList, %proteinScore, %bestPepSpecificity, @pepInfo);
         my $analysisID = $self->{analysisID}{$analysis};
         my $protScore;
@@ -390,18 +446,22 @@ sub importData {
         &promsMod::createMatchGroups(\%matchList, \%matchGroup, \@sortedProt, \%visibility, \%bestProtVis, $self->{_protVisibility}, 0);
         
         ## Inserting data into table ANALYSIS_PROTEIN
-        #foreach my $protein (keys %{$protCoverage{$analysis}}) {  # Replaced because there is no insertion in table at all if the protein was not recognized and it was not inserted in protCoverage (VL 04/09/19)
-        foreach my $protein (keys %proteinID) {
+        foreach my $protein (keys %{$self->{_assosProtPeptide}{$analysis}}) { # Replaced because when using %proteinID, it inserts, for each analysis, ALL proteins existing in all analysis, even though it does not contain these proteins initially !
             my $dbRank = $self->{_dbRankProt}{$protein};
-            my $coverage = $protCoverage{$analysis}{$protein};
+            my $coverage = $self->{_protCoverage}{$analysis}{$protein};
             my $proteinID = $proteinID{$protein};
             my $protScore = ($proteinScore{$protein}) ? $proteinScore{$protein} : '';
-            my $numPep = scalar keys %{$self->{_assosProtPeptide}{$analysis}{$protein}};
             my $numMatch = $numMatchProt{$analysis}{$protein};
             my $matchGroup = $matchGroup{$protein};
             my $pepSpecificity = $bestPepSpecificity{$protein};
             my $visibility = $visibility{$protein};
-            $sthAnaProt->execute($analysisID, $proteinID, $dbRank, 2, $protScore, $numPep, $numMatch, $coverage, $matchGroup, $pepSpecificity, $visibility);
+            
+            my $numPepNotImputed = 0;
+            foreach my $peptide (keys %{$self->{_assosProtPeptide}{$analysis}{$protein}}) {
+                $numPepNotImputed++ unless($self->{_assosProtPeptide}{$analysis}{$protein}{$peptide}[2]);
+            }
+
+            $sthAnaProt->execute($analysisID, $proteinID, $dbRank, 2, $protScore, $numPepNotImputed, $numMatch, $coverage, $matchGroup, $pepSpecificity, $visibility);
         }
         $sthAnaProt->finish;
         $currentAnaIndex++;
@@ -409,7 +469,7 @@ sub importData {
     $dbh->commit;
 
     my $sthPeptide=$dbh->prepare("INSERT INTO PEPTIDE (ID_ANALYSIS,PEP_SEQ,PEP_LENGTH,QUERY_NUM,PEP_RANK,SEARCH_RANK,SCORE,MISS_CUT,MR_EXP,MR_CALC,MR_OBS,MR_DELTA,COMMENTS,SUBST,CHARGE,ELUTION_TIME,VALID_STATUS,DATA,SPEC_COUNT) VALUES (?,?,?,?,?,?,?,?,?,NULL,?,NULL,NULL,NULL,?,?,?,NULL,?)");
-    my $sthModification=$dbh->prepare("INSERT INTO PEPTIDE_MODIFICATION (ID_PEPTIDE,ID_MODIFICATION,MODIF_TYPE,POS_STRING,REF_POS_STRING) VALUES (?,?,?,?,NULL)");
+    my $sthModification=$dbh->prepare("INSERT INTO PEPTIDE_MODIFICATION (ID_PEPTIDE,ID_MODIFICATION,MODIF_TYPE,POS_STRING,REF_POS_STRING) VALUES (?,?,?,?,?)");
     my $sthAttrib=$dbh->prepare("INSERT INTO PEPTIDE_PROTEIN_ATTRIB (ID_PROTEIN,ID_PEPTIDE,ID_ANALYSIS,PEP_BEG,PEP_END,FLANKING_AA,IS_SPECIFIC) VALUES (?,?,?,?,?,?,?)");
     my $sthUpdatePeptide=$dbh->prepare("UPDATE PEPTIDE SET MR_CALC=?, MR_DELTA=? WHERE ID_PEPTIDE=?");
     
@@ -418,7 +478,8 @@ sub importData {
     ###############################################################
     $self->appendLog("Storing peptides data into database.");
     my $nbPepProcessed = 0;
-    
+    my $nbPepAssocProcessed=0;
+
     foreach my $analysis (keys %{$self->{analysisID}}) {
         my $analysisID = $self->{analysisID}{$analysis};
         foreach my $peptide (keys %{$self->{_peptideList}{$analysis}}) {
@@ -430,15 +491,16 @@ sub importData {
                 $pepSequence=~s/(^\.|\.$)//g; # OpenSwath DIA
                 $pepSequence=~s/\[([A-Za-z0-9 -]+)\s\(\w+\)\]//g; # TDA
                 $pepSequence=~s/\(unimod:\d+\)//g; # TDA
-                $pepSequence=~s/\[\+?\w+\.?\d*\]//g; # Peakview
-                #print("Processing $pepSeq[0] $pepSeq[1] $rt ($pepSequence) ...\n"); # TODO Remove
+                $pepSequence=~s/\[[+-]?\w+\.?\d*\]//g; # Peakview / Spectronaut
+                $pepSequence=~s/\[[^\[]+\]//g; # Spectronaut             
                 
+                $ghostPep = ($self->{_peptideList}{$analysis}{$peptide}{$rt}[4]) ? 1 : 0; # Specific to spectronaut when using imputation
                 my $pepLength = length $pepSequence;
                 my $pepCharge = $pepSeq[1];
                 my $mrObs = ($self->{_peptideInfo}{$peptide}[0]) ? $self->{_peptideInfo}{$peptide}[0] : $self->{_peptideList}{$analysis}{$peptide}{$rt}[0] ;
                 my $mrExp = ($mrObs-1.007825032)*$pepCharge;
                 my $missCut = ($self->{_peptideInfo}{$peptide}[1]) ? $self->{_peptideInfo}{$peptide}[1] : '0' ;
-                my $pepScore = ($ghostPep) ? 'NULL' : ($self->{_peptideList}{$analysis}{$peptide}{$rt}[1] && $self->{_peptideList}{$analysis}{$peptide}{$rt}[1]=~/\d+/) ? $self->{_peptideList}{$analysis}{$peptide}{$rt}[1] : 'NULL';
+                my $pepScore = ($ghostPep) ? undef : ($self->{_peptideList}{$analysis}{$peptide}{$rt}[1] && $self->{_peptideList}{$analysis}{$peptide}{$rt}[1]=~/\d+/) ? $self->{_peptideList}{$analysis}{$peptide}{$rt}[1] : undef;
                 
                 $rt = sprintf("%0.2f", $rt);
                 
@@ -456,10 +518,10 @@ sub importData {
                     $rt = ($rtMean != 0 && $nbFragments != 0) ? $rtMean/$nbFragments : "0.00";
                 }
                 
-                my $queryNum = ($ghostPep) ? '' : $peptideRTOrder{$analysis}{$peptide}[1];
-                my $rank = ($ghostPep) ? '' : 1;
+                my $queryNum = ($ghostPep) ? undef : $peptideRTOrder{$analysis}{$peptide}[1];
+                my $rank = ($ghostPep) ? undef : 1;
                 my $validStatus = ($ghostPep) ? 0 : 1;
-                my $elutionTime = "sc".$pepScore.";et".$rt;
+                my $elutionTime = ($pepScore) ? "sc".$pepScore.";et".$rt : "sc?;et".$rt;
                 
                 ###>Insertion into PEPTIDE
                 $sthPeptide->execute($analysisID, $pepSequence, $pepLength, $queryNum, $rank, $rank, $pepScore, $missCut, $mrExp, $mrObs, $pepCharge, $elutionTime, $validStatus, 1);
@@ -468,25 +530,31 @@ sub importData {
                 
                 ###>Insertion into PEPTIDE_MODIFICATION
                 my %varMods;
+                my $refPosStr; # Contains PTMs scores if any
                 foreach my $modificationID (keys %{$self->{_peptideModif}{$analysis}{$peptide}}) {
                     my $position = "";
-                    foreach my $pos (sort {$a cmp $b} keys %{$self->{_peptideModif}{$analysis}{$peptide}{$modificationID}}) {
-                        $pos = '=' if ($pos == 0);
-                        $position = ($position) ? "$position.$pos" : $pos;
-                        $varMods{$pos} = ($pos eq '=') ? $self->{_peptideModif}{$analysis}{$peptide}{$modificationID}{0} : $self->{_peptideModif}{$analysis}{$peptide}{$modificationID}{$pos};
+                    $refPosStr = undef;
+                    foreach my $pos (sort {$a <=> $b} keys %{$self->{_peptideModif}{$analysis}{$peptide}{$modificationID}}) { # pos = position of modif OR "SCORE" -> represent PTMs score/probabilities
+                        if($pos eq "-1") { # Correspond to PTM Probabilities
+                            my $softwarePTMShort = ($self->{_format} eq 'spectronaut') ? "SPC" : ($self->{_format} eq 'openswath') ? 'OS' : '';
+                            $refPosStr = "##PRB_$softwarePTMShort=".$self->{_peptideModif}{$analysis}{$peptide}{$modificationID}{$pos}; # <position1>:<proba1>;<position2>:<proba2>...
+                        } else {
+                            $pos = '=' if ($pos == 0);
+                            $position = ($position) ? "$position.$pos" : $pos;
+                            $varMods{$pos} = ($pos eq '=') ? $self->{_peptideModif}{$analysis}{$peptide}{$modificationID}{0} : $self->{_peptideModif}{$analysis}{$peptide}{$modificationID}{$pos};
+                        }
                     }
-                    $sthModification->execute($peptideID,$modificationID,'V',$position);
+                    $sthModification->execute($peptideID,$modificationID,'V',$position,$refPosStr);
                 }
                 
-                #print(Dumper(\%varMods)); # TODO Remove
-                
-                my $mrCalc = &mrCalc($pepSequence, \%varMods); ## $pepSequence = peptide sequence without modification ; %varMod => {modification position}=modification mass
+                my $mrCalc = &promsMod::mrCalc($pepSequence, \%varMods); ## $pepSequence = peptide sequence without modification ; %varMod => {modification position}=modification mass
                 my $delta = $mrCalc-$mrExp;
                 $sthUpdatePeptide->execute($mrCalc, $delta ,$peptideID);
                 $nbPepProcessed++;
                 
-                if($nbPepProcessed % 100000 == 0) {
+                if($nbPepProcessed % 10000 == 0) {
                     $self->appendLog("Storing peptides data into database ($nbPepProcessed processed)");
+                    $dbh->commit;
                 }
             }
         }
@@ -498,11 +566,13 @@ sub importData {
         ########################################################
         ####Inserting data into tables PEPTIDE_PROTEIN_ATTRIB###
         ########################################################
+        $self->appendLog("Storing peptides proteins association data into database.");
         foreach my $protein (keys %{$self->{_assosProtPeptide}{$analysis}}) {
             my $proteinID = $proteinID{$protein};
             foreach my $peptide (keys %{$self->{_assosProtPeptide}{$analysis}{$protein}}) {
                 my $ghostPep = 0;
                 foreach my $rt (keys %{$self->{peptidesID}{$analysis}{$peptide}}) {
+                    $ghostPep = ($self->{_peptideList}{$analysis}{$peptide}{$rt}[4]) ? 1 : 0; # Specific to spectronaut when using imputation
                     foreach my $peptideID (@{$self->{peptidesID}{$analysis}{$peptide}{$rt}}) {
                         ### Max peptide specificity
                         my $specificity;
@@ -518,7 +588,12 @@ sub importData {
                             my $flanking = "$begPeptideInfo[1]$endPeptideInfo[1]";
                             $sthAttrib->execute($proteinID,$peptideID,$analysisID,$pepBeg,$pepEnd,$flanking,$specificity);
                         }
-                        $ghostPep = 1;
+                        $nbPepAssocProcessed++;
+
+                        if($nbPepAssocProcessed % 10000 == 0) {
+                            $self->appendLog("Storing peptides proteins association data into database ($nbPepAssocProcessed processed)");
+                            $dbh->commit;
+                        }
                     }
                 }
             }
@@ -527,32 +602,27 @@ sub importData {
         $dbh->commit;
     }
 
-
+    ## Get all analysisID
+    my @analysisIDs = ();
+    foreach my $analysis (sort { lc($a) cmp lc($b) } keys %{$self->{analysisID}}) {
+        push(@analysisIDs, $self->{analysisID}{$analysis});
+    }
+    
     #######################################################################
     ####Inserting data into tables QUANTIFICATION and ANA_QUANTIFICATION###
     #######################################################################
-    my $code = ($self->{_format} eq 'prm') ? 'XIC' : 'DIA';
-    my $quantiMethod = $dbh->selectrow_array("SELECT ID_QUANTIFICATION_METHOD FROM QUANTIFICATION_METHOD WHERE CODE='$code'");
-    
-    ## Inserting data into QUANTIFICATION
-    my $sthQuanti = $dbh->prepare("INSERT INTO QUANTIFICATION (ID_MODIFICATION,ID_QUANTIFICATION_METHOD,ID_DESIGN,NAME,FOCUS,QUANTIF_ANNOT,STATUS,UPDATE_DATE,UPDATE_USER) VALUES (NULL,?,NULL,?,?,?,?,NOW(),?)");
-    $sthQuanti->execute($quantiMethod, $self->{_quantiName}, 'peptide', $self->{_quantiAnnot}, 1, $self->{_userID}) or die $dbh->errstr;
-    $sthQuanti->finish;
-    $self->{quantiID} = $dbh->last_insert_id(undef, undef, 'QUANTIFICATION', 'ID_QUANTIFICATION');
-    
-    ## Inserting data into ANA_QUANTIFICATION
-    my $sthAnaQuanti = $dbh->prepare("INSERT INTO ANA_QUANTIFICATION (ID_QUANTIFICATION,ID_ANALYSIS,QUANTIF_FILE,IS_REFERENCE) VALUES (?,?,NULL,NULL)");
-    foreach my $analysis (keys %{$self->{analysisID}}) {
-        $sthAnaQuanti->execute($self->{quantiID}, $self->{analysisID}{$analysis});
+    if($self->{_quantiName} && $self->{_quantiAnnot}) {
+        my $code = ($self->{_format} eq 'prm') ? 'XIC' : 'DIA';
+        my $quantiMethod = $dbh->selectrow_array("SELECT ID_QUANTIFICATION_METHOD FROM QUANTIFICATION_METHOD WHERE CODE='$code'");
+        
+        $self->{quantiID} = $self->createQuantification($self->{_quantiName}, 'peptide', $self->{_quantiAnnot}, $quantiMethod, \@analysisIDs);
     }
-    $sthAnaQuanti->finish;
-    
     
     ############################
     ## UPDATE ANALYSIS STATUS ##
     ############################
     my $sthUpdateAnalysis = $dbh->prepare("UPDATE ANALYSIS SET VALID_STATUS=2 WHERE ID_ANALYSIS=?");
-    foreach my $analysis (sort {$a cmp $b} keys %{$self->{analysisID}}) {
+    foreach my $analysis (sort { lc($a) cmp lc($b) } keys %{$self->{analysisID}}) {
         my $analysisID = $self->{analysisID}{$analysis};
         $sthUpdateAnalysis->execute($analysisID);
     }
@@ -560,13 +630,7 @@ sub importData {
     ######################
     ## MAP NEW PROTEINS ##
     ######################
-    my $allAnaId = '';
-    foreach my $analysis (sort {$a cmp $b} keys %{$self->{analysisID}}) {
-        $allAnaId .= ',' if($allAnaId);
-        $allAnaId .= $self->{analysisID}{$analysis};
-    }
-    
-    system "./mapProteinIdentifiers.pl ".$self->{_userID}." $allAnaId";
+    system "./mapProteinIdentifiers.pl ".$self->{_userID}." ".join(',', @analysisIDs);
         
     $dbh->commit;
     $dbh->disconnect;
@@ -589,30 +653,6 @@ sub deltaLength {
 	my ($l_a,$l_b,$d_a,$d_b)=@_;
 	my $pepDensVal=($l_b > $l_a)? $d_a : $d_b;
 	if (abs($l_b-$l_a) > $pepDensVal) {return $l_a<=>$l_b} else {return 0}
-}
-
-sub mrCalc {
-    my ($pepSeq,$refVarMods)=@_;    ## pepSeq => peptide sequence without modifications ; %varMods => {modification position}=modification mass
-    my $mrCalc=0;
-    my %massValueAA=&promsConfig::getMassAAmono;
-    my @aaArray=split(//,$pepSeq);
-    push @aaArray, 'C_term';
-    unshift @aaArray, 'N_term';
-    for (my $i=1; $i<$#aaArray; $i++){
-        if($i==1){      ##N-term
-            $mrCalc+=$massValueAA{$aaArray[0]};
-            $mrCalc+=$refVarMods->{'='} if defined $refVarMods->{'='}; #N-term modification
-        }
-        if($i==$#aaArray-1){        ##C_term
-            $mrCalc+=$massValueAA{$aaArray[$i+1]};
-            $mrCalc+=$refVarMods->{'*'} if defined $refVarMods->{'*'}; # C-term modification
-        }
-        $mrCalc+=$massValueAA{$aaArray[$i]} if ($massValueAA{$aaArray[$i]});
-        print "$aaArray[$i],$pepSeq,@aaArray" unless $massValueAA{$aaArray[$i]};
-        exit unless $massValueAA{$aaArray[$i]};
-        $mrCalc+=$refVarMods->{$i} if defined $refVarMods->{$i};
-    }
-    return $mrCalc;
 }
 
 sub _fetchProjectProteins {
@@ -653,9 +693,7 @@ sub _fetchProjectProteins {
 sub _fetchProteinFromTDAFile {
     my ($self) = @_;
     my @analysisList = values (%{$self->{analysisID}});
-    my ($dbID,$dbRank)=split(/&/,@{$self->{_dbID}}[0]);
     my %protList;
-    
     my $dbh = &promsConfig::dbConnect('no_user');
     
     foreach my $analysis (keys %{$self->{_assosProtPeptide}}){
@@ -664,52 +702,150 @@ sub _fetchProteinFromTDAFile {
         }
     }
     
-    &promsMod::getProtInfo('silent', $dbh, $dbID, \@analysisList, \%protDes, \%protMW, \%protOrg, \%protLength, \%protSeq, \%protList);
+    foreach my $dbInfo (@{$self->{_dbID}}) {
+        my ($dbID,$dbRank)=split(/&/,$dbInfo);
+        &promsMod::getProtInfo('silent', $dbh, $dbID, \@analysisList, \%protDes, \%protMW, \%protOrg, \%protLength, \%protSeq, \%protList);
+    
+        ## compute peptide specificity and protein coverage
+        foreach my $anaName (keys %{$self->{_peptideProt}}){
+            foreach my $pep (keys %{$self->{_peptideProt}{$anaName}}){
+                next unless scalar keys %{$self->{_peptideProt}{$anaName}{$pep}};
+                if (scalar keys %{$self->{_peptideProt}{$anaName}{$pep}} == 1){
+                    $self->{_peptideInfo}{$pep}[2]=100;
+                }else{
+                    $self->{_peptideInfo}{$pep}[2]=(1/scalar keys %{$self->{_peptideProt}{$anaName}{$pep}})*100;
+                }
+            }
+            
+            ## protein coverage
+            if(!$self->{_protCoverage}) {
+                foreach my $protein (keys %{$self->{_peptidePosition}{$anaName}}){
+                    next unless $protLength{$protein};
+                    my %positionPeptide;
+                    foreach my $peptide (keys %{$self->{_peptidePosition}{$anaName}{$protein}}){
+                        foreach my $infoBeg (keys %{$self->{_peptidePosition}{$anaName}{$protein}{$peptide}}){
+                            my ($beg,$begFlank)=split('_', $infoBeg);
+                            my ($end,$endFlank)=split('_', $self->{_peptidePosition}{$anaName}{$protein}{$peptide}{$infoBeg});
+                            $positionPeptide{$beg}++;
+                            $positionPeptide{$end}--;
+                            $numMatchProt{$anaName}{$protein}++;    #number of peptide match
+                        }
+                    }
+                    my $hasPep=0;
+                    my ($pepCoverage,$matchBeg);
+                    foreach my $position (sort {$a <=> $b} keys %positionPeptide){
+                        if($hasPep == 0){
+                            $matchBeg=$position;
+                        }
+                        $hasPep+=$positionPeptide{$position};
+                        if($hasPep==0){
+                            $pepCoverage+=($position-$matchBeg+1);
+                        }
+                    }
+                    my $coverage=sprintf ("%.1f",$pepCoverage/$protLength{$protein}*100);
+                    $self->{_protCoverage}{$anaName}{$protein}=$coverage;
+                }
+            }
+        }
+    }
+}
 
-    ## compute peptide specificity and protein coverage
-    foreach my $anaName (keys %{$self->{_peptideProt}}){
-        foreach my $pep (keys %{$self->{_peptideProt}{$anaName}}){
-            next unless scalar keys %{$self->{_peptideProt}{$anaName}{$pep}};
-            if (scalar keys %{$self->{_peptideProt}{$anaName}{$pep}} == 1){
-                $self->{_peptideInfo}{$pep}[2]=100;
-            }else{
-                $self->{_peptideInfo}{$pep}[2]=(1/scalar keys %{$self->{_peptideProt}{$anaName}{$pep}})*100;
+sub createQuantification {
+    my ($self, $name, $focus, $annot, $method, $relatedAnalysisIDRef, $designID) = @_;
+    my $dbh = &promsConfig::dbConnect('no_user');
+    my @relatedAnalysisID = @{$relatedAnalysisIDRef};
+    
+    ## Inserting data into QUANTIFICATION
+    my $sthQuanti = $dbh->prepare("INSERT INTO QUANTIFICATION (ID_MODIFICATION,ID_QUANTIFICATION_METHOD,ID_DESIGN,NAME,FOCUS,QUANTIF_ANNOT,STATUS,UPDATE_DATE,UPDATE_USER) VALUES (NULL,?,?,?,?,?,?,NOW(),?)");
+    $sthQuanti->execute($method, $designID, $name, $focus, $annot, 1, ($self->{_userID}) ? $self->{_userID} : undef) or die $dbh->errstr;
+    $sthQuanti->finish;
+    my $quantiID = $dbh->last_insert_id(undef, undef, 'QUANTIFICATION', 'ID_QUANTIFICATION');
+    
+    ## Inserting data into ANA_QUANTIFICATION
+    my $sthAnaQuanti = $dbh->prepare("INSERT INTO ANA_QUANTIFICATION (ID_QUANTIFICATION,ID_ANALYSIS,QUANTIF_FILE,IS_REFERENCE) VALUES (?,?,NULL,NULL)");
+    foreach my $analysisID (@relatedAnalysisID) {
+        $sthAnaQuanti->execute($quantiID, $analysisID);
+    }
+    $sthAnaQuanti->finish;
+    
+    $dbh->commit;
+    $dbh->disconnect;
+    return $quantiID;
+}
+
+# Need to have all IDs of analysis and observations computed with the importData function if not specified in $designExperiment{"conditions"}. expID comes from the one provided in object constructor
+sub createExperimentDesign { # $design{"name"} + $design{"conditions"}{CONDITION_NAME}{REPLICATE_NAME} = {anaName => ANA_NAME, techRep => TECH_REP_NB, fraction => FRACTION_NB, anaID => ANA_ID, obsID => OBS_ID}
+    my ($self, $designExperimentRef) = @_;
+    my %designExperiment = ($designExperimentRef) ? %{$designExperimentRef} : %{$self->{designExperiment}};
+    my %designExperimentID;
+ 
+    if(%designExperiment && scalar keys %designExperiment > 1) {
+        my $dbh = &promsConfig::dbConnect('no_user');
+        my $sthDesign = $dbh->prepare("INSERT INTO DESIGN (ID_DESIGN,ID_EXPERIMENT,NAME,DES,UPDATE_DATE,UPDATE_USER) VALUES (?,?,?,?,NOW(),?)");
+        my $sthState = $dbh->prepare("INSERT INTO EXPCONDITION (ID_EXPCONDITION,ID_DESIGN,NAME,DES) VALUES (?,?,?,?)");
+        my $sthInsObsExp = $dbh->prepare("INSERT INTO OBS_EXPCONDITION (ID_EXPCONDITION,ID_OBSERVATION,FRACTION_GROUP,TECH_REP_GROUP) VALUES (?,?,?,?)");
+        
+        # Create empty Design
+        my ($newDesignID) = $dbh->selectrow_array("SELECT MAX(ID_DESIGN) FROM DESIGN");
+        $sthDesign->execute(++$newDesignID, $self->{_experimentID}, ($designExperiment{"name"}) ? $designExperiment{"name"} : "Quantification Design", "Automatically generated design", $self->{_userID}) || die $dbh->errstr();
+        $designExperimentID{"ID"} = $newDesignID;
+        my $stateIndex = 1;
+        
+        # Get max expConditionID (= State ID)
+        my ($newExpConditionID) = $dbh->selectrow_array("SELECT MAX(ID_EXPCONDITION) FROM EXPCONDITION");
+        
+        foreach my $condition (sort { lc($a) cmp lc($b) } keys %{$designExperiment{"conditions"}}){
+            
+            # Add State
+            if ($condition) {
+                $sthState->execute(++$newExpConditionID, $newDesignID, $condition, "") || die $dbh->errstr();
+                $designExperimentID{"STATE"}{$newExpConditionID}{"NAME"} = $condition; 
+                $designExperimentID{"STATE"}{$newExpConditionID}{"INDEX"} = $stateIndex; 
+                %{$designExperimentID{"STATE"}{$newExpConditionID}{"OBS"}} = ();
+                
+                foreach my $replicate (sort { $a <=> $b } keys %{$designExperiment{"conditions"}{$condition}}){
+                    my %replicateInfos = %{$designExperiment{"conditions"}{$condition}{$replicate}};
+                    my ($anaName, $techRep, $fraction) = ($replicateInfos{"anaName"}, $replicateInfos{"techRep"}, $replicateInfos{"fraction"});
+                    my $obsID = ($replicateInfos{"obsID"}) ? $replicateInfos{"obsID"} : ($self->{anaObsID}) ? $self->{anaObsID}{$anaName} : undef;            
+                    my $anaID = ($replicateInfos{"anaID"}) ? $replicateInfos{"anaID"} : ($self->{analysisID}) ? $self->{analysisID}{$anaName} : undef;            
+    
+                    # Link observations to experiment
+                    if($obsID) {
+                        $sthInsObsExp->execute($newExpConditionID, $obsID, ($fraction) ? $fraction : undef, ($techRep) ? $techRep : undef) || die $dbh->errstr();
+                        $designExperimentID{"STATE"}{$newExpConditionID}{"OBS"}{$obsID} = $anaID;
+                    }
+                }
+                
+                $stateIndex++;
             }
         }
         
-        ## protein coverage
-        foreach my $protein (keys %{$self->{_peptidePosition}{$anaName}}){
-            next unless $protLength{$protein};
-            my %positionPeptide;
-            foreach my $peptide (keys %{$self->{_peptidePosition}{$anaName}{$protein}}){
-                foreach my $infoBeg (keys %{$self->{_peptidePosition}{$anaName}{$protein}{$peptide}}){
-                    my ($beg,$begFlank)=split('_', $infoBeg);
-                    my ($end,$endFlank)=split('_', $self->{_peptidePosition}{$anaName}{$protein}{$peptide}{$infoBeg});
-                    $positionPeptide{$beg}++;
-                    $positionPeptide{$end}--;
-                    $numMatchProt{$anaName}{$protein}++;    #number of peptide match
-                }
-            }
-            my $hasPep=0;
-            my ($pepCoverage,$matchBeg);
-            foreach my $position (sort {$a <=> $b} keys %positionPeptide){
-                if($hasPep == 0){
-                    $matchBeg=$position;
-                }
-                $hasPep+=$positionPeptide{$position};
-                if($hasPep==0){
-                    $pepCoverage+=($position-$matchBeg+1);
-                }
-            }
-            my $coverage=sprintf ("%.1f",$pepCoverage/$protLength{$protein}*100);
-            $protCoverage{$anaName}{$protein}=$coverage;
-        }
+        $sthDesign->finish;
+        $sthState->finish;
+        $sthInsObsExp->finish;
+        
+        $dbh->commit;
+        $dbh->disconnect;
+        
+        return \%designExperimentID;
     }
+    
+    return -1;
 }
 
 1;
 
 ####>Revision history<####
+# 1.0.18 [BUGFIX] Count inserted peptides and proteins peptide association properly (VS 01/04/21) 
+# 1.0.17 [BUGFIX] Fixed strict-related error (VS 02/02/21) 
+# 1.0.16 [MINOR] Added log of proteins inserted in db (VS 29/01/21)
+# 1.0.15 [MINOR] Avoid lock timeout by regularly committing changes during peptides and peptide_attribs insert (VS 11/12/2020)
+# 1.0.14 [ENHANCEMENT] Handles imputed data from Spectronaut (VS 26/11/20)
+# 1.0.13 [MINOR] Use &mrCalc from promsMod (VS 22/10/20)
+# 1.0.12 [MINOR] Added spectronaut peptide sequence modifications pattern (VS 25/09/20)
+# 1.0.11 [MINOR] Changed data sorting for sample/analysis insertion (VS 02/09/20)
+# 1.0.10 [MODIF] Changed quantification design storage structure (VS 21/08/20)  
+# 1.0.9 [BUGFIX] Do not insert all proteins for all analysis. Missing proteins where considered has ghost (VS 12/08/20)
 # 1.0.8 [MODIF] Minor modif on skyline fileFormat to be consistent with handling of .sky files (VL 20/11/19)
 # 1.0.7 [BUGFIX] Loop over proteinID keys instead of dbRankProt (dbRankProt misses keys in DIA) (VS 16/10/19) 
 # 1.0.6 [MODIF] Fix unused name dbRankProtRef to dbRankProt and loop over its keys in importData to insert proteins in ANALYSIS_PROTEIN (VL 04/09/19) 

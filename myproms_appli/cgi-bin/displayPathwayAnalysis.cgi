@@ -1,11 +1,11 @@
 #!/usr/local/bin/perl -w
 
-##################################################################
-# displayPathwayAnalysis.cgi    1.0.2              	 	 #
-# Authors: P. Poullet, G. Arras & S. Liva (Institut Curie) 	 #
-# Contact: myproms@curie.fr                               	 #
-# Display in clound and table format Pathway Enrichment Analysis #
-##################################################################
+################################################################################
+# displayPathwayAnalysis.cgi    1.0.3                                          #
+# Authors: P. Poullet, G. Arras & S. Liva (Institut Curie)                     #
+# Contact: myproms@curie.fr                               	                   #
+# Display in clound and table format Pathway Enrichment Analysis               #
+################################################################################
 #----------------------------------CeCILL License-------------------------------
 # This file is part of myProMS
 #
@@ -299,7 +299,7 @@ my $sthProt=$dbh->prepare("SELECT P.ID_PROTEIN, MI.VALUE  FROM $strgFromSQL PROT
 			where $strgWhereSQL
 			P.ID_MASTER_PROTEIN = MP.ID_MASTER_PROTEIN and
 			MP.ID_MASTER_PROTEIN = MI.ID_MASTER_PROTEIN and
-			MI.ID_IDENTIFIER=? and MI.RANK=1 $strgCondSQL");
+			MI.ID_IDENTIFIER=? and MI.IDENT_RANK=1 $strgCondSQL");
 ($catID)? $sthProt->execute($catID, $identifierID) : $sthProt->execute($identifierID, $pathwayID);
 while(my ($protID, $uniprot) = $sthProt->fetchrow_array){
       $protIDs{$uniprot}{$protID}=1;
@@ -614,7 +614,7 @@ sub ajaxGetProteins {
 				  where $strgWhereSQL
 				  P.ID_MASTER_PROTEIN = MP.ID_MASTER_PROTEIN and
 				  MP.ID_MASTER_PROTEIN = MI.ID_MASTER_PROTEIN and
-				  MI.ID_IDENTIFIER=? and MI.RANK=1 $strgCondSQL");
+				  MI.ID_IDENTIFIER=? and MI.IDENT_RANK=1 $strgCondSQL");
 	($catID)? $sthProt->execute($catID, $identifierID) : $sthProt->execute($identifierID, $pathwayID);
 #my $count=0;
 	while(my ($protID, $uniprot) = $sthProt->fetchrow_array) {
@@ -682,13 +682,13 @@ sub ajaxGetProteins {
 	my $identGN="GN";
 	my ($geneID)=$dbh->selectrow_array("SELECT ID_IDENTIFIER FROM IDENTIFIER WHERE CODE='$identGN'");
 	my ($uniAcID)=$dbh->selectrow_array("SELECT ID_IDENTIFIER FROM IDENTIFIER WHERE CODE='AC'");
-	my $selProtGene=$dbh->prepare("SELECT VALUE from MASTERPROT_IDENTIFIER where ID_MASTER_PROTEIN=? and ID_IDENTIFIER=? ORDER BY RANK");
-	my $selUniprotAC=$dbh->prepare("SELECT VALUE from MASTERPROT_IDENTIFIER where ID_MASTER_PROTEIN=? and ID_IDENTIFIER=? ORDER BY RANK");
+	my $selProtGene=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_MASTER_PROTEIN=? AND ID_IDENTIFIER=? ORDER BY IDENT_RANK");
+	my $selUniprotAC=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_MASTER_PROTEIN=? AND ID_IDENTIFIER=? ORDER BY IDENT_RANK");
 	my (%protInfo, %protGene, %protUniAC);
 	foreach my $uniprotID (split('-', $submitEntities)) {
 		if ($protIDs{$uniprotID}) {
 			foreach my $protID (keys %{$protIDs{$uniprotID}}) {
-				my ($alias, $masterID, $protDes, $species)=$dbh->selectrow_array("SELECT ALIAS, ID_MASTER_PROTEIN, PROT_DES, ORGANISM from PROTEIN where ID_PROTEIN=$protID");
+				my ($alias, $masterID, $protDes, $species)=$dbh->selectrow_array("SELECT ALIAS, ID_MASTER_PROTEIN, PROT_DES, ORGANISM FROM PROTEIN WHERE ID_PROTEIN=$protID");
 				$selProtGene->execute($masterID, $geneID);
 				while (my $gene = $selProtGene->fetchrow_array) {
 					push @{$protGene{$protID}},$gene;
@@ -699,7 +699,7 @@ sub ajaxGetProteins {
 				}
 
 
-				my ($anaID, $numPep)=$dbh->selectrow_array("SELECT ID_ANALYSIS, NUM_PEP FROM ANALYSIS_PROTEIN WHERE ID_PROTEIN=$protID AND VISIBILITY > 0 ORDER BY NUM_PEP LIMIT 0,1");
+				my ($anaID, $numPep)=$dbh->selectrow_array("SELECT ID_ANALYSIS, NUM_PEP FROM ANALYSIS_PROTEIN WHERE ID_PROTEIN=$protID AND VISIBILITY > 0 ORDER BY NUM_PEP LIMIT 1");
 				my $sizeEntities = scalar(@{$numEntities{$uniprotID}}) if ($numEntities{$uniprotID});
 				my $strgAlias = (!$numEntities{$uniprotID})? "<A href=\"javascript:sequenceView($anaID,$protID,'valid',0)\">$alias</A>" : "<A href=\"javascript:sequenceView($anaID,$protID,'valid',0)\" onmouseover=\"popup('<B>matches $sizeEntities entities in <br>reactome pathway database')\" onmouseout=\"popout()\">$alias</A>";
 				$protInfo{$protID}=[$strgAlias, $protDes, $species, $anaID, $numPep];
@@ -899,6 +899,7 @@ sub exportProteins {
 }
 
 ####>Revision history<####
+# 1.0.3 [UPDATE] Changed RANK field to IDENT_RANK for compatibility with MySQL 8 (PP 04/03/20) 
 # 1.0.2 add color to sort function (SL 14/03/18)
 # 1.0.1 add export function and add graphical view (generic plot), comment FDR parameter and export protein list (add colimn uniprotAC) in excel format (SL 19/10/15)
 # 1.0.0 New script to display Pathway enrichment analysis results in cloud and table format, replace runAndDisplayPathwayAnalysis.cgi (SL 09/03/15)

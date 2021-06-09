@@ -1,43 +1,28 @@
 #!/usr/local/bin/perl -w
 ################################################################################
-# myproms4databanks.pl        1.0.8D                                            #
+# myproms4databanks.pl        1.1.0                                            #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
-#----------------------------------CeCILL License-------------------------------
+#----------------------------------GPL License----------------------------------
 # This file is part of myProMS
+# myProMS is a web server for collaborative validation and interpretation of proteomic mass spectrometry data
+# Copyright (C) 2013  Institut Curie
 #
-# Copyright Institut Curie 2018
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
 #
-# This software is a computer program whose purpose is to process
-# Mass Spectrometry-based proteomic data.
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
 #
-# This software is governed by the CeCILL license under French law and
-# abiding by the rules of distribution of free software. You can use,
-# modify and/or redistribute the software under the terms of the CeCILL
-# license as circulated by CEA, CNRS and INRIA at the following URL
-# "http://www.cecill.info".
-#
-# As a counterpart to the access to the source code and rights to copy,
-# modify and redistribute granted by the license, users are provided only
-# with a limited warranty and the software's author, the holder of the
-# economic rights, and the successive licensors have only limited
-# liability.
-#
-# In this respect, the user's attention is drawn to the risks associated
-# with loading, using, modifying and/or developing or reproducing the
-# software by the user in light of its specific status of free software,
-# that may mean that it is complicated to manipulate, and that also
-# therefore means that it is reserved for developers and experienced
-# professionals having in-depth computer knowledge. Users are therefore
-# encouraged to load and test the software's suitability as regards their
-# requirements in conditions enabling the security of their systems and/or
-# data to be ensured and, more generally, to use and operate it in the
-# same conditions as regards security.
-#
-# The fact that you are presently reading this means that you have had
-# knowledge of the CeCILL license and that you accept its terms.
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #-------------------------------------------------------------------------------
+
 $|=1;
 use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI ':standard';
@@ -49,10 +34,15 @@ print header(-type=>'text/plain'); warningsToBrowser(1);
 ##################
 ####>Security<####
 ##################
-my @remoteHostIPs=(
-	# '<IP address of myProMS web server>' (Add comma (,) after each entry but last)
+my @remoteHostIPs=( # Add comma (,) after each server but last
+	'10.2.0.30', # pangaea
+	'10.2.200.39', # server bioinfo-web-dev
+	'10.2.0.193', # new prod
+	'10.2.200.38', # dev/prod on bi-web02
+	'10.200.10.172', # BIWS ppoullet
+	'10.200.10.93', # BIWS fyvon
 );
-if (scalar @remoteHostIPs) {
+if (!param('SKIP') && scalar @remoteHostIPs) {
 	my $okRequest=0;
 	foreach my $allowedIP (@remoteHostIPs) {
 		if ($allowedIP eq $ENV{'REMOTE_ADDR'}) {
@@ -120,7 +110,6 @@ elsif ($action eq 'dbFile') {
 				$numEntries++;
 				print "#$numEntries\n" unless $numEntries % 100000;
 			}
-
 		}
 		close FAS;
 	}
@@ -214,7 +203,7 @@ elsif ($action eq 'scan') {
 	);
 	my $trueDbFile=&getDatabankFile(param('DB'));
 	my (%protList,%protMW,%protLength,%protDes,%protOrg);
-	foreach my $identifier (split(':',param('protList'))) {$protList{$identifier}=1;}
+	foreach my $identifier (split(',:,',param('protList'))) {$protList{$identifier}=1;}
 #my $dbOrganism=param('dbOrganism');
 #	my $parseRules=uri_unescape(param('parseRules'));#deprotection of url information
 ##$parseRules=~s/£/\+/g;
@@ -229,7 +218,6 @@ elsif ($action eq 'scan') {
 #	if ($rules[2]) {($orgRule=$rules[2])=~s/ORG=//;}
 	my ($idRule,$desRule,$orgRule)=&getParseRules(param('parseRules'));
 	my $identType=param('identType') || '';
-
 	my $maxProtID=scalar keys (%protList);
 
 	###>Scanning DBank file
@@ -272,15 +260,14 @@ elsif ($action eq 'scan') {
 			my @line=split(//,$newLine);
 			foreach my $entry (@line) {
 				my ($identifier)=($entry=~/$idRule/);
-				next unless $identifier; # just to be safe
-
-				if ($identType eq 'UNIPROT_ID') { # check for isoforms in 1st keyword before | & add to UNIPROT_ID
-					$entry=~s/^sp\|//;
-					if ($entry=~/^[^|]+-(\d+)\|/) {
-						$identifier.="-$1";
-					}
+				next unless $identifier; # just to be safe	
+				if ($identType eq 'UNIPROT_ID') { # check for isoforms in 1st keyword before | & add to UNIPROT_ID	
+					$entry=~s/^sp\|//;	
+					if ($entry=~/^[^|]+-(\d+)\|/) {	
+						$identifier.="-$1";	
+					}	
 				}
-
+				
 				if (defined($protList{$identifier})) {
 					my $des; ($des)=($entry=~/$desRule/) if $desRule; # optional
 					my $org; ($org)=($entry=~/$orgRule/) if $orgRule; # optional
@@ -341,6 +328,28 @@ elsif ($action eq 'scan') {
 	exit;
 }
 
+####################################
+####>Protein list from databank<####
+####################################
+elsif ($action eq 'prots') {
+	my $trueDbFile = &getDatabankFile(param('DB'));
+	my ($idRule, $desRule, $orgRule) = &getParseRules(param('parseRules'));
+	open(DB, $trueDbFile) || die "can't open $trueDbFile\n";
+	while (my $line = <DB>) {
+		next unless ($line =~ /^>/);
+		chomp $line;
+		$line =~ s/^>\s*//;
+		$line =~ s/.+//;  # take 1 entry if multi-entry line (NCBI)
+		$line =~ s/\s+\Z//;  # chomp not always enough
+		my ($identifier) = ($line =~ /$idRule/);
+		next unless ($identifier =~ /\w/);
+		print "$identifier\n";
+	}
+	close DB;
+	exit;
+}
+
+
 ################################
 ####<Fetching databank file>####
 ################################
@@ -383,7 +392,7 @@ sub getTrueFile {
 sub getParseRules {
 	#my $parseRules=uri_unescape($_[0]); # deprotection of url information
 	my $parseRules=$_[0];
-	#$parseRules=uri_unescape($parseRules) if $parseRules=~/%/;
+	#$parseRules=uri_unescape($parseRules) if $parseRules=~/\%/;
 	$parseRules=~s/£/\+/g; # back comptatibility with myProMS 2.7.2
 	my @rules=split(',:,',$parseRules);
 #my @rules=split(',:,','ID=([^\|]+_[^\s\|]+),:,ORG=\s?- ([^\(]*),:,');
@@ -398,9 +407,11 @@ sub getParseRules {
 }
 
 ####>Revision history<####
-# 1.0.8D Modified for distribution (PP 12/07/16)
+# 1.1.0 [ENHANCEMENT] Added a skip parameter to bypass IP adress restriction (VS 27/10/20)
+# 1.0.10 [FEATURE] Add ACT=prots option to return all protein identifiers from databank (VL 08/10/20)
+# 1.0.9 [CHANGE] Changed identifier parsing separator for ACT=scan (PP 29/09/20)
 # 1.0.8 Detects and moves UniProt isoform key from ACC to ID if ID is selected (PP 08/02/15)
-# 1.0.7 Added parse rules test (PP 28/10/13)
+# 1.0.7 Added parse rules test (PP 04/11/13)
 # 1.0.6 GPL license (PP 19/09/13)
 # 1.0.5 Error control on missing databank (PP 14/09/12)
 # 1.0.4 URL encoding for parsing rules (GA 26/07/12)

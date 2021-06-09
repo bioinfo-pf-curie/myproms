@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# processAnalyses.cgi    1.4.11                                                #
+# processAnalyses.cgi    1.5.1                                                 #
 # Authors: P. Poullet, G. Arras, F. Yvon & M. Le Picard (Institut Curie)       #
 # Contact: myproms@curie.fr                                                    #
 # Generates list of options available to manage multiple analyses at once      #
@@ -190,6 +190,7 @@ my $disabDecoy=($numUnValid && $projectFullAccess)? '' : ' disabled';
 #my $disabCombine=($numUnValidDat>=2 && $projectAccess !~ /power/)? '' : ' disabled';
 ##>Filter + auto-selection
 my $disabFilterSel=($numUnValid)? '' : ' disabled';
+my $disabHydro = ($numValidTMT || $numValidITRAQ)? ' disabled' : '';
 my $disabRemFilter=' disabled';
 if ($numUnValid) {
 	my ($filter)=$dbh->selectrow_array($filterQuery);
@@ -289,8 +290,11 @@ function selectAction(action) {
 			window.location="./selectAnalyses.cgi?ID=$branchID&id_project=$projectID&callType=duplicate";
 			break;
 		case 'applyFilter':
-			//window.location="./filterAnalysis.cgi?ITEM=$item&ID=$itemID&id_project=$projectID";
+			// window.location="./filterAnalysis.cgi?ITEM=$item&ID=$itemID&id_project=$projectID";
 			window.location="./selectAnalyses.cgi?ID=$branchID&id_project=$projectID&callType=appFilter";
+			break;
+		case 'hydrophobicityFlag':
+			window.location="./selAna4Quantification.cgi?ID=$branchID&quantifType=hydro";
 			break;
 		case 'removeFilter':
 			//if (confirm('Remove filter from all unvalidated Analyses found in selected item?')) {
@@ -360,15 +364,11 @@ function selectAction(action) {
 		case 'openswath' :
 			window.location="./importSwathDataRefonte.cgi?id_project=$projectID&ID=$branchID&ACT=quantification&FORMAT=openswath&USERID=$userID";
 			break;
-		case 'openswathOld' :
-			window.location="./importSwathData.cgi?id_project=$projectID&ID=$branchID&ACT=quantification&FORMAT=openswath&USERID=$userID";
-			break;
 		case 'openswathImport' :
 			window.location="./importSwathDataRefonte.cgi?id_project=$projectID&ID=$branchID&ACT=import&FORMAT=openswath&USERID=$userID";
-			//window.location="./importSwathData.cgi?id_project=$projectID&ID=$branchID&ACT=import&FORMAT=openswath&USERID=$userID";
 			break;
 		case 'spectronautImport' :
-			window.location="./importSwathData.cgi?id_project=$projectID&ID=$branchID&ACT=import&FORMAT=spectronaut";
+			window.location="./importSpectronaut.cgi?id_project=$projectID&ID=$branchID&USERID=$userID";
 			break;
 		case 'skyline' :
 			window.location="./importSkyline.cgi?id_project=$projectID&ID=$branchID&ACT=import&FORMAT=prm";
@@ -416,6 +416,7 @@ function selectAction(action) {
 <TABLE bgcolor=$darkColor cellpadding=4 width=500>
 <TR><TD colspan=2><FONT class="title2">&nbsp;Filters and flags:</TD></TR>
 <TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('applyFilter')"$disabFilterSel/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">Apply a protein filter&nbsp;</FONT></TD></TR>
+<TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('hydrophobicityFlag')"$disabHydro/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">Compute peptides hydrophobicity&nbsp;</FONT></TD></TR>
 <TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('removeFilter')"$disabRemFilter/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">Remove protein filters&nbsp;</FONT></TD></TR>
 <TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('removeFlags')"$disabAutoSel/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">Remove peptide flags&nbsp;</FONT></TD></TR>
 </TABLE>
@@ -450,7 +451,6 @@ function selectAction(action) {
 <TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('skyline')"$disabTDA/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">Import Skyline data&nbsp;</FONT></TD></TR>
 <TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('peakview')"$disabPkv/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">Import PeakView data&nbsp;</FONT></TD></TR>
 <TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('openswath')"$disabOpenSwath/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">OpenSwath based quantification (new)&nbsp;</FONT></TD></TR>
-<TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('openswathOld')"$disabOpenSwath/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">OpenSwath based quantification (old)&nbsp;</FONT></TD></TR>
 <TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('openswathImport')"$disabOpenSwathImport/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">Import OpenSwath data&nbsp;</FONT></TD></TR>
 <TR><TH><INPUT type="button" value=" Proceed " onclick="selectAction('spectronautImport')"$disabSpectronautImport/></TH><TD bgcolor=$lightColor width=100% nowrap>&nbsp;<FONT class="title3">Import Spectronaut data&nbsp;</FONT></TD></TR>
 </TABLE>
@@ -464,6 +464,9 @@ function selectAction(action) {
 #<TR><TH>&nbsp;<INPUT type="button" value=" Proceed " onclick="selectAction('combine')"$disabCombine/>&nbsp;</TH><TD bgcolor=$lightColor>&nbsp;<FONT class="title3">Combine analyses</FONT></TD></TR>
 
 ####>Revision history<####
+# 1.5.1 [FEATURE] Add hydrophobicity computation (VL 01/02/21)
+# 1.5.0 [CHANGE] Remove old SWATH workflow from Quantification menu (VS 09/09/20)
+# 1.4.12 [CHANGE] Changed Spectronaut import script path (VS 05/06/20)
 # 1.4.11 Remove monitoring buttons from every specific tabs since it is now global to all job types (VS 21/10/19)
 # 1.4.10 Replace call to importTDAData by importSkyline and corresponding button (VL 11/09/19) 
 # 1.4.9 Add OpenSwath new workflow (VS 05/06/19)

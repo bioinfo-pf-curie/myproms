@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# listSwathLibraries.cgi         1.2.1                                         #
+# listSwathLibraries.cgi         1.2.2                                         #
 # Authors: M. Le Picard, V. Sabatet (Institut Curie)                           #
 # Contact: myproms@curie.fr                                                    #
 # Lists the libraries available in myProMS                                     #
@@ -78,7 +78,7 @@ if($act) {
     }
 }
 
-my $sthDataLibrary = $dbh->prepare("SELECT SL.ID_SWATH_LIB,RT.NAME,SL.NAME,SL.DES,SL.IDENTIFIER_TYPE,SL.ORGANISM,SL.VERSION_NAME,SL.START_DATE,SL.SPLIT,SL.STATISTICS,SL.USE_STATUS FROM SWATH_LIB SL,REFERENCE_RT RT WHERE SL.USE_STATUS!='no' AND SL.USE_STATUS!='err' AND SL.ID_REFERENCE_RT=RT.ID_REFERENCE_RT ORDER BY SL.NAME ASC");
+my $sthDataLibrary = $dbh->prepare("SELECT SL.ID_SWATH_LIB,RT.NAME,SL.NAME,SL.DES,SL.IDENTIFIER_TYPE,SL.ORGANISM,SL.VERSION_NAME,IF(SL.PARAM_STRG LIKE '%Spectronaut%', 'SPC', 'TPP') AS SOFTWARE,SL.START_DATE,SL.SPLIT,SL.STATISTICS,SL.USE_STATUS FROM SWATH_LIB SL LEFT JOIN REFERENCE_RT RT ON SL.ID_REFERENCE_RT=RT.ID_REFERENCE_RT WHERE SL.USE_STATUS!='no' AND SL.USE_STATUS!='err' ORDER BY SL.NAME ASC");
 $sthDataLibrary->execute;
 my $refDataLib = $sthDataLibrary->fetchall_arrayref;
 $sthDataLibrary->finish;
@@ -132,7 +132,7 @@ print qq |
             }
             
             function monitorLibCreation() {
-                var monitorJobsWin=window.open("$promsPath{cgi}/monitorJobs.cgi?filterType=Import [TPP]&filterDateNumber=1&filterDateType=DAY&filterStatus=Queued&filterStatus=Running",'monitorJobsWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
+                var monitorJobsWin=window.open("$promsPath{cgi}/monitorJobs.cgi?filterType=Spectral Library&filterDateNumber=1&filterDateType=DAY",'monitorJobsWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
                 monitorJobsWin.focus();
             }
             
@@ -186,7 +186,7 @@ print qq |
     |;
     
     foreach my $dataRow (@{$refDataLib}) {
-        my ($libraryID, $rtFile, $libraryName, $des, $identifierType, $organism, $versionName, $startDate, $modeSplit, $stat, $useStatus)=@{$dataRow};
+        my ($libraryID, $rtFile, $libraryName, $des, $identifierType, $organism, $versionName, $software, $startDate, $modeSplit, $stat, $useStatus)=@{$dataRow};
         my ($version, $dbFile);
         if ($versionName) {
             ($version=$versionName)=~s/v//;
@@ -194,7 +194,7 @@ print qq |
         
         $des='' unless $des;
         $stat =~ s/[\n\s]//g;
-        my $split = ($modeSplit == 1) ? "Split" : "Unsplit";
+        my $split = (!$modeSplit) ? $modeSplit : ($modeSplit == 1) ? "Split" : "Unsplit";
         my $workDir = "$promsPath{swath_lib}/SwLib_$libraryID";
         if ((-e "$workDir/$libraryName\_peakview.tsv") && ((-M "$workDir/$libraryName\_peakview.tsv") >1)) {
             system "rm $workDir/$libraryName\_peakview.tsv";
@@ -215,7 +215,8 @@ print qq |
         my $sthDatabankSwathLib = $dbh->prepare("SELECT D.NAME FROM DATABANK_SWATHLIB DS,DATABANK D WHERE DS.ID_DATABANK=D.ID_DATABANK AND DS.ID_SWATH_LIB=?");
         $sthDatabankSwathLib->execute($libraryID);
         while (my $db = $sthDatabankSwathLib->fetchrow_array) {
-            $dbFile .= "$db\t";
+            $dbFile .= "; " if($dbFile);
+            $dbFile .= "$db";
         }
         
         print qq |
@@ -228,12 +229,12 @@ print qq |
         print "<FONT color=\"red\" style=\"font-size:18px;font-weight:bold;\">&nbsp;(Archived)</FONT>" if ($useStatus eq 'arc');
         print "</p><p style='margin-left:12px;'>";
         print "<B>Version:</B> $versionName<br/>" if $versionName;
-        print "<B>Mode:</B> $split<br/>";
+        if($split) { print "<B>Mode:</B> $split<br/>"; }
         print "<B>Identifier type:</B> $identifierType<br/>" if $identifierType;
         print qq |
                <B>Database(s):</B> $dbFile<br/>
-               <B>RT:</B> $rtFile<br/>
         |;
+        if($rtFile) { print "<B>RT:</B> $rtFile<br/>"; }
         if ($des) { print "<B>Description:</B> $des<br/>";}
         if ($organism){print "<B>Organism:</B> $organism<br/>";}
         if ($startDate){print "<B>Creation date:</B> $startDate<br/>";}
@@ -245,7 +246,7 @@ print qq |
                         <INPUT type="button" value="Delete" style="width:100px" onclick="deleteSwathLibrary($libraryID,'$libraryName')">
                         <INPUT type="button" value="Edit" style="width:100px" onclick="window.location='./editSwathLibrary.cgi?ACT=edit&ID=$libraryID'">
                         <INPUT type="button" value="Export library" style="width:100px" onclick="window.location='./exportSwathLibrary.cgi?ID=$libraryID'">
-                        <INPUT type="button" value="Export proteins" style="width:115px" onclick="window.location='./exportLibraryProteins.cgi?ID=$libraryID'">
+                        <INPUT type="button" value="Export proteins" style="width:100px" onclick="window.location='./exportLibraryProteins.cgi?ID=$libraryID'">
                         <INPUT type="button" value="Search" style="width:100px" onclick="window.location='./searchSwathLibrary.cgi?ID=$libraryID'">
                 
         |;
@@ -258,7 +259,7 @@ print qq |
             print "<INPUT type=\"button\" value=\"Archive\" style=\"width:100px\" onclick=\"archiveSwathLibrary($libraryID,'$libraryName')\">";
         }
         
-        if ($version >1 and -e "$workDir/Lib$libraryID\_v$prevVersion.tar.gz") {
+        if ($version >1 and -e "$workDir/Lib$libraryID\_v$prevVersion.tar.gz" and $software eq 'TPP') {
             print "<INPUT type=\"button\" value=\"Restore previous version\" style=\"width:175px\" onclick=\"window.location='./editSwathLibrary.cgi?ACT=restore&ID=$libraryID'\"><BR>";
         }
         
@@ -395,7 +396,7 @@ sub showLibProteinContent {
     if ($numProtSpe) { $displayData .= "<BR><B>Number of unambigious proteins:</B> $numProtSpe";}
     if ($numPep) { $displayData .= "<BR><B>Number of peptides:</B> $numPep";}
     if ($numPepModList){
-        my @modList=split(/&/,$numPepModList);
+        my @modList=split(/\.\./,$numPepModList);
         foreach my $mod (@modList) {
             my ($modName,$numPepMod,$numModSite)=($mod=~/(.+):(\d+)\/(\d+)/);
             $displayData .= "<BR><B>Number of $modName sites:</B> $numModSite";
@@ -417,7 +418,8 @@ sub showLibProteinContent {
 }
 
 ####>Revision history<####
-# 1.2.1 [CHANGES] Use new job monitoring window opening parameters (VS 18/11/19)
+# 1.2.2 [CHANGE] Only archive TPP libraries (VS 22/10/20)
+# 1.2.1 [CHANGE] Use new job monitoring window opening parameters (VS 18/11/19)
 # 1.2.0 [ENHANCEMENT] Possibility to display projects and experiments associated to a library (VS 13/11/19)
 # 1.1.11 [MODIF] Switch from monitorDIA to monitorJobs script (VS 21/10/19)
 # 1.1.10 Add "Export proteins" option (VL 20/09/19)

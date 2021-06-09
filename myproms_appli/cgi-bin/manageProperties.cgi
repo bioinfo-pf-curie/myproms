@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# manageProperties.cgi              1.0.3                                      #
+# manageProperties.cgi              1.0.5                                      #
 # Authors: P. Poullet, G. Arras, S. Liva (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -80,11 +80,11 @@ if (param('submit')) { # add or edit or usage
 
 	my (%allSamples,$rankTreat);
 
-	my $sthSelectRank=$dbh->prepare("SELECT BP.ID_BIOSAMPLE, BP.ID_PROPERTY, BP.RANK FROM BIOSAMPLE_PROPERTY BP INNER JOIN PROPERTY P ON BP.ID_PROPERTY = P.ID_PROPERTY
-					WHERE P.PROPERTY_TYPE='$type' and BP.ID_BIOSAMPLE=? and BP.RANK>? ORDER BY BP.RANK");
-	my $strgSQL = ($type eq "T")? " and RANK=?" : " ";
-	my $sthInsertSampProp=$dbh->prepare("INSERT INTO BIOSAMPLE_PROPERTY(ID_BIOSAMPLE, ID_PROPERTY, RANK, PROPERTY_VALUE) VALUES (?,?,?,?)");
-	my $sthUpdateRank=$dbh->prepare("UPDATE BIOSAMPLE_PROPERTY SET RANK=? WHERE ID_BIOSAMPLE=? and ID_PROPERTY=?$strgSQL");
+	my $sthSelectRank=$dbh->prepare("SELECT BP.ID_BIOSAMPLE,BP.ID_PROPERTY,BP.PROPERTY_RANK FROM BIOSAMPLE_PROPERTY BP INNER JOIN PROPERTY P ON BP.ID_PROPERTY = P.ID_PROPERTY
+					WHERE P.PROPERTY_TYPE='$type' and BP.ID_BIOSAMPLE=? and BP.PROPERTY_RANK>? ORDER BY BP.PROPERTY_RANK");
+	my $strgSQL = ($type eq "T")? " AND PROPERTY_RANK=?" : " ";
+	my $sthInsertSampProp=$dbh->prepare("INSERT INTO BIOSAMPLE_PROPERTY(ID_BIOSAMPLE,ID_PROPERTY,PROPERTY_RANK,PROPERTY_VALUE) VALUES (?,?,?,?)");
+	my $sthUpdateRank=$dbh->prepare("UPDATE BIOSAMPLE_PROPERTY SET PROPERTY_RANK=? WHERE ID_BIOSAMPLE=? AND ID_PROPERTY=?$strgSQL");
 	my $sthDeleteSample=$dbh->prepare("DELETE FROM BIOSAMPLE_PROPERTY WHERE ID_BIOSAMPLE=? and ID_PROPERTY=?$strgSQL");
 	my $sthUpdatePropValue=$dbh->prepare("UPDATE BIOSAMPLE_PROPERTY SET PROPERTY_VALUE=? WHERE ID_BIOSAMPLE=? and ID_PROPERTY=?$strgSQL");
 
@@ -105,8 +105,8 @@ if (param('submit')) { # add or edit or usage
 			#print "old:$oldValue # current:$currentValue<br>\n";
 			if (!$currentValue && $oldValue) {
 				##DELETE
-				my ($rank)= $dbh->selectrow_array("SELECT BP.RANK from BIOSAMPLE_PROPERTY BP INNER JOIN PROPERTY P ON BP.ID_PROPERTY = P.ID_PROPERTY WHERE P.PROPERTY_TYPE='$type'
-										  and BP.ID_BIOSAMPLE=$sampID and BP.ID_PROPERTY=$propertyID ORDER BY BP.RANK");
+				my ($rank)= $dbh->selectrow_array("SELECT BP.PROPERTY_RANK FROM BIOSAMPLE_PROPERTY BP INNER JOIN PROPERTY P ON BP.ID_PROPERTY = P.ID_PROPERTY WHERE P.PROPERTY_TYPE='$type'
+													AND BP.ID_BIOSAMPLE=$sampID AND BP.ID_PROPERTY=$propertyID ORDER BY BP.PROPERTY_RANK");
 				#print "Deleting property: $allSamples{$sampID} ($sampID) deleted in rank $rank (oldValue:$oldValue currentValue:$currentValue)<BR>";
 				$sthDeleteSample->execute($sampID,$propertyID);
 				$dbh->commit;
@@ -121,8 +121,8 @@ if (param('submit')) { # add or edit or usage
 			}
 			elsif ($currentValue && !$oldValue) {
 				##INSERT
-				my ($maxRank)=$dbh->selectrow_array("SELECT MAX(RANK) FROM BIOSAMPLE_PROPERTY BP INNER JOIN PROPERTY P ON  BP.ID_PROPERTY = P.ID_PROPERTY
-							     		where BP.ID_BIOSAMPLE=$sampID and P.PROPERTY_TYPE = '$type'");
+				my ($maxRank)=$dbh->selectrow_array("SELECT MAX(PROPERTY_RANK) FROM BIOSAMPLE_PROPERTY BP INNER JOIN PROPERTY P ON  BP.ID_PROPERTY = P.ID_PROPERTY
+							     		WHERE BP.ID_BIOSAMPLE=$sampID AND P.PROPERTY_TYPE = '$type'");
 				$maxRank=0 if (!$maxRank);#skip warning if maxRank is null
 				my $newRank=$maxRank+1;
 				$sthInsertSampProp->execute($sampID,$propertyID,$newRank,$currentValue);
@@ -192,8 +192,8 @@ if (param('submit')) { # add or edit or usage
 			}
 			elsif ($curList{$sampID}) {
 				##INSERT
-				my ($maxRank)=$dbh->selectrow_array("SELECT MAX(RANK) FROM BIOSAMPLE_PROPERTY BP INNER JOIN PROPERTY P ON  BP.ID_PROPERTY = P.ID_PROPERTY
-									where BP.ID_BIOSAMPLE=$sampID and P.PROPERTY_TYPE = '$type'");
+				my ($maxRank)=$dbh->selectrow_array("SELECT MAX(PROPERTY_RANK) FROM BIOSAMPLE_PROPERTY BP INNER JOIN PROPERTY P ON  BP.ID_PROPERTY = P.ID_PROPERTY
+									WHERE BP.ID_BIOSAMPLE=$sampID AND P.PROPERTY_TYPE = '$type'");
 				$maxRank=0 if (!$maxRank);#skip warning if maxRank is null
 				my $newRank=$maxRank+1;
 				$sthInsertSampProp->execute($sampID,$propertyID,$newRank,$propertyValue);
@@ -284,7 +284,7 @@ my $sthUsedProp=$dbh->prepare("SELECT 1 FROM BIOSAMPLE_PROPERTY PY
 				JOIN PROJECT_BIOSAMPLE PT ON PY.ID_BIOSAMPLE=PT.ID_BIOSAMPLE
 				WHERE PY.ID_PROPERTY=? AND PT.ID_PROJECT=$projectID LIMIT 0,1"); # not used for bioSamples of current project
 my $sthSelSample=$dbh->prepare("SELECT B.ID_BIOSAMPLE,B.NAME FROM BIOSAMPLE B INNER JOIN PROJECT_BIOSAMPLE PB ON B.ID_BIOSAMPLE = PB.ID_BIOSAMPLE WHERE PB.ID_PROJECT=$projectID");# for sample usage
-my $sthSampProp=$dbh->prepare("SELECT BP.ID_PROPERTY, BP.ID_BIOSAMPLE, BP.PROPERTY_VALUE, BP.RANK FROM PROJECT_BIOSAMPLE PB
+my $sthSampProp=$dbh->prepare("SELECT BP.ID_PROPERTY, BP.ID_BIOSAMPLE, BP.PROPERTY_VALUE, BP.PROPERTY_RANK FROM PROJECT_BIOSAMPLE PB
 				  INNER JOIN BIOSAMPLE B ON PB.ID_BIOSAMPLE=B.ID_BIOSAMPLE
 				  INNER JOIN BIOSAMPLE_PROPERTY BP ON B.ID_BIOSAMPLE=BP.ID_BIOSAMPLE
 				  WHERE PB.ID_PROJECT=? AND BP.ID_PROPERTY=?"); # for javascript object
@@ -384,7 +384,7 @@ function cancelForm() {
 }
 function displayPossibleValues(predefVal) {
 	if (predefVal==1) {
-		for (var i = 1; i <= $MAX_POSSIBLE_VALUES; i++) {
+		for (let i = 1; i <= $MAX_POSSIBLE_VALUES; i++) {
 			if (document.getElementById('textValue_'+i).value \|\| i <= 2) {
 				document.getElementById('textValue_'+i).disabled = false;
 				document.getElementById('dispDiv_'+i).style.display='block';
@@ -393,7 +393,7 @@ function displayPossibleValues(predefVal) {
 		document.getElementById('newValButton').style.display='';
 	}
 	else {
-		for (var i = 1; i <= $MAX_POSSIBLE_VALUES; i++) {
+		for (let i = 1; i <= $MAX_POSSIBLE_VALUES; i++) {
 			document.getElementById('textValue_'+i).disabled = false;
 			document.getElementById('dispDiv_'+i).style.display='none';
 		}
@@ -403,7 +403,7 @@ function displayPossibleValues(predefVal) {
 function addRemoveInput(val,pos) {
 	if (val == '+') {
 		var lastVisPos=0;
-		for (var i = 1; i <= $MAX_POSSIBLE_VALUES; i++) {
+		for (let i = 1; i <= $MAX_POSSIBLE_VALUES; i++) {
 			if (document.getElementById('dispDiv_'+i).style.display != 'none') lastVisPos=i;
 		}
 		if (lastVisPos==$MAX_POSSIBLE_VALUES) {
@@ -447,6 +447,32 @@ function numericOnly(e) {
 		return false;
 	}
 }
+function clearUsage() { // property/treatment usage
+	/* checkbox (treatment only) */
+	const treatChk=document.propertyForm.list;
+	if (treatChk) {
+		if (treatChk.length) {
+			for (let i=0; i<treatChk.length; i++) {
+				treatChk[i].checked=false;
+			}
+		}
+		else {treatChk.checked=false;}
+	}
+	/* select */
+	const sourceSelect=document.getElementsByClassName('sourceSelect');
+	if (sourceSelect) {
+		for (let i=0; i<sourceSelect.length; i++) {
+			sourceSelect[i].selectedIndex=0;
+		}
+	}
+	/* input */
+	const sourceInput=document.getElementsByClassName('sourceInput');
+	if (sourceInput) {
+		for (let i=0; i<sourceInput.length; i++) {
+			sourceInput[i].value='';
+		}
+	}
+}
 function checkForm(myForm) {
 	var okForm = true;
 |;
@@ -474,7 +500,7 @@ function checkForm(myForm) {
 	elsif ($type eq "T") {
 		print qq
 |	var sampChkList=document.getElementsByName('list');
-	for (var i=0; i<sampChkList.length; i++) {
+	for (let i=0; i<sampChkList.length; i++) {
 		if (sampChkList[i].checked) {
 			var sampID=sampChkList[i].value;
 			var quantVal=document.getElementById('quantity_'+sampID).value;
@@ -539,14 +565,16 @@ if (scalar keys %propList) { #display available list of properties
 	print qq
 |	<TR>
 		<TD class="tBorder" colspan="4" align="center">
-			<INPUT TYPE="button" value="New $strgProp1" onclick="addProperty()"$disabButton>
+			<INPUT type="button" value="New $strgProp1" onclick="addProperty()"$disabButton>&nbsp;&nbsp;&nbsp;<INPUT type="button" value="Import from File" onclick="window.location='./importBioSampleData.cgi?projectID=$projectID&context=property'"$disabButton>
 		</TD>
 	</TR>
 </TABLE>
 |;
 }
 else {
-	print qq|<INPUT type="button" class="title2" value=" New $strgProp1 " onclick="addProperty()"$disabButton>|;
+	print qq
+|<INPUT type="button" class="title2" value=" New $strgProp1 " onclick="addProperty()"$disabButton>&nbsp;&nbsp;&nbsp;<INPUT type="button" value="Import from File" onclick="window.location='./importBioSampleData.cgi?projectID=$projectID&context=property'"$disabButton>
+|;
 }
 if ($action eq 'summary') {
 	$dbh->disconnect;
@@ -649,7 +677,7 @@ else { # usage
 		}
 		print qq|<TH nowrap align="right">&nbsp;$samplesUsage{$sampID} :</TH>|;
 		if ($propEdit{predefValues}) {
-			print qq|<TD><SELECT name="selValue_$sampID"><OPTION value="">-=Select=-</OPTION>\n|;
+			print qq|<TD><SELECT name="selValue_$sampID" class="sourceSelect"><OPTION value="">-=Select=-</OPTION>\n|;
 			foreach my $values (split(":#:|#", $propEdit{possValues})) {
 				my $sel = (!$sampProp{$sampID})? '' : ($sampProp{$sampID} eq $values )? ' selected' : '';
 				print qq|<OPTION value="$values"$sel>$values</OPTION>\n|;
@@ -662,7 +690,7 @@ else { # usage
 			if ($type eq "O") {
 				my $valInput = ($sampProp{$sampID})? $sampProp{$sampID} : "";
 				print qq
-|<TD><INPUT TYPE="text" name="selValue_$sampID" value="$valInput"></TD><INPUT type="hidden" value="$valInput" name="oldValue_$sampID">
+|<TD><INPUT TYPE="text" name="selValue_$sampID" value="$valInput" class="sourceInput"></TD><INPUT type="hidden" value="$valInput" name="oldValue_$sampID">
 |;
 			}
 			else {
@@ -684,8 +712,8 @@ else { # usage
 							print qq
 |<INPUT TYPE="hidden" VALUE="$rank" NAME="rank_$sampID">
 <INPUT TYPE="hidden" VALUE="$strgOldvalue" NAME="oldValue_$sampID">
-<INPUT class="right" type="text" name="quantity_$sampID" id="quantity_$sampID" size="4" value="$strgQuantity" onkeypress="return numericOnly(event);"$disabledInfo/>
-<SELECT name="quantUnit_$sampID" id="quantUnit_$sampID"$disabledInfo>
+<INPUT class="right sourceInput" type="text" name="quantity_$sampID" id="quantity_$sampID" size="4" value="$strgQuantity" onkeypress="return numericOnly(event);"$disabledInfo/>
+<SELECT name="quantUnit_$sampID" id="quantUnit_$sampID" class="sourceSelect" $disabledInfo>
 	<OPTION value="">-</OPTION>
 |;
 							foreach my $unit (&getConcentrationUnits) {
@@ -694,8 +722,8 @@ else { # usage
 							}
 							print qq
 |</SELECT>
-<INPUT class="right" type="text" name="duration_$sampID" id="duration_$sampID" size="4" value="$strgDuration" onkeypress="return numericOnly(event);"$disabledInfo/>
-<SELECT name="durUnit_$sampID" id="durUnit_$sampID"$disabledInfo>
+<INPUT class="right sourceInput" type="text" name="duration_$sampID" id="duration_$sampID" size="4" value="$strgDuration" onkeypress="return numericOnly(event);"$disabledInfo/>
+<SELECT name="durUnit_$sampID" id="durUnit_$sampID" class="sourceSelect" $disabledInfo>
 	<OPTION value="">-</OPTION>
 |;
 							foreach my $unit ('sec','min','h','day') {
@@ -708,8 +736,8 @@ else { # usage
 							next if ($countStep==1);
 							print qq
 |<INPUT TYPE="hidden" VALUE="" NAME="oldValue_$sampID" ID="oldValue_$sampID">
-<INPUT class="right" type="text" name="quantity_$sampID" id="quantity_$sampID" size="4" value="" onkeypress="return numericOnly(event);"$disabledInfo/>
-<SELECT name="quantUnit_$sampID" id="quantUnit_$sampID"$disabledInfo>
+<INPUT class="right sourceInput" type="text" name="quantity_$sampID" id="quantity_$sampID" size="4" value="" onkeypress="return numericOnly(event);"$disabledInfo/>
+<SELECT name="quantUnit_$sampID" id="quantUnit_$sampID" class="sourceSelect" $disabledInfo>
 	<OPTION value="">-</OPTION>
 |;
 							foreach my $unit (&getConcentrationUnits) {
@@ -717,8 +745,8 @@ else { # usage
 							}
 							print qq
 |</SELECT>
-<INPUT class="right" type="text" name="duration_$sampID" id="duration_$sampID" size="4" value="" onkeypress="return numericOnly(event);"$disabledInfo/>
-<SELECT name="durUnit_$sampID" id="durUnit_$sampID"$disabledInfo>
+<INPUT class="right sourceInput" type="text" name="duration_$sampID" id="duration_$sampID" size="4" value="" onkeypress="return numericOnly(event);"$disabledInfo/>
+<SELECT name="durUnit_$sampID" id="durUnit_$sampID" class="sourceSelect" $disabledInfo>
 	<OPTION value="">-</OPTION>
 |;
 							foreach my $unit ('sec','min','h','day') {
@@ -735,8 +763,8 @@ else { # usage
 				else {
 					print qq
 |<INPUT TYPE="hidden" VALUE="" NAME="oldValue_$sampID" ID="oldValue_$sampID">
-<INPUT class="right" type="text" name="quantity_$sampID" id="quantity_$sampID" size="4" value="" onkeypress="return numericOnly(event);"$disabledInfo/>
-<SELECT name="quantUnit_$sampID" id="quantUnit_$sampID"$disabledInfo>
+<INPUT class="right sourceInput" type="text" name="quantity_$sampID" id="quantity_$sampID" size="4" value="" onkeypress="return numericOnly(event);"$disabledInfo/>
+<SELECT name="quantUnit_$sampID" id="quantUnit_$sampID" class="sourceSelect" $disabledInfo>
 	<OPTION value="">-</OPTION>
 |;
 					foreach my $unit (&getConcentrationUnits) {
@@ -744,8 +772,8 @@ else { # usage
 					}
 					print qq
 |</SELECT>
-<INPUT class="right" type="text" name="duration_$sampID" id="duration_$sampID" size="4" value="" onkeypress="return numericOnly(event);"$disabledInfo/>
-<SELECT name="durUnit_$sampID" id="durUnit_$sampID"$disabledInfo>
+<INPUT class="right sourceInput" type="text" name="duration_$sampID" id="duration_$sampID" size="4" value="" onkeypress="return numericOnly(event);"$disabledInfo/>
+<SELECT name="durUnit_$sampID" id="durUnit_$sampID" class="sourceSelect" $disabledInfo>
 	<OPTION value="">-</OPTION>
 |;
 					foreach my $unit ('sec','min','h','day') {
@@ -764,7 +792,7 @@ else { # usage
 	my $disabledSubmit=($type eq "O" && !$propEdit{possValues} )? " disabled" : "";
 	my $strgOldList=join(":", @checkList);
 	print qq
-|<TR bgcolor="$darkColor"><TH colspan="$colspan">&nbsp;<INPUT type="submit" value=" Save "$disabledSubmit name="submit">&nbsp;&nbsp;<INPUT type="reset" value="Cancel" onclick="cancelForm()"><INPUT type="hidden" name="oldList" value="$strgOldList">&nbsp;
+|<TR bgcolor="$darkColor"><TH colspan="$colspan">&nbsp;<INPUT type="submit" value=" Save "$disabledSubmit name="submit">&nbsp;&nbsp;<INPUT type="button" value="Clear all" onclick="clearUsage()">&nbsp;&nbsp;<INPUT type="reset" value="Cancel" onclick="cancelForm()"><INPUT type="hidden" name="oldList" value="$strgOldList">&nbsp;
 </TH></TR>
 </TABLE>
 </DIV>
@@ -795,6 +823,8 @@ sub getConcentrationUnits {
 }
 
 ####>Revision history<####
+# 1.0.5 [FEATURE] Added "Clear all" option for Property/Treatment usage (PP 29/09/20)
+# 1.0.4 [UPDATE] Changed RANK field to PROPERTY_RANK for compatibility with MySQL 8 (PP 17/03/20)
 # 1.0.3 Display improvement (PP 06/11/15)
 # 1.0.2 add one property/treatment to biosamples list, add usage item (SL 08/09/14)
 # 1.0.1 Update for PROJECT_PROPERTY table (PP 21/08/14)

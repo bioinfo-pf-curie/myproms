@@ -87,7 +87,7 @@ if (!$action) { # never for biologist
 
 	####>Scan Analyses for validations to be auto-ended<####
 	my $dayDiff=&promsConfig::getMaxPartialValidationDuration; #365; # 1 year # 92 <=> 3 months
-	my ($analysisID)=$dbh->selectrow_array("SELECT ID_ANALYSIS FROM ANALYSIS WHERE VALID_STATUS=1 AND DATEDIFF(NOW(),VALID_DATE) >= $dayDiff ORDER BY VALID_DATE LIMIT 0,1");
+	my ($analysisID)=$dbh->selectrow_array("SELECT ID_ANALYSIS FROM ANALYSIS WHERE VALID_STATUS=1 AND DATEDIFF(NOW(),VALID_DATE) >= $dayDiff ORDER BY VALID_DATE LIMIT 1");
 	if ($analysisID) {
 		my $flagDir="$promsPath{tmp}/scratch/autoEndValidation";
 		if (-e $flagDir) {

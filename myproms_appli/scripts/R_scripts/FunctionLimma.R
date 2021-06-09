@@ -1,5 +1,5 @@
 ################################################################################
-# FunctionLimma.R         5.2.4                                              #
+# FunctionLimma.R         5.3.0                                                #
 # Authors: Matthieu Lhotellier & Alexandre Sta & Isabel Brito (Institut Curie) #
 # Contact: myproms@curie.fr                                                    #
 # Function of AnalysisDiffLimma.R                                              #
@@ -370,6 +370,7 @@ library(bit64) # for fread
 #################################################################################
 .normalizeData <- function(object,params,normProt){
   print("Execution of .normalizeData")
+  
   # Read the parameters of the normalisation  
   normalizationMethod = unlist(strsplit(params$normalization.method,split="\\."))
   if(length(normalizationMethod)==1){normalizationMethod=c(normalizationMethod,"none")}
@@ -381,6 +382,17 @@ library(bit64) # for fread
   # Tag the specific proteins who will be used to normalize the data (possibly all, at least one)
   object$normProtein = 0
   object$normProtein[ which( object$proteinId %in% normProtein$proteinId ) ] = 1
+  
+  # Remove non-common peptide if wanted
+  if( !( is.null(params$common.peptides)  ) ){ 
+    print("Only common peptides are used")
+    distpeptidebysample = table(object$sample,object$peptide) 
+    dinul1= apply(distpeptidebysample,2,prod)
+    dinul2= which(dinul1==0)
+    object$peptideCom=ifelse( object$peptide %in% names(dinul2), 0, 1) 
+  }else{
+    object$peptideCom = 1
+  }  
   
   # Select the functions to normalize
   if(normalizationMethod[1] != "quantile"){
@@ -468,7 +480,7 @@ library(bit64) # for fread
 #################################################################################
 .normBetweenExp <- function(object,E,V,design){
   # Build m_i and \sigma_i
-  biasExp = object %>% filter(normProtein==1) %>% group_by(experiment) %>% 
+  biasExp = object %>% filter(normProtein==1 & peptideCom==1) %>% group_by(experiment) %>% 
     dplyr::summarise(coefMul = V(M),coefAdd=E(M))
   biasRef = biasExp %>% group_by() %>% dplyr::summarise(coefMulRef = exp(mean(log(coefMul))) , coefAddRef = mean(coefAdd) ) 
   if( (design=="PEP_RATIO") & (E(c(1,2,3))!=0) ){ 
@@ -496,7 +508,7 @@ library(bit64) # for fread
 #################################################################################
 .normWithinExp <- function(object,E,V,design){
   # Build m_i and \sigma_i
-  biasRun = object %>% filter(normProtein==1) %>% group_by(sample,replicate,experiment,repTech) %>% 
+  biasRun = object %>% filter(normProtein==1 & peptideCom==1) %>% group_by(sample,replicate,experiment,repTech) %>% 
     dplyr::summarise(coefMul = V(M),coefAdd=E(M))
   biasExperiment = biasRun %>% group_by(experiment) %>% dplyr::summarise(coefMulExp = exp(mean(log(coefMul))) , coefAddExp = mean(coefAdd) )
   # If PEP_INTENSITY center the mean to the mean of the mean, if PEP_RATIO m_i = 0
@@ -612,6 +624,7 @@ library(bit64) # for fread
   }
   
   if(params$design == "PEP_INTENSITY"){ # Case PEP_INTENSITY
+
     object = object %>% mutate(sample=as.factor(sample)) %>%  group_by(proteinId)
     .lmRepParam = function( x ){ .lmProteinPEP_INTENSITY( subObject = x , params = params )}
     
@@ -1222,6 +1235,7 @@ library(bit64) # for fread
   return(p)
 }
 
+.
 #################################################################################
 ## Name : .control
 ## Arguments: object
@@ -1656,6 +1670,7 @@ return(objectNorm)
 } ##normEachProt  
 
 ####>Revision history<####
+# 5.3.0 if parameters contains the field common.peptides then only common petides are used  (IB 13/08/2020)
 # 5.2.4 bug corrected: pAdj.method	fdr and residual.variability are not necessary when normalization.only=yes (IB 30/01/2002)
 # 5.2.3 .control function checks parameters for normalisation.method and design (minimal required parameters) (IB 06/01/2020)
 # 5.2.2 the R packages are required as the function fread depend on them from now on  (IB 13/11/2019)

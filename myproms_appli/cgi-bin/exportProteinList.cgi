@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# exportProteinList.cgi        2.5.2	                                       #
+# exportProteinList.cgi        2.6.0	                                         #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Exports a list of proteins in MS Excel or HTML format                        #
@@ -87,6 +87,7 @@ if (param('AJAX')) {
 my $projectID=param('projectID');
 my $listMode=param('listMode'); # not defined after submit
 my $classificationID=(!$listMode)? param('classID') : ($listMode=~/classification:(\d+)/)? $1 : ($listMode eq 'raw')? -1 : 0; # converts new list prot option to old classification
+my $listID=(param('catList'))? param('catList') : ''; # selected list
 my $restrictListID=param('restrictList') || 0; # exclusion/selection List ID
 my $listAction=param('listAction') || 'restrict';
 my $view=(param('view'))? param('view') : 'pepAll'; # depth=analysis by default
@@ -221,6 +222,19 @@ function chooseClass(classID) {
 	if (classID > 0) {
 		document.getElementById('itemSpan').style.display='none';
 		document.getElementById('catSpan').style.display='';
+		document.getElementById('subFocusTitle').innerHTML = 'Selected List(s):';
+		document.getElementById('catList').disabled = false;
+		
+		var elThemeSelect = document.getElementById("classID");
+		var themeListsStr = elThemeSelect.options[elThemeSelect.selectedIndex].dataset.lists;
+		var themeLists = themeListsStr.split('\$\$');
+		var elListSelectHTML = "<option value='0'>All</option>";
+		themeLists.forEach(function(list) {
+			var listInfos = list.split('::');
+			elListSelectHTML += "<option value='" + listInfos[0] + "'>" + listInfos[1] + "</option>";
+		});
+		document.getElementById('catList').innerHTML= elListSelectHTML;
+		
 		myForm.depth.disabled=true;
 		myForm.listAction.disabled=true;
 		myForm.restrictList.disabled=true;
@@ -242,6 +256,8 @@ function chooseClass(classID) {
 	else { // project hierarchy
 		document.getElementById('catSpan').style.display='none';
 		document.getElementById('itemSpan').style.display='';
+		document.getElementById('subFocusTitle').innerHTML = 'Depth:';
+		document.getElementById('catList').disabled=true;
 		myForm.depth.disabled=false;
 		myForm.listAction.disabled=false;
 		myForm.restrictList.disabled=false;
@@ -369,7 +385,7 @@ var reportWin;
 <TABLE align=center border=0 bgcolor="$color2" cellpadding=0 cellspacing=10>
 <TR><TD colspan=4><TABLE width=100% border=0>
 <TR><TD align=right><FONT class="title2">Focus:</FONT></TD>
-<TD colspan=3 nowrap><SELECT name="classID" onchange="chooseClass(this.value)" style="font-size:18px;">
+<TD colspan=3 nowrap><SELECT id='classID' name="classID" onchange="chooseClass(this.value)" style="font-size:18px;">
 |;
 # my $selString=(==-1)? 'selected' : '';
 # print "<OPTION value=-1 $selString>Raw list</OPTION>\n";
@@ -381,13 +397,18 @@ print qq
 foreach my $themeID (sort{lc($classificationList{$a}) cmp lc($classificationList{$b})} keys %classificationList){
 	next if $themeID<=0; # raw list, proj hierarchy
 	$selString=($classificationID==$themeID)? 'selected' : '';
-	print "<OPTION value=\"$themeID\" $selString>$classificationList{$themeID}</OPTION>\n";
+	my @themeLists = ();
+	foreach my $listID (sort{lc($customList{$themeID}{$a}[1]) cmp lc($customList{$themeID}{$b}[1])} keys %{$customList{$themeID}}) {
+		push(@themeLists, "$listID\::".$customList{$themeID}{$listID}[0]);
+	}
+	print "<OPTION data-lists='".join('$$', @themeLists)."' value=\"$themeID\" $selString>$classificationList{$themeID}</OPTION>\n";
 }
 print "</OPTGROUP></SELECT>\n";
 
 ##>Expand tree options
-my ($visItemSpan,$visCatSpan,$disabledString1)=($classificationID>0)? ('none','','disabled') : ('','none','');
-print "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<FONT class=\"title2\">Depth:</FONT>&nbsp;";
+my ($visItemSpan,$visCatSpan,$disabledString1, $disabledString5)=($classificationID>0)? ('none','','disabled','') : ('','none','', 'none');
+my $displayFieldName = ($classificationID>0) ? 'Selected List(s)' : 'Depth';
+print "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span id='subFocusTitle' class=\"title2\">$displayFieldName:</span>&nbsp;";
 my $itemOK=0;
 print "<SPAN id=\"itemSpan\" style=\"display:$visItemSpan\"><SELECT name=\"depth\" style=\"font-size:18px;\" onchange=\"chooseDepth(this.value)\" $disabledString1>\n";
 foreach my $it ('project','experiment','gel2d sample','spot','analysis') {
@@ -404,7 +425,24 @@ foreach my $it ('project','experiment','gel2d sample','spot','analysis') {
 	my $itemStrg=($refIt eq 'analysis')? 'Analyses' : &promsMod::getItemType($refIt).'s';
 	print ">$itemStrg$extraTxt$rawString</OPTION>\n";
 }
-print "</SELECT><SUP>*</SUP></SPAN><SPAN id=\"catSpan\" style=\"display:$visCatSpan\"><FONT style=\"font-size:18px;\">Custom Lists ",&promsMod::getItemType($item),"</FONT><SUP>*</SUP></SPAN></TD></TR>\n";
+print qq |
+		</SELECT><SUP>*</SUP>
+	</SPAN>
+	<SPAN id=\"catSpan\" style=\"display:$visCatSpan\">
+		<SELECT id='catList' name='catList' style='font-size:18px;' $disabledString5>
+			<OPTION value='0'>All</OPTION>
+|;
+
+if($classificationID>0) {
+	foreach my $listID (sort{lc($customList{$classificationID}{$a}[1]) cmp lc($customList{$classificationID}{$b}[1])} keys %{$customList{$classificationID}}) {
+		print("<OPTION value='$listID'>".$customList{$classificationID}{$listID}."</OPTION>");
+	}
+}
+
+print qq |
+		</SELECT>
+	</SPAN></TD></TR>\n
+|;
 
 ##>Restrict/exclude List option
 print qq
@@ -524,13 +562,16 @@ print qq
 	&nbsp;&nbsp;&nbsp;<INPUT type="submit" name="export" value="   Export List   " style="font-weight:bold;"/>
 </TH></TR>
 </TABLE>
-<I>Only visible proteins will be exported.</I>
+<I>*Only visible proteins will be exported.</I>
 </FORM>
 </CENTER>
 <DIV id="divDescription" class="clDescriptionCont">
 <!--Empty div-->
 </DIV>
-<SCRIPT type="text/javascript">setPopup()</SCRIPT>
+<SCRIPT type="text/javascript">
+	setPopup()
+	chooseClass(document.getElementById('classID').value);
+</SCRIPT>
 </BODY>
 </HTML>
 |;
@@ -559,7 +600,11 @@ sub checkMapping {
 
 	my @sthAI;
 	if ($ITEM eq 'PROJECT') {
-		$sthAI[0]=$dbh->prepare("SELECT DISTINCT ID_IDENTIFIER FROM MASTERPROT_IDENTIFIER MI INNER JOIN ROTEIN P ON AP.ID_PROTEIN=P.ID_PROTEIN INNER JOIN ANALYSIS_PROTEIN AP ON P.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN INNER JOIN EXPERIMENT E ON E.ID_PROJECT=$itemID WHERE VISIBILITY>=1 AND P.ID_PROJECT=$itemID AND E.ID_EXPERIMENT NOT IN (SELECT E2.ID_EXPERIMENT FROM EXPERIMENT E2 INNER JOIN USER_EXPERIMENT_LOCK EU ON EU.ID_EXPERIMENT=E2.ID_EXPERIMENT WHERE E2.ID_PROJECT=$itemID AND EU.ID_USER='$userID')");
+		$sthAI[0]=$dbh->prepare("SELECT DISTINCT ID_IDENTIFIER FROM MASTERPROT_IDENTIFIER MI
+									INNER JOIN PROTEIN P ON P.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN
+									INNER JOIN ANALYSIS_PROTEIN AP ON AP.ID_PROTEIN=P.ID_PROTEIN
+									WHERE P.ID_PROJECT=$itemID AND VISIBILITY>=1");
+		#AND P.ID_PROJECT=$itemID AND E.ID_EXPERIMENT NOT IN (SELECT E2.ID_EXPERIMENT FROM EXPERIMENT E2 INNER JOIN USER_EXPERIMENT_LOCK EU ON EU.ID_EXPERIMENT=E2.ID_EXPERIMENT WHERE E2.ID_PROJECT=$itemID AND EU.ID_USER='$userID')");
 	}
 	elsif ($ITEM eq 'EXPERIMENT') {
 		$sthAI[0]=$dbh->prepare("SELECT DISTINCT ID_IDENTIFIER FROM MASTERPROT_IDENTIFIER MI,PROTEIN P,ANALYSIS_PROTEIN AP,ANALYSIS A,SAMPLE S WHERE AP.ID_PROTEIN=P.ID_PROTEIN AND P.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN AND VISIBILITY>=1 AND AP.ID_ANALYSIS=A.ID_ANALYSIS AND A.ID_SAMPLE=S.ID_SAMPLE AND S.ID_SPOT IS NULL AND ID_EXPERIMENT=$itemID");
@@ -645,7 +690,7 @@ sub exportProteinList {
 	my $exportFile;
 	$xlsRow=0;
 	($rowColor1,$rowColor2)=('#FFFFFF','#DDDDDD');
-	my $focusStrg=($classificationID)? $classificationList{$classificationID} : 'Project hierarchy';
+	my $focusStrg= ($classificationID && $listID) ? $customList{$classificationID}{$listID}[0] : ($classificationID) ? $classificationList{$classificationID} : 'Project hierarchy';
 	if ($exportFormat eq 'XLS') { # EXCEL
 		$exportFile="export_protein_list_$jobID.xls";
 		$newLine="\n";
@@ -712,7 +757,7 @@ sub exportProteinList {
 |;
 	}
 
-	my $depthITEM=uc(param('depth'));
+	my $depthITEM= (param('depth')) ? uc(param('depth')) : '';
 	@protColumns=param('sel_prot');
 	unshift @protColumns,'IDENTIFIER';
 	push @selColName,('#','Identifier'); # add numb prot & identifier (mandatory)
@@ -851,29 +896,38 @@ sub exportProteinList {
 	}
 	####<User-defined classification>####
 	else {
+		my $focusType = ($listID) ? "List" : "Theme";
 		#my ($className,$classDes)=$dbh->selectrow_array("SELECT NAME,DES FROM CLASSIFICATION WHERE ID_CLASSIFICATION=$classificationID");
 		if ($exportFormat eq 'XLS') {
-			$worksheet->merge_range(0,0,0,$colSpan-1,&promsMod::getItemType($item).": ".decode_utf8($itemName).", Theme: ".decode_utf8($focusStrg),$itemFormat{'TITLE'});
+			$worksheet->merge_range(0,0,0,$colSpan-1,&promsMod::getItemType($item).": ".decode_utf8($itemName).", $focusType: ".decode_utf8($focusStrg),$itemFormat{'TITLE'});
 			#$worksheet->write_comment(0,0,$classDes) if $classDes;
 		}
 		else {
-			print HTML "<TR><TH colspan=$colSpan><FONT style=\"font-size:$fontSize{TITLE}\">",&promsMod::getItemType($item),": $itemName, Theme: $focusStrg";
+			print HTML "<TR><TH colspan=$colSpan><FONT style=\"font-size:$fontSize{TITLE}\">",&promsMod::getItemType($item),": $itemName, $focusType: $focusStrg";
 			#print HTML "<BR><FONT style=\"font-size:$fontSize{CATEGORY}\">($classDes)</FONT>" if $classDes;
 			print HTML "</FONT></TH></TR>\n";
 		}
+		
 		##>Proteins in categories
-		my @listChildren=&promsMod::getChildrenList($dbh,$classificationID,'classification');
-		foreach my $catID (sort{$listChildren[0]{'LIST'}{$a}[2]<=>$listChildren[0]{'LIST'}{$b}[2]} keys %{$listChildren[0]{'LIST'}}){
-			my ($catDes)=&promsMod::chkDef($listChildren[0]{'LIST'}{$catID}[1]);
-			$catDes=" ($catDes)" if $catDes;
-			if ($exportFormat eq 'XLS') {
-				$worksheet->merge_range(++$xlsRow,0,$xlsRow,$colSpan-1,decode_utf8($listChildren[0]{'LIST'}{$catID}[0].$catDes),$itemFormat{'CATEGORY'});
+		if($listID) {
+			my ($catName) = $dbh->selectrow_array("SELECT NAME FROM CATEGORY WHERE ID_CATEGORY=$listID");
+			&printWaitingMsg("Processing Custom List $catName");
+			&listItemProteins(uc($item),$listID,0);
+		} else {
+			my @listChildren=&promsMod::getChildrenList($dbh,$classificationID,'classification');
+			foreach my $catID (sort{$listChildren[0]{'LIST'}{$a}[2]<=>$listChildren[0]{'LIST'}{$b}[2]} keys %{$listChildren[0]{'LIST'}}){
+				my ($catDes)=&promsMod::chkDef($listChildren[0]{'LIST'}{$catID}[1]);
+				$catDes=" ($catDes)" if $catDes;
+				
+				if ($exportFormat eq 'XLS') {
+					$worksheet->merge_range(++$xlsRow,0,$xlsRow,$colSpan-1,decode_utf8($listChildren[0]{'LIST'}{$catID}[0].$catDes),$itemFormat{'CATEGORY'});
+				}
+				else {
+					print HTML "<TR><TH align=left colspan=$colSpan bgcolor=\"$color2\"><FONT style=\"font-size:$fontSize{CATEGORY}\">$listChildren[0]{LIST}{$catID}[0]$catDes</FONT></TH></TR>\n";
+				}
+				&printWaitingMsg("Processing Custom List $listChildren[0]{LIST}{$catID}[0]");
+				&listItemProteins(uc($item),$catID,0);
 			}
-			else {
-				print HTML "<TR><TH align=left colspan=$colSpan bgcolor=\"$color2\"><FONT style=\"font-size:$fontSize{CATEGORY}\">$listChildren[0]{LIST}{$catID}[0]$catDes</FONT></TH></TR>\n";
-			}
-			&printWaitingMsg("Processing Custom List $listChildren[0]{LIST}{$catID}[0]");
-			&listItemProteins(uc($item),$catID,0);
 		}
 		##>Unclassified proteins
 		if (param('unclass')) {
@@ -983,14 +1037,14 @@ sub exportAnalysisFiles {
 	my $projectID = param('id_project');
 	my @anaIDs = param('anaList');
 	my $item = (param('item')) ? lc param('item') : '';
+	my $genDesign = param('gen_design');
 	
 	#######################
 	####<Starting HTML>####
 	#######################
 	print header(-'content-encoding'=>'no',-charset=>'utf-8');
 	warningsToBrowser(1);
-	print qq
-|<HTML>
+	print qq|<HTML>
 <HEAD>
 <TITLE>Exporting data files</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
@@ -1004,8 +1058,7 @@ sub exportAnalysisFiles {
 
 	# Creating archive that contain all msf files
 	if ($projectID && scalar @anaIDs) {
-		print qq
-|<DIV id="waitDIV">
+		print qq|<DIV id="waitDIV">
 <BR><BR><BR><BR><BR><FONT class="title3">Fetching data...</FONT><BR><IMG src="$promsPath{images}/scrollbarGreen.gif">
 <BR><BR><FONT class="title3">Status:&nbsp;<SPAN id="waitSPAN"><SPAN>...</FONT>
 </DIV>
@@ -1020,43 +1073,46 @@ sub exportAnalysisFiles {
 		my (@msfFiles, $currentAnaFile, $currentSampName);
 		my $designFile = "$exportDir/export_project$projectID\_analyses_from_$item.xls"; # $promsPath{'data'}."/
 		my ($expName, $sampName, $projName) = $dbh->selectrow_array("SELECT E.NAME, S.NAME, P.NAME FROM SAMPLE S INNER JOIN ANALYSIS A ON A.ID_SAMPLE=S.ID_SAMPLE INNER JOIN EXPERIMENT E ON E.ID_EXPERIMENT=S.ID_EXPERIMENT JOIN PROJECT P ON P.ID_PROJECT=E.ID_PROJECT WHERE P.ID_PROJECT=$projectID AND A.ID_ANALYSIS=$anaIDs[0]");
+		my ($workbook, $worksheet, $bodyFormat, $headerFormat);
 		my $zip = Archive::Zip->new();
-		
-		# Initialize design file parameters
-		my $workbook=Spreadsheet::WriteExcel->new($designFile);
-		eval { # Perl 5.8 compatibility
-			$workbook->set_properties(title=>'Design of ',
-									  author=>'myProMS server',
-									  comments=>"Describes analyses carried out for project $projName"
-									  );
-		};
-		
-		# Set design formats
-		my $headerFormat = $workbook->add_format(size=>10, bold=>1, underline=>1, font=>'Arial', align=>'center');
-		my $bodyFormat = $workbook->add_format(size=>11, align=>'center', font=>'Calibri');
-		$worksheet = $workbook->add_worksheet('Design');
-		
-		# Write design header
-		$worksheet->write(0, 0, "Experiment Name", $headerFormat);
-		$worksheet->write(0, 1, "Sample Name", $headerFormat);
-		$worksheet->write(0, 2, "Identification", $headerFormat);
-		$worksheet->write(0, 3, "Raw file", $headerFormat);
+
+		if($genDesign) {
+			# Initialize design file parameters
+			$workbook=Spreadsheet::WriteExcel->new($designFile);
+			eval { # Perl 5.8 compatibility
+				$workbook->set_properties(title=>'Design of ',
+											author=>'myProMS server',
+											comments=>"Describes analyses carried out for project $projName"
+											);
+			};
+			
+			# Set design formats
+			$headerFormat = $workbook->add_format(size=>10, bold=>1, underline=>1, font=>'Arial', align=>'center');
+			$bodyFormat = $workbook->add_format(size=>11, align=>'center', font=>'Calibri');
+			$worksheet = $workbook->add_worksheet('Design');
+			
+			# Write design header
+			$worksheet->write(0, 0, "Experiment Name", $headerFormat);
+			$worksheet->write(0, 1, "Sample Name", $headerFormat);
+			$worksheet->write(0, 2, "Identification", $headerFormat);
+			$worksheet->write(0, 3, "Raw file", $headerFormat);
+		}
 		
 		# Parse relevant analyses
 		my $totAna=scalar @anaIDs;
 		my $iAna = 1;
 		my %usedDataFile;
-		my $sthAna=$dbh->prepare("SELECT A.ID_ANALYSIS, A.NAME, DATA_FILE, S.NAME, WIFF_FILE, VALID_STATUS FROM SAMPLE S INNER JOIN ANALYSIS A ON A.ID_SAMPLE=S.ID_SAMPLE INNER JOIN EXPERIMENT E ON E.ID_EXPERIMENT=S.ID_EXPERIMENT JOIN PROJECT P ON P.ID_PROJECT=E.ID_PROJECT WHERE P.ID_PROJECT=$projectID AND A.ID_ANALYSIS IN (".join(', ', @anaIDs).")");
+		my $sthAna=$dbh->prepare("SELECT E.ID_EXPERIMENT, A.ID_ANALYSIS, A.NAME, DATA_FILE, A.FILE_FORMAT, S.NAME, WIFF_FILE, VALID_STATUS FROM SAMPLE S INNER JOIN ANALYSIS A ON A.ID_SAMPLE=S.ID_SAMPLE INNER JOIN EXPERIMENT E ON E.ID_EXPERIMENT=S.ID_EXPERIMENT JOIN PROJECT P ON P.ID_PROJECT=E.ID_PROJECT WHERE P.ID_PROJECT=$projectID AND A.ID_ANALYSIS IN (".join(', ', @anaIDs).")");
 		my $sthFirstQ=$dbh->prepare("SELECT MIN(ID_QUANTIFICATION) FROM ANA_QUANTIFICATION WHERE ID_ANALYSIS=?");
 		$sthAna->execute;
-		while (my ($anaID,$anaName,$dataFile,$currentSampName,$wiffFile,$validStatus) = $sthAna->fetchrow_array) {
-			&printWaitingMsg("Processing Analysis $iAna/$totAna ($anaName)");			
+		while (my ($expID,$anaID,$anaName,$dataFile,$fileFormat,$currentSampName,$wiffFile,$validStatus) = $sthAna->fetchrow_array) {
+			&printWaitingMsg("Processing Analysis $iAna/$totAna ($anaName)");
 			#$currentSampName =~ s/\//-/;
-			my ($fileExt, $fileName);
+			my ($fileExt, $fullFileName);
 			
-			if ($dataFile=~/mqpar.*\.xml|parameters\.txt/) { # MaxQuant
+			if ($fileFormat =~ /MAXQUANT/ && $dataFile=~/mqpar.*\.xml|parameters\.txt/) { # MaxQuant
 				$fileExt='';
-				$fileName=$wiffFile;
+				$fullFileName=$wiffFile;
 				$currentAnaFile='proteinGroups.txt';
 				unless ($usedDataFile{$currentAnaFile}) {
 					$sthFirstQ->execute($anaID);
@@ -1064,41 +1120,51 @@ sub exportAnalysisFiles {
 					$zip->addFile("$promsPath{quantification}/project_$projectID/quanti_$firstQuantID/proteinGroups.txt","proteinGroups.txt");
 					$zip->addFile("$promsPath{quantification}/project_$projectID/quanti_$firstQuantID/peptides.txt","peptides.txt");
 				}
-			}
-			# TODO: Handle DIA/TDA
-			else { # Mascot or PD
-				$fileExt = ($wiffFile =~ /raw/) ? 'msf' : 'dat';
-				($fileName = $wiffFile ) =~ s/\..*$//;
-			
-				$currentAnaFile = ($fileExt eq 'msf') ? "$anaName.$fileExt" : $dataFile;
-				my $dataFile;
-				if ($validStatus != 2) {
-					$dataFile = ($fileExt eq 'msf') ? "$promsPath{valid}/multi_ana/proj_$projectID/$currentAnaFile" : "$promsPath{valid}/ana_$anaID/$currentAnaFile";
+			} elsif($fileFormat =~ /SWATH|SPECTRONAUT|SKYLINE/) { # OpenSwath, Spectronaut or Skyline
+				$fullFileName = $dataFile;
+				$dataFile = "$promsPath{peptide}/proj_$projectID/exp_$expID/$fullFileName";
+				if (-e $dataFile) { # Actual storage path
+					$zip->addFile($dataFile, $fullFileName) unless $usedDataFile{$dataFile};
+				} else { # Old storage path
+					$dataFile = "$promsPath{peptide}/proj_$projectID/ana_$anaID/$fullFileName";
+					if (-e $dataFile) {
+						$zip->addFile($dataFile, $fullFileName) unless $usedDataFile{$dataFile};
+					}
 				}
-				else {
-					$dataFile = "$promsPath{peptide}/proj_$projectID/ana_$anaID/$currentAnaFile";
-				}
-				if (-e $dataFile) {
+			} else { # Mascot or PD
+				$fileExt = ($fileFormat eq 'SEQUEST.PDM') ? 'msf' : 'dat';
+				(my $fileName = $dataFile ) =~ s/(?:_[0-9]+)?\..*$//;
+				$fullFileName = "$fileName.$fileExt";
+				my ($dataFile, $dataFileValid);
+				$dataFile = ($fileExt eq 'msf') ? "$promsPath{valid}/multi_ana/proj_$projectID/$fullFileName" : "$promsPath{valid}/ana_$anaID/$fullFileName";
+				$dataFileValid = "$promsPath{peptide}/proj_$projectID/ana_$anaID/$fullFileName";
+
+				if (-e $dataFile || -e $dataFileValid) {
 					my $zipOutFolder = ($item eq 'experiment') ? "$currentSampName/" : "";
-					$zip->addFile($dataFile, $zipOutFolder.$currentAnaFile) unless $usedDataFile{$currentAnaFile};
+					$zip->addFile((-e $dataFile)? $dataFile : $dataFileValid, $zipOutFolder.$dataFile) unless $usedDataFile{$dataFile};
 				}
 			}
-			$worksheet->write($iAna, 0, $expName, $bodyFormat);
-			$worksheet->write($iAna, 1, $currentSampName, $bodyFormat);
-			$worksheet->write($iAna, 2, "$fileName.$fileExt", $bodyFormat);
-			$worksheet->write($iAna, 3, $wiffFile, $bodyFormat);
-			$usedDataFile{$currentAnaFile}=1;
+
+			if($genDesign) {
+				$worksheet->write($iAna, 0, $expName, $bodyFormat);
+				$worksheet->write($iAna, 1, $currentSampName, $bodyFormat);
+				$worksheet->write($iAna, 2, $fullFileName, $bodyFormat);
+				$worksheet->write($iAna, 3, $wiffFile, $bodyFormat);
+			}
+			$usedDataFile{$dataFile}=1;
 			$iAna++;
 		}
 		
-		$worksheet->set_column(0, 0, 26);
-		$worksheet->set_column(1, 1, 26);
-		$worksheet->set_column(2, 2, 13);
-		$worksheet->set_column(3, 3, 13);
+		if($genDesign) {
+			$worksheet->set_column(0, 0, 26);
+			$worksheet->set_column(1, 1, 26);
+			$worksheet->set_column(2, 2, 13);
+			$worksheet->set_column(3, 3, 13);
+			
+			$workbook->close();
 		
-		$workbook->close();
-		
-		$zip->addFile($designFile,"design.xls");
+			$zip->addFile($designFile,"design.xls");
+		}
 		
 		my $archiveFile = $projName;
 		$archiveFile .= ($item eq 'experiment') ? " - $expName.zip" : ($item eq 'sample') ? " - $sampName.zip" : " - Analyses.zip";
@@ -1112,18 +1178,16 @@ sub exportAnalysisFiles {
 		rmdir $exportDir;
 		
 		##<Link to download
-		print qq
-|<BR><BR><BR>
-<INPUT type="button" class="title2" value="Download archive" onclick="window.location='$promsPath{cgi}/exportProteinList.cgi?ACT=download&FILE=$archiveFile'"/>
-</CENTER>
-<SCRIPT type="text/javascript">
-document.getElementById('waitDIV').style.display='none';
-top.promsFrame.selectedAction = 'summary';
-window.location='$promsPath{cgi}/exportProteinList.cgi?ACT=download&FILE=$archiveFile'; // auto-start download
-</SCRIPT>
-</BODY>
-</HTML>
-|;	
+		print qq |
+				<BR><BR><BR>
+				<INPUT type="button" class="title2" value="Download archive" onclick="window.location='$promsPath{cgi}/exportProteinList.cgi?ACT=download&FILE=$archiveFile'"/></CENTER>
+				<SCRIPT type="text/javascript">
+					document.getElementById('waitDIV').style.display='none';
+					top.promsFrame.selectedAction = 'summary';
+					window.location='$promsPath{cgi}/exportProteinList.cgi?ACT=download&FILE=$archiveFile'; // auto-start download
+				</SCRIPT>
+			</BODY>
+		</HTML>|;	
 	}
 	else {
 		print qq
@@ -1593,7 +1657,7 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 			$identQueryStrg.=" ID_IDENTIFIER=$identifierCodes{$code}[3]";
 			$identID2code{$identifierCodes{$code}[3]}=$code;
 		}
-		#my $sthIV=$dbh->prepare("SELECT ID_IDENTIFIER,VALUE FROM PROTEIN P,MASTERPROT_IDENTIFIER MI WHERE P.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN AND ID_PROTEIN=? AND ($identQueryStrg) ORDER BY RANK");
+		#my $sthIV=$dbh->prepare("SELECT ID_IDENTIFIER,VALUE FROM PROTEIN P,MASTERPROT_IDENTIFIER MI WHERE P.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN AND ID_PROTEIN=? AND ($identQueryStrg) ORDER BY IDENT_RANK");
 		#foreach my $protID (keys %listProteins) {
 		#	$sthIV->execute($protID);
 		#	while (my ($identID,$value)=$sthIV->fetchrow_array) {
@@ -1607,7 +1671,7 @@ $numPeptides{$protID}{'CUM_ALL_TYPIC'}+=$numPep if (param('sel_cumPepAll') && pa
 		#$sthIV->finish;
 		my @proteins=keys %listProteins;
 		while (my @subProtIDs=splice(@proteins,0,2000)) {
-			my $sthIV=$dbh->prepare("SELECT ID_PROTEIN,ID_IDENTIFIER,GROUP_CONCAT(VALUE ORDER BY RANK SEPARATOR ',') FROM PROTEIN P,MASTERPROT_IDENTIFIER MI
+			my $sthIV=$dbh->prepare("SELECT ID_PROTEIN,ID_IDENTIFIER,GROUP_CONCAT(VALUE ORDER BY IDENT_RANK SEPARATOR ',') FROM PROTEIN P,MASTERPROT_IDENTIFIER MI
 									WHERE P.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN AND ID_PROTEIN IN (".join(',',@subProtIDs).") AND ($identQueryStrg)
 									GROUP BY ID_PROTEIN,ID_IDENTIFIER");
 			$sthIV->execute;
@@ -2463,6 +2527,15 @@ sub printWaitingMsg {
 }
 
 ####>Revision history<####
+# 2.6.0 [CHANGE] Make the generation of the experiment design file optional (VS 04/02/21)
+# 2.5.9 [ENHANCEMENT] Added export of skyline data file format (VS 02/02/21)
+# 2.5.8 [BUGFIX] Fix undef depth when exporting a list of proteins (VS 22/07/20)
+# 2.5.7 [BUGFIX] Fix analysis file name displaying (VS 08/06/20)
+# 2.5.6 [BUGFIX] Fix path computation for search files export: old analysis (e.g. 2012) with ended validation status did not have their files stored at the same place (VS 17/04/2020)
+# 2.5.5 [ENHANCEMENT] Add possibility to export a specific list of the selected theme (VS 09/04/20)
+# 2.5.4 [ENHANCEMENT] Handles DIA/Spectronaut search files export  (VS 06/04/20)
+# 2.5.4a [BUGFIX] in mapping resource check for Project (PP 03/04/20)
+# 2.5.3 [UPDATE] Changed RANK field to IDENT_RANK for compatibility with MySQL 8 (PP 04/03/20) 
 # 2.5.2 [ENHANCEMENT] Optimized PhosphoRS file parsing for positions probablility (PP 29/01/20)
 # 2.5.1 [CHANGES] Add more robustness to search files export (VS 08/01/20)
 # 2.5.0 [ENHANCEMENT] File(s) stored server-side to prevents server timeout & [FEATURE] List exclusion/restriction for project hierarchy (PP 07/11/19) 

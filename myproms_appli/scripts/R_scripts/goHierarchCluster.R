@@ -39,12 +39,14 @@
 #-------------------------------------------------------------------------------
 args <- commandArgs(TRUE)
 binMatrixFile <- args[1]
+maxGOTerms <- args[2]
+maxProts <- args[3]
 data <- read.table(binMatrixFile,header=T,row.names=1,sep="\t")
 
 d <- dist(data, method = "binary")
 clust.prot <- hclust(d, method="ward.D")
-write.table(data.frame(clust.prot$merge,sort(clust.prot$height)),file="goDendro.txt",quote=FALSE, sep="\t", col.names=NA )
-write.table(data.frame(clust.prot$order,clust.prot$labels[clust.prot$order]), file="goOrder.txt",quote=FALSE, sep="\t", col.names=NA )
+write.table(data.frame(clust.prot$merge,sort(clust.prot$height)),file= paste("goDendro_", maxGOTerms, "_", maxProts, ".txt", sep="") ,quote=FALSE, sep="\t", col.names=NA )
+write.table(data.frame(clust.prot$order,clust.prot$labels[clust.prot$order]), file= paste("goOrder_", maxGOTerms, "_", maxProts, ".txt", sep=""),quote=FALSE, sep="\t", col.names=NA )
 
 ####>Revision history<####
 # 1.0.0 First version (VS 08/01/20)

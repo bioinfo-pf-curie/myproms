@@ -1,11 +1,11 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# launchExploratoryAnalyses.pl       1.0.8                                     #
+# launchExploratoryAnalyses.pl       1.1.0                                     #
 # Authors: P. Poullet, S.Liva (Institut Curie)                                 #
 # Contact: myproms@curie.fr                                                    #
-# Launches PCA and Clustering analyses                                         #
-# called by startExploratoryAnalyses.cgi                                       #
+# Launches data preprocessing, PCA and Clustering analyses                     #
+# called by startExploratoryAnalysis.cgi                                       #
 ################################################################################
 #----------------------------------CeCILL License-------------------------------
 # This file is part of myProMS
@@ -53,20 +53,25 @@ my ($explorID, $anaType, $projectID, $metric, $method, $itemMetric) = @ARGV;
 
 my $explorDIR = "$promsPath{tmp}/exploratory_analysis/$explorID";
 my $explorScript_Rout;
-if($anaType eq "PCA"){
-	system "cd $explorDIR; $promsPath{R}/R CMD BATCH --no-save --no-restore $promsPath{R_scripts}/PCA.R &";
+
+if ($anaType eq 'prepare') {
+	system "cd $explorDIR; $promsPath{R}/R CMD BATCH --no-save --no-restore $promsPath{R_scripts}/prepareExplorAna.R";
+	exit; # watch is handled by parent startExploratoryAnalysis.cgi script
+}
+elsif($anaType eq "PCA"){
+	system "cd $explorDIR; $promsPath{R}/R CMD BATCH --no-save --no-restore $promsPath{R_scripts}/PCA.R";
 	$explorScript_Rout="$explorDIR/PCA.Rout";
 }
 elsif ($anaType eq "PCAPEP") {
-	system "cd $explorDIR; $promsPath{R}/R CMD BATCH --no-save --no-restore $promsPath{R_scripts}/PCA_PEP.R &";
+	system "cd $explorDIR; $promsPath{R}/R CMD BATCH --no-save --no-restore $promsPath{R_scripts}/PCA_PEP.R";
 	$explorScript_Rout="$explorDIR/PCA_PEP.Rout";
 }
 elsif ($anaType eq "cluster") {
-	system "cd $promsPath{tmp}/exploratory_analysis/$explorID; $promsPath{R}/R CMD BATCH --no-save --no-restore '--args $metric $method $itemMetric' $promsPath{R_scripts}/cluster.R &";
+	system "cd $promsPath{tmp}/exploratory_analysis/$explorID; $promsPath{R}/R CMD BATCH --no-save --no-restore '--args $metric $method $itemMetric' $promsPath{R_scripts}/cluster.R";
 	$explorScript_Rout="$explorDIR/cluster.Rout";
 }
 else {
-	system "cd $promsPath{tmp}/exploratory_analysis/$explorID; $promsPath{R}/R CMD BATCH --no-save --no-restore '--args $metric $method $itemMetric' $promsPath{R_scripts}/cluster_PEP.R &";
+	system "cd $promsPath{tmp}/exploratory_analysis/$explorID; $promsPath{R}/R CMD BATCH --no-save --no-restore '--args $metric $method $itemMetric' $promsPath{R_scripts}/cluster_PEP.R";
 	$explorScript_Rout="$explorDIR/cluster_PEP.Rout";
 }
 #my $tempError = "$explorDIR/error.txt";
@@ -140,7 +145,7 @@ my $dbh = &promsConfig::dbConnect('no_user');
 my $sthUpdateStatus = $dbh -> prepare("UPDATE EXPLORANALYSIS SET STATUS=? WHERE ID_EXPLORANALYSIS = ?");
 
 if ($errorText) {
-	open(ERROR,">>$promsPath{tmp}/exploratory_analysis/error_$explorDIR.txt"); # Also detected by parent process startExploratoryAnalyses.cgi => updated as -2	
+	open(ERROR,">>$promsPath{tmp}/exploratory_analysis/error_$explorDIR.txt"); # Also detected by parent process startExploratoryAnalysis.cgi => updated as -2	
 	print ERROR "$errorText";
 	close ERROR;
 	$sthUpdateStatus -> execute(-2, $explorID) or die "Cannot execute: " . $sthUpdateStatus -> errstr(); # just to be safe
@@ -154,6 +159,7 @@ $dbh -> commit;
 $dbh -> disconnect;
 
 #####>Revision history<####
+# 1.1.0 [ENHANCEMENT] Also handles data matrix preprocessing by prepareExplorAna.R (PP 21/02/20)
 # 1.0.8 Improved wait loop (24h max!) and error management (PP 17/04/19)
 # 1.0.7 Uses File::Copy::Recursive::dirmove instead of File::Copy::move (PP 12/10/18)
 # 1.0.6 add peptide pipeline (SL 06/11/17)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 #############################################################################
-# showPepQuantification.cgi        1.10.5                                   #
+# showPepQuantification.cgi        1.10.19                                  #
 # Authors: P. Poullet, G. Arras, M. Le Picard, V. Sabatet (Institut Curie)  #
 # Contact: myproms@curie.fr                                                 #
 # Displays peptide quantification data                                      #
@@ -57,7 +57,7 @@ use File::Path qw(rmtree); # remove_tree
 use File::Copy;
 #exit;
 
-#print header; warningsToBrowser(1); #DEBUG
+# print header; warningsToBrowser(1); #DEBUG
 #######################
 ####>Configuration<####
 #######################
@@ -89,7 +89,7 @@ my $doExport=param('export')? 1 : 0;
 
 #my $act='display';# parameter pass to displayQuantification() javascript method
 my $maxNumProtRT=10; # Maximum number of proteins to print RT values for XIC extractions
-
+my %modificationNames; # Global used by &decodeVarMod to prevent repeated queries to DB
 
 ################
 ####>Main 1<####
@@ -97,22 +97,27 @@ my $maxNumProtRT=10; # Maximum number of proteins to print RT values for XIC ext
 if ($selQuantifID eq 'XIC') {&showLog10Plot($analysisID); exit;}
 
 my ($projectID)=&promsMod::getProjectID($dbh,$selQuantifID,'quantification');
-my ($quantifType,$quantifAnnot,$quantifMethDesc,$selQuantifName,$rawDate,$quantiUserID)=$dbh->selectrow_array("SELECT M.CODE,QUANTIF_ANNOT,M.DES,Q.NAME,UPDATE_DATE,UPDATE_USER FROM QUANTIFICATION Q,QUANTIFICATION_METHOD M WHERE Q.ID_QUANTIFICATION_METHOD=M.ID_QUANTIFICATION_METHOD AND ID_QUANTIFICATION=$selQuantifID");
+my ($quantifMethodID,$quantifType,$quantifAnnot,$quantifMethDesc,$selQuantifName,$quantifFocus,$quantifStatus,$rawDate,$quantiUserID)=$dbh->selectrow_array("SELECT M.ID_QUANTIFICATION_METHOD,M.CODE,QUANTIF_ANNOT,M.DES,Q.NAME,FOCUS,STATUS,UPDATE_DATE,UPDATE_USER FROM QUANTIFICATION Q,QUANTIFICATION_METHOD M WHERE Q.ID_QUANTIFICATION_METHOD=M.ID_QUANTIFICATION_METHOD AND ID_QUANTIFICATION=$selQuantifID");
 my $selQuantifDate=&promsMod::formatDate($rawDate);
 my ($selQuantifUserName)=($quantiUserID)? $dbh->selectrow_array("SELECT USER_NAME FROM USER_LIST WHERE ID_USER='$quantiUserID'") : $quantiUserID;
 $selQuantifUserName='Unknown user' unless $selQuantifUserName;
 my $numAnaUsed=0;
 my %analysisInfo; # for action=summary only
 if ($action eq 'summary') {
+	my ($numAna)=$dbh->selectrow_array("SELECT COUNT(ID_ANALYSIS) FROM ANA_QUANTIFICATION WHERE ID_QUANTIFICATION=$selQuantifID");
 	#my $sthSA=$dbh->prepare("SELECT S.ID_SAMPLE,S.NAME,S.DISPLAY_POS,A.ID_ANALYSIS,A.NAME,A.DISPLAY_POS FROM ANA_QUANTIFICATION AQ,ANALYSIS A,SAMPLE S WHERE AQ.ID_ANALYSIS=A.ID_ANALYSIS AND A.ID_SAMPLE=S.ID_SAMPLE AND AQ.ID_QUANTIFICATION=$selQuantifID");
-	my $sthSA=$dbh->prepare("SELECT S.ID_SAMPLE,S.NAME,S.DISPLAY_POS,A.ID_ANALYSIS,A.NAME,A.DISPLAY_POS,COUNT(AP.ID_PROTEIN)
-								FROM ANA_QUANTIFICATION AQ,ANALYSIS A,SAMPLE S,ANALYSIS_PROTEIN AP
-								WHERE AQ.ID_ANALYSIS=A.ID_ANALYSIS AND A.ID_SAMPLE=S.ID_SAMPLE AND AP.ID_ANALYSIS=A.ID_ANALYSIS AND AQ.ID_QUANTIFICATION=$selQuantifID AND VISIBILITY=2
-								GROUP BY A.ID_ANALYSIS");
+	my $sthSA=($numAna <= 20)? $dbh->prepare("SELECT S.ID_SAMPLE,S.NAME,S.DISPLAY_POS,A.ID_ANALYSIS,A.NAME,A.DISPLAY_POS,COUNT(AP.ID_PROTEIN),IS_REFERENCE
+									FROM ANA_QUANTIFICATION AQ,ANALYSIS A,SAMPLE S,ANALYSIS_PROTEIN AP
+									WHERE AQ.ID_ANALYSIS=A.ID_ANALYSIS AND A.ID_SAMPLE=S.ID_SAMPLE AND AP.ID_ANALYSIS=A.ID_ANALYSIS AND AQ.ID_QUANTIFICATION=$selQuantifID AND VISIBILITY=2
+									GROUP BY A.ID_ANALYSIS") : # too slow when many analyses
+								$dbh->prepare("SELECT S.ID_SAMPLE,S.NAME,S.DISPLAY_POS,A.ID_ANALYSIS,A.NAME,A.DISPLAY_POS,-1,IS_REFERENCE
+									FROM ANA_QUANTIFICATION AQ,ANALYSIS A,SAMPLE S
+									WHERE AQ.ID_ANALYSIS=A.ID_ANALYSIS AND A.ID_SAMPLE=S.ID_SAMPLE AND AQ.ID_QUANTIFICATION=$selQuantifID"); # faster when many analyses
 	$sthSA->execute;
-	while (my ($sampID,$sampName,$sampPos,$anaID,$anaName,$anaPos,$numProt)=$sthSA->fetchrow_array) {
-		#$numAna++;
-		$analysisInfo{HIERARCHY}{$sampID}{$anaID}=$numProt;
+	while (my ($sampID,$sampName,$sampPos,$anaID,$anaName,$anaPos,$numProt,$isReference)=$sthSA->fetchrow_array) {
+		$analysisID=$anaID unless $analysisID;
+		$isReference=0 unless $isReference;
+		@{$analysisInfo{HIERARCHY}{$sampID}{$anaID}}=($numProt,$isReference);
 		@{$analysisInfo{SAMPLE}{$sampID}}=($sampPos,$sampName);
 		@{$analysisInfo{ANALYSIS}{$anaID}}=($anaPos,$anaName);
 		$numAnaUsed++;
@@ -125,12 +130,12 @@ my (%quantifParamInfo, %anaQuantifList, %quantificationTypes, %methodList, %cond
 
 my (@anaOrder, %peptideInAna, %listAna); # Stores analysis data
 my (%selMGTopProt, %trueMGTopProt, %maxProtMatch, %idtoidentifier, %protInfo, %posBeg, %pepProtPos, %protMG); # Stores proteins data
-my (%pepAll, %pepInfo, %peptideQuant, %quantifData, %peptideFragments, %peptideSets, %labeledPeptideSets, %peptideMrobs, %peptideRT, %peptideScore, %pepDataSource); # Stores peptides data , %nbQuantifPeptides
+my (%pepAll, %pepInfo, %peptideQuant, %quantifData, %peptideFragments, %peptideSets, %labeledPeptideSets, %peptideMrobs, %peptideRT, %peptideScore, %pepDataSource, %isGhost); # Stores peptides data , %nbQuantifPeptides
 
 my $title=($numAnaUsed==1)? 'Single-Analysis Peptide Quantification' : 'Multi-Analysis Quantification';
 my $isTrace=0; # ($quantifAnnot =~ /TRACES=1/)? 1 : 0; # To know if some XIC_TRACES were computed ### DISABLED until call to PEPTIDE_QUANTIFICATION table is replaced (PP 27/06/18) ###
 my $xicSoftCode;
-my $xicSoftVersionStrg=' (Unknown version)';
+my $xicSoftVersionStrg = ' (Unknown version)';
 #$quantifAnnot=~s/::SOFTWARE=([^:|;]+);?\d*\.*\d*//; # remove software info for back compatibility
 $quantifAnnot=~s/::SOFTWARE=([^:|;]+);?([\d*\.?]*)//; # change on 2017/11/03 to deal with software versions with multiple dots like 2.1.0.81
 
@@ -158,17 +163,19 @@ if ($quantifAnnot=~/::CORRECTION=([^:]+)/) {
 else {$dataCorrection{SRC}=0;}
 
 ###>Fetching quantification parameters
-my $sthQP2=$dbh->prepare("SELECT ID_QUANTIF_PARAMETER,P.CODE FROM QUANTIFICATION Q,QUANTIFICATION_METHOD M,QUANTIFICATION_PARAMETER P WHERE Q.ID_QUANTIFICATION_METHOD=M.ID_QUANTIFICATION_METHOD AND M.ID_QUANTIFICATION_METHOD=P.ID_QUANTIFICATION_METHOD AND ID_QUANTIFICATION=$selQuantifID");
+# my $sthQP2=$dbh->prepare("SELECT ID_QUANTIF_PARAMETER,P.CODE FROM QUANTIFICATION Q,QUANTIFICATION_METHOD M,QUANTIFICATION_PARAMETER P WHERE Q.ID_QUANTIFICATION_METHOD=M.ID_QUANTIFICATION_METHOD AND M.ID_QUANTIFICATION_METHOD=P.ID_QUANTIFICATION_METHOD AND ID_QUANTIFICATION=$selQuantifID");
+my $sthQP2=$dbh->prepare("SELECT ID_QUANTIF_PARAMETER,CODE FROM QUANTIFICATION_PARAMETER WHERE ID_QUANTIFICATION_METHOD=$quantifMethodID");
 $sthQP2->execute;
 while (my ($paramID,$paramCode)=$sthQP2->fetchrow_array) {
 	$quantifParamInfo{"$paramCode"}=$paramID;
 }
 $sthQP2->finish;
 
-if ($action eq 'delete') {&deleteQuantification; exit;} # only for label-based 2ndary quantifications
-elsif ($action eq 'ajaxXicTrace') {&ajaxXicTrace($selQuantifID); exit;}
+#if ($action eq 'delete') {&deleteQuantification; exit;} # only for label-based 2ndary quantifications
+if ($action eq 'ajaxXicTrace') {&ajaxXicTrace($selQuantifID); exit;}
 elsif ($action eq 'ajaxShowPepTDAGraph'){&ajaxShowPepTDAGraph; exit;}
 elsif ($action eq 'ajaxShowPepTDAList'){&ajaxShowPepTDAList; exit;}
+elsif ($action eq 'ajaxDistributionPep'){&ajaxDistributionPep; exit;}
 elsif ($action eq 'edit') { ###>Edition submission<###
 	my $qName=$dbh->quote(param('name'));
 	$dbh->do("UPDATE QUANTIFICATION SET NAME=$qName WHERE ID_QUANTIFICATION=$selQuantifID");
@@ -194,13 +201,14 @@ if ($call eq 'ana') {
 	$sthAQ->finish;
 }
 else { #quanti
-	my ($methodID,$methodName,$methodCode)=$dbh->selectrow_array("SELECT M.ID_QUANTIFICATION_METHOD,M.NAME,M.CODE FROM QUANTIFICATION Q,QUANTIFICATION_METHOD M WHERE Q.ID_QUANTIFICATION_METHOD=M.ID_QUANTIFICATION_METHOD AND Q.ID_QUANTIFICATION=$selQuantifID");
-	@{$methodList{$methodID}}=($methodName,$methodCode);
-	($analysisID,@{$anaQuantifList{$selQuantifID}})=$dbh->selectrow_array("SELECT A.ID_ANALYSIS,Q.NAME,Q.FOCUS,STATUS,M.ID_QUANTIFICATION_METHOD FROM ANA_QUANTIFICATION A,QUANTIFICATION Q,QUANTIFICATION_METHOD M WHERE A.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION_METHOD=M.ID_QUANTIFICATION_METHOD AND Q.ID_QUANTIFICATION=$selQuantifID LIMIT 0,1");
-	# $analysisID = first matching analysis
+	# my ($methodID,$methodName,$methodCode)=$dbh->selectrow_array("SELECT M.ID_QUANTIFICATION_METHOD,M.NAME,M.CODE FROM QUANTIFICATION Q,QUANTIFICATION_METHOD M WHERE Q.ID_QUANTIFICATION_METHOD=M.ID_QUANTIFICATION_METHOD AND Q.ID_QUANTIFICATION=$selQuantifID");
+	# @{$methodList{$methodID}}=($methodName,$methodCode);
+	# ($analysisID,@{$anaQuantifList{$selQuantifID}})=$dbh->selectrow_array("SELECT A.ID_ANALYSIS,Q.NAME,Q.FOCUS,STATUS,M.ID_QUANTIFICATION_METHOD FROM ANA_QUANTIFICATION A,QUANTIFICATION Q,QUANTIFICATION_METHOD M WHERE A.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND Q.ID_QUANTIFICATION_METHOD=M.ID_QUANTIFICATION_METHOD AND Q.ID_QUANTIFICATION=$selQuantifID LIMIT 1");
+	@{$methodList{$quantifMethodID}}=($selQuantifName,$quantifType);
+	if ($action eq 'summary') {($analysisID)=$dbh->selectrow_array("SELECT ID_ANALYSIS FROM ANA_QUANTIFICATION WHERE ID_QUANTIFICATION=$selQuantifID LIMIT 1");}
+	@{$anaQuantifList{$selQuantifID}}=($selQuantifName,$quantifFocus,$quantifStatus,$quantifMethodID);
 }
-
-&getAnalysisDataSources($analysisID, $projectID, \%sourceFiles);
+# &getAnalysisDataSources($analysisID, $projectID, \%sourceFiles);
 
 $dbh->disconnect if $action eq 'select'; #'display'; # $selQuantifID;
 
@@ -240,7 +248,7 @@ if ($doExport) {
 			number =>			$workbook->add_format(size=>10,align=>'center',valign=>'top',border=>1),
 			#mergeNumber =>		$workbook->add_format(size=>10,align=>'center',valign=>'top',border=>1),
 			number1d =>			$workbook->add_format(size=>10,align=>'center',valign=>'top',num_format=>'0.0',border=>1),
-#mergeNumber1d =>	$workbook->add_format(size=>10,align=>'center',valign=>'top',num_format=>'0.0',border=>1)
+	#mergeNumber1d =>	$workbook->add_format(size=>10,align=>'center',valign=>'top',num_format=>'0.0',border=>1)
 			);
 
 	print header(-type=>"application/vnd.ms-excel",-attachment=>"Peptide_quantification_$timeStamp1.xls");
@@ -249,35 +257,41 @@ if ($doExport) {
 else {
 	print header(-'content-encoding'=>'no',-charset=>'utf-8',-cache_control=>"no-cache") ;
 	warningsToBrowser(1); # writes PERL warnings as HTML comments <!-- --> must be activated after header
-	print qq |
-	<HTML>
-		<HEAD>
-			<TITLE>Peptide Quantification Results</TITLE>
-			<LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
-			<STYLE type="text/css">
-				.TD {font-weight:normal;}
-				.TH {font-weight:bold;}
-				.LINK {cursor:pointer;}
-				.popup {z-index:999;background-color:#FFFFFF;border:solid 3px #999999;padding:5px;position:absolute;display:none;box-shadow:10px 10px 20px #808080;}
-			</STYLE>
-			<SCRIPT src="$promsPath{html}/js/Raphael/raphael.js"></SCRIPT>
-			<SCRIPT src="$promsPath{html}/js/local/chartLibrary2.js"></SCRIPT>
-			<SCRIPT src="$promsPath{html}/js/local/heatMap.js"></SCRIPT>
-			<SCRIPT src="$promsPath{html}/js/other/canvg.js"></SCRIPT>
-			<SCRIPT src="$promsPath{html}/js/other/svgfix-0.2.js"></SCRIPT>
-			<SCRIPT src="$promsPath{html}/js/other/rgbcolor.js"></SCRIPT>
-			
-			<SCRIPT LANGUAGE="JavaScript">
+	print qq
+|<HTML>
+<HEAD>
+<TITLE>Peptide Quantification Results</TITLE>
+<LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
+<STYLE type="text/css">
+	.TD {font-weight:normal;}
+	.TH {font-weight:bold;}
+	.LINK {cursor:pointer;}
+	.popup {z-index:999;background-color:#FFFFFF;border:solid 3px #999999;padding:5px;position:absolute;display:none;box-shadow:10px 10px 20px #808080;}
+</STYLE>
+|;
+	if ($action ne 'summary') {
+		print qq
+|<SCRIPT src="$promsPath{html}/js/Raphael/raphael.js"></SCRIPT>
+<SCRIPT src="$promsPath{html}/js/local/chartLibrary2.js"></SCRIPT>
+<SCRIPT src="$promsPath{html}/js/local/heatMap.js"></SCRIPT>
+<SCRIPT src="$promsPath{html}/js/other/canvg.js"></SCRIPT>
+<SCRIPT src="$promsPath{html}/js/other/svgfix-0.2.js"></SCRIPT>
+<SCRIPT src="$promsPath{html}/js/other/rgbcolor.js"></SCRIPT>
+|;
+	}
+	print qq
+|<SCRIPT type="text/javascript">
 |;
 	&promsMod::popupInfo();
 	if ($call eq 'ana') {
 		print qq
 |function displayQuantification(quantifInfoStrg,action) {
-	var quantifInfo=quantifInfoStrg.split(':'); // focus:quantifID
-	var focus=quantifInfo[0], quantifID=quantifInfo[1];
-	if (quantifID==0) {action='select';}
-	if (action=='delete' && !confirm('Delete selected quantification?')) {return;}
-	if (focus=='peptide') {
+	var [focus,quantifID]=quantifInfoStrg.split(':'); // focus:quantifID
+	if (quantifID*1==0) {
+		window.location="$promsPath{cgi}/showProtQuantification.cgi?id_ana=$analysisID&CALL=ana";
+	}
+	else if (action=='delete' && !confirm('Delete selected quantification?')) {return;} // obsolete
+	else if (focus=='peptide') {
 		window.location="$promsPath{cgi}/showPepQuantification.cgi?CALL=$call&id_ana=$analysisID&id_quantif="+quantifID+"&ACT="+action;
 	}
 	else {
@@ -292,7 +306,6 @@ else {
 	top.openProtWindow(winLocation);
 }
 
-
 function updateSettings(act) {
 	if (act=='more') {
 		document.getElementById('moreSettings').style.display='none';
@@ -305,6 +318,75 @@ function updateSettings(act) {
 		document.getElementById('advancedSetDIV').style.display='none';
 	}
 }
+
+function getElementPosition(e) {
+	var left=0;
+	var top=0;
+	while (e.offsetParent != undefined && e.offsetParent != null) { // Adding parent item position
+		left += e.offsetLeft + (e.clientLeft != null ? e.clientLeft : 0);
+		top += e.offsetTop + (e.clientTop != null ? e.clientTop : 0);
+		e = e.offsetParent;
+	}
+	return [top,left];
+}
+
+function displayGraph(button, graph) {  // Display graph for MassChroQ filter on peptides retention time dispersion
+	var imageStrg;
+	imageStrg = "<TABLE cellpadding=0 cellspacing=0>";
+	imageStrg += "<TR>";
+	imageStrg += "<TH class=\\"title2\\">Peptides RT dispersion";
+	imageStrg += "&nbsp;&nbsp;";
+	imageStrg += "<INPUT type=\\"button\\" class=\\"font11\\" value=\\" Close \\" onclick=\\"document.getElementById('displayDIV').style.display='none'\\">";
+	imageStrg += "</TH>";
+	imageStrg += "</TR>";
+	imageStrg += "<TR>";
+	imageStrg += "<TD><IMG src='"+graph+"' width=480 heigth=480></TD>";
+	imageStrg += "</TR>";
+
+	var infoDiv = document.getElementById('infoDIV');
+	infoDiv.innerHTML = imageStrg;
+	var [top,left] = getElementPosition(button);
+	top += 30;
+	left -= 230;
+	if (left < 0) {left = 0;}
+	var displayDiv = document.getElementById('displayDIV');
+	displayDiv.style.left = left + 'px';
+	displayDiv.style.top = top + 'px';
+	displayDiv.style.display = 'block';
+}
+
+function displayFilterInfo(button, paramsArray, valuesArray) {  // Display information and RT filter parameters 
+	var filterInfoStrg;
+	filterInfoStrg = "<B>Information about the peptides RT filter&nbsp;&nbsp;</B>";
+	filterInfoStrg += "<INPUT type=\\"button\\" class=\\"font11\\" value=\\" Close \\" onclick=\\"document.getElementById('displayDIV').style.display='none'\\">";
+	filterInfoStrg += "<BR>";
+	filterInfoStrg += "<TABLE cellpadding=0 cellspacing=0>";
+
+	var colors = ["\\$darkColor", "\\$lightColor"];
+	for (let i = 0; i < paramsArray.length; i++) {
+		filterInfoStrg += "<TR>";
+		filterInfoStrg += "<TH bgcolor=" + colors[i % 2] + " align=left nowrap>&nbsp;";
+		filterInfoStrg += paramsArray[i];
+		filterInfoStrg += ":&nbsp;";
+		filterInfoStrg += "</TH>";
+		filterInfoStrg += "<TD bgcolor=" + colors[i % 2] + ">&nbsp;";
+		filterInfoStrg += valuesArray[i];
+		filterInfoStrg += "&nbsp;</TD>";
+		filterInfoStrg += "</TR>";
+	}
+	filterInfoStrg += "</TABLE>";
+
+	var infoDiv = document.getElementById('infoDIV');
+	infoDiv.innerHTML = filterInfoStrg;
+	var [top,left] = getElementPosition(button);
+	top += 30;
+	left -= 230;
+	if (left < 0) {left = 0;}
+	var displayDiv = document.getElementById('displayDIV');
+	displayDiv.style.left = left + 'px';
+	displayDiv.style.top = top + 'px';
+	displayDiv.style.display = 'block';
+} 
 
 function exportQuanti() {
 	window.location="$promsPath{cgi}/showPepQuantification.cgi?CALL=$call&id_ana=$analysisID&id_quantif=$selQuantifID&ACT=$action&export=1";
@@ -322,17 +404,17 @@ function ajaxDrawXICData(e,pepID) {
 	displayDiv.style.top = divY + 'px';
 	displayDiv.style.display='block';
 
-	//wait image
+	// wait image
 	var infoDIV=document.getElementById('infoDIV');
 	infoDIV.innerHTML="<BR><BR><IMG src=\\"$promsPath{images}/scrollbarGreen.gif\\"><BR><BR>";
 
-	//If XHR object already exists, the request is canceled & the object is deleted
+	// If XHR object already exists, the request is canceled & the object is deleted
 	if(XHR && XHR.readyState != 0){
 		XHR.abort();
 		delete XHR;
 	}
 
-	//Creation of the XMLHTTPRequest object
+	// Creation of the XMLHTTPRequest object
 	XHR = getXMLHTTP();
 	if (!XHR) {
 		return false;
@@ -352,10 +434,11 @@ function ajaxDrawXICData(e,pepID) {
 
 function ajaxShowGraphicPepTDA (protID) {
 	if(document.getElementById('TDAButtonGraph'+protID).value=='Show graphic') {
-		document.getElementById('listTDA'+protID).style.display='none';
-		document.getElementById('graphPepTDA'+protID).style.display='';
 		document.getElementById('TDAButtonGraph'+protID).value='Hide graphic';
 		document.getElementById('TDAButtonList'+protID).value='Show list';
+		
+		document.getElementById('graphPepTDA'+protID).style.display='';
+		document.getElementById('listTDA'+protID).style.display='none';
 		
 		if (protID && document.getElementById('graphPepTDA' + protID).innerHTML == ""){
 			document.getElementById('graphPepTDA'+protID).innerHTML="<BR><BR><IMG src=\\"$promsPath{images}/scrollbarGreen.gif\\"><BR><BR>";
@@ -368,23 +451,49 @@ function ajaxShowGraphicPepTDA (protID) {
 			}
 			XHR.send(null);
 		}
-	}else if(document.getElementById('TDAButtonGraph'+protID).value=='Hide graphic'){
+	} else if(document.getElementById('TDAButtonGraph'+protID).value=='Hide graphic'){
 		document.getElementById('graphPepTDA'+protID).style.display='none';
 		document.getElementById('TDAButtonGraph'+protID).value='Show graphic';
+	}
+}
+
+function ajaxDistributionPep(protID) {
+	if(document.getElementById('ButtonDistribution'+protID).value=='Show distribution'){
+		document.getElementById('ButtonList'+protID).value='Show list';
+		document.getElementById('ButtonDistribution'+protID).value='Hide distribution';
+		
+		document.getElementById('list'+protID).style.display='none';
+		document.getElementById('distribution'+protID).style.display='';
+		
+		if (protID && document.getElementById('distribution'+protID).innerHTML == ""){
+			document.getElementById('distribution'+protID).innerHTML="<BR><BR><IMG src=\\"$promsPath{images}/scrollbarGreen.gif\\"><BR><BR>";
+			var XHR = getXMLHTTP();
+			XHR.open("GET", "$promsPath{cgi}/showPepQuantification.cgi?id_quantif=$selQuantifID&ACT=ajaxDistributionPep&id_protein="+protID, true);
+			XHR.onreadystatechange=function() {
+				if (XHR.readyState==4 && XHR.responseText) {
+					document.getElementById('distribution'+protID).innerHTML= (XHR.responseText) ? "<img src='" + XHR.responseText + "' alt='boxplot peptide intensities'/>" : "Error: Peptides intensities boxplot could not be created";
+				}
+			}
+			XHR.send(null);
+		}
+	}else if(document.getElementById('ButtonDistribution'+protID).value=='Hide distribution'){
+		document.getElementById('distribution'+protID).style.display='none';
+		document.getElementById('ButtonDistribution'+protID).value='Show distribution';
 	}
 }
 
 function ajaxShowListPepTDA(protID, anaID = ''){
 	if(document.getElementById('TDAButtonList'+protID).value=='Show list'){
 		document.getElementById('TDAButtonGraph'+protID).value='Show graphic';
+		document.getElementById('TDAButtonList'+protID).value='Hide list';
+		
 		document.getElementById('graphPepTDA'+protID).style.display='none';
 		document.getElementById('listTDA'+protID).style.display='';
-		document.getElementById('TDAButtonList'+protID).value='Hide list';
 		
 		if (protID && document.getElementById('listTDA'+protID).innerHTML == ""){
 			document.getElementById('listTDA'+protID).innerHTML="<BR><BR><IMG src=\\"$promsPath{images}/scrollbarGreen.gif\\"><BR><BR>";
 			var XHR = getXMLHTTP();
-			XHR.open("GET", "$promsPath{cgi}/showPepQuantification.cgi?id_quantif=$selQuantifID&ACT=ajaxShowPepTDAList&id_protein="+protID+"&id_analysis="+anaID, true);
+			XHR.open("GET", "$promsPath{cgi}/showPepQuantification.cgi?id_quantif=$selQuantifID&ACT=ajaxShowPepTDAList&id_protein="+protID, true);
 			XHR.onreadystatechange=function() {
 				if (XHR.readyState==4 && XHR.responseText) {
 					document.getElementById('listTDA'+protID).innerHTML=XHR.responseText;
@@ -395,6 +504,19 @@ function ajaxShowListPepTDA(protID, anaID = ''){
 	}else if(document.getElementById('TDAButtonList'+protID).value=='Hide list'){
 		document.getElementById('listTDA'+protID).style.display='none';
 		document.getElementById('TDAButtonList'+protID).value='Show list';
+	}
+}
+
+function showListPep(protID) {
+	if(document.getElementById('ButtonList'+protID).value=='Show list'){
+		document.getElementById('ButtonList'+protID).value='Hide list';
+		document.getElementById('ButtonDistribution'+protID).value='Show distribution';
+		
+		document.getElementById('list'+protID).style.display='';
+		document.getElementById('distribution'+protID).style.display='none';
+	} else if(document.getElementById('ButtonList'+protID).value=='Hide list'){
+		document.getElementById('list'+protID).style.display='none';
+		document.getElementById('ButtonList'+protID).value='Show list';
 	}
 }
 
@@ -475,7 +597,6 @@ function reloadImage(imgID){
 |;
 }
 
-
 #print "*** ACTION=$action ***<BR>\n";
 
 ################
@@ -521,23 +642,22 @@ if ($call eq 'ana' && !$doExport) {
 		}
 		print "</OPTGROUP>\n";
 	}
-	my $notDeletable=1;
-	if ($selQuantifID) {
-		my ($methodCode)=$dbh->selectrow_array("SELECT CODE FROM QUANTIFICATION Q,QUANTIFICATION_METHOD M WHERE Q.ID_QUANTIFICATION_METHOD=M.ID_QUANTIFICATION_METHOD AND Q.ID_QUANTIFICATION=$selQuantifID");
-		#if (($methodCode =~ /SWATH/ && $xicSoftCode eq 'PKV') || $xicSoftCode eq 'SKY' || $xicSoftCode eq 'OS') {#}	# SWATH PKV is never deletable
-		if (($methodCode=~/SWATH/ && $xicSoftCode eq 'PKV') || $xicSoftCode=~/^(SKY|OS|MQ)$/) {
-			$notDeletable=1;
-		}
-		elsif ($methodCode !~ /SILAC|ITRAQ|TMT/ && $xicSoftCode ne 'PD') { # SILAC & ITRAQ & label-free PD are never deletable
-			($notDeletable)=$dbh->selectrow_array("SELECT 1 FROM PARENT_QUANTIFICATION WHERE ID_PARENT_QUANTIFICATION=$selQuantifID LIMIT 0,1");
-		}
-	}
-	my $disabDeleteStrg=($notDeletable)? ' disabled' : '';
+	#my $notDeletable=1;
+	#if ($selQuantifID) {
+	#	my ($methodCode)=$dbh->selectrow_array("SELECT CODE FROM QUANTIFICATION Q,QUANTIFICATION_METHOD M WHERE Q.ID_QUANTIFICATION_METHOD=M.ID_QUANTIFICATION_METHOD AND Q.ID_QUANTIFICATION=$selQuantifID");
+	#	#if (($methodCode =~ /SWATH/ && $xicSoftCode eq 'PKV') || $xicSoftCode eq 'SKY' || $xicSoftCode eq 'OS') {#}	# SWATH PKV is never deletable
+	#	if ($methodCode=~/SWATH|DIA/ || $xicSoftCode=~/SKY|OS|MQ|SPC/) {
+	#		$notDeletable=1;
+	#	}
+	#	elsif ($methodCode !~ /SILAC|ITRAQ|TMT/ && $xicSoftCode ne 'PD') { # SILAC & ITRAQ & label-free PD are never deletable
+	#		($notDeletable)=$dbh->selectrow_array("SELECT 1 FROM PARENT_QUANTIFICATION WHERE ID_PARENT_QUANTIFICATION=$selQuantifID LIMIT 0,1");
+	#	}
+	#}
+	#my $disabDeleteStrg=($notDeletable)? ' disabled' : '';
 
 	print qq
 |</SELECT></TD>
 <TD><INPUT type="button" value="Edit" onclick="document.getElementById('editDIV').style.display='block'"/></TD>
-<TD bgcolor="#DD0000"><INPUT type="button" value="Delete" style="color:#DD0000" onclick="displayQuantification('peptide:$selQuantifID','delete')"$disabDeleteStrg/></TD>
 </TR></TABLE><BR>
 |;
 
@@ -577,6 +697,7 @@ print qq
 my ($labelStrg,@labelInfo)=split('::',$quantifAnnot);
 my ($labelType)=($labelStrg)? ($labelStrg=~/LABEL=(.+)/) : ('FREE');
 $labelType=uc($labelType); # iTRAQ -> ITRAQ
+my $multiAnaQuanti = ($call eq 'quanti') ? 1 : 0; # 'quanti' => Multi Analysis Quantification || 'ana' => Analysis level quantification
 
 
 #################################
@@ -593,8 +714,7 @@ if ($labelType eq 'FREE') {
 	#}
 
 	my ($viewProtanaID, $count, $totAnalyses, $numAna);
-	my $multiAnaQuanti = ($call eq 'quanti') ? 1 : 0; # 'quanti' => Multi Analysis Quantification || 'ana' => Analysis level quantification
-	my $shouldLoadData = ($quantifType =~ /^(SWATH|TDA|DIA)$/ || $xicSoftCode eq 'SKY') ? 0 : 1;
+	my $shouldLoadData = ($quantifType =~ /SWATH|TDA|DIA/ || $xicSoftCode =~ /SKY|SPC/) ? 0 : 1;
 	my $nbTransition   = 1;
 	
 	if ($action ne 'summary') {
@@ -611,7 +731,7 @@ if ($labelType eq 'FREE') {
 		$totAnalyses = scalar @anaOrder;
 		$numAna = 0;
 		foreach my $anaID (@anaOrder) {
-			my $anaName = $listAna{$anaID};
+			#my $anaName = $listAna{$anaID};
 			$viewProtanaID=$anaID unless $viewProtanaID;# Arbitrary chose an ID_ANALYSIS to print the protein sequence!
 			$numAna++;
 	
@@ -629,14 +749,14 @@ if ($labelType eq 'FREE') {
 		
 		if (!$multiAnaQuanti) {
 			## Fetching peptide info & grouping isoforms (+/- labeled)
-			my $sthPI=$dbh->prepare("SELECT PPA.ID_PROTEIN,P.ID_PEPTIDE,PEP_SEQ,GROUP_CONCAT(PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),MR_OBS,ELUTION_TIME,CHARGE,GROUP_CONCAT(DISTINCT(ABS(PEP_BEG)) ORDER BY ABS(PEP_BEG) SEPARATOR ','),P.SCORE,DATA
+			my $sthPI=$dbh->prepare("SELECT PPA.ID_PROTEIN,P.ID_PEPTIDE,PEP_SEQ,GROUP_CONCAT(PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),MR_OBS,ELUTION_TIME,CHARGE,GROUP_CONCAT(DISTINCT(ABS(PEP_BEG)) ORDER BY ABS(PEP_BEG) SEPARATOR ','),P.SCORE,DATA,P.VALID_STATUS
 										FROM PEPTIDE P
 										LEFT JOIN PEPTIDE_MODIFICATION PM ON P.ID_PEPTIDE=PM.ID_PEPTIDE
 										INNER JOIN PEPTIDE_PROTEIN_ATTRIB PPA ON P.ID_PEPTIDE=PPA.ID_PEPTIDE
 										INNER JOIN ANALYSIS_PROTEIN AP ON AP.ID_ANALYSIS=PPA.ID_ANALYSIS AND AP.ID_PROTEIN=PPA.ID_PROTEIN AND AP.VISIBILITY=2
 										WHERE P.ID_ANALYSIS=$analysisID GROUP BY P.ID_PEPTIDE,PPA.ID_PROTEIN"); # ORDER BY PEP_SEQ,CHARGE
 			$sthPI->execute;
-			while (my ($protID,$pepID,$pepSeq,$modCode,$mrObs,$rtSc,$charge,$beg,$score,$pepData)=$sthPI->fetchrow_array) {
+			while (my ($protID,$pepID,$pepSeq,$modCode,$mrObs,$rtSc,$charge,$begStrg,$score,$pepData,$pepStatus)=$sthPI->fetchrow_array) {
 				next unless $protMG{$protID};
 				my $identifier = $idtoidentifier{$protID};
 				my $matchGroup=$protMG{$protID};
@@ -645,11 +765,11 @@ if ($labelType eq 'FREE') {
 				$pepDataSource{$pepID} = $sourceFiles{$analysisID}{$srcRk}; # use for export only
 				
 				#my $varModStrg=&promsMod::toStringVariableModifications($dbh,'PEPTIDE',$pepID,$analysisID,$pepSeq);
-				my $varModStrg = ($modCode) ? ' + '.&promsMod::decodeVarMod($dbh, $pepSeq, $modCode) : '';
-				
-				my @beg = split(/,/,$beg);
-				@{$posBeg{"$pepSeq$varModStrg"}} = (\@beg, $mrObs);
-				$pepProtPos{$protID}{$pepID} = $beg; # prot ID ; pepID ; beg
+				my $varModStrg = ($modCode) ? ' + '.&promsMod::decodeVarMod($dbh,$pepSeq,$modCode,\%modificationNames) : '';
+				$isGhost{$pepID}=($pepStatus)? 0 : 1;		
+				my @beg = split(/,/,$begStrg);
+				@{$posBeg{$protID}{"$pepSeq$varModStrg"}} = (\@beg, $mrObs);
+				$pepProtPos{$protID}{$pepID} = $beg[0]; # prot ID ; pepID ; beg
 	
 				$peptideMrobs{$pepID} = ($mrObs) ? $mrObs : '-';
 				$peptideScore{$pepID} = ($score) ? $score : 0; # ghost peptides don't have scores
@@ -672,12 +792,10 @@ if ($labelType eq 'FREE') {
 			}
 			$sthPI->finish;
 		}
-		
-	
 	}
 	###>Displaying summary<###
 	print qq
-|<SCRIPT LANGUAGE="Javascript">document.getElementById('waitDIV').style.display='none';</SCRIPT>| if ($action ne 'summary' || !$doExport);
+|<SCRIPT type="text/javascript">document.getElementById('waitDIV').style.display='none';</SCRIPT>| if ($action ne 'summary' || !$doExport);
 	
 	&displayPeptideSummary($labelType,$xicSoftCode);
 
@@ -698,7 +816,8 @@ if ($labelType eq 'FREE') {
 								'refPeptideSets'=>\%peptideSets,
 								#'refPeptideRT'=>\%peptideRT,
 								'refPeptideFragments'=>\%peptideFragments,
-								'nbTransition'=>$nbTransition);
+								'nbTransition'=>$nbTransition
+								);
 			
 			if($multiAnaQuanti) {
 				$exportParameters{'refProtMatch'}  = \%maxProtMatch;
@@ -707,7 +826,7 @@ if ($labelType eq 'FREE') {
 				$exportParameters{'refAnaOrder'}   = \@anaOrder;
 			} else {
 				$exportParameters{'refProtMatch'}  = \%selMGTopProt;
-				$exportParameters{'refPepProtPos'} = \%pepProtPos,
+				$exportParameters{'refPepProtPos'} = \%pepProtPos;
 			}
 			
 			&exportProteinList(\%exportParameters);
@@ -719,16 +838,16 @@ if ($labelType eq 'FREE') {
 		my $colName = ($quantifType eq 'XIC') ? "XIC" : "SI";
 		my $paramCode = ($quantifType eq 'XIC') ? "XIC_AREA" : "SIN_SI";
 		my $printMCQ_RT = ($xicSoftCode eq 'MCQ' && scalar keys %selMGTopProt <= $maxNumProtRT) ? 1 : 0;
-	
+		print qq |<SPAN>Peptide ions identified by MSMS, <FONT class="virtualProt">Peptide ions rescued by Match Between or Within Runs (MBWR).</FONT></SPAN><BR><BR>| if scalar keys %isGhost;
 		foreach my $matchGroup (sort{$a<=>$b} keys %selMGTopProt) { # ALIAS,PROT_DES,MW,PROT_LENGTH,ORGANISM //,NUM_PEP,NUM_MATCH,SCORE,CONF_LEVEL,PEP_COVERAGE,PEP_SPECIFICITY
 			my ($protID, $alias, $des, $mw, $length, $org) = @{$selMGTopProt{$matchGroup}};
 			my $colSpan = 10; # last col is empty for longer prot title
+			my $showListArgs = "$protID";
+			$showListArgs .= ", ".$anaOrder[0] if (!$multiAnaQuanti || scalar @anaOrder == 1);
 	
 			## Displaying protein header
 			if (!$shouldLoadData) { # TDA/DIA/Skyline XIC
 				my $graphButtonDisplay = ($totAnalyses > 1) ? "" : "none";
-				my $showListArgs = "$protID";
-				$showListArgs .= ", ".$anaOrder[0] if (!$multiAnaQuanti || scalar @anaOrder == 1);
 				
 				print qq |
 					<TABLE border=0 cellspacing=0 cellpadding=2 width="100%">
@@ -753,130 +872,29 @@ if ($labelType eq 'FREE') {
 									<TR>
 										<TH valign=top><A href="javascript:sequenceView($protID,$analysisID)">$alias</A>:</TH>
 										<TD bgcolor="$lightColor" width=100%>$des <FONT class="org">$org</FONT> ($length aa)</TD>
+										<TD><INPUT type="button" id="ButtonList$protID" value="Show list" onclick="showListPep($showListArgs)"></TD>
+										<TD><INPUT type="button" id="ButtonDistribution$protID" value="Show distribution" onclick="ajaxDistributionPep($showListArgs, $selQuantifID)"></TD>
 									</TR>
 								</TABLE>
 							</TD>
 						</TR>
-				|;
-				
-				## Displaying fragments name as header
-				if ($multiAnaQuanti && ($printMCQ_RT || $xicSoftCode eq 'MQ')) {
-					print "<TR><TH colspan=6>&nbsp;&nbsp;</TH>\n";
-					
-					my $anaColSpan = ($xicSoftCode eq 'MQ') ? 2 : 3; # 3: MCQ, PD; 2: MQ
-					foreach my $anaIdx (0..$#anaOrder) {
-						### Compute fragment columns length based on their amount
-						my $class=($anaIdx==$#anaOrder)? 'bBorder' : 'rbBorder';
-						print "<TH bgcolor=\"$darkColor\" class=\"$class\" colspan=$anaColSpan>&nbsp;$listAna{ $anaOrder[$anaIdx] }&nbsp;</TH>\n";
-					}
-					
-					print "</TR>\n";
-				}
-				
-				print qq |
-						<TR><TH>&nbsp;&nbsp;</TH><TH bgcolor="$darkColor" class="rbBorder">#</TH>
-						<TH bgcolor="$darkColor" class="rbBorder" >&nbsp;Peptides&nbsp;</TH>
-						<TH bgcolor="$darkColor" class="rbBorder">&nbsp;Mr(Obs)&nbsp;</TH>
-						<TH bgcolor="$darkColor" class="rbBorder">&nbsp;Start&nbsp;</TH>
-						<TH bgcolor="$darkColor" class="rbBorder">&nbsp;Charge&nbsp;</TH>
-				|;
-				print "<TH bgcolor=\"$darkColor\" class=\"rbBorder\">&nbsp;Scores&nbsp;</TH>\n" if (!$multiAnaQuanti);
-				
-				## Displaying quantification type-specific header(s)
-				foreach my $anaIdx (0..$#anaOrder) {
-					my $class=($anaIdx==$#anaOrder)? 'bBorder' : 'rbBorder';
-					if ($printMCQ_RT) {
-						print "<TH bgcolor=\"$darkColor\" class=\"rbBorder\">&nbsp;RT<sub>beg</sub>&nbsp;</TH>\n";
-						print "<TH bgcolor=\"$darkColor\" class=\"$class\">&nbsp;RT<sub>end</sub>&nbsp;</TH>\n";
-					} elsif($xicSoftCode eq 'MQ') {
-						print "<TH bgcolor=\"$darkColor\" class=\"rbBorder\">&nbsp;RT<SUB>min</SUB></TH>";
-						print "<TH bgcolor=\"$darkColor\" class=\"$class\">&nbsp;$colName&nbsp;</TH>";
-					} elsif ($multiAnaQuanti) { # Print Analysis Name as columns
-						print "<TH bgcolor=\"$darkColor\" class=\"$class\">&nbsp;$listAna{ $anaOrder[$anaIdx] }&nbsp;</TH>\n";
-					} else {
-						print "<TH bgcolor=\"$darkColor\" class=\"$class\">&nbsp;$colName&nbsp;</TH>\n";
-					}
-				}
-				print qq |
-							<TD width=50%></TD>
-						</TR>
+					</TABLE>
 				|;
 			
-				if($multiAnaQuanti) {
-					&displayQuantificationValues($protID); #, $colSpan
-				
-					print qq |
-							<TR><TD colspan=$colSpan>&nbsp;</TD></TR>
-						</TABLE>
-					|;
-				}
-				else {
-					my $bgColor=$lightColor;
-					my $pepCount=0;
+				#if($multiAnaQuanti) {
+					#&displayQuantificationValues($protID); #, $colSpan
 					
-					foreach my $seqVarMod (sort{$posBeg{$a}[0][0]<=>$posBeg{$b}[0][0] || lc($a) cmp lc($b) || $a cmp $b} keys %{$maxProtMatch{$idtoidentifier{$protID}}} ) {
-						foreach my $charge (sort keys %{$labeledPeptideSets{$matchGroup}{$seqVarMod}}) {
-							foreach my $pepID (@{$labeledPeptideSets{$matchGroup}{$seqVarMod}{$charge}}) {
-								$pepCount++;
-								my @pepInfo=@{$peptideSets{$pepID}[0]};
-								my $score=($peptideScore{$pepID})? (sprintf "%.2f",$peptideScore{$pepID})*1 : '-';
-								my $mrObs=($peptideMrobs{$pepID})? (sprintf "%.2f",$peptideMrobs{$pepID})*1 : '-';
-								print qq
-		|<TR bgcolor="$bgColor" class="list"><TD bgcolor="#FFFFFF"></TD><TD class="rBorder" align=right>&nbsp;$pepCount&nbsp;</TD><TH class="font11" align=left nowrap>$seqVarMod&nbsp;</TH><TD align=center>$mrObs</TD><TD align=center >$pepProtPos{$protID}{$pepID}</TD><TD align=center>$charge<SUP>+</SUP></TD>
-		<TD align=center>&nbsp;$score&nbsp;</TD>
-		|;
-		#						print qq
-		#|<TR><TD></TD><TD bgcolor="$bgColor" class="rBorder" align=right>&nbsp;$pepCount&nbsp;</TD><TH bgcolor="$bgColor" class="font11" align=left nowrap>$seqVarMod&nbsp;</TH><TD bgcolor="$bgColor" >$mrObs</TD><TD bgcolor="$bgColor" align=center >$pepInfo[2]</TD><TD bgcolor="$bgColor" align=center>$charge<SUP>+</SUP></TD>
-		#<TD bgcolor="$bgColor" align=center>&nbsp;$score&nbsp;</TD>
-		#|;
-								#if ($xicSoftCode eq 'PKV' || $xicSoftCode eq 'SKY' || $xicSoftCode eq 'OS') { #}
-								if ($xicSoftCode eq 'MQ') {
-									my $rt=($peptideRT{$pepID})? (sprintf "%.2f",$peptideRT{$pepID})*1 : '-';
-									print "<TD align=center>&nbsp;$rt&nbsp;</TD>";
-								}
-								if ($peptideFragments{$pepID}) {
-									my $fragMZList;
-									my $nbFragment=scalar keys %{$peptideFragments{$pepID}};
-									foreach my $fragID (sort {"".$peptideFragments{$pepID}{$a}[5] cmp "".$peptideFragments{$pepID}{$b}[5] || "".$peptideFragments{$pepID}{$a}[6] cmp "".$peptideFragments{$pepID}{$b}[6]} keys %{$peptideFragments{$pepID}}){
-										my ($fragMZ,$fragCharge,$fragRT,$fragType,$fragArea)=@{$peptideFragments{$pepID}{$fragID}};
-										if($fragRT){print "<TD align=center><FONT onmouseover=\"popup('<B>M/Z : </B>$fragMZ')\" onmouseout=\"popout()\">&nbsp;$fragType&nbsp;$fragArea\@$fragRT&nbsp;</FONT></TD>";}
-										else{print "<TD align=center><FONT onmouseover=\"popup('<B>M/Z : </B>$fragMZ')\" onmouseout=\"popout()\">&nbsp;$fragType&nbsp;$fragArea&nbsp;</FONT></TD>";}
-									}
-									if ($nbTransition != $nbFragment) {
-										while ($nbFragment != $nbTransition) {
-											print "<TD align=center>&nbsp;-&nbsp;</TD>";
-											$nbFragment++;
-										}
-									}
-								}
-								else {
-									if ($printMCQ_RT && defined($quantifData{$pepID}{$quantifParamInfo{'RT_BEGIN'}}[1])) {
-										print "<TD align=center>&nbsp;".&formatRTinmin($quantifData{$pepID}{$quantifParamInfo{'RT_BEGIN'}}[1])."&nbsp;</TD>";
-										print "<TD align=center>&nbsp;".&formatRTinmin($quantifData{$pepID}{$quantifParamInfo{'RT_END'}}[1])."&nbsp;</TD>";
-									}
-									elsif ($printMCQ_RT) {
-										print "<TD align=center>&nbsp;-&nbsp;</TD>";
-										print "<TD align=center>&nbsp;-&nbsp;</TD>";
-									}
-									
-									my $qData= $quantifData{$pepID}{$quantifParamInfo{$paramCode}}[1]*1;
-									my $qDataLink=($isTrace)? "<A href=\"javascript:void(null)\" onclick=\"ajaxDrawXICData(event, $pepID)\"/>$qData</A>" : $qData;
-									print "<TD align=right>&nbsp;$qDataLink&nbsp;</TD>\n";
-								}
-								print "</TR>\n";
-								$bgColor=($bgColor eq $lightColor)? $darkColor : $lightColor;
-							}
-						}
-					}
-					print "<TR><TD colspan=$colSpan>&nbsp;</TD></TR></TABLE>\n";
-				}
+					print "<DIV id='list$protID' style='display:none'>\n";
+					&showPepList($protID, $matchGroup);
+					print"</DIV>\n<DIV id='distribution$protID' style='display:none'></DIV>\n";
+				#}
 			}
-			print "<br/>\n\n";
+			print "<br/>\n";
 		}
-		
-		print "End of list.\n\n";
+		print "End of list.\n";
 	}
 }
+
 #########################
 ####>LABELED QUANTIF<####
 #########################
@@ -905,6 +923,7 @@ else {
 				#}
 				#if (!$maxPepMG{$matchGroup} || $maxPepMG{$matchGroup}<$numPep) { # true best prot be able to fetch all MG peptides
 					$trueMGTopProt{$matchGroup}=$protID;
+					$protMG{$protID}=$matchGroup;
 				#	$maxPepMG{$matchGroup}=$numPep;
 				#}
 				$idtoidentifier{$protID}=$identifier;
@@ -977,23 +996,26 @@ else {
 				##>Fetching peptide info & grouping isoforms (+/- labeled)
 				my $extraString=($xicSoftCode eq 'MCQ')? "MCQSET_$selQuantifID=" : "QSET="; # If several quantitation were performed (PD or MassChroQ), some peptides would not be retieved
 				#my $sthPI=$dbh->prepare("SELECT P.ID_PEPTIDE,PEP_SEQ,MR_OBS,CHARGE,ABS(PEP_BEG),SCORE,DATA FROM PEPTIDE_PROTEIN_ATTRIB PPA,PEPTIDE P WHERE PPA.ID_PEPTIDE=P.ID_PEPTIDE AND P.ID_ANALYSIS=$analysisID AND ID_PROTEIN=? AND DATA LIKE '%$extraString%' ORDER BY PEP_SEQ,CHARGE"); #
-				my $sthPI=$dbh->prepare("SELECT PPA.ID_PROTEIN,P.ID_PEPTIDE,PEP_SEQ,GROUP_CONCAT(PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),MR_OBS,CHARGE,ABS(PEP_BEG),P.SCORE,DATA
+				my $sthPI=$dbh->prepare("SELECT PPA.ID_PROTEIN,P.ID_PEPTIDE,PEP_SEQ,GROUP_CONCAT(PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),MR_OBS,CHARGE,GROUP_CONCAT(ABS(PEP_BEG)),P.SCORE,DATA,P.VALID_STATUS
 												FROM PEPTIDE P
 												LEFT JOIN PEPTIDE_MODIFICATION PM ON P.ID_PEPTIDE=PM.ID_PEPTIDE
 												INNER JOIN PEPTIDE_PROTEIN_ATTRIB PPA ON P.ID_PEPTIDE=PPA.ID_PEPTIDE
 												INNER JOIN ANALYSIS_PROTEIN AP ON AP.ID_ANALYSIS=PPA.ID_ANALYSIS AND AP.ID_PROTEIN=PPA.ID_PROTEIN AND AP.VISIBILITY=2
 												WHERE P.ID_ANALYSIS=$analysisID GROUP BY P.ID_PEPTIDE,PPA.ID_PROTEIN"); # ORDER BY PEP_SEQ,CHARGE
 				$sthPI->execute;
-				while (my ($protID,$pepID,$pepSeq,$modCode,$mrObs,$charge,$beg,$score,$pepData)=$sthPI->fetchrow_array) {
+				while (my ($protID,$pepID,$pepSeq,$modCode,$mrObs,$charge,$begStrg,$score,$pepData,$pepStatus)=$sthPI->fetchrow_array) {
 					next unless $protMG{$protID};
 					next unless $quantifData{$pepID}{$quantifParamInfo{$paramCode}}; # # No quantif data ***qSetStrg may still be defined (incomplete validated set => no quanti data at all)***
 					my $matchGroup=$protMG{$protID};
 					$pepData='' unless $pepData;
+		$isGhost{$pepID}=($pepStatus || $score)? 0 : 1; # $score to be safe
 					my ($srcRk)=($pepData=~/SOURCE_RANK=(\d+)/); $srcRk=0 unless $srcRk;
 					$pepDataSource{$pepID}=$sourceFiles{$analysisID}{$srcRk};
 					my ($quantSetID)=$pepData=~/$extraString(\d+)/;
 					#my $varModStrg=&promsMod::toStringVariableModifications($dbh,'PEPTIDE',$pepID,$analysisID,$pepSeq);
-					my $varModStrg=($modCode)? ' + '.&promsMod::decodeVarMod($dbh, $pepSeq, $modCode) : '';
+					my $varModStrg=($modCode)? ' + '.&promsMod::decodeVarMod($dbh,$pepSeq,$modCode,\%modificationNames) : '';
+					my @beg=split(/,/,$begStrg);
+					@{$posBeg{$protID}{"$pepSeq$varModStrg"}}=(\@beg,$mrObs);
 					$peptideScore{$pepID}=($score)? $score : 0; # ghost peptides don't have scores
 					$peptideMrobs{$pepID}=$mrObs;
 					foreach my $qLabelMod (@labelModList) { # remove label mods from vmod string
@@ -1004,10 +1026,8 @@ else {
 					#	$quantSetVarMods{$quantSetID}="$pepSeq$varModStrg";
 					#}
 	
-					push @{$peptideSets{$quantSetID}},[$pepID,$charge,$beg,$pepSeq,$varModStrg];
+					push @{$peptideSets{$quantSetID}},[$pepID,$charge,$beg[0],$pepSeq,$varModStrg];
 	
-					my @beg=split(/,/,$beg);
-					@{$posBeg{"$pepSeq$varModStrg"}}=(\@beg,$mrObs);
 	
 					$count++;
 					if ($count==5000) {
@@ -1021,7 +1041,7 @@ else {
 					my ($seqVarMod,$matchGroup)=@{$quantSetVarMods{$quantSetID}};
 					foreach my $refPep (@{$peptideSets{$quantSetID}}) {
 						my ($pepID,$charge,$beg,$pepSeq,$varModStrg)=@{$refPep};
-						$sequenceBeg{$seqVarMod}=$beg if (!$sequenceBeg{$seqVarMod} || $sequenceBeg{$seqVarMod} > $beg); # in case of sequence repetition
+						$sequenceBeg{$seqVarMod}=$beg; # if (!$sequenceBeg{$seqVarMod} || $sequenceBeg{$seqVarMod} > $beg); # in case of sequence repetition
 						my $chanNum=$quantifData{$pepID}{$quantifParamInfo{$paramCode}}[0];
 						#my $srcRk=$quantifData{$pepID}{$quantifParamInfo{$paramCode}}[2];
 						push @{$labeledPeptideSets{$matchGroup}{$seqVarMod}{$charge}{$pepDataSource{$pepID}}{$chanNum}},$pepID; # {chanNum} !!!multiple instances of same peptide possible!!!
@@ -1061,7 +1081,8 @@ else {
 					exit;
 				}
 
-				###>Displaying data<###
+				###>Displaying data<###	
+				print qq |<SPAN style="font-size:16px">Peptide ions identified by MSMS, <FONT class="virtualProt">Peptide ions rescued by Match Between or Within Runs (MBWR).</FONT></SPAN><BR><BR>| if scalar keys %isGhost;
 				my $numDataSrc=scalar keys %{$sourceFiles{$analysisID}}; #dataSources;
 				#my $colSpan=7 + $maxChanNum;
 				my $colSpan=7 + scalar @channelList;
@@ -1073,18 +1094,18 @@ else {
 				foreach my $matchGroup (sort{$a<=>$b} keys %selMGTopProt) { #ALIAS,PROT_DES,MW,PROT_LENGTH,ORGANISM,NUM_PEP,NUM_MATCH,SCORE,CONF_LEVEL,PEP_COVERAGE,PEP_SPECIFICITY
 					my ($protID,$alias,$des,$mw,$length,$org)=@{$selMGTopProt{$matchGroup}};
 					print qq
-	|<TR bgcolor="$darkColor"><TD class="bBorder" colspan=$colSpan><TABLE>
-		<TR><TH valign=top><A href="javascript:sequenceView($protID,$analysisID)">$alias</A>:</TH><TD bgcolor="$lightColor" width=100%>$des <FONT class="org">$org</FONT> ($length aa)</TD></TR>
-		</TABLE></TD></TR>
-	|;
+|<TR bgcolor="$darkColor"><TD class="bBorder" colspan=$colSpan><TABLE>
+	<TR><TH valign=top><A href="javascript:sequenceView($protID,$analysisID)">$alias</A>:</TH><TD bgcolor="$lightColor" width=100%>$des <FONT class="org">$org</FONT> ($length aa)</TD></TR>
+	</TABLE></TD></TR>
+|;
 					if ($labeledPeptideSets{$matchGroup}) {
 						print qq
-	|<TR><TH>&nbsp;&nbsp;</TH><TH bgcolor="$darkColor" class="rbBorder">#</TH>
-	<TH bgcolor="$darkColor" class="rbBorder">Peptide sets&nbsp;&nbsp;</TH>
-	<TH bgcolor="$darkColor" class="rbBorder">&nbsp;Start&nbsp;</TH>
-	<TH bgcolor="$darkColor" class="rbBorder">&nbsp;Charge&nbsp;</TH>
-	<TH bgcolor=\"$darkColor\" class=\"rbBorder\">&nbsp;Scores&nbsp;</TH>
-	|;
+|<TR><TH>&nbsp;&nbsp;</TH><TH bgcolor="$darkColor" class="rbBorder">#</TH>
+<TH bgcolor="$darkColor" class="rbBorder">Peptide sets&nbsp;&nbsp;</TH>
+<TH bgcolor="$darkColor" class="rbBorder">&nbsp;Start&nbsp;</TH>
+<TH bgcolor="$darkColor" class="rbBorder">&nbsp;Charge&nbsp;</TH>
+<TH bgcolor="$darkColor" class="rbBorder">&nbsp;Scores&nbsp;</TH>
+|;
 						foreach my $chanNum (@channelList) { #1..$maxChanNum
 							my $tdClass=($chanNum==$lastChannel && $numDataSrc <= 1)? 'bBorder' : 'rbBorder'; # $maxChanNum
 							print "<TH bgcolor=\"$darkColor\" class=\"$tdClass\">&nbsp;$labelingInfo{$chanNum}{NAME}&nbsp;</TH>\n";
@@ -1094,8 +1115,8 @@ else {
 					}
 					else {
 						print qq
-	|<TR><TH>&nbsp;&nbsp;</TH><TD bgcolor="$lightColor" colspan=2>&nbsp;No peptide quantified.</TD><TD colspan=$noQuanColspan></TD><TD width=50%></TD></TR>
-	|;
+|<TR><TH>&nbsp;&nbsp;</TH><TD bgcolor="$lightColor" colspan=2>&nbsp;No peptide quantified.</TD><TD colspan=$noQuanColspan></TD><TD width=50%></TD></TR>
+|;
 					}
 					my $bgColor=$lightColor;
 					my $numPep=0;
@@ -1104,30 +1125,31 @@ else {
 						foreach my $charge (sort keys %{$labeledPeptideSets{$matchGroup}{$seqVarMod}}) {
 							#if ($labeledPeptideSets{$matchGroup} && $labeledPeptideSets{$matchGroup}{$seqVarMod} && $labeledPeptideSets{$matchGroup}{$seqVarMod}{$charge}) {
 								foreach my $dataSrc (sort keys %{$labeledPeptideSets{$matchGroup}{$seqVarMod}{$charge}}) {
-									my (@scores,%quantifValues);
+									my (@scores,%quantifValues,%pepClass);
 									my $numQuantChannels=0;
 									foreach my $chanNum (@channelList) { #1..$maxChanNum
-										my $sc='-';
+										my $sc='-'; # default
+										$pepClass{$chanNum}=''; # default
+										$quantifValues{$chanNum}='-'; # default
 										if ($labeledPeptideSets{$matchGroup}{$seqVarMod}{$charge}{$dataSrc}{$chanNum}) {
 											my $pepID=(sort{$peptideScore{$b}<=>$peptideScore{$a}} @{$labeledPeptideSets{$matchGroup}{$seqVarMod}{$charge}{$dataSrc}{$chanNum}})[0];
 											$sc=($peptideScore{$pepID})? 1*(sprintf "%.2f",$peptideScore{$pepID}) : '-'; # ghost peptides don't have scores
 											if ($quantifData{$pepID}{$quantifParamInfo{$paramCode}}[1]) {
-												$quantifValues{$chanNum}=1*(sprintf "%.1f",$quantifData{$pepID}{$quantifParamInfo{$paramCode}}[1]);
+												$quantifValues{$chanNum}=sprintf "%.2E",$quantifData{$pepID}{$quantifParamInfo{$paramCode}}[1];
 												$numQuantChannels++;
 											}
+											$pepClass{$chanNum}=($isGhost{$pepID})? 'class="virtualProt"' : '';
 										}
 										push @scores,$sc;
-										#$quantifValues{$chanNum}=$qVal;
 									}
 	#next unless $numQuantChannels==scalar @channelList; # $maxChanNum;
 									$numPep++;
 									my $startPos=$sequenceBeg{$seqVarMod} || '-';
 									my $scoreStrg=join('/',@scores);
-									print "<TR><TD></TD><TD bgcolor=\"$bgColor\" class=\"rBorder\" align=right>&nbsp;$numPep&nbsp;</TD><TH bgcolor=\"$bgColor\" class=\"font11\" align=left nowrap>$seqVarMod&nbsp;</TH><TD bgcolor=\"$bgColor\" align=center>$startPos</TD><TD bgcolor=\"$bgColor\" align=center>$charge<SUP>+</SUP></TD>";
+									print "<TR><TD></TD><TD bgcolor=\"$bgColor\" class=\"rBorder\" align=right>&nbsp;$numPep&nbsp;</TD><TH bgcolor=\"$bgColor\" class=\"font11\" align=left nowrap>$seqVarMod&nbsp;</TH><TD bgcolor=\"$bgColor\" align=\"right\">$startPos</TD><TD bgcolor=\"$bgColor\" align=center>$charge<SUP>+</SUP></TD>";
 									print "<TD bgcolor=\"$bgColor\" align=center>&nbsp;$scoreStrg&nbsp;</TD>";
 									foreach my $chanNum (@channelList) { # 1..$maxChanNum
-										my $value=$quantifValues{$chanNum} || '-';
-										print "<TD bgcolor=\"$bgColor\" align=center>&nbsp;$value&nbsp;</TD>";
+										print "<TD bgcolor=\"$bgColor\" align=center $pepClass{$chanNum}>&nbsp;$quantifValues{$chanNum}&nbsp;</TD>";
 									}
 									print "<TD bgcolor=\"$bgColor\" align=center nowrap>&nbsp;$dataSrc&nbsp;</TD>" if $numDataSrc > 1;
 									print "<TD></TD></TR>\n";
@@ -1199,38 +1221,41 @@ else {
 	
 				##>Fetching peptide info & matchgroups
 				#my $sthPI=$dbh->prepare("SELECT P.ID_PEPTIDE,PEP_SEQ,MR_OBS,CHARGE,PEP_BEG,SCORE,DATA FROM PEPTIDE_PROTEIN_ATTRIB PPA,PEPTIDE P WHERE PPA.ID_PEPTIDE=P.ID_PEPTIDE AND P.ID_ANALYSIS=$analysisID AND ID_PROTEIN=?");
-				my $sthPI=$dbh->prepare("SELECT P.ID_PEPTIDE,PEP_SEQ,GROUP_CONCAT(PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),MR_OBS,CHARGE,ABS(PEP_BEG),P.SCORE,DATA
+				my $sthPI=$dbh->prepare("SELECT ID_PROTEIN,P.ID_PEPTIDE,PEP_SEQ,GROUP_CONCAT(PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),MR_OBS,CHARGE,GROUP_CONCAT(ABS(PEP_BEG)),P.SCORE,DATA,VALID_STATUS
 												FROM PEPTIDE P
 												LEFT JOIN PEPTIDE_MODIFICATION PM ON P.ID_PEPTIDE=PM.ID_PEPTIDE
 												INNER JOIN PEPTIDE_PROTEIN_ATTRIB PPA ON P.ID_PEPTIDE=PPA.ID_PEPTIDE
-												WHERE P.ID_ANALYSIS=$analysisID AND ID_PROTEIN=? GROUP BY P.ID_PEPTIDE ORDER BY PEP_SEQ,CHARGE");
-				foreach my $matchGroup (keys %trueMGTopProt) {
-					$sthPI->execute($trueMGTopProt{$matchGroup}); #$protID
-					while (my ($pepID,$pepSeq,$modCode,$mrObs,$charge,$beg,$score,$pepData)=$sthPI->fetchrow_array) {
-						next unless $score; # ghost peptides don't have scores
-						$pepData='' unless $pepData;
-						my ($srcRk)=($pepData=~/SOURCE_RANK=(\d+)/); $srcRk=0 unless $srcRk;
-						$pepDataSource{$pepID}=$sourceFiles{$analysisID}{$srcRk}; # used for export only
-						#my $varModStrg=&promsMod::toStringVariableModifications($dbh,'PEPTIDE',$pepID,$analysisID,$pepSeq);
-						my $varModStrg=($modCode)? ' + '.&promsMod::decodeVarMod($dbh, $pepSeq, $modCode) : '';
-						if ($peptideData{$matchGroup} && $peptideData{$matchGroup}{$pepID}) { # possible repeats in protein sequence
-							$peptideData{$matchGroup}{$pepID}[1]=$beg if $peptideData{$matchGroup}{$pepID}[1] > $beg;
-						}
-						else {@{$peptideData{$matchGroup}{$pepID}}=("$pepSeq$varModStrg",$beg,$charge,$score);} # first time seen
-						push @{$labeledPeptideSets{$matchGroup}{"$pepSeq$varModStrg"}{$charge}},$pepID;
-						$peptideMrobs{$pepID}=$mrObs;
-						$peptideScore{$pepID}=$score;
-						push @{$peptideSets{$pepID}},[$pepID,$charge,$beg,$pepSeq,$varModStrg];
-						push @{$labeledPeptideSets{$matchGroup}{"$pepSeq$varModStrg"}{$charge}},$pepID;
-						my @beg=split(/,/,$beg);
-						@{$posBeg{"$pepSeq$varModStrg"}}=(\@beg,$mrObs);
-					}
+												WHERE P.ID_ANALYSIS=$analysisID GROUP BY P.ID_PEPTIDE,ID_PROTEIN ORDER BY PEP_SEQ,CHARGE");
+				$sthPI->execute;
+				while (my ($protID,$pepID,$pepSeq,$modCode,$mrObs,$charge,$begStrg,$score,$pepData,$pepStatus)=$sthPI->fetchrow_array) {
+					next unless $idtoidentifier{$protID}; # keep only visible proteins
+					###next unless $score; # ghost peptides don't have scores
+					$pepData='' unless $pepData;
+					my ($srcRk)=($pepData=~/SOURCE_RANK=(\d+)/); $srcRk=0 unless $srcRk;
+					$pepDataSource{$pepID}=$sourceFiles{$analysisID}{$srcRk}; # used for export only
+					$isGhost{$pepID}=($pepStatus)? 0 : 1;
+					#my $varModStrg=&promsMod::toStringVariableModifications($dbh,'PEPTIDE',$pepID,$analysisID,$pepSeq);
+					my $varModStrg=($modCode)? ' + '.&promsMod::decodeVarMod($dbh,$pepSeq,$modCode,\%modificationNames) : '';
+					my @beg=split(/,/,$begStrg);
+					@{$posBeg{$protID}{"$pepSeq$varModStrg"}}=(\@beg,$mrObs);
+					my $matchGroup=$protMG{$protID};
+					#if ($peptideData{$matchGroup} && $peptideData{$matchGroup}{$pepID}) { # possible repeats in protein sequence
+					#	$peptideData{$matchGroup}{$pepID}[1]=$beg if $peptideData{$matchGroup}{$pepID}[1] > $beg;
+					#}
+					#else {
+						@{$peptideData{$matchGroup}{$pepID}}=("$pepSeq$varModStrg",$beg[0],$charge,$score);
+					#} # first time seen
+					push @{$labeledPeptideSets{$matchGroup}{"$pepSeq$varModStrg"}{$charge}},$pepID;
+					$peptideMrobs{$pepID}=$mrObs;
+					$peptideScore{$pepID}=$score;
+					push @{$peptideSets{$pepID}},[$pepID,$charge,$beg[0],$pepSeq,$varModStrg];
+					push @{$labeledPeptideSets{$matchGroup}{"$pepSeq$varModStrg"}{$charge}},$pepID;
 				}
 				$sthPI->finish;
 			}
 			##>Displaying summary
 			print qq
-|<SCRIPT LANGUAGE="Javascript">document.getElementById('waitDIV').style.display='none'</SCRIPT>
+|<SCRIPT  type="text/javascript">document.getElementById('waitDIV').style.display='none'</SCRIPT>
 | if ($action ne 'summary' || !$doExport);
 
 			&displayPeptideSummary($labelType,$xicSoftCode,\%labelingInfo,\%sumValues);
@@ -1254,6 +1279,7 @@ else {
 				}
 	
 				##>Displaying data
+				print qq |<SPAN style="font-size:16px">Peptide ions identified by MSMS, <FONT class="virtualProt">Peptide ions rescued by Match Between or Within Runs (MBWR).</FONT></SPAN><BR><BR>| if scalar keys %isGhost;
 				my $colSpan=7 + $maxReporterPos; # last col is empty for longer prot title
 				print "<TABLE border=0 cellspacing=0 cellpadding=2>\n";
 	
@@ -1284,13 +1310,13 @@ else {
 	<TD></TD>
 	<TD bgcolor="$bgColor" class="rBorder" align=right>&nbsp;$numPep&nbsp;</TD>
 	<TH bgcolor="$bgColor" class="font11" align=left nowrap>$peptideData{$matchGroup}{$pepID}[0]&nbsp;</TH>
-	<TD bgcolor="$bgColor" align=center>$startPos</TD>
+	<TD bgcolor="$bgColor" align=right>$startPos</TD>
 	<TD bgcolor="$bgColor" align=center>$peptideData{$matchGroup}{$pepID}[2]<SUP>+</SUP></TD>
 	<TD bgcolor="$bgColor" align=center>$peptideData{$matchGroup}{$pepID}[3]</TD>
 |;
 						if ($quantifValues{$pepID}) {
 							foreach my $repPos (1..$maxReporterPos) {
-								my $value=($quantifValues{$pepID}{$repValue}{$repPos}[0])? sprintf "%.1f",$quantifValues{$pepID}{$repValue}{$repPos}[0] : '-';
+								my $value=($quantifValues{$pepID}{$repValue}{$repPos}[0])? sprintf "%.2E",$quantifValues{$pepID}{$repValue}{$repPos}[0] : '-';
 								print "<TD bgcolor=\"$bgColor\" align=center>&nbsp;$value&nbsp;</TD>";
 							}
 						}
@@ -1326,7 +1352,7 @@ else {
 		# Implement multi-analysis display similar to Label-free
 		# ...
 		print qq
-|<SCRIPT LANGUAGE="Javascript">document.getElementById('waitDIV').style.display='none';</SCRIPT>
+|<SCRIPT type="text/javascript">document.getElementById('waitDIV').style.display='none';</SCRIPT>
 <BR><FONT class="title3">Please, select one analysis from the navigation window and then click on 'Internal Quantification'.</FONT>
 | unless $doExport;
 	}
@@ -1341,7 +1367,7 @@ print qq |
 		
 		<DIV id="divDescription" class="clDescriptionCont"></DIV>
 		
-		<SCRIPT LANGUAGE="javascript">
+		<SCRIPT type="text/javascript">
 			setPopup();
 		</SCRIPT>
 	</BODY>
@@ -1353,28 +1379,32 @@ print qq |
 sub printWaitingMsg {
 	my ($msg, $append) = @_;
 	my $appendHTML = ($append) ? "+=" : "=";
+	
 	print qq |
-		<SCRIPT LANGUAGE="JavaScript">document.getElementById('waitSPAN').innerHTML $appendHTML '$msg';</SCRIPT>
-	| unless $doExport;	
+		<SCRIPT type="text/javascript">document.getElementById('waitSPAN').innerHTML $appendHTML '$msg';</SCRIPT>
+	| unless ($doExport || $action =~ /ajax/); ## Do not print anything if ajax call
 }
 
 sub fetchQuantiAnalysis {
 	my ($quantiID, $anaID) = @_;
 	
-	my $queryAnaStr = "SELECT A.ID_ANALYSIS,NAME
-						FROM ANALYSIS A, ANA_QUANTIFICATION AQ
-						WHERE A.ID_ANALYSIS=AQ.ID_ANALYSIS AND ID_QUANTIFICATION=$quantiID";
+	my $queryAnaStr = "SELECT A.ID_ANALYSIS,A.NAME,S.NAME
+						FROM ANALYSIS A, ANA_QUANTIFICATION AQ,SAMPLE S
+						WHERE A.ID_ANALYSIS=AQ.ID_ANALYSIS AND ID_QUANTIFICATION=$quantiID AND A.ID_SAMPLE=S.ID_SAMPLE";
 	$queryAnaStr .= " AND A.ID_ANALYSIS=$anaID" if $anaID;
-	$queryAnaStr .= " ORDER BY NAME ASC";
+	$queryAnaStr .= " ORDER BY S.DISPLAY_POS,A.DISPLAY_POS";
 
 	my $sthAna  = $dbh->prepare($queryAnaStr);
 	my $sthAPep = $dbh->prepare("SELECT ID_PEPTIDE FROM PEPTIDE WHERE ID_ANALYSIS=?");
 	
 	$sthAna->execute;
-	while (my ($anaID,$anaName) = $sthAna->fetchrow_array) {
+	my (%sampleNames,%analysisNames);
+	while (my ($anaID,$anaName,$sampName) = $sthAna->fetchrow_array) {
 		#$dataFile=~s/_\d+\.*\d*\.pdm/\.msf/; # in case PD
+		push @anaOrder,$anaID;
 		$listAna{$anaID} = $anaName;
-		push @anaOrder, $anaID;
+		push @{$sampleNames{$sampName}},$anaID;
+		$analysisNames{$anaName}=1;
 		&getAnalysisDataSources($anaID, $projectID, \%sourceFiles);
 		$sthAPep->execute($anaID);
 		if ($quantifType eq 'XIC') {
@@ -1385,6 +1415,13 @@ sub fetchQuantiAnalysis {
 	}
 	$sthAna->finish;
 	$sthAPep->finish;
+	if (scalar keys %sampleNames > 1 && scalar keys %analysisNames < scalar @anaOrder) { # => different Samples with Analyses having same name
+		foreach my $sampName (keys %sampleNames) {
+			foreach my $anaID (@{$sampleNames{$sampName}}) {
+				$listAna{$anaID} = $sampName.' > '.$listAna{$anaID};
+			}
+		}
+	}
 }
 
 
@@ -1392,7 +1429,7 @@ sub fetchAnaProteins {
 	my ($anaID, $shouldLoadData, $protID) = @_;
 	my $count = 0;
 
-	if(!$shouldLoadData) {
+	# if(!$shouldLoadData) {
 		my $sthPIStr = "SELECT IDENTIFIER, PR.ID_PROTEIN, MATCH_GROUP, NUM_PEP, ALIAS, PROT_DES, MW, PROT_LENGTH, ORGANISM, NUM_MATCH, SCORE, CONF_LEVEL, PEP_COVERAGE, PEP_SPECIFICITY
 						FROM ANALYSIS_PROTEIN A, PROTEIN PR
 						WHERE A.ID_PROTEIN=PR.ID_PROTEIN AND ID_ANALYSIS=? AND VISIBILITY=2";
@@ -1405,40 +1442,51 @@ sub fetchAnaProteins {
 			@{$protInfo{$identifier}} = ($protID, @protInfo);
 			$idtoidentifier{$protID} = $identifier;
 			$trueMGTopProt{$matchGroup} = $protID;
-$protMG{$protID}=$matchGroup;
+			$protMG{$protID}=$matchGroup;
 		}
 		$sthPI->finish;
-	}
-	else {
-		my $sthPPIStr = "SELECT IDENTIFIER, PR.ID_PROTEIN, MATCH_GROUP, NUM_PEP, ALIAS, PROT_DES, MW, PROT_LENGTH, ORGANISM, NUM_MATCH, A.SCORE, CONF_LEVEL, PEP_COVERAGE, PEP_SPECIFICITY, 
-						P.ID_PEPTIDE,PEP_SEQ,GROUP_CONCAT(PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),MR_OBS,ELUTION_TIME,CHARGE,GROUP_CONCAT(DISTINCT(ABS(PEP_BEG)) ORDER BY ABS(PEP_BEG) SEPARATOR ','),P.SCORE,DATA
+	# }
+	# else {
+	# 	my $sthPPIStr = "SELECT IDENTIFIER, PR.ID_PROTEIN, MATCH_GROUP, NUM_PEP, ALIAS, PROT_DES, MW, PROT_LENGTH, ORGANISM, NUM_MATCH, A.SCORE, CONF_LEVEL, PEP_COVERAGE, PEP_SPECIFICITY, 
+	# 					P.ID_PEPTIDE,PEP_SEQ,GROUP_CONCAT(PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),MR_OBS,ELUTION_TIME,CHARGE,GROUP_CONCAT(DISTINCT(ABS(PEP_BEG)) ORDER BY ABS(PEP_BEG) SEPARATOR ','),P.SCORE,DATA,P.VALID_STATUS
+	# 					FROM PEPTIDE P
+	# 					LEFT JOIN PEPTIDE_MODIFICATION PM ON P.ID_PEPTIDE=PM.ID_PEPTIDE
+	# 					INNER JOIN PEPTIDE_PROTEIN_ATTRIB PPA ON P.ID_PEPTIDE=PPA.ID_PEPTIDE
+	# 					INNER JOIN PROTEIN PR ON PR.ID_PROTEIN=PPA.ID_PROTEIN 
+	# 					INNER JOIN ANALYSIS_PROTEIN A ON A.ID_PROTEIN=PR.ID_PROTEIN AND A.ID_ANALYSIS=P.ID_ANALYSIS
+	# 					WHERE P.ID_ANALYSIS=? AND VISIBILITY=2";
+	# 	$sthPPIStr .= "  AND PR.ID_PROTEIN=$protID" if $protID;
+	# 	$sthPPIStr .= "  GROUP BY P.ID_PEPTIDE ORDER BY PEP_SEQ,CHARGE";
+		
+	if($shouldLoadData) {	
+		my $sthPPIStr = "SELECT PPA.ID_PROTEIN,P.ID_PEPTIDE,PEP_SEQ,GROUP_CONCAT(PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),MR_OBS,ELUTION_TIME,CHARGE,GROUP_CONCAT(DISTINCT(ABS(PEP_BEG)) ORDER BY ABS(PEP_BEG) SEPARATOR ','),P.SCORE,DATA,P.VALID_STATUS
 						FROM PEPTIDE P
 						LEFT JOIN PEPTIDE_MODIFICATION PM ON P.ID_PEPTIDE=PM.ID_PEPTIDE
 						INNER JOIN PEPTIDE_PROTEIN_ATTRIB PPA ON P.ID_PEPTIDE=PPA.ID_PEPTIDE
-						INNER JOIN PROTEIN PR ON PR.ID_PROTEIN=PPA.ID_PROTEIN 
-						INNER JOIN ANALYSIS_PROTEIN A ON A.ID_PROTEIN=PR.ID_PROTEIN AND A.ID_ANALYSIS=P.ID_ANALYSIS
-						WHERE P.ID_ANALYSIS=? AND VISIBILITY=2";
-		$sthPPIStr .= "  AND PR.ID_PROTEIN=$protID" if $protID;
-		$sthPPIStr .= "  GROUP BY P.ID_PEPTIDE ORDER BY PEP_SEQ,CHARGE";
+						WHERE P.ID_ANALYSIS=?";
+		$sthPPIStr .= "  AND PPA.ID_PROTEIN=$protID" if $protID;
+		$sthPPIStr .= "  GROUP BY P.ID_PEPTIDE,PPA.ID_PROTEIN ORDER BY PEP_SEQ,CHARGE";
 		my $sthPPI = $dbh->prepare($sthPPIStr);
 		$sthPPI->execute($anaID);
-		while (my ($identifier, $protID, $matchGroup, $numPep, $alias, $protDes, $protMW, $protLength, $org, $numMatch, $protScore, $confLevel, $pepCoverage, $pepSpecificity, $pepID, $pepSeq, $modCode, $mrObs, $rtSc, $charge, $beg, $score, $pepData)=$sthPPI->fetchrow_array) { # $vis,
-			my @protInfo = ($alias, $protDes, $protMW, $protLength, $org, $numPep, $numMatch, $protScore, $confLevel, $pepCoverage, $pepSpecificity);
-			@{$selMGTopProt{$matchGroup}} = ($protID, @protInfo); # could be manually modified
-			@{$protInfo{$identifier}} = ($protID, @protInfo);
-			$idtoidentifier{$protID} = $identifier;
-			
-			### Fetching current protein peptides
+		# while (my ($identifier, $protID, $matchGroup, $numPep, $alias, $protDes, $protMW, $protLength, $org, $numMatch, $protScore, $confLevel, $pepCoverage, $pepSpecificity, $pepID, $pepSeq, $modCode, $mrObs, $rtSc, $charge, $begStrg, $score, $pepData,$pepStatus)=$sthPPI->fetchrow_array) { # $vis,		
+		# 	my @protInfo = ($alias, $protDes, $protMW, $protLength, $org, $numPep, $numMatch, $protScore, $confLevel, $pepCoverage, $pepSpecificity);
+		# 	@{$selMGTopProt{$matchGroup}} = ($protID, @protInfo); # could be manually modified
+		# 	@{$protInfo{$identifier}} = ($protID, @protInfo);
+		# 	$idtoidentifier{$protID} = $identifier;
+		
+		while (my ($protID, $pepID, $pepSeq, $modCode, $mrObs, $rtSc, $charge, $begStrg, $score, $pepData,$pepStatus)=$sthPPI->fetchrow_array) {		
+			next unless $idtoidentifier{$protID}; # keep only visible proteins
 			$pepData = '' unless $pepData;
 			my $srcRk = ($pepData=~/SOURCE_RANK=(\d+)/) ? $1 : 0;
 			$pepDataSource{$pepID} = $sourceFiles{$anaID}{$srcRk};
-			
+			$isGhost{$pepID}=($pepStatus)? 0 : 1;	
 			#my $varModStrg=&promsMod::toStringVariableModifications($dbh,'PEPTIDE',$pepID,$anaID,$pepSeq);
-			my $varModStrg = ($modCode) ? ' + '.&promsMod::decodeVarMod($dbh, $pepSeq, $modCode) : '';
+			my $varModStrg = ($modCode) ? ' + '.&promsMod::decodeVarMod($dbh,$pepSeq,$modCode,\%modificationNames) : '';
 			@{$pepInfo{$pepID}} = ($pepSeq, $varModStrg, $charge);
 			
-			my @beg = split(/,/,$beg);
-			@{$posBeg{"$pepSeq$varModStrg"}} = (\@beg, $mrObs);
+			my @beg = split(/,/,$begStrg);
+			@{$posBeg{$protID}{"$pepSeq$varModStrg"}} = (\@beg, $mrObs);
+			$pepProtPos{$protID}{$pepID}=$beg[0];
 			
 			$peptideMrobs{$pepID} = $mrObs;
 			$peptideScore{$pepID} = ($score) ? $score : 0; # ghost peptides don't have scores
@@ -1448,12 +1496,12 @@ $protMG{$protID}=$matchGroup;
 			$peptideRT{$pepID} = $rt;
 			
 			push @{$peptideSets{$pepID}}, [$pepID, $charge, $beg[0], $pepSeq, $varModStrg];
-			push @{$labeledPeptideSets{$matchGroup}{"$pepSeq$varModStrg"}{$charge}}, $pepID;
+			push @{$labeledPeptideSets{ $protMG{$protID} }{"$pepSeq$varModStrg"}{$charge}}, $pepID;
 			
-			if ($maxProtMatch{$identifier}) {
-				$maxProtMatch{$identifier}{"$pepSeq$varModStrg"} += 1;
+			if ($maxProtMatch{ $idtoidentifier{$protID} }) {
+				$maxProtMatch{ $idtoidentifier{$protID} }{"$pepSeq$varModStrg"} += 1;
 			} else {
-				$maxProtMatch{$identifier}{"$pepSeq$varModStrg"} = 1;
+				$maxProtMatch{ $idtoidentifier{$protID} }{"$pepSeq$varModStrg"} = 1;
 			}
 			
 			$count++;
@@ -1464,12 +1512,13 @@ $protMG{$protID}=$matchGroup;
 		}
 		$sthPPI->finish;
 	}
+
 }
 
 
 
 sub fetchPeptidesFromFile {
-	my($anaID) = @_;
+	my($anaID, $peptidesFilterRef) = @_;
 	my $chanNum = undef;
 	my $count = 0;
 	
@@ -1480,6 +1529,8 @@ sub fetchPeptidesFromFile {
 		chomp;
 		
 		my ($paramID, $pepID, $paramValue) = split(/\t/, $_);
+		
+		next if($peptidesFilterRef && !$peptidesFilterRef->{$pepID});
 		
 		if(!$peptideInAna{$anaID}) { # Internal Quantification
 			@{$quantifData{$pepID}{$paramID}} = ($chanNum, $paramValue);
@@ -1572,7 +1623,7 @@ sub fetchTDAPeptides {
 		### Recover number of fragment per petide
 		my $sthQuantiAnnot=$dbh->prepare("SELECT QUANTIF_ANNOT FROM QUANTIFICATION WHERE ID_QUANTIFICATION=$selQuantifID");
 		$sthQuantiAnnot->execute;
-		my $quantifAnnot = $sthQuantiAnnot->fetchrow_array;
+		my ($quantifAnnot) = $sthQuantiAnnot->fetchrow_array;
 		foreach my $annot (split(/::/,$quantifAnnot)){
 			if ($annot =~ /NB_TRANSITION_PER_PEPTIDE=(\d+)/) {
 				$nbTransition = $1;
@@ -1590,16 +1641,17 @@ sub displayQuantificationValues {
 	my ($protID, $nbTransition) = @_;
 	my $bgColor = $lightColor;
 	my $numPep = 0;
-	my $printMCQ_RT = ($xicSoftCode eq 'MQ' || ($xicSoftCode eq 'MCQ' && scalar keys %maxProtMatch <= $maxNumProtRT))? 1 : 0;
-	$nbTransition = 1 if(!$nbTransition);
+	my $printMCQ_RT = ($xicSoftCode eq 'MCQ' && scalar keys %maxProtMatch <= $maxNumProtRT)? 1 : 0;
+	my $printRT= ($xicSoftCode eq 'MQ' || $printMCQ_RT)? 1 : 0;
+	$nbTransition = 1 unless $nbTransition;
 	my $isMS1only = (scalar keys %peptideFragments)? 0 : 1;  # If there are some MS2 values, we don't enter the MS1 case
 	
 	## Displaying peptide quantification values
 	my $hasXicData=0;
-	my $noQuanColspan=5 + (1+$printMCQ_RT) * (scalar @anaOrder);
-	foreach my $seqVarMod (sort{$posBeg{$a}[0][0]<=>$posBeg{$b}[0][0] || lc($a) cmp lc($b) || $a cmp $b} keys %{$maxProtMatch{$idtoidentifier{$protID}}} ){			
+	my $noQuanColspan=5 + (1+$printRT) * (scalar @anaOrder);
+	foreach my $seqVarMod (sort{$posBeg{$protID}{$a}[0][0]<=>$posBeg{$protID}{$b}[0][0] || lc($a) cmp lc($b) || $a cmp $b} keys %{$maxProtMatch{$idtoidentifier{$protID}}} ){
 		foreach my $charge (sort{$a <=> $b} keys %{$pepAll{$seqVarMod}}) {
-			my ($refBeg,$mrObs) = @{$posBeg{$seqVarMod}};
+			my ($refBeg,$mrObs) = @{$posBeg{$protID}{$seqVarMod}};
 			my $beg = join(',',@{$refBeg});
 			$beg = '-' unless $beg;
 			
@@ -1617,32 +1669,32 @@ sub displayQuantificationValues {
 					if ($pepAll{$seqVarMod}{$charge}{$anaID} && $pepAll{$seqVarMod}{$charge}{$anaID}[$pepIdx]) {
 						$hasXicData=1;
 						$pepID = $pepAll{$seqVarMod}{$charge}{$anaID}[$pepIdx]; # if defined($peptideMrobs{$pepAll{$seqVarMod}{$charge}{$anaID}[$pepIdx]});
-						
+						my $pepClassStrg=($isGhost{$pepID})? 'class="virtualProt"' : '';				
+						my $xicValue=sprintf "%.2E",$quantifData{$pepID}{$quantifParamInfo{XIC_AREA}}[1];
 						if ($xicSoftCode =~ /^(MCQ|PD)$/) { 
 							my ($rtb,$rte) = (&formatRTinmin($quantifData{$pepID}{$quantifParamInfo{'RT_BEGIN'}}[1]),&formatRTinmin($quantifData{$pepID}{$quantifParamInfo{'RT_END'}}[1]));
 							push @xicValues, "<TD align=center>&nbsp;$rtb&nbsp;</TD><TD align=center>&nbsp;$rte&nbsp;</TD>" if ($printMCQ_RT && $rtb);
 							push @xicValues, "<TD align=center>&nbsp;-&nbsp;</TD><TD  align=center>&nbsp;-&nbsp;</TD>" if ($printMCQ_RT && !$rtb);
-							my $qDataLink = ($isTrace) ? "<A href=\"javascript:void(null)\" onclick=\"ajaxDrawXICData(event,$pepID)\"/>$quantifData{$pepID}{$quantifParamInfo{'XIC_AREA'}}[1]</A>" : $quantifData{$pepID}{$quantifParamInfo{'XIC_AREA'}}[1];
-							push @xicValues, "<TD align=right>&nbsp;$qDataLink&nbsp;</TD>";
+							my $qDataLink = ($isTrace)? "<A href=\"javascript:void(null)\" onclick=\"ajaxDrawXICData(event,$pepID)\"/>$xicValue</A>" : $xicValue;
+							push @xicValues, "<TD align=right $pepClassStrg>&nbsp;$qDataLink&nbsp;</TD>";
 						}
 						elsif ($xicSoftCode eq 'MQ') {
 							my $rt = (sprintf "%.2f",$peptideRT{$pepID})*1;
 							push @xicValues, "<TD align=center>&nbsp;$rt&nbsp;</TD>";
-							push @xicValues, "<TD align=right>&nbsp;$quantifData{$pepID}{$quantifParamInfo{XIC_AREA}}[1]&nbsp;</TD>";
+							push @xicValues, "<TD align=right $pepClassStrg>&nbsp;$xicValue&nbsp;</TD>";
 						}
-						elsif($xicSoftCode eq 'SKY') { # TDA
+						elsif($xicSoftCode =~ /SKY|SPC/) { # TDA
 							my $rt = (sprintf "%.2f",$peptideRT{$pepID})*1;
 							push @xicValues, "<TD align=center>&nbsp;$rt&nbsp;</TD>";
 							
-							if($isMS1only) { # MS1
-								push @xicValues, "<TD align=right>&nbsp;$quantifData{$pepID}{$quantifParamInfo{XIC_AREA}}[1]&nbsp;</TD>";
+							if ($isMS1only) { # MS1
+								push @xicValues, "<TD align=right>&nbsp;$xicValue&nbsp;</TD>";
 							}
 							$anaPepID .= $anaID.'_'.$pepID.'@';
-						}
-						else { # DIA
+						} else {
 							my $rt = (sprintf "%.2f",$peptideRT{$pepID})*1;
 							push @xicValues, "<TD align=center>&nbsp;$rt&nbsp;</TD>";
-							$anaPepID .= $anaID.'_'.$pepID.'@';
+							$anaPepID .= $anaID.'_'.$pepID.'@';							
 						}
 						
 						if ($peptideFragments{$pepID}) { # MS 2
@@ -1670,17 +1722,17 @@ sub displayQuantificationValues {
 					else {
 						# No RT
 						push @xicValues, "<TD align=center>&nbsp;-&nbsp;</TD><TD align=center>&nbsp;-&nbsp;</TD>" if $printMCQ_RT;
-						push @xicValues, "<TD align=center>&nbsp;-&nbsp;</TD>" if $xicSoftCode eq 'MQ';
+						push @xicValues, "<TD align=center>&nbsp;-&nbsp;</TD>" if $xicSoftCode =~ /MQ|SPC/;
 						
 						# No XIC
-						push @xicValues, "<TD align=right>&nbsp;-&nbsp;</TD>";
-						
-						if ($xicSoftCode=~/^(PKV|SKY|OS)$/ && %peptideFragments) {
+						if ($xicSoftCode=~/PKV|SKY|OS|SPC/ && %peptideFragments) {
 							my $i=0;
 							while ($i!=$nbTransition){
 								push @xicValues, "<TD align=right>&nbsp;-&nbsp;</TD>";
 								$i++;
 							}
+						} else {
+							push @xicValues, "<TD align=right>&nbsp;-&nbsp;</TD>";
 						}
 					}
 				}
@@ -1689,7 +1741,7 @@ sub displayQuantificationValues {
 				my $qSeqVarMod = quotemeta($seqVarMod);
 				#if($xicSoftCode eq 'SKY' || $xicSoftCode eq 'PKV' || $xicSoftCode eq 'OS'){#}
 				print "<TR class=\"list\" bgcolor=\"$bgColor\"><TD bgcolor=\"#FFFFFF\"></TD><TD class=\"rBorder\" align=right>&nbsp;$numPep&nbsp;</TD><TH class=\"font11\" align=left nowrap>";
-				if ($xicSoftCode=~/^(PKV|SKY|OS)$/ && %peptideFragments) { # DIA/TDA MS2 values
+				if ($xicSoftCode=~/PKV|SKY|OS|SPC/ && %peptideFragments) { # DIA/TDA MS2 values
 					print "<A onmouseover=\"popup('Click to display <B>peptide fragment raw data</B>.')\" onmouseout=\"popout()\" href=\"javascript:void(null)\" onclick=\"ajaxShowFragTDA(event,'$anaPepID')\">$seqVarMod</A>&nbsp;";
 				}
 				else {
@@ -1747,7 +1799,7 @@ sub displayPeptideSummary {
 				next unless $parameter;
 				my ($parameterName,$parameterValue)=split(/=/,$parameter);
 				next if $parameterName eq 'LABEL';
-				if ($quantifType eq 'SWATH' || $xicSoftCode eq 'SKY') {
+				if ($quantifType =~ /SWATH|DIA/ || $xicSoftCode =~ /SKY|SPC/) {
                     $parameterName=~s/_/ /g;
 					$parameterValue=~s/_/ /g;
 					$parameterName=lc($parameterName);
@@ -1858,6 +1910,7 @@ sub displayPeptideSummary {
 	}
 
 	####<Quantification summary>####
+	my $creationDateStrg="<TR><TH align=right nowrap>Creation date :</TH><TD bgcolor=\"$lightColor\" colspan=$numExtraCol nowrap>&nbsp;$selQuantifDate by $selQuantifUserName</TD></TR>";
 	my $analysisInfoStrg='';
 	if ($action eq 'summary') {
 		my $anaWord=($numAnaUsed==1)? 'Analysis' : 'Analyses';
@@ -1866,19 +1919,22 @@ sub displayPeptideSummary {
 			my $sampName=$analysisInfo{SAMPLE}{$sampID}[1];
 			foreach my $anaID (sort{$analysisInfo{ANALYSIS}{$a}[0]<=>$analysisInfo{ANALYSIS}{$b}[0]} keys %{$analysisInfo{HIERARCHY}{$sampID}}) {
 				my $anaName=$analysisInfo{ANALYSIS}{$anaID}[1];
-				$analysisInfoStrg.="&nbsp;-$sampName > $anaName ($analysisInfo{HIERARCHY}{$sampID}{$anaID} proteins)<BR>\n";
+				my ($tag1,$tag2,$referenceStrg)=($analysisInfo{HIERARCHY}{$sampID}{$anaID}[1])? ('<B>','</B>',' [Alignment reference]') : ('','','');
+				my $protStrg=($analysisInfo{HIERARCHY}{$sampID}{$anaID}[0] >= 0)? " ($analysisInfo{HIERARCHY}{$sampID}{$anaID}[0] proteins)" : "";
+				$analysisInfoStrg.="&nbsp;-$tag1$sampName > $anaName$protStrg$referenceStrg$tag2<BR>\n";
 			}
 		}
 		$analysisInfoStrg.="</DIV></TD></TR>";
+		my $statusStrg=($quantifStatus==-2)? '<FONT color=#DD0000>Failed</FONT> (Click on "Monitor Jobs" for more information)' : ($quantifStatus==-1)? 'Not launched yet' : ($quantifStatus==0)? 'On-going' : 'Finished';
+		$creationDateStrg.="\n<TR><TH align=\"right\" nowrap valign=top>&nbsp;Status :</TH><TH align=\"left\" bgcolor=\"$lightColor\" valign=top colspan=$numExtraCol>&nbsp;$statusStrg</TH></TR>";
 	}
-	my $creationDateStrg="<TR><TH align=right nowrap>Creation date :</TH><TD bgcolor=\"$lightColor\" colspan=$numExtraCol nowrap>&nbsp;$selQuantifDate by $selQuantifUserName</TD></TR>";
-	
+
 	if ($labelType ne 'FREE' && !$doExport) { # label
 		my $dispLabelType=($labelType eq 'ITRAQ')? 'iTRAQ' : $labelType;
 		my $colSpan=scalar @posList;
 		print qq
 |<TABLE bgcolor="$darkColor">
-<TR bgcolor="$lightColor"><TH align=right bgcolor="$darkColor" class="title3">&nbsp;Label :</TH><TD class="title3" colspan="$colSpan" style="min-width:500px">&nbsp;$dispLabelType&nbsp;&nbsp;&nbsp;<INPUT type="button" name="export" value="Export data" onclick="exportQuanti();"/>&nbsp;</TD></TR>
+<TR bgcolor="$lightColor"><TH align=right bgcolor="$darkColor" class="title3">&nbsp;Label :</TH><TD class="title3" colspan="$colSpan" style="min-width:500px">&nbsp;$dispLabelType<!--&nbsp;&nbsp;&nbsp;<INPUT type="button" name="export" value="Export data" onclick="exportQuanti();" />-->&nbsp;</TD></TR>
 <TR><TH align=right bgcolor="$darkColor">Software :</TH><TD bgcolor="$lightColor" colspan="$colSpan">&nbsp;<B>$xicSoftware{$xicSoftCode}$xicSoftVersionStrg</B>&nbsp;</TD></TR>
 |;
 		if ($dataCorrection{SRC}) {
@@ -1901,7 +1957,7 @@ sub displayPeptideSummary {
 		}
 		print "</TR>\n";
 		if ($labelType eq 'SILAC') {
-			print "<TR bgcolor=\"$lightColor\"><TH align=right bgcolor=\"$darkColor\">&nbsp;Isotope(s) :</TH>";
+			print "<TR bgcolor=\"$lightColor\"><TH align=right bgcolor=\"$darkColor\" valign=top>&nbsp;Isotope(s) :</TH>";
 			foreach my $pos (@posList) {
 				print "<TH>&nbsp;";
 				my $count=0;
@@ -1923,15 +1979,35 @@ sub displayPeptideSummary {
 		else {
 			print "<TR bgcolor=\"$lightColor\"><TH align=right bgcolor=\"$darkColor\">&nbsp;Total signal :</TH>";
 			foreach my $pos (@posList) {
-				printf "<TH>&nbsp;%.2e&nbsp;</TH>",$refSum->{$pos};
+				printf "<TH>&nbsp;%.2E&nbsp;</TH>",$refSum->{$pos};
 			}
 			print "</TR>\n";
 		}
 		print "</TABLE>\n<BR>\n</CENTER>\n";
 	}
-	if ($quantifAnnot =~ /EXTRACTION_ALGO/) { # XIC extraction for example -> display XIC parameters of extraction
+	if ($labelType eq 'FREE' && $xicSoftCode eq 'PD') {
+		
+		if (!$doExport) {
+			print "<BR>\n" if $call eq 'quanti';
+			print qq
+|<TABLE bgcolor="$darkColor" align=center>
+<TR>
+<TH align=right nowrap valign=top>&nbsp;XIC quantification Name :</TH>
+<TH bgcolor="$lightColor" nowrap align=left style="min-width:500px">&nbsp;$selQuantifName&nbsp;|;
+			#print "&nbsp;&nbsp;<INPUT type=\"button\" name=\"export\" value=\"Export data\" onclick=\"exportQuanti();\"/>&nbsp;" if $labelType eq 'FREE';
+			print qq
+|</TH></TR>
+<TR><TH align=right nowrap>Labeling :</TH><TD bgcolor="$lightColor">&nbsp;None&nbsp;</TD></TR>
+<TR><TH align=right nowrap>Software :</TH><TD bgcolor="$lightColor">&nbsp;$xicSoftware{$xicSoftCode}$xicSoftVersionStrg&nbsp;</TD></TR>
+$analysisInfoStrg
+$creationDateStrg
+</TABLE>
+|;
+		}
+	}
+	elsif ($xicSoftCode eq 'MCQ') { # XIC extraction for example -> display XIC parameters of extraction
 		# example: '::ANTISPIKE=5::DT_START=10::DT_STOP=5000::EXTRACTION_ALGO=OBI::MED_MAX=20::MED_MIN=5::MZ_ALIGN_RANGE_MAX=1200::MZ_ALIGN_RANGE_MIN=400::MZTOL_MAX=0.3::MZTOL_MIN=0.3::QUANTIF_NAME=Ext. ion chrom. extraction::RAWDATA_ACQUISITION=profile::REFERENCE=1311::SMOOTH=3::XIC_EXTRACTION_TYPE=sum::XIC_VAL=real_or_mean'
-		my @quantiList;
+		#my @quantiList;
 		#if ($action eq 'xicView') {
 		#	my ($realFocus)=$dbh->selectrow_array("SELECT FOCUS FROM QUANTIFICATION WHERE ID_QUANTIFICATION=$selQuantifID");
 		#	if ($realFocus ne 'peptide') {
@@ -1946,32 +2022,31 @@ sub displayPeptideSummary {
 		#	}
 		#}
 		#else{
-			push @quantiList,$selQuantifID;
+		#	push @quantiList,$selQuantifID;
 		#}
 
-		foreach my $quantiXIC (@quantiList) {
+		#foreach my $quantiXIC (@quantiList) {
 			#print "<TABLE bgcolor=\"$darkColor\">\n";
-			my ($quantifName,$quantifAnnotLocal,$rawDate,$quantiUserID)=$dbh->selectrow_array("SELECT NAME,QUANTIF_ANNOT,UPDATE_DATE,UPDATE_USER FROM QUANTIFICATION WHERE ID_QUANTIFICATION=$quantiXIC");
-			my $startDate=&promsMod::formatDate($rawDate);
-			my ($userName)=($quantiUserID)? $dbh->selectrow_array("SELECT USER_NAME FROM USER_LIST WHERE ID_USER='$quantiUserID'") : $quantiUserID;
-			$userName='Unknown user' unless $userName;
-			my %quantifParameters;
-			foreach my $parameter (split(/::/,$quantifAnnotLocal) ) {
-				next unless $parameter;
-				my ($parameterName,$parameterValue)=split(/=/,$parameter);
-				next unless $parameterValue;
-				$quantifParameters{$parameterName}=$parameterValue;
-			}
-			if (!$doExport) {
-				print "<BR>\n" if $call eq 'quanti';
-				print qq
+		#my ($quantifName,$quantifAnnotLocal,$rawDate,$quantiUserID)=$dbh->selectrow_array("SELECT NAME,QUANTIF_ANNOT,UPDATE_DATE,UPDATE_USER FROM QUANTIFICATION WHERE ID_QUANTIFICATION=$selQuantifID");
+		my %quantifParameters;
+		foreach my $parameter (split(/::/,$quantifAnnot) ) {
+			next unless $parameter;
+			my ($parameterName,$parameterValue)=split(/=/,$parameter);
+			next unless $parameterValue;
+			$quantifParameters{$parameterName}=$parameterValue;
+		}
+		my $labelStrg=($labelType eq 'SILAC')? 'SILAC' : 'None'; # cannot be iTRAQ or TMT
+		if (!$doExport) {
+			print "<BR>\n" if $call eq 'quanti';
+			print qq
 |<TABLE bgcolor="$darkColor" align=center>
 <TR>
-<TH align=right nowrap valign=top>XIC quantification Name :</TH>
-<TH bgcolor="$lightColor" nowrap align=left style="min-width:500px">&nbsp;$quantifName&nbsp;|;
-				print "&nbsp;&nbsp;<INPUT type=\"button\" name=\"export\" value=\"Export data\" onclick=\"exportQuanti();\"/>&nbsp;" if $labelType eq 'FREE';
-				print qq
+<TH align=right nowrap valign=top>&nbsp;XIC quantification Name :</TH>
+<TH bgcolor="$lightColor" nowrap align=left style="min-width:500px">&nbsp;$selQuantifName&nbsp;|;
+			print "&nbsp;&nbsp;<INPUT type=\"button\" name=\"export\" value=\"Export data\" onclick=\"exportQuanti();\"/>&nbsp;" if $labelType eq 'FREE';
+			print qq
 |</TH></TR>
+<TR><TH align=right nowrap>Labeling :</TH><TD bgcolor="$lightColor">&nbsp;$labelStrg&nbsp;</TD></TR>
 <TR><TH align=right nowrap>Software :</TH><TD bgcolor="$lightColor">&nbsp;$xicSoftware{$xicSoftCode}$xicSoftVersionStrg&nbsp;</TD></TR>
 <TR>
 <TH align=right nowrap valign=top>Raw-data settings :</TH>
@@ -1981,24 +2056,24 @@ $quantifParameters{RAWDATA_ACQUISITION}
 </TD>
 </TR>
 |;
+		}
+		if ( $quantifParameters{'REFERENCE'} ) {
+			my $extraAlgoString=($quantifParameters{'EXTRACTION_ALGO'} eq 'OBI')? 'OBI-Warp' : 'ms2';
+			my ($refName)=$dbh->selectrow_array("SELECT NAME FROM ANALYSIS WHERE ID_ANALYSIS=$quantifParameters{'REFERENCE'}");
+			my $alignParams='';
+			if ($quantifParameters{'EXTRACTION_ALGO'} eq 'MS2') {
+				$alignParams.="<TR><TH nowrap align=\"right\">&nbsp;Tendency:</TH><TD>$quantifParameters{MS2_TENDENCY}</TD></TR>" if $quantifParameters{MS2_TENDENCY};
+				$alignParams.="<TR><TH nowrap align=\"right\">&nbsp;Smoothing:</TH><TD>";
+				$alignParams.="$quantifParameters{MS2_SMOUTHING} for MS/MS" if $quantifParameters{MS2_SMOUTHING};
+				$alignParams.=', ' if ($quantifParameters{MS2_SMOUTHING} && $quantifParameters{MS1_SMOUTHING});
+				$alignParams.="$quantifParameters{MS1_SMOUTHING} for MS" if $quantifParameters{MS1_SMOUTHING};
+				$alignParams.="</TD></TR>";
 			}
-			if ( $quantifParameters{'REFERENCE'} ) {
-				my $extraAlgoString=($quantifParameters{'EXTRACTION_ALGO'} eq 'OBI')? 'OBI-Warp' : 'ms2';
-				my ($refName)=$dbh->selectrow_array("SELECT NAME FROM ANALYSIS WHERE ID_ANALYSIS=$quantifParameters{'REFERENCE'}");
-				my $alignParams='';
-				if ($quantifParameters{'EXTRACTION_ALGO'} eq 'MS2') {
-					$alignParams.="<TR><TH nowrap align=\"right\">&nbsp;Tendency:</TH><TD>$quantifParameters{MS2_TENDENCY}</TD></TR>" if $quantifParameters{MS2_TENDENCY};
-					$alignParams.="<TR><TH nowrap align=\"right\">&nbsp;Smoothing:</TH><TD>";
-					$alignParams.="$quantifParameters{MS2_SMOUTHING} for MS/MS" if $quantifParameters{MS2_SMOUTHING};
-					$alignParams.=', ' if ($quantifParameters{MS2_SMOUTHING} && $quantifParameters{MS1_SMOUTHING});
-					$alignParams.="$quantifParameters{MS1_SMOUTHING} for MS" if $quantifParameters{MS1_SMOUTHING};
-					$alignParams.="</TD></TR>";
-				}
-				else {
-					$alignParams="<TR><TH nowrap align=\"right\">&nbsp;Alignment range:</TH><TD>$quantifParameters{MZ_ALIGN_RANGE_MIN} to $quantifParameters{MZ_ALIGN_RANGE_MAX} <B>m/z window</B></TD></TR>";
-				}
-				if (!$doExport) {
-					print qq
+			else {
+				$alignParams="<TR><TH nowrap align=\"right\">&nbsp;Alignment range:</TH><TD>$quantifParameters{MZ_ALIGN_RANGE_MIN} to $quantifParameters{MZ_ALIGN_RANGE_MAX} <B>m/z window</B></TD></TR>";
+			}
+			if (!$doExport) {
+				print qq
 |<TH align=right nowrap valign=top>Alignment settings:</TH><TD bgcolor="$lightColor"><TABLE cellspacing=0>
 	<TR><TH nowrap align="right">&nbsp;Alignment algorithm:</TH><TD>$extraAlgoString</TD></TR>
 	<TR><TH nowrap align="right">&nbsp;Reference:</TH><TD>$refName</TD></TR>
@@ -2009,21 +2084,38 @@ $quantifParameters{RAWDATA_ACQUISITION}
 </TD>
 </TR>
 |;
-				}
-
 			}
-			my $chargeStatesStrg=($quantifParameters{'ALLCHARGESTATE'})? 'All charge states extracted' : 'Validated charge states extracted';
 
-			if (!$doExport) {
-				my $xicTypeStg=($quantifParameters{'XIC_EXTRACTION_TYPE'} eq 'sum')? 'TIC XIC':'BasePeak XIC';
-				my $peakMatchingStg=($quantifParameters{'XIC_VAL'} eq 'post_matching')? 'Post matching mode': ($quantifParameters{'XIC_VAL'} eq 'mean')? 'Mean mode' : 'Real or mean mode';
-				my $xicRange=($quantifParameters{'XIC_RANGE'} && $quantifParameters{'XIC_RANGE'} eq 'ppm')? 'ppm': 'mz';# Before 28/03/14, every extraction was made on mz tol...
-				my $xicFiltering='';
-				$xicFiltering.="&nbsp;<B>Anti-Spike:</B>&nbsp;$quantifParameters{'ANTISPIKE'}\n" if $quantifParameters{'ANTISPIKE'};
-				$xicFiltering.="&nbsp;&nbsp;&nbsp;<B>Half-Mediane:</B> min=$quantifParameters{'MED_MIN'} max=$quantifParameters{'MED_MAX'}\n" if $quantifParameters{'MED_MAX'};
-				$xicFiltering.="&nbsp;&nbsp;&nbsp;<B>Smoothing:</B>&nbsp;$quantifParameters{'SMOOTH'}" if $quantifParameters{'SMOOTH'};
-				$xicFiltering='&nbsp;<B>NONE</B>' unless $xicFiltering;
-				print qq
+		}
+		my $chargeStatesStrg=($quantifParameters{'ALLCHARGESTATE'})? 'All charge states extracted' : 'Validated charge states extracted';
+
+		if (!$doExport) {
+			my $xicTypeStg=($quantifParameters{'XIC_EXTRACTION_TYPE'} eq 'sum')? 'TIC XIC':'BasePeak XIC';
+			my $peakMatchingStg=($quantifParameters{'XIC_VAL'} eq 'post_matching')? 'Post matching mode': ($quantifParameters{'XIC_VAL'} eq 'mean')? 'Mean mode' : 'Real or mean mode';
+			my $niMinAbund = ($quantifParameters{'NI_MIN_ABUND'}) ? $quantifParameters{'NI_MIN_ABUND'} * 100 . " %" : "Not used";
+			my $xicRange=($quantifParameters{'XIC_RANGE'} && $quantifParameters{'XIC_RANGE'} eq 'ppm')? 'ppm': 'mz';# Before 28/03/14, every extraction was made on mz tol...
+			my $xicFiltering='';
+			$xicFiltering.="&nbsp;<B>Anti-Spike:</B>&nbsp;$quantifParameters{'ANTISPIKE'}\n" if $quantifParameters{'ANTISPIKE'};
+			$xicFiltering.="&nbsp;&nbsp;&nbsp;<B>Half-Mediane:</B> min=$quantifParameters{'MED_MIN'} max=$quantifParameters{'MED_MAX'}\n" if $quantifParameters{'MED_MAX'};
+			$xicFiltering.="&nbsp;&nbsp;&nbsp;<B>Smoothing:</B>&nbsp;$quantifParameters{'SMOOTH'}" if $quantifParameters{'SMOOTH'};
+			$xicFiltering='&nbsp;<B>NONE</B>' unless $xicFiltering;
+
+			# Peptides filtering on retention time dispersion
+			my %pepRtSdFilterMap = (  # TODO : remove hard coding here
+				"no_filter", "No filter",
+				"fixed", 	 "Fixed threshold",
+				"max_2FWHM", "Peak max + 2 FWHM",
+				"max_3FWHM", "Peak max + 3 FWHM",
+				"max_4FWHM", "Peak max + 4 FWHM"
+			);
+			my $pepRtSdFilter = ($quantifParameters{'RT_SD_FILTER'}) ? $pepRtSdFilterMap{$quantifParameters{'RT_SD_FILTER'}} : $pepRtSdFilterMap{'no_filter'};
+			my $minPepRtSd	  = ($quantifParameters{'RT_SD_MIN'}) ? $quantifParameters{'RT_SD_MIN'} : 0;
+			my $maxPepRtSd	  = ($quantifParameters{'RT_SD_MAX'}) ? $quantifParameters{'RT_SD_MAX'} : 'None';
+			my $pepRtSdGraph  = "$promsPath{quanti_html}/project_$projectID/quanti_$selQuantifID/result_quanti.d/peptides_rt_sd_hist.png";
+			my $graphDrawn	  = (-f "$promsPath{quantification}/project_$projectID/quanti_$selQuantifID/result_quanti.d/peptides_rt_sd_hist.png") ? 1 : 0;  # Check if graph exists (not the exact same path as the one displayed)
+			my $filterInfoFile = "$promsPath{quantification}/project_$projectID/quanti_$selQuantifID/result_quanti.d/filtering_info.txt";
+
+			print qq
 |<TR>
 <TH align=right nowrap valign=top>Charge states :</TH><TD bgcolor=$lightColor>&nbsp;$chargeStatesStrg</TD></TR>
 <TR>
@@ -2045,6 +2137,11 @@ $quantifParameters{RAWDATA_ACQUISITION}
 	</TD>
 	</TR>
 	<TR>
+		<TD nowrap>
+			&nbsp;<B>Natural isotopes minimum abundance: </B>$niMinAbund
+		</TD>
+	</TR>
+	<TR>
 	<TD nowrap>&nbsp;<B>Detection threshold between </B>$quantifParameters{'DT_START'}<B> to </B>$quantifParameters{'DT_STOP'}</TD>
 	</TR>
 	<TR><TD>&nbsp;&nbsp;<B><U>XIC filtering</U>:</B></TD></TR>
@@ -2055,23 +2152,83 @@ $quantifParameters{RAWDATA_ACQUISITION}
 </TABLE></TR>
 </DIV>
 </TR>
+<TR>
+	<TH align=right nowrap valign=top>RT dispersion filter :</TH>
+	<TD bgcolor=$lightColor nowrap>
+		&nbsp;
+		<B>Filtering method:</B>&nbsp;$pepRtSdFilter
+		&nbsp;&nbsp;
+|;
+			if ($graphDrawn) {
+				print qq
+|		<INPUT type="button" id="showRTgraph" class="font11" value="Show graph" onclick="displayGraph(this, '$pepRtSdGraph')"/>
+|;
+			}
+			if (-f $filterInfoFile) {
+				my $paramsStrg = "[";
+				my $valuesStrg = "[";
+				
+				open(FILTER_INFO, "$filterInfoFile");	
+				while(<FILTER_INFO>) {
+					chomp $_;
+					my ($param, $value) = split("\t", $_);
+					$param =~ s/\'/ /;  # Just in case single quote in param name, which makes the script crash
+					$value =~ s/\'/ /;  # Same for values
+					$paramsStrg .= "'$param',";
+					$valuesStrg .= "'$value',";
+				}
+				close FILTER_INFO;
+				$paramsStrg =~ s/,$//;
+				$valuesStrg =~ s/,$//;
+				$paramsStrg .= "]";
+				$valuesStrg .= "]";
+
+				print qq
+|		<INPUT type="button" id="showRTfilterInfo" class="font11" value="Show filtering info" onclick="displayFilterInfo(this, $paramsStrg, $valuesStrg)"/>
+|;
+			}
+
+			if ($quantifParameters{'RT_SD_FILTER'}) {
+				if ($quantifParameters{'RT_SD_FILTER'} eq "fixed") {
+					print qq
+|		<BR>
+		&nbsp;
+		<B>RT standard deviation threshold (sec):</B>&nbsp;$maxPepRtSd
+|;
+				} elsif ($quantifParameters{'RT_SD_FILTER'} ne "no_filter") {
+					print qq
+|		<BR>
+		&nbsp;
+		<B>RT standard deviation threshold (sec):</B>
+		&nbsp;&nbsp;
+		<B>Min</B>&nbsp;= $minPepRtSd
+		&nbsp;&nbsp;
+		<B>Max</B>&nbsp;= $maxPepRtSd
+|;
+				}
+			}
+
+
+			print qq
+|	</TD>
+</TR>
 $analysisInfoStrg
-<TR><TH align=right nowrap>Creation date :</TH><TD bgcolor=$lightColor nowrap>$startDate by $userName</TD></TR>
+$creationDateStrg
 </TABLE>
 <BR>
 </CENTER>
 |;
-			}
-			#print "</TR>\n</TABLE>\n<BR>\n</CENTER>\n";
 		}
+		#print "</TR>\n</TABLE>\n<BR>\n</CENTER>\n";
+		#}
 	}
 	#elsif ($labelType eq 'FREE' && ($xicSoftCode eq 'PD' || $xicSoftCode eq 'PKV' || $xicSoftCode eq 'SKY' || $xicSoftCode=~/OS/)) { #}
-	elsif ($labelType eq 'FREE' && $xicSoftCode=~/^(PKV|SKY|OS|MQ)$/) {
+	elsif ($labelType eq 'FREE' && $xicSoftCode =~ /PKV|SKY|OS|MQ|SPC/) {
 		my %quantifParameters;
 		foreach my $parameter (split(/::/,$quantifAnnot)){
 			my ($parameterName,$parameterValue)=split(/=/,$parameter);
 			next if $parameterName eq 'LABEL' || !$parameterValue;
-			if ($xicSoftCode=~/^(OS|PKV|SKY)$/) {
+			if ($xicSoftCode=~/^(OS|PKV|SKY|SPC)$/) {
 				$parameterName=~s/_/ /g;
 				$parameterValue=~s/_/ /g;
 				$parameterValue=~s/,\s*/, /g;
@@ -2097,8 +2254,8 @@ $analysisInfoStrg
 			print qq
 |<TABLE bgcolor="$darkColor" align=center>
 <TR>
-<TH align=right nowrap valign=top>XIC quantification Name :</TH>
-<TH bgcolor="$lightColor" nowrap align=left style="min-width:500px">&nbsp;$selQuantifName&nbsp;&nbsp;&nbsp;<INPUT type=\"button\" name=\"export\" value=\"Export data\" onclick=\"exportQuanti();\"/>&nbsp;</TH>
+<TH align=right nowrap valign=top>&nbsp;XIC quantification Name :</TH>
+<TH bgcolor="$lightColor" nowrap align=left style="min-width:500px">&nbsp;$selQuantifName<!--&nbsp;&nbsp;&nbsp;<INPUT type=\"button\" name=\"export\" value=\"Export data\" onclick=\"exportQuanti();\"/>-->&nbsp;</TH>
 </TR>
 <TR><TH align=right nowrap>Labeling :</TH><TD bgcolor="$lightColor">&nbsp;None&nbsp;</TD></TR>
 <TR><TH align=right nowrap>Software :</TH><TD bgcolor="$lightColor">&nbsp;$xicSoftware{$xicSoftCode}$xicSoftVersionStrg&nbsp;</TD></TR>
@@ -2120,171 +2277,171 @@ $analysisInfoStrg
 }
 
 
-sub deleteQuantification {
-	print header(-'content-encoding'=>'no',-charset=>'utf-8');
-	warningsToBrowser(1); # writes PERL warnings as HTML comments <!-- --> must be activated after header
-	print qq
-|<HEAD>
-<TITLE>Deleting Quantification</TITLE>
-<LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
-<BODY background='$promsPath{images}/bgProMS.gif'>
-<FONT class="title2"><BR><BR><BR>Deleting quantification...|;
-
-	####<Connect to the database
-	my $dbh=&promsConfig::dbConnect;
-
-	my ($projID)=&promsMod::getProjectID($dbh,$selQuantifID,'quantification');
-	#my ($status)=$dbh->selectrow_array("SELECT STATUS FROM QUANTIFICATION WHERE ID_QUANTIFCATION=$selQuantifID");
-
-	#<Ghost peptides
-	my $sthgetAnaQ=$dbh->prepare("SELECT ID_ANALYSIS FROM ANA_QUANTIFICATION WHERE ID_QUANTIFICATION=$selQuantifID");
-	#my $sthgetVP=$dbh->prepare("SELECT PQ.ID_PEPTIDE FROM PEPTIDE P,PEPTIDE_QUANTIFICATION PQ WHERE PQ.ID_PEPTIDE=P.ID_PEPTIDE AND ID_QUANTIFICATION=$selQuantifID AND ID_ANALYSIS=? AND VALID_STATUS=0 AND SCORE IS NULL");# If a single extraction is deleted, just the ghost peptides of this analysis will be suppressed
-	my $sthgetVP=$dbh->prepare("SELECT ID_PEPTIDE FROM PEPTIDE WHERE ID_ANALYSIS=? AND VALID_STATUS=0 AND SCORE IS NULL");# If a single extraction is deleted, just the ghost peptides of this analysis will be suppressed
-	my $sthgetQuanA=$dbh->prepare("SELECT Q.ID_QUANTIFICATION FROM ANA_QUANTIFICATION AQ,QUANTIFICATION Q WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND FOCUS='peptide' AND ID_ANALYSIS=?");
-	#my $sthgetVPQ=$dbh->prepare("SELECT COUNT(*) FROM PEPTIDE_QUANTIFICATION WHERE ID_PEPTIDE=?");
-	my $sthGetProtID=$dbh->prepare("SELECT ID_PROTEIN FROM PEPTIDE_PROTEIN_ATTRIB WHERE ID_PEPTIDE=?");
-	my $sthGetPPA=$dbh->prepare("SELECT COUNT(*) FROM PEPTIDE_PROTEIN_ATTRIB WHERE ID_PROTEIN=? AND ID_ANALYSIS=? AND PEP_BEG>0");
-	my $sthDelPPA1=$dbh->prepare("DELETE FROM PEPTIDE_PROTEIN_ATTRIB WHERE ID_PEPTIDE=?");
-	my $sthDelPPA2=$dbh->prepare("DELETE FROM PEPTIDE_PROTEIN_ATTRIB WHERE ID_PROTEIN=? AND ID_ANALYSIS=?");
-	#my $sthDelPepQ=$dbh->prepare("DELETE FROM PEPTIDE_QUANTIFICATION WHERE ID_PEPTIDE=?");
-	my $sthDelPepM=$dbh->prepare("DELETE FROM PEPTIDE_MODIFICATION WHERE ID_PEPTIDE=?");
-	my $sthDelPep=$dbh->prepare("DELETE FROM PEPTIDE WHERE ID_PEPTIDE=?");
-	my $sthDelAP=$dbh->prepare("DELETE FROM ANALYSIS_PROTEIN WHERE CONF_LEVEL=0 AND ID_PROTEIN=? AND ID_ANALYSIS=?");
-	my $sthGetPData=$dbh->prepare("SELECT ID_PEPTIDE,DATA FROM PEPTIDE WHERE ID_ANALYSIS=? AND DATA LIKE '%##MCQSET_$selQuantifID=%'");
-	my $sthUpPData=$dbh->prepare("UPDATE PEPTIDE SET DATA=? WHERE ID_PEPTIDE=?");
-
-	my ($numPepQ,$numPPA);
-
-	my (%virtualPep,%quantifList);
-	$sthgetAnaQ->execute;
-	while (my ($anaID) = $sthgetAnaQ->fetchrow_array) {
-		$sthgetVP->execute($anaID);
-		my $hasVirtualPep=0;
-		while (my ($vpPepID)=$sthgetVP->fetchrow_array) {
-			$virtualPep{$vpPepID}=$anaID;
-			$hasVirtualPep=1;
-		}
-		if ($hasVirtualPep) {
-			$sthgetQuanA->execute($anaID);
-			while (my ($quantID) = $sthgetQuanA->fetchrow_array) {
-				$quantifList{$quantID}=1;
-			}
-		}
-	}
-
-	##<Fetch list of quantified virtual peptides
-	my %peptideQuant;
-	foreach my $quantID (keys %quantifList) {
-		foreach my $quantFile (glob ("$promsPath{quantification}/project_$projID/quanti_$quantID/peptide_quantification*")) {
-			open(QUANTI,$quantFile);
-			while (<QUANTI>) {
-				next if $.==1;
-				my $pepID=(split(/\t/,$_))[0];
-				next unless $virtualPep{$pepID};
-				$peptideQuant{$virtualPep{$pepID}}{$pepID}{$quantID}=1; # {anaID}{pepID}{quantID}
-			}
-			close QUANTI;
-		}
-	}
-
-	foreach my $anaID (sort{$b<=>$a} keys %peptideQuant) {
-		foreach my $vpPepID (keys %{$peptideQuant{$anaID}}) {
-			next if scalar keys %{$peptideQuant{$anaID}{$vpPepID}} > 1;
-			next unless $peptideQuant{$anaID}{$vpPepID}{$selQuantifID};
-			#$sthgetVPQ->execute($vpPepID);
-			#($numPepQ)=$sthgetVPQ->fetchrow_array;
-			#next if $numPepQ>1;# This ghost peptide is still associated to another quantification than this one, do not delete it
-			# This ghost peptide was associated to that quantification only -> need to be deleted !
-			$sthGetProtID->execute($vpPepID);# Get all the proteins associated to that peptide (local to 1 analysis)
-			$sthDelPPA1->execute($vpPepID);# Delete all PPA associated to this peptide in this analysis
-			#$sthDelPepQ->execute($vpPepID); # Quantification ## Line to be removed after deletion of PEPTIDE_QUANTIFICATION table
-			$sthDelPepM->execute($vpPepID); # Modification
-			$sthDelPep->execute($vpPepID);# Delete ghost-peptide
-			while (my ($protID)=$sthGetProtID->fetchrow_array) {
-				$sthGetPPA->execute($protID,$anaID);
-				($numPPA)=$sthGetPPA->fetchrow_array;
-				# Delete Virtual Proteins
-				if ($numPPA==0) {
-					$sthDelPPA2->execute($protID,$anaID);
-					$sthDelAP->execute($protID,$anaID);
-				}
-			}
-		}
-		$sthGetPData->execute($anaID);
-		while (my ($pepID,$data)=$sthGetPData->fetchrow_array) { # Update DATA info in PEPTIDE table if quantification of isotope extraction was performed with MassChroQ
-			$data=~s/##MCQSET_$selQuantifID=\d+//;
-			$sthUpPData->execute($data,$pepID);
-		}
-	}
-
-	$sthgetVP->finish;
-	#$sthgetVPQ->finish;
-	$sthGetProtID->finish;
-	$sthGetPPA->finish;
-	$sthDelPPA1->finish;
-	$sthDelPPA2->finish;
-	#$sthDelPepQ->finish;
-	$sthDelPepM->finish;
-	$sthDelPep->finish;
-	$sthDelAP->finish;
-	$sthGetPData->finish;
-	$sthUpPData->finish;
-
-	#<Peptides
-	#$dbh->do("DELETE FROM PEPTIDE_QUANTIFICATION WHERE ID_QUANTIFICATION=$selQuantifID"); ## Line to be removed after deletion of PEPTIDE_QUANTIFICATION table
-	print '.';
-
-	#<Proteins
-	$dbh->do("DELETE FROM PROTEIN_QUANTIFICATION WHERE ID_QUANTIFICATION=$selQuantifID");
-	print '.';
-
-	#<Parent & analysis
-	$dbh->do("DELETE FROM PARENT_QUANTIFICATION WHERE ID_QUANTIFICATION=$selQuantifID");
-	$dbh->do("DELETE FROM ANA_QUANTIFICATION WHERE ID_QUANTIFICATION=$selQuantifID");
-	$dbh->do("DELETE FROM QUANTIFICATION WHERE ID_QUANTIFICATION=$selQuantifID");
-	print '.';
-
-	if (-e "$promsPath{quantification}/project_$projID") {
-		#remove_tree("$promsPath{quantification}/project_$projID/quanti_$selQuantifID") if -e "$promsPath{quantification}/project_$projID/quanti_$selQuantifID";
-		rmtree("$promsPath{quantification}/project_$projID/quanti_$selQuantifID") if -e "$promsPath{quantification}/project_$projID/quanti_$selQuantifID";
-		my @remaindDirs = glob "$promsPath{quantification}/project_$projID/quanti_*";
-		#remove_tree("$promsPath{quantification}/project_$projID") unless scalar @remaindDirs;
-		rmtree("$promsPath{quantification}/project_$projID") unless scalar @remaindDirs;
-	}
-
-	# Remove log file of this quantification
-	unlink "$promsPath{logs}/quanti_$selQuantifID.log" if -e "$promsPath{logs}/quanti_$selQuantifID.log";
-
-	print " Done</FONT>\n";
-
-	###<Rebuild match groups
-	my $numAna=scalar keys %peptideQuant;
-	print "<FONT class=\"title2\"><BR><BR>Rebuilding match groups for $numAna Analyses:</FONT>\n";
-	my %projectData;
-	my %options=(VERBOSE=>1,COMMIT=>0,USE_GHOST=>1);
-	my $anaCount=0;
-	foreach my $anaID (sort{$b<=>$a} keys %peptideQuant) {
-		$anaCount++;
-		print "<FONT class=\"title2\"><BR>&nbsp;+Analysis #$anaCount:</FONT><BR>\n";
-		&promsMod::updateMatchGroups($dbh,$anaID,\%projectData,\%options);
-	}
-
-	$dbh->commit;
-	$dbh->disconnect;
-
-	print "<FONT class=\"title2\"><BR>Done.</FONT>\n";
-
-	sleep 2;
-
-	print qq
-|<SCRIPT LANGUAGE="JavaScript">
-parent.optionFrame.location.reload(); // will update report button if only primary peptide quantif remains
-</SCRIPT>
-</BODY>
-</HTML>
-|;
-	exit;
-}
+#sub deleteQuantification { # OBSOLETE (handled by manageQuantification.cgi)
+#	print header(-'content-encoding'=>'no',-charset=>'utf-8');
+#	warningsToBrowser(1); # writes PERL warnings as HTML comments <!-- --> must be activated after header
+#	print qq
+#|<HEAD>
+#<TITLE>Deleting Quantification</TITLE>
+#<LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
+#<BODY background='$promsPath{images}/bgProMS.gif'>
+#<FONT class="title2"><BR><BR><BR>Deleting quantification...|;
+#
+#	####<Connect to the database
+#	my $dbh=&promsConfig::dbConnect;
+#
+#	my ($projID)=&promsMod::getProjectID($dbh,$selQuantifID,'quantification');
+#	#my ($status)=$dbh->selectrow_array("SELECT STATUS FROM QUANTIFICATION WHERE ID_QUANTIFCATION=$selQuantifID");
+#
+#	#<Ghost peptides
+#	my $sthgetAnaQ=$dbh->prepare("SELECT ID_ANALYSIS FROM ANA_QUANTIFICATION WHERE ID_QUANTIFICATION=$selQuantifID");
+#	#my $sthgetVP=$dbh->prepare("SELECT PQ.ID_PEPTIDE FROM PEPTIDE P,PEPTIDE_QUANTIFICATION PQ WHERE PQ.ID_PEPTIDE=P.ID_PEPTIDE AND ID_QUANTIFICATION=$selQuantifID AND ID_ANALYSIS=? AND VALID_STATUS=0 AND SCORE IS NULL");# If a single extraction is deleted, just the ghost peptides of this analysis will be suppressed
+#	my $sthgetVP=$dbh->prepare("SELECT ID_PEPTIDE FROM PEPTIDE WHERE ID_ANALYSIS=? AND VALID_STATUS=0 AND SCORE IS NULL");# If a single extraction is deleted, just the ghost peptides of this analysis will be suppressed
+#	my $sthgetQuanA=$dbh->prepare("SELECT Q.ID_QUANTIFICATION FROM ANA_QUANTIFICATION AQ,QUANTIFICATION Q WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND FOCUS='peptide' AND ID_ANALYSIS=?");
+#	#my $sthgetVPQ=$dbh->prepare("SELECT COUNT(*) FROM PEPTIDE_QUANTIFICATION WHERE ID_PEPTIDE=?");
+#	my $sthGetProtID=$dbh->prepare("SELECT ID_PROTEIN FROM PEPTIDE_PROTEIN_ATTRIB WHERE ID_PEPTIDE=?");
+#	my $sthGetPPA=$dbh->prepare("SELECT COUNT(*) FROM PEPTIDE_PROTEIN_ATTRIB WHERE ID_PROTEIN=? AND ID_ANALYSIS=? AND PEP_BEG>0");
+#	my $sthDelPPA1=$dbh->prepare("DELETE FROM PEPTIDE_PROTEIN_ATTRIB WHERE ID_PEPTIDE=?");
+#	my $sthDelPPA2=$dbh->prepare("DELETE FROM PEPTIDE_PROTEIN_ATTRIB WHERE ID_PROTEIN=? AND ID_ANALYSIS=?");
+#	#my $sthDelPepQ=$dbh->prepare("DELETE FROM PEPTIDE_QUANTIFICATION WHERE ID_PEPTIDE=?");
+#	my $sthDelPepM=$dbh->prepare("DELETE FROM PEPTIDE_MODIFICATION WHERE ID_PEPTIDE=?");
+#	my $sthDelPep=$dbh->prepare("DELETE FROM PEPTIDE WHERE ID_PEPTIDE=?");
+#	my $sthDelAP=$dbh->prepare("DELETE FROM ANALYSIS_PROTEIN WHERE CONF_LEVEL=0 AND ID_PROTEIN=? AND ID_ANALYSIS=?");
+#	my $sthGetPData=$dbh->prepare("SELECT ID_PEPTIDE,DATA FROM PEPTIDE WHERE ID_ANALYSIS=? AND DATA LIKE '%##MCQSET_$selQuantifID=%'");
+#	my $sthUpPData=$dbh->prepare("UPDATE PEPTIDE SET DATA=? WHERE ID_PEPTIDE=?");
+#
+#	my ($numPepQ,$numPPA);
+#
+#	my (%virtualPep,%quantifList);
+#	$sthgetAnaQ->execute;
+#	while (my ($anaID) = $sthgetAnaQ->fetchrow_array) {
+#		$sthgetVP->execute($anaID);
+#		my $hasVirtualPep=0;
+#		while (my ($vpPepID)=$sthgetVP->fetchrow_array) {
+#			$virtualPep{$vpPepID}=$anaID;
+#			$hasVirtualPep=1;
+#		}
+#		if ($hasVirtualPep) {
+#			$sthgetQuanA->execute($anaID);
+#			while (my ($quantID) = $sthgetQuanA->fetchrow_array) {
+#				$quantifList{$quantID}=1;
+#			}
+#		}
+#	}
+#
+#	##<Fetch list of quantified virtual peptides
+#	my %peptideQuant;
+#	foreach my $quantID (keys %quantifList) {
+#		foreach my $quantFile (glob ("$promsPath{quantification}/project_$projID/quanti_$quantID/peptide_quantification*")) {
+#			open(QUANTI,$quantFile);
+#			while (<QUANTI>) {
+#				next if $.==1;
+#				my $pepID=(split(/\t/,$_))[0];
+#				next unless $virtualPep{$pepID};
+#				$peptideQuant{$virtualPep{$pepID}}{$pepID}{$quantID}=1; # {anaID}{pepID}{quantID}
+#			}
+#			close QUANTI;
+#		}
+#	}
+#
+#	foreach my $anaID (sort{$b<=>$a} keys %peptideQuant) {
+#		foreach my $vpPepID (keys %{$peptideQuant{$anaID}}) {
+#			next if scalar keys %{$peptideQuant{$anaID}{$vpPepID}} > 1;
+#			next unless $peptideQuant{$anaID}{$vpPepID}{$selQuantifID};
+#			#$sthgetVPQ->execute($vpPepID);
+#			#($numPepQ)=$sthgetVPQ->fetchrow_array;
+#			#next if $numPepQ>1;# This ghost peptide is still associated to another quantification than this one, do not delete it
+#			# This ghost peptide was associated to that quantification only -> need to be deleted !
+#			$sthGetProtID->execute($vpPepID);# Get all the proteins associated to that peptide (local to 1 analysis)
+#			$sthDelPPA1->execute($vpPepID);# Delete all PPA associated to this peptide in this analysis
+#			#$sthDelPepQ->execute($vpPepID); # Quantification ## Line to be removed after deletion of PEPTIDE_QUANTIFICATION table
+#			$sthDelPepM->execute($vpPepID); # Modification
+#			$sthDelPep->execute($vpPepID);# Delete ghost-peptide
+#			while (my ($protID)=$sthGetProtID->fetchrow_array) {
+#				$sthGetPPA->execute($protID,$anaID);
+#				($numPPA)=$sthGetPPA->fetchrow_array;
+#				# Delete Virtual Proteins
+#				if ($numPPA==0) {
+#					$sthDelPPA2->execute($protID,$anaID);
+#					$sthDelAP->execute($protID,$anaID);
+#				}
+#			}
+#		}
+#		$sthGetPData->execute($anaID);
+#		while (my ($pepID,$data)=$sthGetPData->fetchrow_array) { # Update DATA info in PEPTIDE table if quantification of isotope extraction was performed with MassChroQ
+#			$data=~s/##MCQSET_$selQuantifID=\d+//;
+#			$sthUpPData->execute($data,$pepID);
+#		}
+#	}
+#
+#	$sthgetVP->finish;
+#	#$sthgetVPQ->finish;
+#	$sthGetProtID->finish;
+#	$sthGetPPA->finish;
+#	$sthDelPPA1->finish;
+#	$sthDelPPA2->finish;
+#	#$sthDelPepQ->finish;
+#	$sthDelPepM->finish;
+#	$sthDelPep->finish;
+#	$sthDelAP->finish;
+#	$sthGetPData->finish;
+#	$sthUpPData->finish;
+#
+#	#<Peptides
+#	#$dbh->do("DELETE FROM PEPTIDE_QUANTIFICATION WHERE ID_QUANTIFICATION=$selQuantifID"); ## Line to be removed after deletion of PEPTIDE_QUANTIFICATION table
+#	print '.';
+#
+#	#<Proteins
+#	$dbh->do("DELETE FROM PROTEIN_QUANTIFICATION WHERE ID_QUANTIFICATION=$selQuantifID");
+#	print '.';
+#
+#	#<Parent & analysis
+#	$dbh->do("DELETE FROM PARENT_QUANTIFICATION WHERE ID_QUANTIFICATION=$selQuantifID");
+#	$dbh->do("DELETE FROM ANA_QUANTIFICATION WHERE ID_QUANTIFICATION=$selQuantifID");
+#	$dbh->do("DELETE FROM QUANTIFICATION WHERE ID_QUANTIFICATION=$selQuantifID");
+#	print '.';
+#
+#	if (-e "$promsPath{quantification}/project_$projID") {
+#		#remove_tree("$promsPath{quantification}/project_$projID/quanti_$selQuantifID") if -e "$promsPath{quantification}/project_$projID/quanti_$selQuantifID";
+#		rmtree("$promsPath{quantification}/project_$projID/quanti_$selQuantifID") if -e "$promsPath{quantification}/project_$projID/quanti_$selQuantifID";
+#		my @remaindDirs = glob "$promsPath{quantification}/project_$projID/quanti_*";
+#		#remove_tree("$promsPath{quantification}/project_$projID") unless scalar @remaindDirs;
+#		rmtree("$promsPath{quantification}/project_$projID") unless scalar @remaindDirs;
+#	}
+#
+#	# Remove log file of this quantification
+#	unlink "$promsPath{logs}/quanti_$selQuantifID.log" if -e "$promsPath{logs}/quanti_$selQuantifID.log";
+#
+#	print " Done</FONT>\n";
+#
+#	###<Rebuild match groups
+#	my $numAna=scalar keys %peptideQuant;
+#	print "<FONT class=\"title2\"><BR><BR>Rebuilding match groups for $numAna Analyses:</FONT>\n";
+#	my %projectData;
+#	my %options=(VERBOSE=>1,COMMIT=>0,USE_GHOST=>1);
+#	my $anaCount=0;
+#	foreach my $anaID (sort{$b<=>$a} keys %peptideQuant) {
+#		$anaCount++;
+#		print "<FONT class=\"title2\"><BR>&nbsp;+Analysis #$anaCount:</FONT><BR>\n";
+#		&promsMod::updateMatchGroups($dbh,$anaID,\%projectData,\%options);
+#	}
+#
+#	$dbh->commit;
+#	$dbh->disconnect;
+#
+#	print "<FONT class=\"title2\"><BR>Done.</FONT>\n";
+#
+#	sleep 2;
+#
+#	print qq
+#|<SCRIPT LANGUAGE="JavaScript">
+#parent.optionFrame.location.reload(); // will update report button if only primary peptide quantif remains
+#</SCRIPT>
+#</BODY>
+#</HTML>
+#|;
+#	exit;
+#}
 
 sub exportProteinList {
 	#my ($refQuantifData,$refPepDataSource,$refProtInfo,$refProtMatch,$reflabeledPeptideSets,$refPepMrObs,$refPeptideScore,$refPeptideSets,$refPeptideFragments,$refPepProtPos,$nbTransition,@extraParams)=@_;
@@ -2346,7 +2503,7 @@ sub exportProteinList {
 		$worksheet2->write_string($xlsRow,$xlsCol,"Sequence",$itemFormat{'header'});
 		$worksheet2->set_column(++$xlsCol,$xlsCol,30); # col length
 		$worksheet2->write_string($xlsRow,$xlsCol,"PTMs",$itemFormat{'header'});
-		$worksheet2->write_string($xlsRow,++$xlsCol,"Mr(Obs)",$itemFormat{'header'}) unless $labelType eq 'SILAC';
+		$worksheet2->write_string($xlsRow,++$xlsCol,"Mr (Obs)",$itemFormat{'header'}) unless $labelType eq 'SILAC';
 		$worksheet2->write_string($xlsRow,++$xlsCol,"Start",$itemFormat{'header'});
 		$worksheet2->write_string($xlsRow,++$xlsCol,"Charge",$itemFormat{'header'});
 		$worksheet2->write_string($xlsRow,++$xlsCol,"Scores",$itemFormat{'header'});
@@ -2630,7 +2787,7 @@ sub getAnalysisDataSources {
 	my ($anaID,$projectID,$refSourceFiles)=@_;
 	return if $refSourceFiles->{$anaID}; # already retrieved
 	my ($validStatus,$dataFile)=$dbh->selectrow_array("SELECT VALID_STATUS,DATA_FILE FROM ANALYSIS WHERE ID_ANALYSIS=$anaID");
-	my $anaDir=($validStatus==1)? "$promsPath{valid}/ana_$analysisID" : "$promsPath{peptide}/proj_$projectID/ana_$anaID";
+	my $anaDir=($validStatus==1)? "$promsPath{valid}/ana_$anaID" : "$promsPath{peptide}/proj_$projectID/ana_$anaID";
 
 	$refSourceFiles->{$anaID}{0}=$dataFile;
 	if (-e "$anaDir/mergedFiles.txt") {
@@ -2685,7 +2842,7 @@ sub showLog10Plot {
 	$sthPA->execute($anaID);
 	while (my ($pepID,$pepSeq,$modCode,$charge)=$sthPA->fetchrow_array) {
 		#next unless $usedPeptides{$pepID};
-		my $modStrg=($modCode)? '+'.&promsMod::decodeVarMod($dbh, $pepSeq, $modCode) : '';
+		my $modStrg=($modCode)? '+'.&promsMod::decodeVarMod($dbh,$pepSeq,$modCode,\%modificationNames) : '';
 		$pepSequence{$pepID}=$pepSeq.$modStrg.' '.$charge.'+';
 	}
 	$sthPA->finish;
@@ -2848,7 +3005,7 @@ sub ajaxXicTrace {
 	my $dbh=&promsConfig::dbConnect;
 	my $projectID=promsMod::getProjectID($dbh,$quantiID,'QUANTIFICATION');
 	my ($pepSeq,$mrObs,$charge)=$dbh->selectrow_array("SELECT PEP_SEQ,MR_OBS,CHARGE FROM PEPTIDE WHERE ID_PEPTIDE=$pepID");
-	$mrObs=($mrObs)? "Mr(Obs)=$mrObs" : "";
+	$mrObs=($mrObs)? "Mr (Obs)=$mrObs" : "";
 	my ($rtBegin)=$dbh->selectrow_array("SELECT QUANTIF_VALUE FROM PEPTIDE_QUANTIFICATION PQ, QUANTIFICATION_PARAMETER QP WHERE PQ.ID_QUANTIF_PARAMETER=QP.ID_QUANTIF_PARAMETER AND ID_QUANTIFICATION=$quantiID AND ID_PEPTIDE=$pepID AND CODE='RT_BEGIN'");
 	my ($rtEnd)=$dbh->selectrow_array("SELECT QUANTIF_VALUE FROM PEPTIDE_QUANTIFICATION PQ, QUANTIFICATION_PARAMETER QP WHERE PQ.ID_QUANTIF_PARAMETER=QP.ID_QUANTIF_PARAMETER AND ID_QUANTIFICATION=$quantiID AND ID_PEPTIDE=$pepID AND CODE='RT_END'");
 	$dbh->disconnect;
@@ -2978,7 +3135,7 @@ sub ajaxShowPepTDAList {
 		<TR>
 			<TH>&nbsp;&nbsp;</TH><TH bgcolor="$darkColor" class="rbBorder">#</TH>
 			<TH bgcolor="$darkColor" class="rbBorder">Peptides&nbsp;&nbsp;</TH>
-			<TH bgcolor="$darkColor" class="rbBorder">&nbsp;Mr(Obs)&nbsp;</TH>
+			<TH bgcolor="$darkColor" class="rbBorder">&nbsp;Mr (Obs)&nbsp;</TH>
 			<TH bgcolor="$darkColor" class="rbBorder">&nbsp;Start&nbsp;</TH>
 			<TH bgcolor="$darkColor" class="rbBorder">&nbsp;Charge&nbsp;</TH>
 	|;
@@ -3007,6 +3164,231 @@ sub ajaxShowPepTDAList {
 			<TR><TD colspan=$nbTransition>&nbsp;</TD></TR>
 		</TABLE>
 	|;
+}
+
+sub showPepList {
+	my ($protID, $matchGroup) = @_;
+	
+	my $colSpan = 10; # last col is empty for longer prot title
+	my $colName = ($quantifType eq 'XIC') ? "XIC" : "SI";
+	my $paramCode = ($quantifType eq 'XIC') ? "XIC_AREA" : "SIN_SI";
+	my $printMCQ_RT = ($xicSoftCode eq 'MCQ' && scalar keys %selMGTopProt <= $maxNumProtRT) ? 1 : 0;
+	
+	# Displaying protein data
+	print qq |
+			<br/>
+			<TABLE border=0 cellspacing=0 cellpadding=2>
+	|;
+	
+	## Displaying fragments name as header
+	if ($multiAnaQuanti && ($printMCQ_RT || $xicSoftCode eq 'MQ')) {
+		print "<TR><TH colspan=6>&nbsp;&nbsp;</TH>\n";
+		
+		my $anaColSpan = ($xicSoftCode eq 'MQ') ? 2 : 3; # 3: MCQ, PD; 2: MQ
+		foreach my $anaIdx (0..$#anaOrder) {
+			### Compute fragment columns length based on their amount
+			my $class=($anaIdx==$#anaOrder)? 'bBorder' : 'rbBorder';
+			print "<TH bgcolor=\"$darkColor\" class=\"$class\" colspan=$anaColSpan>&nbsp;$listAna{ $anaOrder[$anaIdx] }&nbsp;</TH>\n";
+		}
+		
+		print "</TR>\n";
+	}
+	
+	print qq |
+			<TR><TH>&nbsp;&nbsp;</TH><TH bgcolor="$darkColor" class="rbBorder">#</TH>
+			<TH bgcolor="$darkColor" class="rbBorder" >&nbsp;Peptides&nbsp;</TH>
+			<TH bgcolor="$darkColor" class="rbBorder">&nbsp;Mr(Obs)&nbsp;</TH>
+			<TH bgcolor="$darkColor" class="rbBorder">&nbsp;Start&nbsp;</TH>
+			<TH bgcolor="$darkColor" class="rbBorder">&nbsp;Charge&nbsp;</TH>
+	|;
+	print "<TH bgcolor=\"$darkColor\" class=\"rbBorder\">&nbsp;Scores&nbsp;</TH>\n" if (!$multiAnaQuanti);
+	
+	## Displaying quantification type-specific header(s)
+	foreach my $anaIdx (0..$#anaOrder) {
+		my $class=($anaIdx==$#anaOrder)? 'bBorder' : 'rbBorder';
+		if ($printMCQ_RT) {
+			print "<TH bgcolor=\"$darkColor\" class=\"rbBorder\">&nbsp;RT<sub>beg</sub>&nbsp;</TH>\n";
+			print "<TH bgcolor=\"$darkColor\" class=\"$class\">&nbsp;RT<sub>end</sub>&nbsp;</TH>\n";
+		} elsif($xicSoftCode eq 'MQ') {
+			print "<TH bgcolor=\"$darkColor\" class=\"rbBorder\">&nbsp;RT<SUB>min</SUB></TH>";
+			print "<TH bgcolor=\"$darkColor\" class=\"$class\">&nbsp;$colName&nbsp;</TH>";
+		} elsif ($multiAnaQuanti) { # Print Analysis Name as columns
+			print "<TH bgcolor=\"$darkColor\" class=\"$class\">&nbsp;$listAna{ $anaOrder[$anaIdx] }&nbsp;</TH>\n";
+		} else {
+			print "<TH bgcolor=\"$darkColor\" class=\"$class\">&nbsp;$colName&nbsp;</TH>\n";
+		}
+	}
+	print qq |
+				<TD width=50%></TD>
+			</TR>
+	|;
+
+	if($multiAnaQuanti) {
+		&displayQuantificationValues($protID); #, $colSpan
+	
+		print qq |
+				<TR><TD colspan=$colSpan>&nbsp;</TD></TR>
+			</TABLE>
+		|;
+	}
+	else {
+		my $bgColor=$lightColor;
+		my $pepCount=0;
+		
+		foreach my $seqVarMod (sort{$posBeg{$protID}{$a}[0][0]<=>$posBeg{$protID}{$b}[0][0] || lc($a) cmp lc($b) || $a cmp $b} keys %{$maxProtMatch{$idtoidentifier{$protID}}} ) {
+			foreach my $charge (sort keys %{$labeledPeptideSets{$matchGroup}{$seqVarMod}}) {
+				foreach my $pepID (@{$labeledPeptideSets{$matchGroup}{$seqVarMod}{$charge}}) {
+					$pepCount++;
+					my @pepInfo=@{$peptideSets{$pepID}[0]};
+					my $score=($peptideScore{$pepID})? (sprintf "%.2f",$peptideScore{$pepID})*1 : '-';
+					my $mrObs=($peptideMrobs{$pepID})? (sprintf "%.2f",$peptideMrobs{$pepID})*1 : '-';
+					print qq
+|<TR bgcolor="$bgColor" class="list"><TD bgcolor="#FFFFFF"></TD><TD class="rBorder" align=right>&nbsp;$pepCount&nbsp;</TD><TH class="font11" align=left nowrap>$seqVarMod&nbsp;</TH><TD align=center>$mrObs</TD><TD align=center >$pepProtPos{$protID}{$pepID}</TD><TD align=center>$charge<SUP>+</SUP></TD>
+<TD align=center>&nbsp;$score&nbsp;</TD>
+|;
+					if ($xicSoftCode eq 'MQ') {
+						my $rt=($peptideRT{$pepID})? (sprintf "%.2f",$peptideRT{$pepID})*1 : '-';
+						print "<TD align=center>&nbsp;$rt&nbsp;</TD>";
+					}
+					if ($peptideFragments{$pepID}) {
+						my $fragMZList;
+						my $nbFragment=scalar keys %{$peptideFragments{$pepID}};
+						foreach my $fragID (sort {"".$peptideFragments{$pepID}{$a}[5] cmp "".$peptideFragments{$pepID}{$b}[5] || "".$peptideFragments{$pepID}{$a}[6] cmp "".$peptideFragments{$pepID}{$b}[6]} keys %{$peptideFragments{$pepID}}){
+							my ($fragMZ,$fragCharge,$fragRT,$fragType,$fragArea)=@{$peptideFragments{$pepID}{$fragID}};
+							if($fragRT){print "<TD align=center><FONT onmouseover=\"popup('<B>M/Z : </B>$fragMZ')\" onmouseout=\"popout()\">&nbsp;$fragType&nbsp;$fragArea\@$fragRT&nbsp;</FONT></TD>";}
+							else{print "<TD align=center><FONT onmouseover=\"popup('<B>M/Z : </B>$fragMZ')\" onmouseout=\"popout()\">&nbsp;$fragType&nbsp;$fragArea&nbsp;</FONT></TD>";}
+						}
+					}
+					else {
+						if ($printMCQ_RT && defined($quantifData{$pepID}{$quantifParamInfo{'RT_BEGIN'}}[1])) {
+							print "<TD align=center>&nbsp;".&formatRTinmin($quantifData{$pepID}{$quantifParamInfo{'RT_BEGIN'}}[1])."&nbsp;</TD>";
+							print "<TD align=center>&nbsp;".&formatRTinmin($quantifData{$pepID}{$quantifParamInfo{'RT_END'}}[1])."&nbsp;</TD>";
+						}
+						elsif ($printMCQ_RT) {
+							print "<TD align=center>&nbsp;-&nbsp;</TD>";
+							print "<TD align=center>&nbsp;-&nbsp;</TD>";
+						}
+						my $pepClassStrg=($isGhost{$pepID})? 'class="virtualProt"' : '';
+						my $qData=($quantifData{$pepID}{$quantifParamInfo{$paramCode}}[1])? sprintf "%.2E",$quantifData{$pepID}{$quantifParamInfo{$paramCode}}[1] : '-';
+						my $qDataLink=($isTrace)? "<A href=\"javascript:void(null)\" onclick=\"ajaxDrawXICData(event, $pepID)\"/>$qData</A>" : $qData;
+						print "<TD align=right $pepClassStrg>&nbsp;$qDataLink&nbsp;</TD>\n";
+					}
+					print "</TR>\n";
+					$bgColor=($bgColor eq $lightColor)? $darkColor : $lightColor;
+				}
+			}
+		}
+		print "<TR><TD colspan=$colSpan>&nbsp;</TD></TR></TABLE>\n";
+	}
+}
+
+sub ajaxDistributionPep {
+	my $protID = param('id_protein');
+	my $analysisID = param('id_analysis');
+	my $outFileName = "pep_intensity_boxplot_$protID";
+	
+	print header(-type=>'text/plain',-charset=>'utf-8',-cache_control=>"no-cache");
+	warningsToBrowser(1);
+	
+	if(!-e "$promsPath{tmp}/boxplot_intensities/$outFileName") {
+		if ($analysisID) { # Fetch all analysis and corresponding peptides from the quantification
+			&fetchQuantiAnalysis($selQuantifID, $analysisID);
+		} else { # Internal Quantifications
+			&fetchQuantiAnalysis($selQuantifID);
+		}
+		
+		### Fetch proteins peptides ID
+		my $sthPepAna=$dbh->prepare("SELECT ID_PEPTIDE FROM PEPTIDE_PROTEIN_ATTRIB WHERE ID_PROTEIN=$protID AND ID_ANALYSIS IN (".join(',', @anaOrder).")");
+		$sthPepAna->execute;
+		my %pepFilter;
+		while (my ($pepID)=$sthPepAna->fetchrow_array) {
+			$pepFilter{$pepID} = 1;
+		}
+		
+		### Fetch all proteins for current analysis
+		foreach my $anaID (@anaOrder) {
+			&fetchAnaProteins($anaID, 1, $protID);
+			&fetchPeptidesFromFile($anaID, \%pepFilter);
+		}
+		
+		### Fetch analysis names
+		my $sthAna=$dbh->prepare("SELECT A.ID_ANALYSIS, A.NAME, S.NAME FROM ANALYSIS A INNER JOIN SAMPLE S ON S.ID_SAMPLE=A.ID_SAMPLE WHERE A.ID_ANALYSIS IN (".join(',', @anaOrder).")");
+		$sthAna->execute;
+		my %analysisSampName;
+		my %sampNameAnalysis;
+		while (my ($anaID, $anaName, $sampName)=$sthAna->fetchrow_array) {
+			@{$analysisSampName{$anaID}} = ($anaName, $sampName);
+			$sampNameAnalysis{$sampName} = $anaName;
+		}
+		
+		## Compute ordered analysis
+		my $orderedAnalysis = "";
+		foreach my $anaID (sort {$analysisSampName{$a}[1] cmp $analysisSampName{$b}[1]} keys %analysisSampName) {
+			$orderedAnalysis .= ", " if($orderedAnalysis);
+			$orderedAnalysis .= "'$analysisSampName{$anaID}[0]'";
+		}
+		
+		### Remove all previously create boxplots
+		system("mkdir -p $promsPath{tmp}/boxplot_intensities/");
+		system("rm $promsPath{tmp}/boxplot_intensities/*");
+		
+		### Print peptides intensity to csv file
+		if(!-e "$promsPath{tmp}/boxplot_intensities/pep_intensity_$protID.csv") {
+			open(PEP_INTENSITY, ">>", "$promsPath{tmp}/boxplot_intensities/pep_intensity_$protID.csv") or die ("open: $!");
+			
+			## Display headers
+			print PEP_INTENSITY "analysis\tconditions\tpeptides\tintensity\n";
+			
+			## Display raw peptide quantification values
+			foreach my $seqVarMod (sort{$posBeg{$protID}{$a}[0][0]<=>$posBeg{$protID}{$b}[0][0] || lc($a) cmp lc($b) || $a cmp $b} keys %{$maxProtMatch{$idtoidentifier{$protID}}} ){
+				foreach my $charge (sort{$a <=> $b} keys %{$pepAll{$seqVarMod}}) {
+					my $maxLocalPepIdx = 0;
+					foreach my $anaID (@anaOrder) {
+						next unless $pepAll{$seqVarMod}{$charge}{$anaID};
+						$maxLocalPepIdx = $#{$pepAll{$seqVarMod}{$charge}{$anaID}} if $maxLocalPepIdx < $#{$pepAll{$seqVarMod}{$charge}{$anaID}};
+					}
+					
+					(my $seqVarModStr = $seqVarMod) =~ s/[\s\+()]+/_/g;
+					my $pepIntensitiesStr = "";
+					foreach my $pepIdx (0..$maxLocalPepIdx) {
+						foreach my $anaID (@anaOrder) {
+							if ($pepAll{$seqVarMod}{$charge}{$anaID} && $pepAll{$seqVarMod}{$charge}{$anaID}[$pepIdx]) {
+								my $pepID = $pepAll{$seqVarMod}{$charge}{$anaID}[$pepIdx];
+								print PEP_INTENSITY "$analysisSampName{$anaID}[0]\t$analysisSampName{$anaID}[1]\t$seqVarModStr\_$charge\t$quantifData{$pepID}{$quantifParamInfo{XIC_AREA}}[1]\n" if($quantifData{$pepID}{$quantifParamInfo{XIC_AREA}}[1]);
+							}
+						}
+					}
+				}
+			}
+			close(PEP_INTENSITY);
+		}
+		
+		my $width = 150+(85*scalar @anaOrder);
+		$width = 500 unless($width > 500);
+		open(R,">$promsPath{tmp}/boxplot_intensities/$outFileName.R");
+				print R qq
+|library(ggplot2)
+data <- read.delim("$promsPath{tmp}/boxplot_intensities/pep_intensity_$protID.csv")
+data\$peptide <- as.factor(data\$peptide)
+data\$conditions <- as.factor(data\$conditions)
+data\$analysis <- as.character(data\$analysis)
+data\$analysis <- factor(data\$analysis, levels=c($orderedAnalysis))
+plot <- ggplot(subset(data, !is.na(intensity)), aes(x=reorder(analysis, conditions, na.rm = TRUE), y=log2(intensity))) + 
+	geom_boxplot(aes(colour = conditions)) +
+	geom_hline(yintercept=mean(log2(subset(data, !is.na(intensity))\$intensity)), color="black", size=1, alpha=0.4) + 
+	stat_summary(fun.y=mean, geom="point", shape=20, size=3, color="grey", fill="red") + 
+	labs(y="log2(peptides intensity)", x = "\nSamples")
+png("$outFileName.png", width=$width, height=500)
+print(plot)
+dev.off()
+|;
+		close R;
+		system "cd $promsPath{tmp}/boxplot_intensities; $promsPath{R}/R CMD BATCH --no-save --no-restore $outFileName.R";
+		
+		print("$promsPath{tmp_html}/boxplot_intensities/$outFileName.png") if(-e "$promsPath{tmp}/boxplot_intensities/$outFileName.png");
+	} else {
+		print("$promsPath{tmp_html}/boxplot_intensities/$outFileName.png");
+	}
 }
 
 sub ajaxShowPepTDAGraph {
@@ -3050,7 +3432,7 @@ sub ajaxShowPepTDAGraph {
 	
 	## Fetching peptides info
 	my (%peptideInfo, %peptideBeg, %varModText, %peptideID, %peptideDataGost);
-	my $sthPI=$dbh->prepare("SELECT PEP_SEQ,GROUP_CONCAT(PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),CHARGE,ABS(PEP_BEG),P.ID_ANALYSIS,P.VALID_STATUS,P.ID_PEPTIDE,QUERY_NUM,PEP_RANK,SCORE
+	my $sthPI=$dbh->prepare("SELECT PEP_SEQ,GROUP_CONCAT(PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),CHARGE,MIN(ABS(PEP_BEG)),P.ID_ANALYSIS,P.VALID_STATUS,P.ID_PEPTIDE,QUERY_NUM,PEP_RANK,SCORE
 							FROM PEPTIDE P
 							LEFT JOIN PEPTIDE_MODIFICATION PM ON P.ID_PEPTIDE=PM.ID_PEPTIDE
 							INNER JOIN PEPTIDE_PROTEIN_ATTRIB PPA ON P.ID_PEPTIDE=PPA.ID_PEPTIDE AND P.ID_ANALYSIS IN ($anaString)
@@ -3076,7 +3458,7 @@ sub ajaxShowPepTDAGraph {
 			"score"		 => $score,
 			"ghost"		 => ($validStatus == 0) ? 1 : 0,
 		};
-		$varModText{$varModCode} = &promsMod::decodeVarMod($dbh, $pepSeq, $varModCode) if $varModCode;
+		$varModText{$varModCode} = &promsMod::decodeVarMod($dbh,$pepSeq,$varModCode,\%modificationNames) if $varModCode;
 	}
 	$sthPI->finish;
 	$dbh->disconnect;
@@ -3336,8 +3718,21 @@ $jsPeptideIdStr
 |;
 }
 
-
 ####>Revision history<####
+# 1.10.19 [ENHANCEMENT] Add minimum threshold of MassChroQ filter to display (VL 15/04/21)
+# 1.10.18 [ENHANCEMENT] Update SQL queries for MySQL8 compatibility (PP 17/02/21)
+# 1.10.17 [ENHANCEMENT] Optimized SQL queries for large number of Analyses (PP 29/01/21)
+# 1.10.16 [MINOR] Add display of MassChroQ filtering info (VL 05/10/20)
+# 1.10.15 [BUGFIX] Fix peptide display for label-free internal quantification (PP 24/09/20)
+# 1.10.14 [MINOR] Remove filter graph button if the graph does not exist, for backward compatibility (VL 24/09/20)
+# 1.10.13 [MINOR] Change MassChroQ filter choices to force a reference to the peak maximum (VL 27/08/20)
+# 1.10.12 [ENHANCEMENT] Add natural isotopes minimum abundance to MassChroQ parameters (VL 22/07/20)
+# 1.10.11 [ENHANCEMENT] Add filtering of MassChroQ output on peptides RT dispersion (VL 22/07/20)
+# 1.10.10 [BUGFIX] Fix issues related to fragments displaying - TDA/SWATH (VS 09/06/20)
+# 1.10.9 [FEATURE] Possibility to create protein peptides intensities boxplot on-the-fly (VS 09/06/20)
+# 1.10.8 [BUGFIX] Summary for label-free PD XIC extraction now displayed (PP 08/06/20)
+# 1.10.7 [ENHANCEMENT] Ghost peptides are flagged & minor bug fix in peptide position handling (PP 28/05/20)
+# 1.10.6 [ENHANCEMENT] Handles Spectronaut peptide quantification data displaying (VS 13/03/20)
 # 1.10.5 [BUGFIX] Fix graph display in case peptides don't have valid fragment quantif values but are still present because of MS1 (VL 13/09/19)
 # 1.10.4 [BUGFIX] Fix silent error (joint not restrictive enough + ambiguous columns) for peptide modifications queries (VL 11/09/19)
 # 1.10.3 [FEATURE] Display both fixed and variable modifications in summary (for TDA/Skyline) (VL 11/09/19)

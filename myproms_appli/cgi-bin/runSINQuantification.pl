@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# runSINQuantification.pl           1.2.0                                      #
+# runSINQuantification.pl           1.2.1                                      #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Allows quantification of proteins by computing the Spectral Index            #
@@ -49,6 +49,7 @@
 $| = 1;
 use promsConfig;
 use promsMod;
+use promsQuantif;
 use strict;
 use POSIX qw(strftime);
 
@@ -77,14 +78,21 @@ print FILESTAT "Started ",strftime("%H:%M:%S %d/%m/%Y",localtime),"\n";
 ###############################################################
 my (%myQueries,%validatedPep,%FixMods,%massValueMods,%massValueFixedMods,%expIonTable,%filteredIon);
 my $dbh=&promsConfig::dbConnect('no_user');
+my $projectID=&promsMod::getProjectID($dbh,$analysisID,'analysis');
 my ($dataFile,$minScore,$maxRank,$fileType)=$dbh->selectrow_array("SELECT DATA_FILE, MIN_SCORE, MAX_RANK, FILE_FORMAT FROM ANALYSIS WHERE ID_ANALYSIS=$analysisID");
-if($fileType !~ /MASCOT/) {
+if ($fileType !~ /MASCOT/) {
 	open(FILESTAT,">>$fileStat");
-	print FILESTAT "The analysis does not seem to habe been searched with Mascot software\n";
-	print FILESTAT "Ended ",strftime("%H:%M:%S %d/%m/%Y",localtime),"\n";
-	close(FILESTAT);
+	#print FILESTAT "The analysis does not seem to habe been searched with Mascot software\n";
+	print FILESTAT "ERROR: SIN quantification is only possible for searches performed with Mascot.";
+	#print FILESTAT "Ended ",strftime("%H:%M:%S %d/%m/%Y",localtime),"\n";
+	close FILESTAT;
 	exit;
 }
+
+###> Quantification is 'in-process' state
+$dbh->do("UPDATE QUANTIFICATION SET STATUS=0 WHERE ID_QUANTIFICATION=$quantiID") || die $dbh->errstr();
+$dbh->commit;
+
 my $DatFile="$promsPath{valid}/ana_$analysisID/$dataFile";
 #print "$DatFile<BR>\n";
 ############################################
@@ -144,8 +152,8 @@ $validPep->finish;
 ############################################################################################
 ###> Read the 1st part of the Mascot file (PDM or not) and get the queries
 ###> by reading the peptide part of
-if (!-e $DatFile){
-	my ($projectID)=&promsMod::getProjectID($dbh,$analysisID,'analysis');
+if (!-e $DatFile) {
+	#my ($projectID)=&promsMod::getProjectID($dbh,$analysisID,'analysis');
 	my $pepFileExt=($fileType=~/\.PDM/)? 'pdm' : 'dat';
 	my $oldPepFileName=sprintf "P%06d.$pepFileExt",$analysisID;
 	$DatFile="$promsPath{peptide}/proj_$projectID/$oldPepFileName";
@@ -355,7 +363,7 @@ sub computeSIPeps{
 	#$sthPepQuantif->finish;
 	#$dbh->commit;
 	#$dbh->disconnect;
-	my $projectID=&promsMod::getProjectID($dbh,$analysisID,'analysis');
+	
 	mkdir "$promsPath{quantification}/project_$projectID" unless -e "$promsPath{quantification}/project_$projectID";
 	mkdir "$promsPath{quantification}/project_$projectID/quanti_$quantiID";
 	open(QUANTI,">$promsPath{quantification}/project_$projectID/quanti_$quantiID/peptide_quantification.txt") || die $!;
@@ -365,15 +373,15 @@ sub computeSIPeps{
 	}
 	close QUANTI;
 
-	return ($quantiID);
+	return $quantiID;
 }
 
 ####################################################################
 ####>Compute SIN once the SI of all peptides have been computed<####
 ####################################################################
-sub computeSIProts{
+sub computeSIProts {
 	my ($minPepPerProt,$analysisID,$refvalidatedPep,$parentQuantiID)=@_;
-	$dbh=&promsConfig::dbConnect('no_user');
+	my $dbh=&promsConfig::dbConnect('no_user');
 	my $sthProtValid=$dbh->prepare("SELECT PEP_SEQ,ID_PROTEIN,PEPTIDE.ID_PEPTIDE FROM PEPTIDE,PEPTIDE_PROTEIN_ATTRIB WHERE PEPTIDE.ID_PEPTIDE=PEPTIDE_PROTEIN_ATTRIB.ID_PEPTIDE AND PEPTIDE.ID_ANALYSIS=PEPTIDE_PROTEIN_ATTRIB.ID_ANALYSIS AND PEPTIDE.ID_ANALYSIS=$analysisID AND PEPTIDE.PEP_RANK IS NOT NULL");
 	my $siGi=0;
 	my %si;
@@ -383,14 +391,14 @@ sub computeSIProts{
 		my $varMod=&promsMod::toStringVariableModifications($dbh,'PEPTIDE',$peptideID,$analysisID,$pepSeq);
 		$varMod='' unless $varMod;
 		($visibility)=$dbh->selectrow_array("SELECT VISIBILITY FROM ANALYSIS_PROTEIN WHERE ID_ANALYSIS=$analysisID AND ID_PROTEIN=$proteinID");
-		if($si{$proteinID}){
+		if ($si{$proteinID}) {
 			$si{$proteinID}{'SI'}+=$refvalidatedPep->{"$pepSeq $varMod"}{'SI'};
 			$si{$proteinID}{'pepNumber'}+=1;
 			if($visibility==2) {#Just top-match proteins contribute to the global SIGI
 				$siGi+=$refvalidatedPep->{"$pepSeq $varMod"}{'SI'};
 			}
 		}
-		else{
+		else {
 			$si{$proteinID}{'SI'}=$refvalidatedPep->{"$pepSeq $varMod"}{'SI'};
 			$si{$proteinID}{'pepNumber'}=1;
 			if($visibility==2) {#Just top-match proteins contribute to the global SIGI
@@ -400,7 +408,9 @@ sub computeSIProts{
 	}
 	$sthProtValid->finish;
 	#print "<BR>SIGI=$siGi<BR>\n";
-	if($siGi == 0) {
+	if ($siGi == 0) {
+		$dbh->do("UPDATE QUANTIFICATION SET STATUS=-2 WHERE ID_QUANTIFICATION=$quantiID") || die $dbh->errstr();
+		$dbh->commit;
 		$dbh->disconnect;
 		open(FILESTAT,">>$fileStat");
 		print FILESTAT "Problem during computation of SIGI (equals to 0...)\n";
@@ -408,45 +418,50 @@ sub computeSIProts{
 		close(FILESTAT);
 		exit;
 	}
-	my $sthProtInfo=$dbh->prepare("SELECT IDENTIFIER,PROT_LENGTH FROM PROTEIN WHERE ID_PROTEIN=?");
-	my $sin;
+	#my $sthProtInfo=$dbh->prepare("SELECT IDENTIFIER,PROT_LENGTH FROM PROTEIN WHERE ID_PROTEIN=?");
+	my %protLength;
+	my $sthProtInfo=$dbh->prepare("SELECT P.ID_PROTEIN,PROT_LENGTH FROM PROTEIN P,ANALYSIS_PROTEIN AP WHERE P.ID_PROTEIN=AP.ID_PROTEIN AND AP.ID_ANALYSIS=$analysisID");
+	$sthProtInfo->execute;
+	while (my ($proteinID,$length)=$sthProtInfo->fetchrow_array) {$protLength{$proteinID}=$length;}
+	$sthProtInfo->finish;
 
 	###> Create new instance of Quantification <-> The parent is the precedent quantification at the level peptide (SI values)
 	my ($methodID)=$dbh->selectrow_array("SELECT ID_QUANTIFICATION_METHOD FROM QUANTIFICATION_METHOD WHERE CODE='SIN'") || die $dbh->errstr();
 	my $quantiAnnot="minPepPerProt=$minPepPerProt;";
 	$quantiAnnot=$dbh->quote($quantiAnnot);
 
-	my ($quantiID)=$dbh->selectrow_array("SELECT MAX(ID_QUANTIFICATION)+1 FROM QUANTIFICATION");
 	my ($anaName)=$dbh->selectrow_array("SELECT NAME FROM ANALYSIS WHERE ID_ANALYSIS=$analysisID");
+	my ($protQuantiID)=$dbh->selectrow_array("SELECT MAX(ID_QUANTIFICATION)+1 FROM QUANTIFICATION");
 	#$quantiID++;
-	$dbh->do("INSERT INTO QUANTIFICATION (ID_QUANTIFICATION,ID_QUANTIFICATION_METHOD,NAME,FOCUS,QUANTIF_ANNOT,UPDATE_DATE,UPDATE_USER,STATUS) VALUES ($quantiID,$methodID,'PROT_SIN_$anaName','protein',$quantiAnnot,NOW(),'$userID',-1)") || die $dbh->errstr();
-
-	$dbh->do("INSERT INTO ANA_QUANTIFICATION (ID_QUANTIFICATION,ID_ANALYSIS) VALUES($quantiID,$analysisID)") || die $dbh->errstr();
-
-	$dbh->do("INSERT INTO PARENT_QUANTIFICATION (ID_PARENT_QUANTIFICATION,ID_QUANTIFICATION) VALUES($parentQuantiID,$quantiID)") || die $dbh->errstr();
-
-	my ($quantifParamID)=$dbh->selectrow_array("SELECT ID_QUANTIF_PARAMETER FROM QUANTIFICATION_PARAMETER WHERE NAME='SIN'");#QUANTIFICATION_PARAMETER <-> ID_QUANTIF_PARAMETER of SIN of a protein
-
-	###> Quantification is 'in-process' state
-	$dbh->do("UPDATE QUANTIFICATION SET STATUS=0 WHERE ID_QUANTIFICATION=$quantiID") || die $dbh->errstr();
+	$dbh->do("INSERT INTO QUANTIFICATION (ID_QUANTIFICATION,ID_QUANTIFICATION_METHOD,NAME,FOCUS,QUANTIF_ANNOT,UPDATE_DATE,UPDATE_USER,STATUS) VALUES ($protQuantiID,$methodID,'PROT_SIN_$anaName','protein',$quantiAnnot,NOW(),'$userID',0)") || die $dbh->errstr();
+	$dbh->do("INSERT INTO ANA_QUANTIFICATION (ID_QUANTIFICATION,ID_ANALYSIS) VALUES($protQuantiID,$analysisID)") || die $dbh->errstr();
+	$dbh->do("INSERT INTO PARENT_QUANTIFICATION (ID_PARENT_QUANTIFICATION,ID_QUANTIFICATION) VALUES($parentQuantiID,$protQuantiID)") || die $dbh->errstr();
 	$dbh->commit;
-
-	my $sthProtQuantif=$dbh->prepare("INSERT INTO PROTEIN_QUANTIFICATION (ID_PROTEIN,ID_QUANTIFICATION,ID_QUANTIF_PARAMETER,QUANTIF_VALUE) VALUES (?,$quantiID,$quantifParamID,?)");
+	
+	my $protQuantifDir="$promsPath{quantification}/project_$projectID/quanti_$protQuantiID";
+	mkdir $protQuantifDir;
+	
+	my ($quantifParamID)=$dbh->selectrow_array("SELECT ID_QUANTIF_PARAMETER FROM QUANTIFICATION_PARAMETER WHERE NAME='SIN'");#QUANTIFICATION_PARAMETER <-> ID_QUANTIF_PARAMETER of SIN of a protein
+	my $dbhLite=&promsQuantif::dbCreateProteinQuantification($protQuantiID,$protQuantifDir); # SQLite
+	my $sthProtQuantif=$dbhLite->prepare("INSERT INTO PROTEIN_QUANTIFICATION (ID_PROTEIN,ID_QUANTIF_PARAMETER,QUANTIF_VALUE) VALUES (?,$quantifParamID,?)");
+	#my $sthProtQuantif=$dbh->prepare("INSERT INTO PROTEIN_QUANTIFICATION (ID_PROTEIN,ID_QUANTIFICATION,ID_QUANTIF_PARAMETER,QUANTIF_VALUE) VALUES (?,$protQuantiID,$quantifParamID,?)");
 	foreach my $proteinID (keys(%si)) {
 		next unless $si{$proteinID}{'pepNumber'} >= $minPepPerProt;
-		$sthProtInfo->execute($proteinID);
-		my ($identifier,$protLength)=$sthProtInfo->fetchrow_array;
-		next unless $protLength > 0;
-		$sin=$si{$proteinID}{'SI'}/$siGi;
-		$sin/=$protLength;
+		#$sthProtInfo->execute($proteinID);
+		#my ($identifier,$protLength)=$sthProtInfo->fetchrow_array;
+		#next unless $protLength > 0;
+		next unless $protLength{$proteinID};
+		my $sin=($si{$proteinID}{'SI'}/$siGi)/$protLength{$proteinID};
 		$sthProtQuantif->execute($proteinID,$sin);
 		#print "ID_PROTEIN=$proteinID SI=$si{$proteinID}{'SI'} PepNumber=$si{$proteinID}{'pepNumber'} ProtLength=$protLength SIN=$sin<BR>\n";
 	}
-	$sthProtInfo->finish;
+	#$sthProtInfo->finish;
 	$sthProtQuantif->finish;
+	$dbhLite->commit;
+	$dbhLite->disconnect;
 
 	###> Quantification is finished
-	$dbh->do("UPDATE QUANTIFICATION SET STATUS=1 WHERE ID_QUANTIFICATION=$quantiID") || die $dbh->errstr();
+	$dbh->do("UPDATE QUANTIFICATION SET STATUS=1 WHERE ID_QUANTIFICATION=$protQuantiID") || die $dbh->errstr();
 
 	$dbh->commit;
 	$dbh->disconnect;
@@ -713,6 +728,7 @@ sub compareWithTheoreticalFragmentation{
 }
 
 ####>Revision history<####
+# 1.2.1 [UPDATE] Uses SQLite database to store quantification data (PP 06/07/20)
 # 1.2.0 Peptide SI data now written to file $promsPath{quantification}/project_$projectID/quanti_$quantifID/peptide_quantification.txt (PP 11/05/18)
 # 1.1.0 Change query to avoid retrieve ghost-peptides (GA 03/02/17)
 # 1.0.9 Minor modification in args (GA 16/04/14)

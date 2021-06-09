@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 #############################################################################
-# selectGOOption.cgi    1.0.6                                               #
+# selectGOOption.cgi    1.0.7                                               #
 # Authors: P. Poullet, G. Arras & F. Yvon (Institut Curie)                  #
 # Contact: myproms@curie.fr                                                 #
 # Generates list of options available to user, in case of GO analysis item  #
@@ -75,7 +75,7 @@ $validProt=1 if $validProt;
 ####>Fetching user information<####
 my @userInfo=&promsMod::getUserInfo($dbh,$userID,$projectID);
 my $projectAccess=${$userInfo[2]}{$projectID};
-my $projectFullAccess=($projectAccess eq 'bioinfo' ||$projectAccess eq 'mass' || $projectAccess =~ /super/)? 1 : 0;
+my $projectGuestAccess = ($projectAccess eq 'guest')? 1 : 0;
 
 $dbh->disconnect;
 
@@ -152,11 +152,11 @@ var currentButton; // currently selected button
 |;
 if ($itemType eq 'go_analysis') {
 	print "<TD nowrap><INPUT type=\"button\" id=\"summary\" style=\"width:80px\" value=\"Summary\" onclick=\"selectOption(this)\">";
-	#if($projectFullAccess){
+	unless ($projectGuestAccess) {
 		print "<BR>\n<INPUT type=\"button\" id=\"edit\" style=\"width:80px\" value=\"Edit\" onclick=\"selectOption(this)\">";
 		print "</TD><TD nowrap><INPUT type=\"button\" id=\"delete\" style=\"width:80px\" value=\"Delete\" onclick=\"selectOption(this)\">";
-	#}
-	print "</TD>";
+	}
+	print "</TD>\n";
 	if(lc($type) eq 'heatmap'){
 		print qq
 		|<TD nowrap><INPUT type="button" id="heatmap" style="font-weight:bold" value="Heatmap" onclick="selectOption(this);"></TD>
@@ -192,10 +192,12 @@ sub goAnalysisButton {
 }
 ###<GO analysis>####
 sub goQuantiAnalysisButton {
-	return "<INPUT type=\"button\" id=\"goQuantiAnalysis\" style=\"width:160px\" value=\"Start Q. GO Analysis\" onclick=\"selectOption(this)\">";
+	my $disabled = ($projectGuestAccess)? " disabled" : " ";
+	return "<INPUT type=\"button\" id=\"goQuantiAnalysis\" style=\"width:160px\" value=\"Start Q. GO Analysis\" onclick=\"selectOption(this)\"$disabled>";
 }
 
 ####>Revision history<####
+# 1.0.7 [BUGFIX] Disable edition and deletion by guest users (VL 28/01/21)
 # 1.0.6 Minor modification to make biologists able to remove GO analysis (GA 20/06/17)
 # 1.0.5 CSS style for active button (PP 15/03/16)
 # 1.0.4 Left border color code to help navigation (PP 19/10/15)

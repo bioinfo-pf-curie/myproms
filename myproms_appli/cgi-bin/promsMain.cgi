@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# promsMain.cgi         1.1.7                                                  #
+# promsMain.cgi         1.1.8                                                  #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Displays myProMS main entry page with links to different sections            #
@@ -107,9 +107,11 @@ my $okSeqMod=($userStatus eq 'bioinfo' || $userPref=~/seqMod=1/)? 1 : 0;
 ($hoverAction{'seqMod'},$clickAction{'seqMod'})=($okSeqMod)? ('on','manageModifications.cgi') : ('silent','null');
 my $okGoSp=($userStatus eq 'bioinfo' || $userPref=~/go=1/)? 1 : 0;
 ($hoverAction{'goAnnot'},$clickAction{'goAnnot'})=($okGoSp==1)? ('on','manageGOFiles.cgi') : ('silent','null');
-my $okSpecies=($okSeqDBs || $okGoSp || $okSpLib)? 1 : 0;
+my $okGSets=($userStatus eq 'bioinfo' || $userPref=~/gSet=1/)? 1 : 0;
+($hoverAction{'geneSets'},$clickAction{'geneSets'})=($okGSets==1)? ('on','manageGeneSets.cgi') : ('silent','null');
+my $okSpecies=($okSeqDBs || $okGoSp || $okSpLib || $okGSets)? 1 : 0;
 ($hoverAction{'species'},$clickAction{'species'})=($okSpecies)? ('on','manageSpecies.cgi') : ('silent','null');
-my $okAnnotData=($okSeqDBs || $okSeqMod || $okGoSp || $okSpLib)? 1 : 0;
+my $okAnnotData=($okSeqDBs || $okSeqMod || $okGoSp || $okSpLib || $okGSets)? 1 : 0;
 @{$hoverAction{'annotData'}}=($okAnnotData)? ('on','wait') : ('none','none');
 
 #>Settings
@@ -247,6 +249,7 @@ window.onload=function() {
 				['Spectral libraries','$colors{$okSpLib}','$hoverAction{specLibs}','$clickAction{specLibs}'],
 				['Sequence modifications','$colors{$okSeqMod}','$hoverAction{seqMod}','$clickAction{seqMod}'],
 				['GO Annotations','$colors{$okGoSp}','$hoverAction{goAnnot}','$clickAction{goAnnot}'],
+				['Gene Sets','$colors{$okGSets}','$hoverAction{geneSets}','$clickAction{geneSets}'],
 				['Species','$colors{$okSpecies}','$hoverAction{species}','$clickAction{species}']
 			 ]
 			);
@@ -423,6 +426,7 @@ window.onload=function() {
 |;
 
 ####>Revision history<####
+# 1.1.8 [FEATURE] Add Gene Sets management in Annotation data (VL 10/11/20)
 # 1.1.7 Points to Readthedocs User's guide (PP 18/06/19)
 # 1.1.6 Add 'Reference peptides' & 'Label reagents links' (PP 30/04/19)
 # 1.1.5 Dedicated flag Spectral libraries access (PP 13/11/17)

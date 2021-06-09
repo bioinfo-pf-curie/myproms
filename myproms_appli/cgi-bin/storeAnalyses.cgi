@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# storeAnalyses.cgi     3.8.1                                                  #
+# storeAnalyses.cgi     3.9.5                                                  #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Stores analysis data into myProMS server and DB                              #
@@ -53,7 +53,6 @@ use strict;
 use XML::SAX;
 use promsDIARefonte;
 use File::Copy;
-
 
 #######################
 ####>Configuration<####
@@ -107,6 +106,7 @@ my ($paramScore,$paramFDR,$des,$comments)=&promsMod::cleanParameters(param('minS
 my $maxFDR=($paramFDR && $paramFDR > 0)? $paramFDR : 0; # maximum FDR allowed (%)
 my $selMinScore=(defined($paramScore) && $paramScore=~/^\d+\.*\d*$/)? $paramScore : 'default';
 my ($phenyxTaxoNumber,$phenyxTaxo,$phenyxSourceFile,$phenyxInstrument);
+my (@contaminantDBs,%msfDatabankFiles);
 my $dbMixedDecoyFlag; # defined later if @databankIDs
 my @databankScans; # list of analyses which proteins need to be annotated
 my $isSpectra; # for X! Tandem -> used to know if the spectra option is selected
@@ -163,10 +163,16 @@ my $dbh=&promsConfig::dbConnect;
 ############################
 if (scalar @databankIDs) {
 	my %decoyFlags;
+	my $sthDBF=$dbh->prepare("SELECT DECOY_TAG,IS_CRAP FROM DATABANK WHERE ID_DATABANK=?");
+	my $dbRank=0;
 	foreach my $dbID (@databankIDs) {
-		my ($flag)=$dbh->selectrow_array("SELECT DECOY_TAG FROM DATABANK WHERE ID_DATABANK=$dbID");
-		$decoyFlags{$flag}=1 if $flag;
+		$dbRank++;
+		$sthDBF->execute($dbID);
+		my ($isDecoy,$isCrap)=$sthDBF->fetchrow_array;
+		$decoyFlags{$isDecoy}=1 if $isDecoy;
+		push @contaminantDBs,$dbRank if $isCrap;
 	}
+	$sthDBF->finish;
 	$dbMixedDecoyFlag=join('|',keys %decoyFlags) if scalar keys %decoyFlags;
 }
 $dbh->disconnect;
@@ -174,14 +180,6 @@ $dbh->disconnect;
 ##################################
 ####>Starting data processing<####
 ##################################
-#if ($action eq 'add') { # OBSOLETE
-#	my $dataFile=(split(/[\\\/]/,param('data_file')))[-1];
-#	$fileList{$dataFile}{'anaName'} = param('name');
-#	$fileList{$dataFile}{lc(param('PARENT'))} = param('PARENT_ID'); #  spot or sample
-#	$fileList{$dataFile}{'file_path'} = param('data_file');
-#	$fileList{$dataFile}{'pos'}=1;
-#}
-#els
 if ($action eq 'reval') { #reval
 	my $dataFile=(split(/[\\\/]/,param('data_file')))[-1];
 	#$fileList{$dataFile}{'anaName'} = param('name');
@@ -256,6 +254,9 @@ elsif ($action eq 'anaBatch') {
 			my $percolParamStrg=($FDRalgo eq 'precomputed' && $maxFDR)? "&percolThr=$maxFDR" : '';
 			###>Launching msf to pdm conversion<###
 			#my $pdmFile=&parseProteomeDiscovererMSF($dbh,$filePath,$msfFile,$searchNodeNumber,&getAllSearches("$filePath/$msfFile"));
+			
+			my $databankIDsStrg=join(',',@databankIDs);
+			
 			if ($splitMsfFiles) { # Split-mode
 				my $nbFile=0;
 				my @fileIDs=split(/;/,$fileIDstring);
@@ -265,36 +266,39 @@ elsif ($action eq 'anaBatch') {
 					$nbFile++;
 					
 					#>Process tracking files<#
-					(my $databankFile="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$searchNodeNumber\.$fileID\.$userID\.fasta/;
-					(my $processEnd="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$searchNodeNumber\.$fileID\.$userID\.end/;
-					(my $processError="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$searchNodeNumber\.$fileID\.$userID\.error/;
-					unlink $databankFile if -e $databankFile;
+					#(my $pdmFile="$filePath/$msfFile")=~s/\.msf\Z/_$searchNodeNumber.pdm/;
+					#$usedFileName=(split(/\//,$pdmFile))[-1];
+					($usedFileName=$msfFile)=~s/\.msf\Z/_$searchNodeNumber.$fileID.pdm/;
+					$usedFilePath="$promsPath{tmp}/batch/$userID";
+					my $pdmFile="$usedFilePath/$usedFileName"; # pdm generated in user's directory no matter where msf is
+					#(my $databankFile="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$searchNodeNumber\.$fileID\.$userID\.fasta/;
+					#unlink $databankFile if -e $databankFile;
+					foreach my $databankID (@databankIDs) {
+						($msfDatabankFiles{$usedFileName}{$databankID}="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$searchNodeNumber.$fileID.$userID\_$databankID.fasta/;
+						unlink $msfDatabankFiles{$usedFileName}{$databankID} if -e $msfDatabankFiles{$usedFileName}{$databankID};
+					}
+					(my $processEnd="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$searchNodeNumber.$fileID.$userID.end/;
+					(my $processError="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$searchNodeNumber.$fileID.$userID.error/;
 					unlink $processEnd if -e $processEnd;
 					unlink $processError if -e $processError;
 				
 					#>Launching convertMsf2Pdm<#
-					print qq
-|<FONT class=\"title3\">&nbsp;-Extracting search #$searchNodeNumber from $msfFile split-mode file #$nbFile/$totalMergedFiles:</FONT><BR>
+					print qq|<FONT class=\"title3\">&nbsp;-Extracting search #$searchNodeNumber from $msfFile split-mode file #$nbFile/$totalMergedFiles:</FONT><BR>
 <DIV id="streamDIV_${i}_$fileID">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<B>Waiting for process...</B></DIV>
-<SCRIPT LANGUAGE="JavaScript">
-systemFrame.location="./convertMsf2Pdm.cgi?minScore=$selMinScore$percolParamStrg&databankID=$databankIDs[0]&node=$searchNodeNumber&file=$msfFile&fileID=$fileID&path=$filePath";
+<SCRIPT type="text/javascript">
+systemFrame.location="./convertMsf2Pdm.cgi?minScore=$selMinScore$percolParamStrg&databankID=$databankIDsStrg&node=$searchNodeNumber&file=$msfFile&fileID=$fileID&path=$filePath";
 divID='streamDIV_${i}_$fileID'; // reset
 streamLength=0; // reset
 paramString='&node=$searchNodeNumber&file=$msfFile&fileID=$fileID'; // reset
 setTimeout('getWindowStream()',1500);
 </SCRIPT>
 |;
-					#(my $pdmFile="$filePath/$msfFile")=~s/\.msf\Z/_$searchNodeNumber.pdm/;
-					#$usedFileName=(split(/\//,$pdmFile))[-1];
-					($usedFileName=$msfFile)=~s/\.msf\Z/_$searchNodeNumber\.$fileID.pdm/;
-					$usedFilePath="$promsPath{tmp}/batch/$userID";
-					my $pdmFile="$usedFilePath/$usedFileName"; # pdm generated in user's directory no matter where msf is
 
 					#>Starting wait loop<#
 					my $count=my $totCount=0;
 					my $pdmSize=0;
 					while (!-e $processEnd && !-e $processError) {
-						sleep 1;
+						sleep 2;
 						if (-e $pdmFile) {
 							my $newSize=-s $pdmFile;
 							if ($newSize > $pdmSize) {
@@ -305,16 +309,20 @@ setTimeout('getWindowStream()',1500);
 						if (++$count > 500) { # xxx cycles w/o change in pdm file
 							print "<B>ERROR: The maximum duration allowed for process was exceeded. Skipping file import...</B>";
 							unlink $pdmFile if -e $pdmFile;
-							unlink $databankFile if -e $databankFile;
+							foreach my $databankFile (values %{$msfDatabankFiles{$usedFileName}}) {
+								unlink $databankFile if -e $databankFile;
+							}
 							next SEL_FILE;
 						}
-						print "<!--*-->\n" unless ++$totCount % 30; # keeps connection alive ~ every 30 sec
+						print "<!--*-->\n" unless ++$totCount % 15; # keeps connection alive ~ every 30 sec
 					}
 					if (-e $processError) { # ERROR
 						print "<B>ERROR: Premature ending of file convertion. Skipping file import...</B>";
 						unlink $processError;
 						unlink $pdmFile if -e $pdmFile;
-						unlink $databankFile if -e $databankFile;
+						foreach my $databankFile (values %{$msfDatabankFiles{$usedFileName}}) {
+							unlink $databankFile if -e $databankFile;
+						}
 						next SEL_FILE;
 					}
 					unlink $processEnd if -e $processEnd;
@@ -363,7 +371,18 @@ setTimeout('getWindowStream()',1500);
 								(my $msfFilewoExt=$msfFile)=~s/\.msf\Z//;
 								$fileNames[$i]="$msfFilewoExt##$newIndex.msf";
 								###> Copy the new indexed MSF file (only if it was not copied before).
-								copy("$filePath/$msfFile","$promsPath{valid}/multi_ana/proj_$projectID/$fileNames[$i]") unless -e "$promsPath{valid}/multi_ana/proj_$projectID/$fileNames[$i]";
+								if(!-e "$promsPath{valid}/multi_ana/proj_$projectID/$fileNames[$i]") {
+									system("cp '$filePath/$msfFile' '$promsPath{valid}/multi_ana/proj_$projectID/$fileNames[$i]'&"); # move msf to peptide dir!
+									print("&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>-Storing search file ...");
+									my $sourceFileSize = `stat -c %s '$filePath/$msfFile'`;
+									my $targetFileSize = 0;
+									while(!-e "$promsPath{valid}/multi_ana/proj_$projectID/$fileNames[$i]" || $targetFileSize != $sourceFileSize) {
+										sleep 10;
+										$targetFileSize = (-e "$promsPath{valid}/multi_ana/proj_$projectID/$fileNames[$i]") ? `stat -c %s '$promsPath{valid}/multi_ana/proj_$projectID/$fileNames[$i]'`: 0;
+										print(".");
+									}
+									print(" Done.</b><br/>");
+								}
 								###> Update the previously created PDM filename.
 								my $newPDMFile="$usedFilePath/$msfFilewoExt##$newIndex"."_$searchNodeNumber.$fileID.pdm";
 								move($pdmFile,$newPDMFile);
@@ -380,7 +399,16 @@ setTimeout('getWindowStream()',1500);
 						}
 						else{
 							mkdir "$promsPath{valid}/multi_ana/proj_$projectID" unless -e "$promsPath{valid}/multi_ana/proj_$projectID";
-							copy("$filePath/$msfFile","$promsPath{valid}/multi_ana/proj_$projectID/$msfFile");
+							system("cp '$filePath/$msfFile' '$promsPath{valid}/multi_ana/proj_$projectID/$msfFile'&"); # move msf to peptide dir!
+							print("&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>-Storing search file ...");
+							my $sourceFileSize = `stat -c %s '$filePath/$msfFile'`;
+							my $targetFileSize = 0;
+							while(!-e "$promsPath{valid}/multi_ana/proj_$projectID/$msfFile" || $targetFileSize != $sourceFileSize) {
+								sleep 10;
+								$targetFileSize = (-e "$promsPath{valid}/multi_ana/proj_$projectID/$msfFile") ? `stat -c %s '$promsPath{valid}/multi_ana/proj_$projectID/$msfFile'`: 0;
+								print(".");
+							}
+							print(" Done.</b><br/>");
 						}
 					}
 					print "<FONT class=\"title3\">&nbsp;&nbsp;Done.</FONT><BR>\n";
@@ -402,31 +430,34 @@ setTimeout('getWindowStream()',1500);
 			else { # Regular mode: merge files stay together
 				
 				#>Process tracking files<#
-				(my $databankFile="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$searchNodeNumber\.$userID\.fasta/;
+				#(my $pdmFile="$filePath/$msfFile")=~s/\.msf\Z/_$searchNodeNumber.pdm/;
+				#$usedFileName=(split(/\//,$pdmFile))[-1];
+				($usedFileName=$msfFile)=~s/\.msf\Z/_$searchNodeNumber.pdm/;
+				$usedFilePath="$promsPath{tmp}/batch/$userID";
+				my $pdmFile="$usedFilePath/$usedFileName"; # pdm generated in user's directory no matter where msf is
+				#(my $databankFile="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$searchNodeNumber\.$userID\.fasta/;
+				#unlink $databankFile if -e $databankFile;
+				foreach my $databankID (@databankIDs) {
+					($msfDatabankFiles{$usedFileName}{$databankID}="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$searchNodeNumber.$userID\_$databankID.fasta/;
+					unlink $msfDatabankFiles{$usedFileName}{$databankID} if -e $msfDatabankFiles{$usedFileName}{$databankID};
+				}
 				(my $processEnd="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$searchNodeNumber\.$userID\.end/;
 				(my $processError="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$searchNodeNumber\.$userID\.error/;
-				unlink $databankFile if -e $databankFile;
+
 				unlink $processEnd if -e $processEnd;
 				unlink $processError if -e $processError;
 				
 				#>Launching convertMsf2Pdm<#
-				print qq
-|<FONT class=\"title3\">&nbsp;-Extracting search #$searchNodeNumber from $msfFile:</FONT><BR>
+				print qq |<FONT class=\"title3\">&nbsp;-Extracting search #$searchNodeNumber from $msfFile:</FONT><BR>
 <DIV id="streamDIV_$i">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<B>Waiting for process...</B></DIV>
-<SCRIPT LANGUAGE="JavaScript">
-systemFrame.location="./convertMsf2Pdm.cgi?minScore=$selMinScore$percolParamStrg&databankID=$databankIDs[0]&node=$searchNodeNumber&file="+encodeURIComponent('$msfFile')+"&path=$filePath";
+<SCRIPT type="text/javascript">
+systemFrame.location="./convertMsf2Pdm.cgi?minScore=$selMinScore$percolParamStrg&databankID=$databankIDsStrg&node=$searchNodeNumber&file="+encodeURIComponent('$msfFile')+"&path=$filePath";
 divID='streamDIV_$i'; // reset
 streamLength=0; // reset
 paramString='&node=$searchNodeNumber&file=$msfFile'; // reset
 setTimeout('getWindowStream()',1500);
 </SCRIPT>
 |;
-				#(my $pdmFile="$filePath/$msfFile")=~s/\.msf\Z/_$searchNodeNumber.pdm/;
-				#$usedFileName=(split(/\//,$pdmFile))[-1];
-				($usedFileName=$msfFile)=~s/\.msf\Z/_$searchNodeNumber.pdm/;
-				$usedFilePath="$promsPath{tmp}/batch/$userID";
-				my $pdmFile="$usedFilePath/$usedFileName"; # pdm generated in user's directory no matter where msf is
-
 				#>Starting wait loop<#
 				my $count=my $totCount=0;
 				my $pdmSize=0;
@@ -442,7 +473,9 @@ setTimeout('getWindowStream()',1500);
 					if (++$count > 500) { # xxx cycles w/o change in pdm file
 						print "<B>ERROR: The maximum duration allowed for process was exceeded. Skipping file import...</B>";
 						unlink $pdmFile if -e $pdmFile;
-						unlink $databankFile if -e $databankFile;
+						foreach my $databankFile (values %{$msfDatabankFiles{$usedFileName}}) {
+							unlink $databankFile if -e $databankFile;
+						}
 						next SEL_FILE;
 					}
 					print "<!--*-->\n" unless ++$totCount % 30; # keeps connection alive ~ every 30 sec
@@ -451,7 +484,9 @@ setTimeout('getWindowStream()',1500);
 					print "<B>ERROR: Premature ending of file convertion. Skipping file import...</B>";
 					unlink $processError;
 					unlink $pdmFile if -e $pdmFile;
-					unlink $databankFile if -e $databankFile;
+					foreach my $databankFile (values %{$msfDatabankFiles{$usedFileName}}) {
+						unlink $databankFile if -e $databankFile;
+					}
 	#exit;
 					next SEL_FILE;
 				}
@@ -501,7 +536,19 @@ setTimeout('getWindowStream()',1500);
 							(my $msfFilewoExt=$msfFile)=~s/\.msf\Z//;
 							$fileNames[$i]="$msfFilewoExt##$newIndex.msf";
 							###> Copy the new indexed MSF file (only if it was not copied before).
-							copy("$filePath/$msfFile","$promsPath{valid}/multi_ana/proj_$projectID/$fileNames[$i]") unless -e "$promsPath{valid}/multi_ana/proj_$projectID/$fileNames[$i]";
+							if(!-e "$promsPath{valid}/multi_ana/proj_$projectID/$fileNames[$i]") {
+								system("cp '$filePath/$msfFile' '$promsPath{valid}/multi_ana/proj_$projectID/$fileNames[$i]'&"); # move msf to peptide dir!
+								print("&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>-Storing search file ...");
+								my $sourceFileSize = `stat -c %s '$filePath/$msfFile'`;
+								my $targetFileSize = 0;
+								while(!-e "$promsPath{valid}/multi_ana/proj_$projectID/$fileNames[$i]" || $targetFileSize != $sourceFileSize) {
+									sleep 10;
+									$targetFileSize = (-e "$promsPath{valid}/multi_ana/proj_$projectID/$fileNames[$i]") ? `stat -c %s '$promsPath{valid}/multi_ana/proj_$projectID/$fileNames[$i]'`: 0;
+									print(".");
+								}
+								print(" Done.</b><br/>");
+							}
+							
 							###> Update the previously created PDM filename.
 							my $newPDMFile="$usedFilePath/$msfFilewoExt##$newIndex"."_$searchNodeNumber.pdm";
 							move($pdmFile,$newPDMFile);
@@ -518,7 +565,16 @@ setTimeout('getWindowStream()',1500);
 					}
 					else{
 						mkdir "$promsPath{valid}/multi_ana/proj_$projectID" unless -e "$promsPath{valid}/multi_ana/proj_$projectID";
-						copy("$filePath/$msfFile","$promsPath{valid}/multi_ana/proj_$projectID/$msfFile");
+						system("cp '$filePath/$msfFile' '$promsPath{valid}/multi_ana/proj_$projectID/$msfFile'&"); # move msf to peptide dir!
+						print("&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>-Storing search file ...");
+						my $sourceFileSize = `stat -c %s '$filePath/$msfFile'`;
+						my $targetFileSize = 0;
+						while(!-e "$promsPath{valid}/multi_ana/proj_$projectID/$msfFile" || $targetFileSize != $sourceFileSize) {
+							sleep 10;
+							$targetFileSize = (-e "$promsPath{valid}/multi_ana/proj_$projectID/$msfFile") ? `stat -c %s '$promsPath{valid}/multi_ana/proj_$projectID/$msfFile'`: 0;
+							print(".");
+						}
+						print(" Done.</b><br/>");
 					}
 				}
 				print "<FONT class=\"title3\">&nbsp;&nbsp;Done.</FONT><BR>\n";
@@ -560,12 +616,12 @@ unless (scalar keys %fileList) {
 ####################################
 ####>Looping through data files<####
 ####################################
-$dbh=&promsConfig::dbConnect; # reconnect
 my %newSamplesID;
 my ($newSampleID,$newSamplePos);
 my $numFiles=scalar keys %fileList;
 my $filePos=0;
 foreach my $dataFile (sort{$fileList{$a}{'pos'}<=>$fileList{$b}{'pos'}} keys %fileList) {
+	$dbh=&promsConfig::dbConnect; # reconnect
 	$filePos++;
 
 	my $computeFDR;
@@ -1231,8 +1287,6 @@ foreach my $dataFile (sort{$fileList{$a}{'pos'}<=>$fileList{$b}{'pos'}} keys %fi
 	}
 	$sthInsAM->finish;
 
-
-
 	####>FDR Algorithm<####
 	if ($computeFDR) {
 		($computeFDR,$minScore)=&applyFDR($FDRalgo,$maxFDR,$analysisID,$dataFile,&promsConfig::getMinScore($fileFormat)); # $computeFDR & $minScore updated by function
@@ -1247,12 +1301,6 @@ foreach my $dataFile (sort{$fileList{$a}{'pos'}<=>$fileList{$b}{'pos'}} keys %fi
 		my $fdrQueryStrg=",DECOY=CONCAT(DECOY,',FDR=$maxFDR:$FDRalgo')";
 		$dbh->do("UPDATE ANALYSIS SET MIN_SCORE=$minScore$fdrQueryStrg WHERE ID_ANALYSIS=$analysisID");
 	}
-
-
-	####>Creating Match groups<####
-	my @sortedIdentifiers = (sort{scalar (keys %{$matchList{$b}})<=>scalar (keys %{$matchList{$a}}) || $maxProtScore{$b}<=>$maxProtScore{$a} || $a cmp $b} keys %matchList);
-	&promsMod::createMatchGroups(\%matchList, \%matchGroup, \@sortedIdentifiers, undef, undef, undef, 1);
-
 
 	####>Protecting ID space in tables QUERY_VALIDATION and PROTEIN_VALIDATION<####
 	#my ($maxQueryID,$maxProtValID);
@@ -1283,7 +1331,7 @@ foreach my $dataFile (sort{$fileList{$a}{'pos'}<=>$fileList{$b}{'pos'}} keys %fi
 			#my $tempDbFile;
 
 			if ($fileFormat=~/\.PDM/) {
-				(my $tempDbFile="$promsPath{tmp}/pdm/$dataFile")=~s/\.pdm\Z/\.$userID.fasta/; # same dir as pdm file
+				#(my $tempDbFile="$promsPath{tmp}/pdm/$dataFile")=~s/\.pdm\Z/\.$userID.fasta/; # same dir as pdm file
 				#if ($splitMsfFiles) {
 				#	($tempDbFile="$promsPath{tmp}/pdm/$dataFile")=~s/\.pdm\Z/\.$fileList{$dataFile}{'file_id'}\.$userID.fasta/; # same dir as pdm file
 				#}else{
@@ -1291,24 +1339,29 @@ foreach my $dataFile (sort{$fileList{$a}{'pos'}<=>$fileList{$b}{'pos'}} keys %fi
 				#}
 				
 				# Unset previous auto db rank
-				%protDbRank = ();
+				##%protDbRank = ();
 				
 				# If multiple banks, assign the rank of the right one to each protein
-				if(scalar @databankIDs > 1) {
-					for(my $i=0; $i < scalar @databankIDs; $i++) {
-						&promsMod::getProtInfo('verbose',$dbh,$databankIDs[$i],[$analysisID],\%protDes,\%protMW,\%protOrg,\%protLength,undef,$refProtMatch);
-						
-						foreach my $protID (keys %protDes) {
-							$protDbRank{$protID} = $i+1 if(!$protDbRank{$protID} && $protMW{$protID} != 0);
-						}
+				#if (scalar @databankIDs > 1) {
+					foreach my $dbID (@databankIDs) { # POSSIBILITY to extract DB rank by passing local sequence hash & checking when defined
+						&promsMod::getProtInfo('verbose',$dbh,$dbID,[$analysisID],\%protDes,\%protMW,\%protOrg,\%protLength,undef,$refProtMatch,$msfDatabankFiles{$dataFile}{$dbID}); #$tempDbFile
+		unlink $msfDatabankFiles{$dataFile}{$dbID}; # no longer needed		
+						# foreach my $ident (keys %protLength) {
+						# 	$protDbRank{$ident} = $i+1 if !$protDbRank{$ident}; # Already done in parseMascotDAT_MIS!!!
+						# }
 					}
-				} else {
-					&promsMod::getProtInfo('verbose',$dbh,$databankIDs[0],[$analysisID],\%protDes,\%protMW,\%protOrg,\%protLength,undef,$refProtMatch,$tempDbFile); # $tempDbFile only for MSF
-				}
+				# }
+				# else {
+				# 	&promsMod::getProtInfo('verbose',$dbh,$databankIDs[0],[$analysisID],\%protDes,\%protMW,\%protOrg,\%protLength,undef,$refProtMatch,$tempDbFile); # $tempDbFile only for MSF
+				# 	foreach my $ident (keys %protLength) {
+				# 		$protDbRank{$ident} = 1 if !$protDbRank{$ident};
+				# 	}	
+				# }
 				
-				# Unmatched proteins take a DB_RANK of 1
-				foreach my $protID (keys %protDbRank) {
-					$protDbRank{$protID} = 1 if(!$protDbRank{$protID});
+				# !! Should never happen: Unmatched proteins take a DB_RANK of -1 (UNKNOWN)
+				foreach my $ident (keys %protLength) {
+					#$protDbRank{$ident} = -1 if(!$protDbRank{$ident});
+					$protDbRank{$ident} = 1 unless $protDbRank{$ident};
 				}	
 			}
 			else {
@@ -1328,6 +1381,24 @@ foreach my $dataFile (sort{$fileList{$a}{'pos'}<=>$fileList{$b}{'pos'}} keys %fi
 			}
 		}
 	}
+
+	####>Creating Match groups<####
+	my %isContaminant;
+	if (scalar @contaminantDBs) {
+		foreach my $identifier (keys %protDbRank) {
+			foreach my $dbRank (@contaminantDBs) {
+				if ($protDbRank{$identifier}=~/$dbRank/) {
+					$isContaminant{$identifier}=1;
+					last;
+				}
+			}
+		}
+	}
+	foreach my $identifier (keys %protDbRank) {
+		$isContaminant{$identifier}=0 unless $isContaminant{$identifier};
+	}
+	my @sortedIdentifiers = (sort{scalar (keys %{$matchList{$b}})<=>scalar (keys %{$matchList{$a}}) || $isContaminant{$b}<=>$isContaminant{$a} || $maxProtScore{$b}<=>$maxProtScore{$a} || $a cmp $b} keys %matchList); # added contaminant sort
+	&promsMod::createMatchGroups(\%matchList, \%matchGroup, \@sortedIdentifiers, undef, undef, undef, 1);
 
 
 	############################################
@@ -1361,7 +1432,7 @@ foreach my $dataFile (sort{$fileList{$a}{'pos'}<=>$fileList{$b}{'pos'}} keys %fi
 	}
 
 	my $sth1=$dbh->prepare("INSERT INTO QUERY_VALIDATION (ID_ANALYSIS,QUERY_NUM,EXT_SPECTRUMID,VALID_STATUS,MASS_DATA,MAX_SCORE,CHARGE,ELUTION_TIME,$pepString) VALUES ($analysisID,?,?,?,?,?,?,?,$valueString)");
-	my $sth1bis=$dbh->prepare("INSERT INTO QUERY_MODIFICATION (ID_MODIFICATION,ID_QUERY,PEP_RANK,POS_STRING) VALUES (?,?,?,?)");
+	my $sth1bis=$dbh->prepare("INSERT INTO QUERY_MODIFICATION (ID_MODIFICATION,ID_QUERY,PEP_RANK,POS_STRING,REF_POS_STRING) VALUES (?,?,?,?,?)");
 
 	$numEntry=scalar keys %queryInfo;
 	undef @limitValue;
@@ -1411,6 +1482,8 @@ foreach my $dataFile (sort{$fileList{$a}{'pos'}<=>$fileList{$b}{'pos'}} keys %fi
 			if ($pepInfo=~ /VMOD=\s\+\s([^,]+)/) {
 				my ($varModsString) = $1;
 				my ($sequence) = ($pepInfo=~ /SEQ=(\w+)/);
+				my ($ptmSoft, $ptmProb) = ($pepInfo =~ /PTM_SOFT=(\w+),PTM_PROB=([\d;.:]+)/);
+				$ptmProb =~ s/;/,/g if($ptmProb);
 				my @arrayVarMods = split (/\s\+\s/, $varModsString);
 				my %modifs=();
 				###> Read the all string
@@ -1441,7 +1514,7 @@ foreach my $dataFile (sort{$fileList{$a}{'pos'}<=>$fileList{$b}{'pos'}} keys %fi
 				foreach my $modificationID (keys (%modifs)) {
 					my $modifsPos=join('.',sort{if ($a=~/(-|=|\+|\*)\Z/ || $b=~/(-|=|\+|\*)\Z/) {return $a cmp $b} else {return $a<=>$b}} keys %{$modifs{$modificationID}});
 					$modifsPos=-1 unless $modifsPos;
-					$sth1bis->execute($modificationID,$queryID,$pepR,$modifsPos); #à décommenter
+					$sth1bis->execute($modificationID,$queryID,$pepR,$modifsPos, ($modificationID == 9 && $ptmProb) ? "##PRB_$ptmSoft=$ptmProb" : undef); #TODO find a way to not use hard coded modification ID for PTM localization
 				}
 			}
 			$pepR++;
@@ -1453,7 +1526,7 @@ foreach my $dataFile (sort{$fileList{$a}{'pos'}<=>$fileList{$b}{'pos'}} keys %fi
 	print "</B></BR>\n";
 # $dbh->disconnect(); print "END"; exit;
 
-	####<Loading parsed data into table PROTEIN_VALIDATION
+	####<Storing parsed data into table PROTEIN_VALIDATION
 	print "<FONT class=\"title3\">&nbsp&nbsp;-Step 2 of 3:</FONT><BR>\n";
 	my $sth2=$dbh->prepare("INSERT INTO PROTEIN_VALIDATION (ID_ANALYSIS,IDENTIFIER,DB_RANK,MW,PROT_LENGTH,PROT_DES,ORGANISM,NUM_MATCH,MAX_MATCH,SCORE,MAX_SCORE,SEL_STATUS,MATCH_GROUP) VALUES ($analysisID,?,?,?,?,?,?,0,?,?,?,-1,?)");
 	$numEntry=scalar keys %maxProtMatch;
@@ -1588,7 +1661,7 @@ foreach my $dataFile (sort{$fileList{$a}{'pos'}<=>$fileList{$b}{'pos'}} keys %fi
 	}
 
 	print "<BR>\n";
-
+	$dbh->disconnect;
 }
 
 
@@ -1598,7 +1671,9 @@ foreach my $dataFile (sort{$fileList{$a}{'pos'}<=>$fileList{$b}{'pos'}} keys %fi
 foreach my $tempFile (@temporaryFiles) {
 	unlink $tempFile;
 }
-unlink glob "$promsPath{tmp}/pdm/*.$userID.fasta" if $action eq 'anaBatch';
+
+unlink glob "$promsPath{tmp}/pdm/*.$userID*.fasta" if $action eq 'anaBatch';
+
 
 #################################
 ####>Deleting original files<####
@@ -1617,8 +1692,9 @@ if ($deleteFiles && $action eq 'anaBatch') {
 ########################################
 ####>Fetching info for frame reload<####
 ########################################
-my @anaInfo=&promsMod::getItemInfo($dbh,'ANALYSIS',$firstAnalysisID) if $firstAnalysisID;
 
+$dbh=&promsConfig::dbConnect; # reconnect
+my @anaInfo=&promsMod::getItemInfo($dbh,'ANALYSIS',$firstAnalysisID) if $firstAnalysisID;
 $dbh->disconnect; # safer to disconnect before fork
 
 ################################################
@@ -1646,7 +1722,7 @@ if (scalar @databankScans) {
 ##########################
 ####>Reloading frames<####
 ##########################
-#exit; # DEBUG!
+# exit; # DEBUG!
 if ($firstAnalysisID) {
 	my $anaBranchID="analysis:$firstAnalysisID";
 	my $updateURL="parent.navFrame.location=\"$promsPath{cgi}/openProject.cgi?ID=$projectID&ACT=nav";
@@ -1664,7 +1740,7 @@ if ($firstAnalysisID) {
 	}
 
 	print qq
-|<SCRIPT LANGUAGE="JavaScript">
+|<SCRIPT type="text/javascript">
 	top.promsFrame.selectedAction='summary';
 	if ('$action' != 'reval' && top.$targetTree) {top.$targetTree=parent.$treeFrame.addItemToTree('$anaBranchID');}
 	$updateURL;
@@ -1981,7 +2057,8 @@ sub parseMascotDAT_MIS {
 				print ANAFILE "$analysisID\n";
 				close ANAFILE;
 				(my $msfFile = $anaFile) =~ s/\.ana/\.msf/;
-				my $dbsqlite = DBI->connect( "dbi:SQLite:$promsPath{valid}/multi_ana/proj_$projectID/$msfFile", "", "", {PrintError => 1,RaiseError => 1});
+				my $msfFilePath = (-e "$filePath/$msfFile") ? "$filePath/$msfFile" : "$promsPath{valid}/multi_ana/proj_$projectID/$msfFile";
+				my $dbsqlite = DBI->connect( "dbi:SQLite:$msfFilePath", "", "", {PrintError => 1,RaiseError => 1});
 # COMMENTED by PP ----------->
 				#my $getSpectrumIDs = $dbsqlite->prepare("SELECT SpectrumID, RetentionTime, MassPeaks.Charge FROM SpectrumHeaders, MassPeaks, Spectra WHERE Spectra.UniqueSpectrumID=SpectrumHeaders.UniqueSpectrumID AND SpectrumHeaders.MassPeakID=MassPeaks.MassPeakID ORDER BY SpectrumHeaders.Mass ASC");
 				#$getSpectrumIDs->execute;
@@ -2059,8 +2136,10 @@ sub parseMascotDAT_MIS {
 
 				if ($line=~/^q\d+_p\d+_db=(\d+)/) { # multi-db search: eg. 010202010101
 					my $dbStrg=$1;
-					@databankRanks=($dbStrg=~ m/../g); # split every 2 characters -> (01,02,02,01,01,01)
-					foreach my $i (0..$#databankRanks) {$databankRanks[$i]=~s/^0//;} # remove starting 0
+					# @databankRanks=($dbStrg=~ m/../g); # split every 2 characters -> (01,02,02,01,01,01)
+					# foreach my $i (0..$#databankRanks) {$databankRanks[$i]=~s/^0//;} # remove starting 0
+	@databankRanks=split('0',$dbStrg); # db rank can be mixted ...12, 13, 23, 123
+	shift @databankRanks; # remove first empty value
 				}
 				elsif ($line=~/^q\d+_p\d+=/) {
 					if ($rank==1) {
@@ -2313,6 +2392,22 @@ sub parseMascotDAT_MIS {
 						$queryInfo{$queryNum}[-1].="PEP=$PEP,QVAL=$qValue," if $matchGood;
 					}
 				}
+				elsif ($line=~/^q\d+_p\d+_(phosphors|ptmrs)=(\S+)/) { # PtmRS or PhosphoRS from PD
+					my $softName = ($1 eq 'phosphors') ? "PRS" : "PTMRS"; # Add new softs name here
+					if ($dbMixedDecoyFlag) { # use tempQueryInfo
+						$tempQueryInfo{$queryNum}{$rankGood}.="PTM_SOFT=$softName,PTM_PROB=$2," if $matchGood;
+						$tempQueryInfo{$queryNum}{$rankBad}.="PTM_SOFT=$softName,PTM_PROB=$2" if $matchBad;
+					}
+					else { # use queryInfo directly
+						$queryInfo{$queryNum}[-1].="PTM_SOFT=$softName,PTM_PROB=$2," if $matchGood;
+					}
+				}
+				elsif(($line=~/^q\d+_p\d+_precursor=(\S+)/)) {
+					my ($precMassExp, $precCharge, $precMassObs) = split(/,/,$1);
+					$massExp{($dbMixedDecoyFlag) ? "-$queryNum" : "$qSign$queryNum"}= $precMassExp; # Experimental mass
+					$charge{($dbMixedDecoyFlag) ? "-$queryNum" : "$qSign$queryNum"}=$precCharge; # Charge
+					$massObs{($dbMixedDecoyFlag) ? "-$queryNum" : "$qSign$queryNum"}=$precMassObs; # Observed mass
+				}
 				elsif ($line=~/^q\d+_p\d+_subst=(\S+)/) { # keep substitution information for Mascot
 					my @substitutions =split(/,/,$1);
 					my $subString='';
@@ -2370,7 +2465,8 @@ sub parseMascotDAT_MIS {
 				$charge{"-$currentQuery"}=$charge{$currentQuery};
 			}
 		}
-		if ($nbLine > 1000000) {
+		
+		if ($nbLine > 100000) {
 			$nbLine=0;
 			print '.';
 		}
@@ -2521,7 +2617,6 @@ sub parseParagonXML {
 	print " Done.</FONT><BR>\n";
 }
 
-
 #######################################
 ####<Parsing .tandem.pep.xml file >####
 #######################################
@@ -2572,15 +2667,12 @@ sub drawScoreDistribution {
 	###<Generating score files>###
 	open (TARGET,">$targetFile");
 	open (DECOY,">$decoyFile");
-	my ($numTarget,$numDecoy)=(0,0);
 	foreach my $queryNum (sort{$maxQueryScore{$b}<=>$maxQueryScore{$a}} keys %maxQueryScore) { # sort just for helping debug
 		if ($queryNum > 0) {
 			print TARGET "$maxQueryScore{$queryNum}\n";
-			$numTarget++;
 		}
 		else {
 			print DECOY "$maxQueryScore{$queryNum}\n";
-			$numDecoy++;
 		}
 	}
 	close TARGET;
@@ -2590,22 +2682,22 @@ sub drawScoreDistribution {
 	##<Drawing density plot with R
 	my $Rscript="$promsPath{valid}/ana_$anaID/density.R";
 	open(R,">$Rscript");
-	print R qq
-|target <- t(read.table("$targetFile"))
-decoy <- t(read.table("$decoyFile"))
-densT <- density(target)
-densD <- density(decoy)
-
-minX <- min(c(min(densT\$x,densD\$x)))
-maxX <- max(c(max(densT\$x,densD\$x)))
-maxY <- max(c(max(densT\$y*$numTarget,densD\$y*$numDecoy)))
+	print R qq |
+library(ggplot2)
+target <- read.csv("$targetFile", header = FALSE)
+decoy <- read.csv("$decoyFile", header = FALSE)
 
 png(filename="$promsPath{valid}/ana_$anaID/scores.png", width=500, height=500, units = "px")
 
-plot(densT\$x,densT\$y*$numTarget, xlim=c(minX,maxX), ylim=c(0,maxY*1.1), yaxs='i', type='l', col='green', xlab="Scores", ylab="Abundance", main="$rootName ($fdr% FDR precomputed)")
-lines(densD\$x,densD\$y*$numDecoy, col='red')
-legend("topright", c("Peptides","Decoy peptides"), cex=0.8, col=c('green','red'), lwd=2, bty="n")
-
+rep = rbind(data.frame(type=factor('Target'), value=target), data.frame(type=factor('Decoy'), value=decoy))
+sc_threshold = quantile(rep[rep\$type == 'Decoy',]\$V1, 0.99, na.rm = TRUE)
+p <- ggplot(rep, aes(V1, color=type)) +
+  geom_density(aes(y = ..count..), alpha=.2) +
+  labs(title="Identification score distribution of $rootName", 
+       subtitle="For both target and decoy peptides",
+       x="Score",
+       y="Peptides amount")
+plot(p)
 dev.off()
 |;
 	close R;
@@ -3017,23 +3109,22 @@ sub applyFDR {
 		##<Drawing density plot with R
 		my $Rscript="$promsPath{valid}/ana_$anaID/density.R";
 		open(R,">$Rscript");
-		print R qq
-|target <- t(read.table("$targetFile"))
-decoy <- t(read.table("$decoyFile"))
-densT <- density(target)
-densD <- density(decoy)
-
-minX <- min(c(min(densT\$x,densD\$x)))
-maxX <- max(c(max(densT\$x,densD\$x)))
-maxY <- max(c(max(densT\$y*$numTarget,densD\$y*$numDecoy)))
+		print R qq |
+library(ggplot2)
+target <- read.csv("$targetFile", header = FALSE)
+decoy <- read.csv("$decoyFile", header = FALSE)
 
 png(filename="$promsPath{valid}/ana_$anaID/scores.png", width=500, height=500, units = "px")
 
-plot(densT\$x,densT\$y*$numTarget, xlim=c(minX,maxX), ylim=c(0,maxY*1.1), yaxs='i', type='l', col='green', xlab="Scores", ylab="Abundance", main="$rootName ($fdr% FDR)")
-lines(densD\$x,densD\$y*$numDecoy, col='red')
-abline(v=$fdrScore, col='blue')
-legend("topright", c("Peptides","Decoy peptides","Threshold score"), cex=0.8, col=c('green','red','blue'), lwd=2, bty="n")
-
+rep = rbind(data.frame(type=factor('Target'), value=target), data.frame(type=factor('Decoy'), value=decoy))
+sc_threshold = quantile(rep[rep\$type == 'Decoy',]\$V1, 0.99, na.rm = TRUE)
+p <- ggplot(rep, aes(V1, color=type)) +
+  geom_density(aes(y = ..count..), alpha=.2) +
+  labs(title="Identification score distribution of $rootName", 
+       subtitle="For both target and decoy peptides",
+       x="Score",
+       y="Peptides amount")
+plot(p)
 dev.off()
 |;
 		close R;
@@ -4043,7 +4134,6 @@ sub getPercolatorScores {
 					elsif ($Element eq "aaAfter" ) {$peptideProt->setAaAfter($el->{'Data'});}
 				}
 				elsif ($Element eq "AC" ) {$ProteinMatch->setIdentifier($el->{'Data'})}
-
 			}
 			elsif (exists ($Elements{"ple:peptide"})) {
 				if ($Element eq "ple:PeptideDescr" ) {$spectrum->setTittle($el->{'Data'});}
@@ -5144,6 +5234,16 @@ sub getPercolatorScores {
 
 
 ####>Revision history<####
+# 3.9.5 [CHANGE] Safer dbh connections management to avoid lock wait timeouts (VS 05/01/2020)
+# 3.9.4 [ENHANCEMENT] Handles precursor modification nodes in PD Workflow (VS 10/12/2020)
+# 3.9.2 [ENCHANCEMENT] Improved peptide score distribution graph display (VS 30/11/20)
+# 3.9.1 [BUGFIX] Avoid null error logging on $ptmProb when peptides do not have any PTM probabilities (VS 29/09/20)
+# 3.9.0 [CHANGE] Change to handle multi-databank for PD (PP 05/10/20)
+# 3.8.6 [ENHANCEMENT] Store PtmRS PTMs localization probabilities when importing MSF files (VS 12/08/20)
+# 3.8.5 [BUGFIX] Proper DB_RANK attribution on single database search import (VS 03/05/2020)
+# 3.8.4 [BUGFIX] Handles large merged msf files (VS 07/04/20)
+# 3.8.3 [CHANGE] Change import monitoring strategy for large files (VS 08/04/20)
+# 3.8.2 [BUGFIX] Handles large msf files (VS 07/04/20)
 # 3.8.1 [BUGFIX] Multiple modifications (with a '+') could not be imported (VS 15/11/19)
 # 3.8.0 [ENHANCEMENT] Remove scanDatabanks.pl from system iframe and run in background (VS 12/08/19)
 # 3.7.9 [MODIF] Changed createMatchGroup to fit with promsMod.pm prototype (VS 03/07/19)

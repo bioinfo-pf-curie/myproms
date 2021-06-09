@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# drawSpectrum.cgi                  1.8.5                                      #
+# drawSpectrum.cgi                  1.8.6                                      #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Checks if a reference spectrum exists                                        #
@@ -85,7 +85,8 @@ if ($call eq 'pep' ||  $call eq 'val') { # called from sequenceView or validated
 	#	$dataFile="$promsPath{peptide}/proj_$projectID/$analysisID"."_$dataFileName"; # new data file conservation procedure (01/06/11)
 	#	$dataFile=~s/\.xml/\.pgf/ if ($fileFormat=~/\.XML/ && $fileFormat ne 'PARAGON.XML');
 	#}
-	$dataFileName='msms.txt' if $fileFormat eq 'MAXQUANT.DIR';
+	$dataFileName = "swath_ana_$analysisID.txt" if($fileFormat eq 'SPECTRONAUT.XLS');
+	$dataFileName = 'msms.txt' if($fileFormat eq 'MAXQUANT.DIR');
 	$dataFile=($validStatus==2)? "$promsPath{peptide}/proj_$projectID/ana_$analysisID/$dataFileName" : "$promsPath{valid}/ana_$analysisID/$dataFileName"; # new data file structure (04/03/13)
 	unless (-e $dataFile) {
 		if ($fileFormat eq 'MASCOT.DAT') {$dataFile=~s/\.dat/_min\.dat/;} # "old" minimal file
@@ -186,20 +187,28 @@ while (my ($specID,$refMassObs,$fileName,$qNum,$rank,$score,$upUser)=$sthRefSpec
 			$refUpUser=$upUser;
 # 			last;
 		}
-		push @refSpectra,[$specID,$fileName,$qNum,$rank,$score,$upUser];
+		push @refSpectra,[$specID,$refSpecFile,$qNum,$rank,$score,$upUser];
 	}
 }
 $sthRefSpec->finish;
 
 
-if ($msType eq 'DIA'){
+if ($msType eq 'DIA') {
 	####> FOR DIA $refSpecID = library ID
-	my ($libraryID,$libraryName)=$dbh->selectrow_array("SELECT ASL.ID_SWATH_LIB, NAME FROM ANALYSIS_SWATH_LIB ASL, SWATH_LIB SL WHERE ID_ANALYSIS=$analysisID AND ASL.ID_SWATH_LIB=SL.ID_SWATH_LIB");
-	$refSpecID=$libraryID;
-	$refSpecFile="$promsPath{data}/swath_lib/SwLib_$libraryID/$libraryName.sptxt";
-	($refQueryNum,$refRank,$refScore)=($objectID,'','0');
-	$refUpUser='';
-	push @refSpectra,[$refSpecID,"S$libraryID.sptxt",$objectID,'','',''];
+	my $sthRefSpec=$dbh->prepare("SELECT ASL.ID_SWATH_LIB, NAME FROM ANALYSIS_SWATH_LIB ASL, SWATH_LIB SL WHERE ID_ANALYSIS=$analysisID AND ASL.ID_SWATH_LIB=SL.ID_SWATH_LIB");
+	$sthRefSpec->execute();
+	$rank = 1;
+	while (my ($libraryID, $libraryName, $upUser)=$sthRefSpec->fetchrow_array) {
+		$upUser='' unless $upUser;
+		my $specFile = (-e "$promsPath{data}/swath_lib/SwLib_$libraryID/$libraryName.sptxt") ? "$promsPath{data}/swath_lib/SwLib_$libraryID/$libraryName.sptxt" : "$promsPath{data}/swath_lib/SwLib_$libraryID/$libraryName.tsv";
+		unless ($refSpecID) {
+			$refSpecID=$libraryID;
+			$refSpecFile= $specFile;
+			($refQueryNum,$refRank,$refScore)=($objectID,$rank,'0') if(!$refQueryNum);
+			$refUpUser=$upUser;
+		}
+		push @refSpectra,[$refSpecID, $specFile,$objectID,$rank++,'',$upUser];
+	}
 }
 $dbh->disconnect;
 
@@ -236,7 +245,7 @@ if ($refSpecID) { # There are reference spectra for this peptide
 	print qq
 |var currentPos=0; // default starting reference spectrum position
 function loadRefSpectrum(specPos) {
-	refSpecFrame.location="$promsPath{cgi}/peptide_view.cgi?REF=1&file=$promsPath{spectrum}/"+spectra[specPos][1]+"&query="+spectra[specPos][2]+"&hit="+spectra[specPos][3]+"&REF_SC="+spectra[specPos][4]+"&TYPE=REFSPEC&UP_USER="+spectra[specPos][5]+"&REF_POS="+specPos+"_$numSpec$disableStrg&width="+window.innerWidth;
+	refSpecFrame.location="$promsPath{cgi}/peptide_view.cgi?REF=1&file="+spectra[specPos][1]+"&query="+spectra[specPos][2]+"&hit="+spectra[specPos][3]+"&REF_SC="+spectra[specPos][4]+"&TYPE=REFSPEC&UP_USER="+spectra[specPos][5]+"&REF_POS="+specPos+"_$numSpec$disableStrg&width="+window.innerWidth;
 	currentPos=specPos; // update reference spectrum position
 }
 function loadQueryFrames() {
@@ -297,6 +306,7 @@ else { # no reference spectra
 }
 
 ####>Revision history<####
+# 1.8.6 [FEATURE] Handles Spectronaut library spectrum visualization (VS 06/06/20)
 # 1.8.5 [Fix]Minor bug for undefined $msType when called from validation mode (PP 30/04/18)
 # 1.8.4 Minor modif to allow DIA reference spectrum drawing (MLP 19/12/17)
 # 1.8.3 Change to match use of mqpar.xml file in ANALYSIS.DATA_FILE field for MaxQuant (PP 02/02/17)

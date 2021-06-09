@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# mapProteinIdentifiers.pl        1.5.1                                        #
+# mapProteinIdentifiers.pl        1.5.7                                        #
 # Authors: P. Poullet, G. Arras & F. Yvon (Institut Curie)                     #
 # Contact: myproms@curie.fr                                                    #
 # Maps protein identifiers over the internet.                                  #
@@ -50,7 +50,7 @@ use File::Path qw(mkpath); # make_path
 use LWP::UserAgent;
 use promsConfig;
 use promsMod;
-#exit;
+# exit;
 #############################
 ####>Fetching parameters<####
 #############################
@@ -175,7 +175,11 @@ if ($update eq 'force') {
 		if ($protSeq eq '+') {$sthUpProt1->execute($protID);}
 		else {$sthUpProt2->execute($protID);}
 		$protCount++;
-		print '.' unless $protCount % 1000;
+		#print '.' unless $protCount % 1000;
+		unless ($protCount % 500) {
+			$dbh->commit;
+			print '.';
+		}
 	}
 	$sthMapProt->finish;
 	$sthUpProt1->finish;
@@ -184,7 +188,7 @@ if ($update eq 'force') {
 
 	###>Retrieve uniprotID & backup uniprot ACC from master proteins<###
 	my $sthForceID=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_MASTER_PROTEIN=? AND ID_IDENTIFIER=$identifierTypes{ID}"); # force update only
-	my $sthForceAC=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_MASTER_PROTEIN=? AND ID_IDENTIFIER=$identifierTypes{AC} AND RANK=1"); # force update only
+	my $sthForceAC=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_MASTER_PROTEIN=? AND ID_IDENTIFIER=$identifierTypes{AC} AND IDENT_RANK=1"); # force update only
 	foreach my $masterProtID (keys %forceUnusedMasters) {
 		$sthForceID->execute($masterProtID);
 		my ($uniID)=$sthForceID->fetchrow_array;
@@ -195,7 +199,7 @@ if ($update eq 'force') {
 	}
 	$sthForceID->finish;
 	$sthForceAC->finish;
-	print " Done.\n-",(scalar keys %forceUpdateProteins)," proteins (matching ",(scalar keys %forceUnusedMasters)," UniProt IDs) were unmapped\n";
+	print " Done.\n-Mapping of was deleted for ",(scalar keys %forceUpdateProteins)," proteins (matching ",(scalar keys %forceUnusedMasters)," UniProt IDs).\n";
 	print "-$totUnmapped proteins without mapping in project to be updated.\n";
 
 	###>Retrieve list of analyses in project <###
@@ -218,11 +222,12 @@ my ($projectIdentMapID)=$dbh->selectrow_array("SELECT ID_IDENTIFIER FROM PROJECT
 my $sthDB=$dbh->prepare("SELECT IDENTIFIER_TYPE,DB_RANK FROM ANALYSIS_DATABANK AD,DATABANK D WHERE AD.ID_ANALYSIS=? AND AD.ID_DATABANK=D.ID_DATABANK");
 #my $sthID=$dbh->prepare("SELECT P.ID_PROTEIN,IDENTIFIER,DB_RANK,PROT_LENGTH,ORGANISM FROM ANALYSIS_PROTEIN A,PROTEIN P WHERE ID_ANALYSIS=? AND P.ID_PROTEIN=A.ID_PROTEIN AND ID_MASTER_PROTEIN IS NULL");
 #my $strgSQL = ($update eq 'force')? "" : "AND (ID_MASTER_PROTEIN IS NULL OR PROT_SEQ='-')";
-my $sthID=$dbh->prepare("SELECT P.ID_PROTEIN,IDENTIFIER,DB_RANK,PROT_LENGTH,ORGANISM,PROT_SEQ,ID_MASTER_PROTEIN FROM ANALYSIS_PROTEIN A,PROTEIN P WHERE ID_ANALYSIS=? AND P.ID_PROTEIN=A.ID_PROTEIN AND (ID_MASTER_PROTEIN IS NULL OR PROT_SEQ='-')"); # $strgSQL
-my $sthMP=$dbh->prepare("SELECT ID_MASTER_PROTEIN FROM PROTEIN WHERE IDENTIFIER=? AND ID_MASTER_PROTEIN IS NOT NULL LIMIT 0,1"); # get 1st
+#my $sthID=$dbh->prepare("SELECT P.ID_PROTEIN,IDENTIFIER,DB_RANK,PROT_LENGTH,ORGANISM,PROT_SEQ,ID_MASTER_PROTEIN FROM ANALYSIS_PROTEIN A,PROTEIN P WHERE ID_ANALYSIS=? AND P.ID_PROTEIN=A.ID_PROTEIN AND (ID_MASTER_PROTEIN IS NULL OR PROT_SEQ='-')"); # $strgSQL
+my $sthID=$dbh->prepare("SELECT P.ID_PROTEIN,IDENTIFIER,DB_RANK,PROT_LENGTH,ORGANISM,PROT_SEQ,ID_MASTER_PROTEIN FROM ANALYSIS_PROTEIN A,PROTEIN P WHERE ID_ANALYSIS=? AND P.ID_PROTEIN=A.ID_PROTEIN AND (ID_MASTER_PROTEIN IS NULL OR MW=0 OR ORGANISM='unknown organism' OR ORGANISM='' OR (PROT_SEQ='-' AND ID_MASTER_PROTEIN IS NOT NULL))"); # $strgSQL		
+my $sthMP=$dbh->prepare("SELECT ID_MASTER_PROTEIN FROM PROTEIN WHERE IDENTIFIER=? AND ID_MASTER_PROTEIN IS NOT NULL LIMIT 1"); # get 1st
 my $sthUpMP=$dbh->prepare("UPDATE PROTEIN SET ID_MASTER_PROTEIN=?,ALIAS=? WHERE ID_PROTEIN=?");
 my $sthOrg=$dbh->prepare("SELECT P.ID_PROTEIN FROM PROTEIN P,ANALYSIS_PROTEIN A WHERE ID_ANALYSIS=? AND ID_MASTER_PROTEIN IS NOT NULL AND P.ID_PROTEIN=A.ID_PROTEIN AND ORGANISM='unknown organism'");
-my $sthAC=($projectIdentMapID)? $dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_IDENTIFIER=$projectIdentMapID AND ID_MASTER_PROTEIN=? AND RANK=1 LIMIT 0,1") : undef;
+my $sthAC=($projectIdentMapID)? $dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_IDENTIFIER=$projectIdentMapID AND ID_MASTER_PROTEIN=? AND IDENT_RANK=1 LIMIT 1") : undef;
 
 my (%proteinList,%identifier2Master,%missingProteins,%noOrganismProteins,%directProteinAnnotation,%master2AliasConv);
 my $numDirectMapped=0;
@@ -238,7 +243,9 @@ foreach my $anaID (@analysisList) {
 	}
 	$sthID->execute($anaID);
 	while (my ($protID,$identifier,$dbRank,$protLength,$organism,$protSeq,$masterProtID0)=$sthID->fetchrow_array) {
-		my $identType=($dbType eq 'AUTO')? $dbRankIdentType{$dbRank} : $dbType;
+		my $trueDbRank=($dbRank > 10)? (split(//,$dbRank))[0] : $dbRank;  # multi-databank protein: 1 & 2 => 12
+		my $identType=($dbType eq 'AUTO')? $dbRankIdentType{$trueDbRank} : $dbType;
+		$identType='UNKNOWN' unless $identType;
 #print "$protID,$identifier,$dbRank,$protLength,$organism,$protSeq,master=$masterProtID0\n<br>";
 		if ($masterProtID0 && $update ne 'force') { # already mapped
 			$identifier2Master{$identifier}=$masterProtID0;
@@ -261,6 +268,7 @@ foreach my $anaID (@analysisList) {
 					my $alias=($master2AliasConv{$identifier2Master{$identifier}})? $master2AliasConv{$identifier2Master{$identifier}} : $identifier;
 					$sthUpMP->execute($identifier2Master{$identifier},$alias,$protID);
 					$numDirectMapped++;
+					$dbh->commit unless $numDirectMapped % 500;
 				}
 			}
 			#else { # to be mapped
@@ -286,7 +294,7 @@ foreach my $anaID (@analysisList) {
 #print "protID=$protID##$identType##$identifier\n<br>";
 			}
 		}
-		if (!$protLength || $protSeq eq '-') { #  all annotations missing or just prot seq
+		if (!$protLength || !$protSeq || $protSeq eq '-') { #  all annotations missing or just prot seq
 			if ($identType eq 'GI_ACCESSION' || $identType eq 'NCBI_ALL') {
 				push @{$directProteinAnnotation{'GI_ACCESSION'}{'ANA'}{$protID}},$anaID;
 				my ($modIdentifier)=($identifier=~/gi\|(\d+)/);
@@ -430,19 +438,19 @@ unless (scalar keys %uniprotIdList) {
 ##########################
 my %sthQueries=(
 	'INS_MP'=>$dbh->prepare('INSERT INTO MASTER_PROTEIN (ID_SPECIES,PROT_DES,PROT_LENGTH,MW,PROT_SEQ,UPDATE_DATE) VALUES (?,?,?,?,?,NOW())'), # autoincrement
-	'INS_MI'=>$dbh->prepare('INSERT INTO MASTERPROT_IDENTIFIER (ID_IDENTIFIER,ID_MASTER_PROTEIN,RANK,VALUE) VALUES (?,?,?,?)'),
+	'INS_MI'=>$dbh->prepare('INSERT INTO MASTERPROT_IDENTIFIER (ID_IDENTIFIER,ID_MASTER_PROTEIN,IDENT_RANK,VALUE) VALUES (?,?,?,?)'),
 	'INS_SP'=>$dbh->prepare('INSERT INTO SPECIES (ID_SPECIES,COMMON_NAME,SCIENTIFIC_NAME,TAXONID) VALUES (?,?,?,?)'),
 	'UP_PROT'=>$dbh->prepare("UPDATE PROTEIN SET ID_MASTER_PROTEIN=? WHERE ID_PROTEIN=? AND ID_MASTER_PROTEIN IS NULL"), # AND ID_MASTER_PROTEIN IS NULL <- just to be safe
 	'UP_PSQ'=>$dbh->prepare("UPDATE PROTEIN SET PROT_SEQ='+' WHERE ID_PROTEIN=? AND (PROT_SEQ='-' OR PROT_SEQ IS NULL OR PROT_SEQ=?)") # in case no protSeq or protSeq = masterSeq
 );
 if ($projectIdentMapID) {
-	$sthQueries{'SEL_PIM'}=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_IDENTIFIER=$projectIdentMapID AND ID_MASTER_PROTEIN=? AND RANK=1 LIMIT 0,1");
+	$sthQueries{'SEL_PIM'}=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_IDENTIFIER=$projectIdentMapID AND ID_MASTER_PROTEIN=? AND IDENT_RANK=1 LIMIT 0,1");
 	$sthQueries{'UP_PROT2'}=$dbh->prepare("UPDATE PROTEIN SET ID_MASTER_PROTEIN=?,ALIAS=? WHERE ID_PROTEIN=? AND ID_MASTER_PROTEIN IS NULL"); # AND ID_MASTER_PROTEIN IS NULL <- just to be safe
 }
 if ($update eq 'force') {
 	$sthQueries{'SEL_PIM2'}=$dbh->prepare("SELECT ID_MASTER_PROTEIN FROM MASTERPROT_IDENTIFIER WHERE ID_IDENTIFIER=$identifierTypes{ID} AND VALUE=? LIMIT 0,1");
 	$sthQueries{'SEL_PSEQ'}=$dbh->prepare("SELECT ID_PROTEIN,PROT_SEQ FROM PROTEIN WHERE ID_PROJECT=$projectID AND PROT_LENGTH=?");
-	$sthQueries{'SEL_MI'}=$dbh->prepare("SELECT I.CODE,GROUP_CONCAT(MI.VALUE ORDER BY MI.RANK SEPARATOR ':') FROM MASTERPROT_IDENTIFIER MI,IDENTIFIER I WHERE MI.ID_MASTER_PROTEIN=? AND MI.ID_IDENTIFIER=I.ID_IDENTIFIER GROUP BY MI.ID_IDENTIFIER");
+	$sthQueries{'SEL_MI'}=$dbh->prepare("SELECT I.CODE,GROUP_CONCAT(MI.VALUE ORDER BY MI.IDENT_RANK SEPARATOR ':') FROM MASTERPROT_IDENTIFIER MI,IDENTIFIER I WHERE MI.ID_MASTER_PROTEIN=? AND MI.ID_IDENTIFIER=I.ID_IDENTIFIER GROUP BY MI.ID_IDENTIFIER");
 	$sthQueries{'SEL_MPA'}=$dbh->prepare("SELECT PROT_LENGTH,MW,PROT_SEQ FROM MASTER_PROTEIN WHERE ID_MASTER_PROTEIN=?");
 	#$sthQueries{'UP_OLD_SEQ'}=$dbh->prepare("UPDATE PROTEIN P INNER JOIN MASTER_PROTEIN M ON P.ID_MASTER_PROTEIN=M.ID_MASTER_PROTEIN SET P.PROT_SEQ=M.PROT_SEQ WHERE P.ID_MASTER_PROTEIN=? AND P.PROT_SEQ='+'"); # reinject original prot_seq
 	$sthQueries{'UP_MP'}=$dbh->prepare('UPDATE MASTER_PROTEIN SET ID_SPECIES=?,PROT_DES=?,PROT_LENGTH=?,MW=?,PROT_SEQ=?,UPDATE_DATE=NOW() WHERE ID_MASTER_PROTEIN=?');
@@ -458,7 +466,7 @@ if ($update ne 'force') {
 	print "+Checking for already referenced UniProt IDs...";
 	##my ($fromSQL,$condSQL) = ($update eq "force")? (",MASTER_PROTEIN MP"," AND MI.ID_MASTER_PROTEIN=MP.ID_MASTER_PROTEIN AND UPDATE_DATE <= DATE_SUB(NOW(),INTERVAL 15 DAY)") : ("","");
 	##my $sthUID=$dbh->prepare("SELECT MI.ID_MASTER_PROTEIN FROM MASTERPROT_IDENTIFIER MI $fromSQL WHERE MI.ID_IDENTIFIER=$identifierTypes{ID} AND MI.VALUE=? $condSQL LIMIT 0,1 ");
-	my $sthUID=$dbh->prepare("SELECT ID_MASTER_PROTEIN FROM MASTERPROT_IDENTIFIER WHERE ID_IDENTIFIER=$identifierTypes{ID} AND VALUE=? LIMIT 0,1");
+	my $sthUID=$dbh->prepare("SELECT ID_MASTER_PROTEIN FROM MASTERPROT_IDENTIFIER WHERE ID_IDENTIFIER=$identifierTypes{ID} AND VALUE=? LIMIT 1");
 	my $count=0;
 	my $numMappableProt=0;
 	my $numUniId2Annot=0;
@@ -517,6 +525,7 @@ if ($update ne 'force') {
 		}
 		$count++;
 		print '.' unless $count % 100;
+		$dbh->commit unless $count % 500;
 	}
 	$dbh->commit;
 
@@ -581,7 +590,7 @@ print " Done.\n-$numAnnotProt proteins ($numAnnotUniIds UniProt IDs) annotated.\
 
 
 ###############################################################################################
-####>Re-linking unmapped proteins to old their mapping (if any) & deleting unused mappings<####
+####>Re-linking unmapped proteins to their old mapping (if any) & deleting unused mappings<####
 ###############################################################################################
 if ($update eq 'force') {
 	foreach my $protID (keys %forceRemovedProteins) {
@@ -1204,7 +1213,15 @@ sub importAnnotationsFromUniprotKB { #importAnnotationsFromSRS
 				$line=~s/;\Z//; # . at end of lines replace by ;
 #print "'$line' -> $dbX:";
 				my @data=split(/;\s/,$line);
-				#if ($dbCode=~/PIR|RefSeq|Ensembl/) {
+				if ($data[-1]=~/\. \[/) { # isoform info: "Ensembl; ENSMUST00000037701; ENSMUSP00000045345; ENSMUSG00000034382. [Q91Z58-2]"
+					my ($idValue,$isoform)=split(/\. /,$data[-1]);
+					foreach my $v (0..($#data-1)) {$data[$v].=". $isoform";}
+					if ($dbCode eq 'Ensembl') {
+						#>Prevent duplicate GeneID (unique for all isoforms)
+						if ($identifierCrossRef{$currentIdent} && $identifierCrossRef{$currentIdent}{$dbCode}) {pop @data;} # would be safer to check if geneID already recorded
+						else {$data[-1]=$idValue;} # no isoform info for GeneID
+					}	
+				}
 				if ($dbCode=~/IntAct|STRING/) {
 					@{$identifierCrossRef{$currentIdent}{$dbCode}}=($data[1]);
 				}
@@ -1218,7 +1235,6 @@ sub importAnnotationsFromUniprotKB { #importAnnotationsFromSRS
 					foreach my $identX (@data[1..$#data]) {
 						next if ($dbCode eq "FlyBase" && $identX !~ /FBgn/);
 						next if $identX eq '-';
-#print "*$identX";
 						push @{$identifierCrossRef{$currentIdent}{$dbCode}},$identX;
 					}
 				}
@@ -1256,6 +1272,7 @@ sub importAnnotationsFromUniprotKB { #importAnnotationsFromSRS
 	my $newAnnotProt=0;
 	my %masterProteins;
 	my %matchedUniprotIDs;
+	my $numInsUp=0;
 	foreach my $uniprotID (keys %identifierAnnot) {
 #print "\n>>$uniprotID:\n"; # if $uniprotID eq 'CLU_HUMAN';
 
@@ -1382,8 +1399,12 @@ sub importAnnotationsFromUniprotKB { #importAnnotationsFromSRS
 			}
 			if ($isDifferentAnnot) {
 				$refQueries->{'UP_MP'}->execute($refSpecies->{$identifierAnnot{$uniprotID}{'OX'}},$identifierAnnot{$uniprotID}{'DE'},$identifierAnnot{$uniprotID}{'AA'},$identifierAnnot{$uniprotID}{'MW'},$identifierAnnot{$uniprotID}{'SQ'},$usedMasterID); # $forceUpMasterID
+				$numInsUp++;
 			}
-			$refQueries->{'UP_MPD'}->execute($usedMasterID) if $usedMasterID; # set UPDATE_DATE as NOW() no matter the changes
+			if ($usedMasterID) {
+				$refQueries->{'UP_MPD'}->execute($usedMasterID) ; # set UPDATE_DATE as NOW() no matter the changes
+				$numInsUp++;
+			}
 			$masterProtID=$usedMasterID; # $forceUpMasterID;
 		} # end of update eq 'force'
 
@@ -1391,17 +1412,20 @@ sub importAnnotationsFromUniprotKB { #importAnnotationsFromSRS
 			##<Create master prot in DB
 			$refQueries->{'INS_MP'}->execute($refSpecies->{$identifierAnnot{$uniprotID}{'OX'}},$identifierAnnot{$uniprotID}{'DE'},$identifierAnnot{$uniprotID}{'AA'},$identifierAnnot{$uniprotID}{'MW'},$identifierAnnot{$uniprotID}{'SQ'});
 			$masterProtID=$dbh->last_insert_id(undef,undef,'MASTER_PROTEIN','ID_MASTER_PROTEIN');
+			$numInsUp++;
 		}
 		$masterProteins{$masterProtID}=1;
 
 		##<Insert (up to date) Xref values
 		if ((!$forceUpMasterID && !$dbMasterID) || $isDifferentXref) {
 			$refQueries->{'INS_MI'}->execute($refIdentifierTypes->{'ID'},$masterProtID,1,$uniprotID); # UniProtID
+			$numInsUp++;
 			foreach my $dbCode (keys %{$identifierCrossRef{$uniprotID}}) {
 				my $rank=0;
 				foreach my $identX (@{$identifierCrossRef{$uniprotID}{$dbCode}}) {
 					$refQueries->{'INS_MI'}->execute($refIdentifierTypes->{$dbCode},$masterProtID,++$rank,$identX);
 				}
+				$numInsUp+=$rank; 
 			}
 		}
 
@@ -1419,7 +1443,12 @@ sub importAnnotationsFromUniprotKB { #importAnnotationsFromSRS
 				$refQueries->{'UP_PROT'}->execute($masterProtID,$protID);
 			}
 			$refQueries->{'UP_PSQ'}->execute($protID,$identifierAnnot{$uniprotID}{'SQ'}); # PROT_SEQ -> '+'
+			$numInsUp+=2;
 			$newAnnotProt++;
+		}
+		if ($numInsUp >= 500) {
+			$dbh->commit;
+			$numInsUp=0;
 		}
 	}
 	$dbh->commit;
@@ -1498,7 +1527,7 @@ sub directProteinAnnotation {
 					my ($protACC,$seq);
 					foreach my $line (split(/\n/,$response->content)) {
 						if ($line=~/^>/) {
-							if ($protACC) {
+							if ($protACC) { # from previous entry
 								$dataAnnot{$protACC}{'seq'} = $seq;
 								$dataAnnot{$protACC}{'length'} = length($seq);
 							}
@@ -1511,7 +1540,7 @@ sub directProteinAnnotation {
 						}
 						else {$seq.=$line;}
 					}
-					if ($seq) {
+					if ($seq && $protACC) { # last entry [COMMENT: in rare cases to be indentifed, $protACC is undef but not $seq!!! (PP 12/03/21)]
 						$dataAnnot{$protACC}{'seq'} = $seq;
 						$dataAnnot{$protACC}{'length'} = length($seq);
 					}
@@ -1537,7 +1566,7 @@ sub directProteinAnnotation {
 		my $sthUpPC=$dbh->prepare('UPDATE ANALYSIS_PROTEIN SET PEP_COVERAGE=? WHERE ID_ANALYSIS=? AND ID_PROTEIN=?');
 		my %massAAave=&promsConfig::getMassAAave; # Average mass, needed for protein mass calculation
 		my %massATave=&promsConfig::getMassATave; # Average mass, needed for protein mass calculation
-
+		my $numIdent=0;
 		foreach my $mIdent (keys %dataAnnot) {
 			my %countAA;
 			foreach my $aa (split(//,$dataAnnot{$mIdent}->{'seq'})) {
@@ -1554,6 +1583,8 @@ sub directProteinAnnotation {
 
 			#<Updating peptide coverage
 			&updatePeptideCoverage($sthPP,$sthUpPC,$protID,$dataAnnot{$mIdent}->{'length'},$refDirectProtAnnot->{$identType}{'ANA'}{$protID});
+			$numIdent++;
+			$dbh->commit unless $numIdent % 500;
 		}
 		$sthPP->finish;
 		$sthUpP->finish;
@@ -1594,6 +1625,10 @@ sub updateProteinAnnotationFromMaster {
 			##<Computing peptide coverage
 			&updatePeptideCoverage($sthPP,$sthUpPC,$protID,$length,$refMissingProteins->{$protID});
 			$numProtAnnot++;
+			unless ($numProtAnnot % 500) {
+				$dbh->commit;
+				print '.' ;  # print '.' every 500 proteins
+			}
 		}
 	}
 	$sthMPA->finish;
@@ -1650,6 +1685,10 @@ sub updateProteinOrganism {
 		next unless $organism;
 		$sthUpOrg->execute($organism,$protID);
 		$numProtOrg++;
+		unless ($numProtOrg % 500) {
+			$dbh->commit;
+			print '.' ;  # print '.' every 500 proteins
+		}
 	}
 	$sthOS->finish;
 	$sthUpOrg->finish;
@@ -1790,6 +1829,12 @@ sub correctDuplicateMaster {
 }
 
 ####>Revision history<####
+# 1.5.7 [BUGFIX] Fixed bug in SQL query for detection of proteins to be mapped introduced in v1.5.5 (PP 27/05/21) 
+# 1.5.6 [ENHANCEMENT] Additionel progress info and commits (PP 10/05/21)
+# 1.5.5 [ENHANCEMENT] Improved initial selection of unmapped proteins (PP 19/04/21)
+# 1.5.4 [BUGFIX] Fixed bug identifier assignement based on databank rank where protein is shared between multiple databanks with composite protrank 1 and 2 = 12 (PP 12/03/21)
+# 1.5.3 [ENHANCEMENT] Handles isoform info in cross-DB identfier line (PP 13/04/20)
+# 1.5.2 [UPDATE] Changed RANK field to IDENT_RANK for compatibility with MySQL 8 (PP 04/03/20) 
 # 1.5.1 Minor change in query for detecting unlocalized peptides (PP 24/01/19)
 # 1.5.0 Major improvement in project-wide annotation update (PP 25/09/18)
 # 1.4.6 Uses get instead of post for www.uniprot.org/mapping service (PP 18/09/18)

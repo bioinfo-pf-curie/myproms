@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# exportSwathLibrary.cgi         1.2.0                                         #
+# exportSwathLibrary.cgi         1.2.2                                         #
 # Authors: M. Le Picard (Institut Curie)                                       #
 # Contact: myproms@curie.fr                                                    #
 #Export a librarie available in myProMS  for peakview or openswath             #
@@ -69,12 +69,19 @@ my $dbh=&promsConfig::dbConnect;
 #######################
 ####>Starting HTML<####
 #######################
-print header(-'content-encoding'=>'no',-charset=>'UTF-8'); warningsToBrowser(1);
 
 my $libID = param('ID');
-my ($libraryName, $libVersion, $identType) = $dbh->selectrow_array("SELECT NAME, VERSION_NAME, IDENTIFIER_TYPE FROM SWATH_LIB WHERE ID_SWATH_LIB='$libID' ") or die "Couldn't prepare statement: " . $dbh->errstr;
-my $action=(param('submit'))? param('submit') : "";
+my ($libraryName, $libVersion, $software, $identType) = $dbh->selectrow_array("SELECT NAME, VERSION_NAME, IF(PARAM_STRG LIKE '%Spectronaut%', 'SPC', 'TPP'), IDENTIFIER_TYPE FROM SWATH_LIB WHERE ID_SWATH_LIB='$libID' ") or die "Couldn't prepare statement: " . $dbh->errstr;
+my $action=(param('submit'))? param('submit') : param('ACT') ? param('ACT') : '';
 
+if($action eq 'download') {
+    my $format = &promsMod::cleanParameters(param("FORMAT"));
+    downloadFile("$promsPath{swath_lib}/SwLib_$libID", "$libraryName.$format");
+    exit;
+}
+
+
+print header(-'content-encoding'=>'no',-charset=>'UTF-8'); warningsToBrowser(1);
 
 
 
@@ -107,9 +114,11 @@ print qq
     &promsMod::popupInfo();
     print qq |
     function selectFormat(format){
-        if (format == 'sptxt'){
-            document.getElementById('sptxt').style.display="";
-            document.getElementById('form').style.display="none";
+        document.getElementById('sptxt').style.display="none";
+        document.getElementById('tsv').style.display="none";
+        
+        if (format == 'sptxt' \|\| (format == 'tsv' && '$software' == 'SPC')) {
+            document.getElementById(format).style.display="";
         }
         else if (format == 'zip'){
             document.getElementById('test').style.display="none";
@@ -150,21 +159,38 @@ unless ($action){
                     <TD bgcolor="$lightColor">
                         <SELECT name="-k" onChange="selectFormat(this.value)" required>
                             <option value="">-= Select format =-</option>
-                            <option value="peakview">PeakView</option>
-                            <option value="openswath">OpenSwath*</option>
-                            <option value="sptxt">Sptxt file</option>
-                            <option value="zip">Zip archive</option>
+        |;
+        
+        if($software eq 'TPP') {
+            print qq |
+                <option value="peakview">PeakView</option>
+                <option value="openswath">OpenSwath*</option>
+                <option value="spectronaut">Spectronaut</option>
+                <option value="sptxt">Sptxt file</option>
+                <option value="zip">Zip archive</option>
+            |;
+        } else {
+            print qq |
+                <option value="tsv">tsv</option>
+            |;
+        }
+        
+        print qq |
                         </SELECT><BR>
                     </TD>
                 </TR>
-                <DIV id="test"><TR><TH align=right valign="top">Mass range of fragment ions : </TH>
+        |;
+        
+        if($software eq 'TPP') {
+            print qq |
+                <TR><TH align=right valign="top">Mass range of fragment ions : </TH>
                     <TD bgcolor="$lightColor">
                         Min : <INPUT type="text" name="-lmin" size="5" value="350">&nbsp;&nbsp;Max : <INPUT type="text" name="-lmax" size="5" value="2000"><BR>
                     </TD>
                 </TR>
                 <TR><TH align=right valign="top">Ion series and charge : </TH>
                     <TD bgcolor="$lightColor">
-                        Ions : <INPUT type="text" name="-s" size="5"  required><SMALL> (separated by ',') for example : 'b,y' </SMALL><BR>
+                        Ions : <INPUT type="text" name="-s" size="5" value="b,y" required><SMALL> (separated by ',') for example : 'b,y' </SMALL><BR>
                         Charge : <INPUT type="text" name="-x" size="5" value="1,2"><BR>
                     </TD>
                 </TR>
@@ -210,10 +236,13 @@ unless ($action){
                     </TD>
                 </TR>|;
                 }
-                print qq |
-                </DIV><TR ><TH colspan=2><BR><input type="submit" name="submit" value="Submit">
+        }
+        
+        print qq | <TR><TH colspan=2><br> |;
+        print('<input type="submit" name="submit" value="Submit">') if($software eq 'TPP');
+        print qq |
                    <!-- CLEAR button -->
-                   &nbsp &nbsp &nbsp<INPUT type="reset" value="Clear" />
+                   &nbsp &nbsp &nbsp<INPUT type="reset" value="Clear" onclick="selectFormat('');" />
                    <!-- CANCEL button -->
                    &nbsp &nbsp &nbsp<INPUT type="button" value="Cancel" onclick="window.location='./listSwathLibraries.cgi'"></TH>
                 </TR>
@@ -256,7 +285,8 @@ if($action){
             <BR><BR><IMG src='$promsPath{images}/engrenage.gif'>
     |;
     
-    my $workDir = "$promsPath{tmp}/Swath/export_swath_lib_$libID";
+    my $time = strftime("%Y%m%d%H%M%S", localtime);
+    my $workDir = "$promsPath{tmp}/Swath/export_swath_lib_$libID\_$time";
     system("mkdir -p $workDir");
     
     #############################
@@ -266,8 +296,7 @@ if($action){
     my $libraryID = param('ID');
     my $format = (param('-k')) ? param('-k') : 'openswath'; # peakview, openswath, spectronaut
     
-    my $pepMod = param('pepMod');
-    $pepMod = ($pepMod) ? $pepMod : '';
+    my @pepMod = (param('pepMod')) ? (param('pepMod')) : ();
     
     my $protList = param('protList');
     $protList = ($protList) ? $protList : '';
@@ -307,7 +336,7 @@ if($action){
     my $loadingDivID="document.getElementById('loadingDIV')";
     my $loadingSPAN="document.getElementById('loadingSPAN')";
     my $startTime=strftime("%s",localtime);
-    my $processText="<B>Conversion for OpenSwath ...</B>";
+    my $processText="<B>Conversion to $format format ...</B>";
     
     my %libraryParams = (
         "ID"      => $libID,
@@ -344,7 +373,7 @@ if($action){
         "w" => $w, "format" => $format,
     );
     
-    my ($finalFile, $paramFile) = DIAWorkflow::exportLibrary(\%exportParams, $pepMod, 0, $protList, $processText, $loadingDivID, $loadingSPAN);
+    my ($finalFile, $paramFile) = DIAWorkflow::exportLibrary(\%exportParams, \@pepMod, 0, $protList, $processText, $loadingDivID, $loadingSPAN);
     
     ###> deleting temporary files
     system "rm $workDir/$w ;";
@@ -373,8 +402,13 @@ if($action){
 }
 print qq
 |<DIV style="display:none" id="sptxt">
-   <CENTER><BR><BR><A class="button" target="_blank" href="$promsPath{swath_lib_html}/SwLib_$libID/$libraryName.sptxt" download><B>Download sptxt file</B></A></CENTER>
- </DIV> |;
+   <CENTER><BR><BR><A class="button" target="_blank" href="./exportSwathLibrary.cgi?ACT=download&ID=$libID&FORMAT=sptxt"><B>Download sptxt file</B></A></CENTER>
+ </DIV>
+ 
+ <DIV style="display:none" id="tsv">
+   <CENTER><BR><BR><A class="button" target="_blank" href="./exportSwathLibrary.cgi?ACT=download&ID=$libID&FORMAT=tsv"><B>Download tsv file</B></A></CENTER>
+ </DIV>
+ |;
 
 $dbh->disconnect; 
 
@@ -396,7 +430,20 @@ sub uploadFile {
     return "";
 }
 
+sub downloadFile {
+	my ($filePath, $fileName)=@_;
+	print header(-type=>"application/octet-stream", -attachment=>$fileName);
+	
+	if(-e "$filePath/$fileName") {
+        open(FILE,"$filePath/$fileName");
+        while (<FILE>) {print $_;}
+        close FILE;
+    }
+}
+
 ####>Revision history<####
+# 1.2.2 [ENCHANCEMENT] Compatibility with Spectronaut spectral libraries (VS 22/10/2020)
+# 1.2.1 [ENHANCEMENT] Handles spectronaut spectral library export format (VS 06/04/20)
 # 1.2.0 [BUGFIX] Changed path to exported file: tmp_html directory (VS 16/12/19)
 # 1.1.9 [ENHANCEMENT] Properly handles new DIA workflow for protein exportation (VS 18/11/19)
 # 1.1.8 Update exportLibrary function to match the DIAWorkflow module (VS 07/01/19)

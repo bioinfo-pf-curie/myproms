@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 #############################################################################
-# analysePhospho.cgi         2.0.4                                          #
+# analysePhospho.cgi         2.0.9                                          #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                   #
 # Contact: myproms@curie.fr                                                 #
 # Script processing PhosphoRS analyses started by selectAnalyses.cgi        #
@@ -55,19 +55,17 @@ use XML::Simple; # needed for &promsMod::extractSpectrumMSF
 
 ####>Configuration<####
 my %promsPath=&promsConfig::getServerInfo('no_user');
-my $phosphoRSDir="$promsPath{tmp}/phosphoRS";
-my $currentPRSDir="$phosphoRSDir/current";
+my $phosphoRSPath="$promsPath{tmp}/phosphoRS";
+my $currentPRSPath="$phosphoRSPath/current";
 
                       ######################
 ##########################>>>CGI mode<<<##########################
                       ######################
 if ($#ARGV < 0) {
 	
-	my $dbh=&promsConfig::dbConnect;
-	
-	#------------------#
-	# Only delete case #
-	#------------------#
+	####################
+	####>Delete PRS<####
+	####################
 	if (param('deleteID')) {
 		my $branchID = param('branchID');
 		print header(-'content-encoding' => 'no', -'charset' => 'UTF-8');
@@ -77,22 +75,82 @@ if ($#ARGV < 0) {
 <TITLE>Deleting PhosphoRS Analysis</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
 </HEAD>
-<BODY>
+<BODY background="$promsPath{images}/bgProMS.gif">
 |;
 		print "<FONT class=\"title3\">&nbsp;&nbsp;- ";
-		&deletePRS($dbh,param('deleteID'));
+		my $dbh=&promsConfig::dbConnect;
+		&deletePRS($dbh,param('deleteID'),1);
 		print "</FONT><BR>\n";
 		$dbh->disconnect;
 
 		print qq
-|<SCRIPT language="Javascript">
+|<SCRIPT type="text/javascript">
 window.location="$promsPath{cgi}/selectAnalyses.cgi?ID=$branchID&callType=phosphoRS";
 </SCRIPT>
 </BODY>
 |;
 		exit;
 	}
+	######################
+	####>Clear errors<####
+	######################
+	elsif (param('clearErrors')) { # Called from selectAnalyses.cgi
+		my @analysisList=split(',',param('anaList'));
+		my $branchID = param('branchID');
+		
+		my $anaKeyword=(scalar @analysisList > 1)? 'analyses' : 'analysis';
+		print header(-'content-encoding' => 'no', -'charset' => 'UTF-8');
+		warningsToBrowser(1);
+		print qq
+|<HEAD>
+<TITLE>Clearing PhosphoRS Errors</TITLE>
+<LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
+</HEAD>
+<BODY background="$promsPath{images}/bgProMS.gif">
+<BR><BR>
+<FONT class="title2">Clearing failed PhosphoRS $anaKeyword:...|;
 
+		my $dbh = &promsConfig::dbConnect;
+		my $sthDelJob=$dbh->prepare("DELETE FROM JOB_HISTORY WHERE ID_JOB=?");
+		my $sthPRS=$dbh->prepare("SELECT 1 FROM QUERY_VALIDATION WHERE ID_ANALYSIS=? AND INFO_PEP1 LIKE '%,PRS=%' LIMIT 1");
+		foreach my $anaID (@analysisList) {
+			my $jobDir;
+			foreach my $currFile (glob("$currentPRSPath/$anaID\_*")) {
+				unless ($jobDir) {
+					my $fileName=(split(/\//,$currFile))[-1];
+					($jobDir)=$fileName=~/_([^_]+)_/;
+				}
+				unlink $currFile;
+			}
+			rmtree("$phosphoRSPath/$jobDir");
+			my $prsParamFile = "$promsPath{valid}/ana_$anaID/PRSparam_ana_$anaID.txt";
+			if (-e $prsParamFile) {
+				#>Check for partially recorded data
+				$sthPRS->execute($anaID);
+				my ($hasPRS)=$sthPRS->fetchrow_array;
+				if ($hasPRS) {
+					&deletePRS($dbh,$anaID);
+				}
+				else {
+					unlink $prsParamFile;
+				}
+			}
+			$sthDelJob->execute($jobDir);
+			print '.';
+		}
+		$dbh->commit;
+		$dbh->disconnect;
+		print " Done.</FONT>\n";
+		sleep 3;
+
+		print qq
+|<SCRIPT type="text/javascript">
+window.location="$promsPath{cgi}/selectAnalyses.cgi?ID=$branchID&callType=phosphoRS";
+</SCRIPT>
+</BODY>
+|;
+		exit;
+	}
 
 	#------------------------------------#
 	# Preparing Phosphorylation Analyses #
@@ -104,14 +162,19 @@ window.location="$promsPath{cgi}/selectAnalyses.cgi?ID=$branchID&callType=phosph
 	my $activationType = param('activationType');
 	my $overWrite=param('overwrite') || 0;
 	my @analysisList = param('anaList');
+
+	my $dbh=&promsConfig::dbConnect;
 	
+    # my $projectID = $dbh->selectrow_array("SELECT DISTINCT E.ID_PROJECT FROM EXPERIMENT E INNER JOIN SAMPLE S ON S.ID_EXPERIMENT=E.ID_EXPERIMENT INNER JOIN ANALYSIS A ON A.ID_SAMPLE=S.ID_SAMPLE WHERE ID_ANALYSIS IN (".join(',', @analysisList).") LIMIT 1");
+	my $projectID = &promsMod::getProjectID($dbh,$analysisList[0],'analysis');
+
 	print header(-'content-encoding' => 'no', -'charset' => 'UTF-8');
 	warningsToBrowser(1);
 	print qq
 |<HEAD>
 <TITLE>Preparing Phosphorylation Analyses</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
-<SCRIPT language="Javascript">
+<SCRIPT type="text/javascript">
 function newPhosphoRS() {
 	var branchID=top.promsFrame.navFrame.getSelectedBranchID();
 	window.location="./selectAnalyses.cgi?ID="+branchID+"&callType=phosphoRS";
@@ -124,16 +187,16 @@ function newPhosphoRS() {
 <BR>
 |;
 	####>job directories<####
-	mkdir $phosphoRSDir unless -e $phosphoRSDir;
-	mkdir $currentPRSDir unless -e $currentPRSDir;
+	mkdir $phosphoRSPath unless -e $phosphoRSPath;
+	mkdir $currentPRSPath unless -e $currentPRSPath;
 	
 	my $masterJobCode=strftime("%Y%m%d%H%M%S",localtime);
-	while (glob "$phosphoRSDir/$masterJobCode*") { # to prevent multi-user launch collision
+	while (glob "$phosphoRSPath/$masterJobCode*") { # to prevent multi-user launch collision
 		sleep 2;
 		$masterJobCode=strftime("%Y%m%d%H%M%S",localtime);
 	}
 	my $numJobs=scalar @analysisList;
-	print '<FONT class="title3">Launching PhosohRS process';
+	print '<FONT class="title3">Launching PhosphoRS process';
 	print "es" if $numJobs > 1;
 	print " [Master job #$masterJobCode]:\n";
 	
@@ -149,16 +212,16 @@ function newPhosphoRS() {
 		print "<BR>&nbsp;&nbsp;-$jobPos/$numJobs: Analysis '$anaName'";
 		if (-e "$promsPath{valid}/ana_$anaID/PRSparam_ana_$anaID.txt") { # $paramFile
 			print ' [';
-			&deletePRS($dbh,$anaID);
+			&deletePRS($dbh,$anaID,1);
 			print ']';
 		}
 		my $jobDir=$masterJobCode.'.'.$jobPos;
-		open(FLAG,">$currentPRSDir/$anaID\_$jobDir\_wait.flag"); # flag file used by watchQuantif
+		open(FLAG,">$currentPRSPath/$anaID\_$jobDir\_wait.flag"); # flag file used by watchQuantif
 		print FLAG "#";
 		close FLAG;
-		my $fullJobDir="$phosphoRSDir/$jobDir";
-		mkdir $fullJobDir || die "ERROR detected: $!";
-		open (INFO,">$fullJobDir/prs_info.txt"); # item valueR valueDB
+		my $jobPath="$phosphoRSPath/$jobDir";
+		mkdir $jobPath || die "ERROR detected: $!";
+		open (INFO,">$jobPath/prs_info.txt"); # item valueR valueDB
 		print INFO qq
 |USER=$ENV{REMOTE_USER}
 ANAID=$anaID
@@ -185,7 +248,7 @@ overWrite=$overWrite
 	
 	print qq
 |<CENTER>
-<BR><FONT class=\"title2\"><BR>PhosphoRS is running in background mode. You can continue using myProMS.</FONT>
+<BR><FONT class="title2"><BR>PhosphoRS is running in background mode. You can continue using myProMS.</FONT>
 <BR><BR><INPUT type="button" value="New PhosphoRS Analysis" onclick="newPhosphoRS();">
 </CENTER>
 |;
@@ -193,7 +256,7 @@ overWrite=$overWrite
 	sleep 3;
 	print qq
 |<SCRIPT type="text/javascript">
-var monitorJobsWin=window.open("$promsPath{cgi}/monitorJobs.cgi?filterType=Phospho&filterDateNumber=1&filterDateType=DAY&filterStatus=Queued&filterStatus=Running",'monitorJobsWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
+var monitorJobsWin=window.open("$promsPath{cgi}/monitorJobs.cgi?filterType=Phospho&filterDateNumber=1&filterDateType=DAY&filterStatus=Queued&filterStatus=Running&filterProject=$projectID",'monitorJobsWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
 monitorJobsWin.focus();
 </SCRIPT>
 </BODY>
@@ -210,10 +273,10 @@ monitorJobsWin.focus();
 
 ####>Recovering parameters<####
 my ($userID,$jobDir,$anaID,$probThreshold,$massTolerance,$activationType,$overWrite)=@ARGV;
-my $fullJobDir="$phosphoRSDir/$jobDir";
-my $fileStat="$fullJobDir/status.out";
+my $jobPath="$phosphoRSPath/$jobDir";
+my $fileStat="$jobPath/status.out";
 
-rename("$currentPRSDir/$anaID\_$jobDir\_wait.flag","$currentPRSDir/$anaID\_$jobDir\_run.flag"); # run flag file
+rename("$currentPRSPath/$anaID\_$jobDir\_wait.flag","$currentPRSPath/$anaID\_$jobDir\_run.flag"); # run flag file
 
 open(FILESTAT,">$fileStat") || die "Error while opening $fileStat";
 print FILESTAT "Started ",strftime("%H:%M:%S %d/%m/%Y",localtime),"\n";
@@ -239,16 +302,16 @@ my $anadir = "$promsPath{valid}/ana_$anaID";
 my $fullDataFileName = "$anadir/$dataFile";
 
 ####>Preparing data for PhosphoRS<####
-my $phosphoRS = new phosphoRS(AnaID => $anaID, fullJobDir =>$fullJobDir, File => $fullDataFileName, FileFormat => $fileFormat, MassTolerance => $massTolerance, ActivationType => $activationType);
+my $phosphoRS = new phosphoRS(AnaID => $anaID, fullJobDir =>$jobPath, File => $fullDataFileName, FileFormat => $fileFormat, MassTolerance => $massTolerance, ActivationType => $activationType);
 
 my %noAmbiguityQueries;
 if ($fullDataFileName =~ /([^\/]+)\.pdm$/) {
 	
 	open(FILESTAT,">>$fileStat") || die "Error while opening $fileStat";
-	print FILESTAT "1.1/3 Fetching spectra from MSF file\n";
+	print FILESTAT "1.1/3 Fetching analysis information from MSF file\n";
 	close FILESTAT;
 	my $cutFileName = $1;
-	$cutFileName =~ s/_\d$//;
+	$cutFileName =~ s/_\d_?$//; # use s/_\d_?.*$// to be compatible with current splitted file format
 	
 	$dbh=&promsConfig::dbConnect('no_user');
 	
@@ -267,8 +330,8 @@ if ($fullDataFileName =~ /([^\/]+)\.pdm$/) {
 		$sthPep{$i} = $dbh->prepare("SELECT INFO_PEP$i FROM QUERY_VALIDATION WHERE ID_QUERY=?");
 	}
 	#my $sthSpecId = $dbh->prepare("SELECT EXT_SPECTRUMID,QUERY_NUM,V.ID_QUERY,GROUP_CONCAT(CONCAT(PEP_RANK,':',POS_STRING) SEPARATOR ',') FROM QUERY_VALIDATION V,QUERY_MODIFICATION M WHERE V.ID_QUERY=M.ID_QUERY AND VALID_STATUS>=-3 AND QUERY_NUM>0 AND ID_MODIFICATION=$phosphoModID AND ID_ANALYSIS=$anaID GROUP BY QUERY_NUM");
-	my ($addQuery)=($overWrite)?'':' M.REF_POS_STRING IS NULL AND';###> Avoid to take into account modified queries
-	my $sthSpecId = $dbh->prepare("SELECT EXT_SPECTRUMID,QUERY_NUM,V.ID_QUERY,GROUP_CONCAT(CONCAT(PEP_RANK,':',POS_STRING) SEPARATOR ',') FROM QUERY_VALIDATION V,QUERY_MODIFICATION M WHERE V.ID_QUERY=M.ID_QUERY AND$addQuery VALID_STATUS>=-3 AND QUERY_NUM>0 AND ID_MODIFICATION=$phosphoModID AND ID_ANALYSIS=$anaID GROUP BY QUERY_NUM");
+	my ($addQuery)=($overWrite)? '' : ' M.REF_POS_STRING IS NULL AND';###> Avoid to take into account modified queries
+	my $sthSpecId = $dbh->prepare("SELECT EXT_SPECTRUMID,QUERY_NUM,V.ID_QUERY,GROUP_CONCAT(CONCAT(PEP_RANK,':',POS_STRING) SEPARATOR ',') FROM QUERY_VALIDATION V,QUERY_MODIFICATION M WHERE V.ID_QUERY=M.ID_QUERY AND$addQuery VALID_STATUS>=-3 AND QUERY_NUM>0 AND ID_MODIFICATION=$phosphoModID AND ID_ANALYSIS=$anaID GROUP BY V.ID_QUERY,QUERY_NUM,EXT_SPECTRUMID");
 	$sthSpecId->execute;
 	while(my ($extSpectrumID,$queryNum,$queryID,$phosPosStrg) = $sthSpecId->fetchrow_array){
 		#>Filetring for obvious unambiguous positions
@@ -298,18 +361,21 @@ if ($fullDataFileName =~ /([^\/]+)\.pdm$/) {
 	}
 	$dbh->disconnect;
 
-	my $numSpectra=scalar @spectrumList;
 	open(FILESTAT,">>$fileStat") || die "Error while opening $fileStat";
-	print FILESTAT "1.2/3 Extracting $numSpectra spectra from MSF file: 0%\n";
+	print FILESTAT "1.2/3 Fetching spectra from MSF file...\n";
 	close FILESTAT;
+	my $dbsqlite = DBI->connect("dbi:SQLite:$msfFileName","","",{PrintError=>1,RaiseError=>1});
 	
+	my $numSpectra=scalar @spectrumList;
 	my @fracList;
 	foreach my $i (1..10) {
 		push @fracList,int($i*$numSpectra/10);
 	}
 	my $spCount=0; my $fracIdx=0;
+    open(FILESTAT,">>$fileStat") || die "Error while opening $fileStat";
+	print FILESTAT "1.3/3 Extracting $numSpectra spectra from MSF file: 0% ($spCount/$numSpectra)\n";
+	close FILESTAT;
 
-	my $dbsqlite = DBI->connect("dbi:SQLite:$msfFileName","","",{PrintError=>1,RaiseError=>1});
 	foreach my $refSpectrum (@spectrumList) {
 		my ($queryNum,$extSpectrumID)=@{$refSpectrum};
 		my ($parentFile,@spectrumInfos) = &promsMod::extractSpectrumMSF($dbsqlite, $extSpectrumID); #, $dir, 'no_user');
@@ -326,10 +392,13 @@ if ($fullDataFileName =~ /([^\/]+)\.pdm$/) {
 
 		$spCount++;
 		if ($spCount==$fracList[$fracIdx]) {
-			open(FILESTAT,">>$fileStat") || die "Error while opening $fileStat";
-			print FILESTAT "1.2/3 Extracting $numSpectra spectra from MSF file: ",(($fracIdx+1)*10),"%\n";
-			close FILESTAT;
 			$fracIdx++;
+		}
+        
+        if ($spCount%50 == 0) {
+			open(FILESTAT,">>$fileStat") || die "Error while opening $fileStat";
+			print FILESTAT "1.3/3 Extracting $numSpectra spectra from MSF file: ",(($fracIdx+1)*10),"% ($spCount/$numSpectra)\n";
+			close FILESTAT;
 		}
 	}
 	$dbsqlite->disconnect;
@@ -490,7 +559,7 @@ my $paramStrg = "threshold:$probThreshold;massTolerance:$massTolerance;activatio
 $dbh->commit;
 $dbh->disconnect;
 		
-rename("$currentPRSDir/$anaID\_$jobDir\_run.flag","$currentPRSDir/$anaID\_$jobDir\_end.flag"); # end flag file
+rename("$currentPRSPath/$anaID\_$jobDir\_run.flag","$currentPRSPath/$anaID\_$jobDir\_end.flag"); # end flag file
 
 open(FILESTAT,">>$fileStat");
 print FILESTAT "PhosphoRS Ended.",strftime("%H:%M:%S %d/%m/%Y",localtime),"\n";
@@ -500,23 +569,24 @@ close(FILESTAT);
 sleep 30;
 
 ##>Cleaning tmp job directory
-unlink "$currentPRSDir/$anaID\_$jobDir\_error.txt";
-unlink "$currentPRSDir/$anaID\_$jobDir\_end.flag";
+# unlink "$currentPRSPath/$anaID\_$jobDir\_error.txt";
+# unlink "$currentPRSPath/$anaID\_$jobDir\_end.flag"; Do NOT delete
 
 
 
 
 ######################################> SUBROUTINES <########################################
 
-sub launchAllJobs { # Globals: $phosphoRSDir,$currentPRSDir
+sub launchAllJobs { # Globals: $phosphoRSPath,$currentPRSPath
 	
 	my ($masterJobCode,$refAnalysisList,$probThreshold,$massTolerance,$activationType,$overWrite)=@_;
 	my $userID=$ENV{REMOTE_USER};
-	my $numJobs=scalar @{$refAnalysisList};
+	my $numJobToRun=scalar @{$refAnalysisList};
 	my %runningJobs;
-	my $cgiUnixDir=`pwd`;
-	$cgiUnixDir=~s/\/*\s*$//; # trim any trailing '/' & spaces
+	my $cgiUnixPath=`pwd`;
+	$cgiUnixPath=~s/\/*\s*$//; # trim any trailing '/' & spaces
 	my $dbh=&promsConfig::dbConnect;
+	my $projectID = &promsMod::getProjectID($dbh,$refAnalysisList->[0],'ANALYSIS');
 	my %cluster=&promsConfig::getClusterInfo;
     
 	####>Cluster jobs<####
@@ -524,30 +594,40 @@ sub launchAllJobs { # Globals: $phosphoRSDir,$currentPRSDir
 		my $checkForEndedJobs=sub { # This sub can access all variables global to parent bloc code!!!
 			foreach my $anaID (keys %runningJobs) {
 				my $jobDir=$masterJobCode.'.'.$runningJobs{$anaID};
-				my $fullJobDir="$phosphoRSDir/$jobDir";
-				if (!-e $fullJobDir || -s "$currentPRSDir/$anaID\_$jobDir\_error.txt") {
+				my $jobPath="$phosphoRSPath/$jobDir";
+				if (-e "$currentPRSPath/$anaID\_$jobDir\_end.flag" || $cluster{'checkError'}->("$currentPRSPath/$anaID\_$jobDir\_error.txt",['Cache disabled'])) {
 					delete $runningJobs{$anaID}; # untrack job.
+					$numJobToRun--;
 				}
 			}
 		};
+
+		####>Fetching amount of data to estimate maxMem
+		my %peptidesInAna;
+		my $sthNumPep=$dbh->prepare("SELECT ID_ANALYSIS,COUNT(*) FROM QUERY_VALIDATION WHERE QUERY_NUM>0 AND VALID_STATUS >=-3 AND ID_ANALYSIS IN (".join(',',@{$refAnalysisList}).") GROUP BY ID_ANALYSIS");
+		$sthNumPep->execute;
+		while (my ($anaID,$numPep)=$sthNumPep->fetchrow_array) {
+			$peptidesInAna{$anaID}=$numPep;
+		}
+		$sthNumPep->finish;
+
 		my %baseJobParameters=(
-			maxMem=>'20Gb',
 			numCPUs=>2,
 			maxHours=>168, # 7 days
-			pbsRunDir=>$cgiUnixDir,
+			pbsRunDir=>$cgiUnixPath,
 			noWatch=>1 # do not wait for job to end
 		);
 		my $MAX_PARALLEL_JOBS=$cluster{'maxJobs'};
         
 		####>Looping through job list
 		my $curJobIdx=-1;
-		MAIN_LOOP:while (1) {
+		MAIN_LOOP:while ($numJobToRun) {
 	
 			###>Parallel launch of up to $MAX_PARALLEL_JOBS jobs
 			while (scalar (keys %runningJobs) < $MAX_PARALLEL_JOBS) {
 	
 				##>Also check other user/launches jobs
-				my @runs=glob "$currentPRSDir/*_run.flag";
+				my @runs=glob "$currentPRSPath/*_run.flag";
 				last if scalar @runs >= $MAX_PARALLEL_JOBS;
 				
 				##>Ok to go
@@ -555,20 +635,27 @@ sub launchAllJobs { # Globals: $phosphoRSDir,$currentPRSDir
 				my $jobPos=$curJobIdx+1;
 				my $anaID=$refAnalysisList->[$curJobIdx];
 				my $jobDir=$masterJobCode.'.'.$jobPos;
-				my $fullJobDir="$phosphoRSDir/$jobDir";
+				my $jobPath="$phosphoRSPath/$jobDir";
 				
 				my %jobParameters=%baseJobParameters;
 				$jobParameters{jobName}="myProMS_phosphoRS_$anaID";
-				my $commandString="$cgiUnixDir/analysePhospho.cgi $userID $jobDir $anaID $probThreshold $massTolerance $activationType $overWrite 2> $currentPRSDir/$anaID\_$jobDir\_error.txt";
-				my ($pbsError, $pbsErrorFile, $jobClusterID) = $cluster{'runJob'}->($fullJobDir, $commandString, \%jobParameters);
+				$jobParameters{maxMem}=int(1 + $peptidesInAna{$anaID}/750).'Gb';
+				my $commandString="$cgiUnixPath/analysePhospho.cgi $userID $jobDir $anaID $probThreshold $massTolerance $activationType $overWrite 2> $currentPRSPath/$anaID\_$jobDir\_error.txt";
+				my ($pbsError, $pbsErrorFile, $jobClusterID) = $cluster{'runJob'}->($jobPath, $commandString, \%jobParameters);
 				$runningJobs{$anaID}=$jobPos;
 				
-                my $projectID = &promsMod::getProjectID($dbh, $anaID, 'ANALYSIS');
-                $dbh->do("INSERT INTO JOB_HISTORY (ID_JOB, ID_USER, ID_PROJECT, ID_JOB_CLUSTER, TYPE, STATUS, FEATURES, SRC_PATH, LOG_PATH, ERROR_PATH, STARTED) VALUES('$jobDir', '$userID', $projectID, 'C$jobClusterID', 'Phospho', 'Queued', 'ID_ANALYSIS=$anaID;PROB_THRESHOLD=$probThreshold;MASS_TOLERANCE=$massTolerance;ACTIVATION_TYPE=$activationType;OVERWRITE=$overWrite', '$fullJobDir', '$fullJobDir/status.out', '$currentPRSDir/$anaID\_$jobDir\_error.txt', NOW())");
+				unless ($dbh) { # reconnect in case disconnected
+					$dbh=&promsConfig::dbConnect('no_user');
+				}
+                $dbh->do("INSERT INTO JOB_HISTORY (ID_JOB, ID_USER, ID_PROJECT, ID_JOB_CLUSTER, TYPE, JOB_STATUS, FEATURES, SRC_PATH, LOG_PATH, ERROR_PATH, STARTED) VALUES('$jobDir', '$userID', $projectID, 'C$jobClusterID', 'Phospho', 'Queued', 'ID_ANALYSIS=$anaID;PROB_THRESHOLD=$probThreshold;MASS_TOLERANCE=$massTolerance;ACTIVATION_TYPE=$activationType;OVERWRITE=$overWrite', '$jobPath', '$jobPath/status.out', '$currentPRSPath/$anaID\_$jobDir\_error.txt', NOW())");
                 $dbh->commit;
                 
 				last MAIN_LOOP if $curJobIdx==$#{$refAnalysisList}; # no more jobs to launch => break MAIN_LOOP
-				sleep 2;
+				sleep 5;
+			}
+			if ($dbh) { # disconnect because wait for next launch is too long
+				$dbh->disconnect;
+				undef $dbh;
 			}
 			
 			###>Wait for potential ended job before next MAIN_LOOP
@@ -584,6 +671,8 @@ sub launchAllJobs { # Globals: $phosphoRSDir,$currentPRSDir
 	}
 	####>Local jobs<####
 	else {
+		$dbh->disconnect; # disconnect before fork
+
 		$SIG{CHLD} = sub { # sub called when child communicates with parent (occur during parent sleep)
 			local $!; # good practice. avoids changing errno.
 			while (1) { # while because multiple children could finish at same time
@@ -616,12 +705,13 @@ sub launchAllJobs { # Globals: $phosphoRSDir,$currentPRSDir
 					my $jobPos=$curJobIdx+1;
 					my $jobDir=$masterJobCode.'.'.$jobPos;
 					my $anaID=$refAnalysisList->[$curJobIdx];
-                    my $fullJobDir="$phosphoRSDir/$jobDir";
-                    my $projectID = &promsMod::getProjectID($dbh, $anaID, 'ANALYSIS');
+                    my $jobPath="$phosphoRSPath/$jobDir";
                     
-                    $dbh->do("INSERT INTO JOB_HISTORY (ID_JOB, ID_USER, ID_PROJECT, ID_JOB_CLUSTER, TYPE, STATUS, FEATURES, SRC_PATH, LOG_PATH, ERROR_PATH, STARTED) VALUES('$jobDir', '$userID', $projectID, 'L$$', 'Phospho', 'Queued', 'ID_ANALYSIS=$anaID;PROB_THRESHOLD=$probThreshold;MASS_TOLERANCE=$massTolerance;ACTIVATION_TYPE=$activationType;OVERWRITE=$overWrite', '$fullJobDir', '$fullJobDir/status.out', '$currentPRSDir/$anaID\_$jobDir\_error.txt', NOW())");
+					my $dbh=&promsConfig::dbConnect('no_user');
+                    $dbh->do("INSERT INTO JOB_HISTORY (ID_JOB, ID_USER, ID_PROJECT, ID_JOB_CLUSTER, TYPE, JOB_STATUS, FEATURES, SRC_PATH, LOG_PATH, ERROR_PATH, STARTED) VALUES('$jobDir', '$userID', $projectID, 'L$$', 'Phospho', 'Queued', 'ID_ANALYSIS=$anaID;PROB_THRESHOLD=$probThreshold;MASS_TOLERANCE=$massTolerance;ACTIVATION_TYPE=$activationType;OVERWRITE=$overWrite', '$jobPath', '$jobPath/status.out', '$currentPRSPath/$anaID\_$jobDir\_error.txt', NOW())");
                     $dbh->commit;
-					system "$cgiUnixDir/analysePhospho.cgi $userID $jobDir $anaID $probThreshold $massTolerance $activationType $overWrite 2> $currentPRSDir/$anaID\_$jobDir\_error.txt";
+					$dbh->disconnect;
+					system "$cgiUnixPath/analysePhospho.cgi $userID $jobDir $anaID $probThreshold $massTolerance $activationType $overWrite 2> $currentPRSPath/$anaID\_$jobDir\_error.txt";
 					exit;
 				}
 				$runningJobs{$childPid}=$curJobIdx;
@@ -639,14 +729,12 @@ sub launchAllJobs { # Globals: $phosphoRSDir,$currentPRSDir
 			sleep 60; # $SIG{CHLD} is active during sleep
 		}
 	}
-    
-    $dbh->disconnect;
 }
 
 sub deletePRS{
-    my ($dbh,$anaID) = @_;
+    my ($dbh,$anaID,$verbose) = @_;
 
-	print "Deleting previous PhosphoRS analysis...";
+	print "Deleting previous PhosphoRS analysis..." if $verbose;
     ## Restore DB entries ##
 	my ($maxRank) = $dbh->selectrow_array("SELECT MAX_RANK FROM ANALYSIS WHERE ID_ANALYSIS=$anaID");
 	my @infoPepList = map { "INFO_PEP$_" } (1..$maxRank);
@@ -711,10 +799,15 @@ sub deletePRS{
 	unlink glob "$dir/PRSparam_*.txt"; # old & new param naming
 	unlink glob "$dir/PRS_*"; # old & new result.xml naming + status.txt
 	#unlink "$dir/PRSerrors.txt" if -e "$dir/PRSerrors.txt";
-	print " Done.";
+	print " Done." if $verbose;
 }
 
 ####>Revision history<####
+# 2.0.9 [BUGFIX] Multiple fixes including ended jobs detection in cluster context (PP 21/04/21) 
+# 2.0.8 [FEATURE] Clears PhosphoRS error & MySQL8 compatibility (PP 12/02/21)
+# 2.0.7 [UPDATE] Changed JOB_HISTORY.STATUS to JOB_HISTORY.JOB_STATUS (PP 28/08/20)
+# 2.0.6 [MINOR] Added project selection when opening monitor jobs windows (VS 02/09/20)
+# 2.0.5 [BUGFIX] Handles analysis imported from splitted MSF files (VS 20/04/20)
 # 2.0.4 [CHANGES] Use new job monitoring window opening parameters (VS 18/11/19)
 # 2.0.3 [MODIF] Switch from watchPhosphoAnalyses to monitorJobs script (VS 21/10/19)
 # 2.0.2 [ENHANCEMENT] Add insertion into JOB_HISTORY table for job monitoring (VS 08/10/19)

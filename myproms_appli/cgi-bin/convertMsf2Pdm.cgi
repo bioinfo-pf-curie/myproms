@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# convertMsf2Pdm.cgi     1.3.0                                                 #
+# convertMsf2Pdm.cgi     1.4.5                                                 #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Converts Proteome Discoverer .msf file into a Mascot-like .pdm file          #
@@ -50,8 +50,7 @@ use promsConfig;
 use promsMod;
 use strict;
 use XML::Simple;
-
-
+# exit;
 #######################
 ####>Configuration<####
 #######################
@@ -85,8 +84,11 @@ if (param('error')) {
 }
 my $selMinScore=param('minScore') || 0; # 'default'; #
 my $percolatorThres=(param('percolThr'))? param('percolThr')/100 : undef; # 1% -> 0.01
-my $databankID=param('databankID'); # 17; #
-
+#my $databankID=param('databankID'); # 17; #
+my @databankIDs=split(',',param('databankID')) if param('databankID'); # 17; #
+my %databankRanks;
+my $isPhosphoRSOnly = 0;
+foreach my $i (0..$#databankIDs) {$databankRanks{$databankIDs[$i]}=$i+1;}
 
 #######################
 ####>Starting HTML<####
@@ -258,7 +260,7 @@ sub getAllSearches { # GLOBALS: $dbsqlite
 		my ($parenProcessingNumber,$processingNodeName,$processingNodeNumber);
 		my $prsNodeID=0;
 		foreach my $processingNodeParameters (sort{$a->{ParentProcessingNodeNumber} cmp $b->{ParentProcessingNodeNumber}} @{$xmlData->{WorkflowTree}->{WorkflowNode}}) {
-			next unless $processingNodeParameters->{FriendlyName} eq 'Mascot' or uc($processingNodeParameters->{FriendlyName}) =~ 'SEQUEST';
+			next unless uc($processingNodeParameters->{FriendlyName}) =~ /(MASCOT|SEQUEST|MSAMANDA)/;
 			$prsNodeID++;
 			$processingNodeNumber=$processingNodeParameters->{ProcessingNodeNumber};
 			$searches{$processingNodeNumber}{'NODEID'}=$prsNodeID;
@@ -266,13 +268,19 @@ sub getAllSearches { # GLOBALS: $dbsqlite
 			$searches{$processingNodeNumber}{'NODEGUID'}=$processingNodeParameters->{Guid};
 		}
 		foreach my $processingNodeParameters (sort{$a->{ParentProcessingNodeNumber} cmp $b->{ParentProcessingNodeNumber}} @{$xmlData->{WorkflowTree}->{WorkflowNode}}) {
-			next unless $processingNodeParameters->{FriendlyName} eq 'Percolator' or uc($processingNodeParameters->{FriendlyName}) =~ /PHOSPHORS/;
-			$prsNodeID++;
-			my ($tagName)=($processingNodeParameters->{FriendlyName} eq 'Percolator')? 'PERCOLATOR':'PHOSPHORS';
-			foreach my $parNode (split(';',$processingNodeParameters->{ParentProcessingNodeNumber})) {
-				if ($searches{$parNode}) {
-					$searches{$parNode}{"${tagName}_NODE"}=$processingNodeParameters->{ProcessingNodeNumber};
-					$searches{$parNode}{"${tagName}_NODEID"}=$prsNodeID;
+			if(uc($processingNodeParameters->{FriendlyName}) =~ /(PHOSPHORS|PERCOLATOR|PTMRS)/) {
+				$prsNodeID++;
+				my ($tagName)= $1;
+				$searches{$processingNodeNumber}{"${tagName}_NODE"}=$processingNodeParameters->{ProcessingNodeNumber};
+				$searches{$processingNodeNumber}{"${tagName}_NODEID"}=$prsNodeID;
+
+				if($tagName eq 'PTMRS') { # Retrieve if ptmRS was started in PhophoRS only or full ptmRS mode
+					foreach my $processingNodeParameter (@{$processingNodeParameters->{ProcessingNodeParameters}->{ProcessingNodeParameter}}) {
+						if($processingNodeParameter->{Name} eq 'PhosphoRSMode') {
+							$isPhosphoRSOnly = 1 if($processingNodeParameter->{DisplayValue} eq 'True');
+							last;
+						}
+					}
 				}
 			}
 		}
@@ -689,6 +697,7 @@ sub printParametersMSF { # GLOBALS: $dbsqlite, $processingNodeNumber, $refSearch
 	}
 	my $isPercolator=($refSearches->{$processingNodeNumber}{PERCOLATOR_NODE})? 'Percolator' : '';
 	my $isPhosphoRS=($refSearches->{$processingNodeNumber}{PHOSPHORS_NODE})? 1 : 0;
+	my $isPTMRS=($refSearches->{$processingNodeNumber}{PTMRS_NODE})? 1 : 0;
 
 	#######################
 	###>Writing to file<###
@@ -772,6 +781,7 @@ DECOY=$decoy
 SEARCH_ALGO=$isSequest
 FDR_ALGO=$isPercolator
 PHOSPHORS=$isPhosphoRS
+PTMRS=$isPTMRS
 PEP_ISOTOPE_ERROR=
 RULES=1,2,8,9,10,13,14,15
 INTERNALS=0.0,700.0
@@ -934,7 +944,7 @@ sub printSummaryMSF { # GLOBALS: $dbsqlite, FILE
 ###################################################################
 ####<Print Summary: the queries one by one with the ions found>####
 ###################################################################
-sub printPeptidesMSF { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber, $refSearches, FILE, $databankID, $userID
+sub printPeptidesMSF { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber, $refSearches, FILE, @databankIDs, $userID
 	my ($decoy,$minScorePep,$refQueries,$refSpectra,$refModifications,$refMasses)=@_;
 
 	########################################
@@ -944,7 +954,7 @@ sub printPeptidesMSF { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber, $r
 	print "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<B>-Proteins...";
 	my %proteinsInfo;
 	my $dbh=&promsConfig::dbConnect;
-	my ($parseRules,$identType,$defIdentType)=$dbh->selectrow_array("SELECT PARSE_RULES,IDENTIFIER_TYPE,DEF_IDENT_TYPE FROM DATABANK,DATABANK_TYPE WHERE DATABANK.ID_DBTYPE=DATABANK_TYPE.ID_DBTYPE AND ID_DATABANK=$databankID"); # $databankID global. Only 1 db-search allowed in MSF
+	my ($parseRules,$identType,$defIdentType)=$dbh->selectrow_array("SELECT PARSE_RULES,IDENTIFIER_TYPE,DEF_IDENT_TYPE FROM DATABANK,DATABANK_TYPE WHERE DATABANK.ID_DBTYPE=DATABANK_TYPE.ID_DBTYPE AND ID_DATABANK=$databankIDs[0]"); # $databankID global. Only 1 db-search allowed in MSF
 	$defIdentType='UNKNOWN' unless $defIdentType;
 	$dbh->disconnect;
 	$identType=$defIdentType unless $identType;
@@ -1156,6 +1166,30 @@ sub printPeptidesMSF { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber, $r
 			}
 			$sthPRS->finish;
 		}
+		
+		##> PTMRS information
+		if($refSearches->{$processingNodeNumber}{'PTMRS_NODE'} && $typeName eq 'Target') {
+			my $ptmRSFieldName = ($isPhosphoRSOnly) ? "PhosphoRSPhosphoSiteProbabilities" : "ptmRSPhosphoSiteProbabilities";
+			my $sthPRS=$dbsqlite->prepare("SELECT PeptideID,$ptmRSFieldName FROM ${typeName}Psms");
+			$sthPRS->execute;
+			while( my($peptideID,$prsData) = $sthPRS->fetchrow_array) {
+				next unless $peptidesInfo{$peptideID};
+				
+				my $ptmProbStr = "";
+				while($prsData =~ /\w\((\d+)\):\s([\d.]+)/g) {
+					my ($pos, $prob) = ($1, $2);
+					$prob /= 100;
+
+					$ptmProbStr .= ";" if($ptmProbStr);
+					$ptmProbStr .= "$pos:$prob";
+					
+					$prsData=~s/\w\(\d+\):\s[\d.]+//;
+				}
+				
+				$peptidesInfo{$peptideID}[9]=$ptmProbStr;
+			}
+			$sthPRS->finish;
+		}
 
 		#####################################################
 		###<Get all the peptides associated to this query>###
@@ -1246,6 +1280,9 @@ sub printPeptidesMSF { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber, $r
 					}
 					if ($peptidesInfo{$peptideID}[8]) { # PhosphoRS data
 						print FILE "q$queryNum","_p$i","_phosphors=$peptidesInfo{$peptideID}[8]\n";
+					}
+					if ($peptidesInfo{$peptideID}[9]) { # PTMRS data
+						print FILE "q$queryNum","_p$i","_ptmrs=$peptidesInfo{$peptideID}[9]\n";
 					}
 				}
 			}
@@ -1632,6 +1669,7 @@ sub printParametersMSF2_2 { # GLOBALS: $dbsqlite, $processingNodeNumber, $refSea
 	}
 	my $isPercolator=($refSearches->{$processingNodeNumber}{PERCOLATOR_NODE})? 'Percolator' : '';
 	my $isPhosphoRS=($refSearches->{$processingNodeNumber}{PHOSPHORS_NODE})? 1 : 0;
+	my $isPTMRS=($refSearches->{$processingNodeNumber}{PTMRS_NODE})? 1 : 0;
 
 	#######################
 	###>Writing to file<###
@@ -1715,6 +1753,7 @@ DECOY=$decoy
 SEARCH_ALGO=$isSequest
 FDR_ALGO=$isPercolator
 PHOSPHORS=$isPhosphoRS
+PTMRS=$isPTMRS
 PEP_ISOTOPE_ERROR=
 RULES=1,2,8,9,10,13,14,15
 INTERNALS=0.0,700.0
@@ -1806,7 +1845,7 @@ $boundary
 ###################################################################
 ####<Print Summary: the queries one by one with the ions found>####
 ###################################################################
-sub printPeptidesMSF2_2 { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber, $refSearches, FILE, $databankID, $userID
+sub printPeptidesMSF2_2 { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber, $refSearches, FILE, @databankIDs, $userID
 	my ($decoy,$minScorePep,$refQueries,$refSpectra,$refModifications,$refMasses)=@_;
 
 	########################################
@@ -1814,47 +1853,137 @@ sub printPeptidesMSF2_2 { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber,
 	########################################
 #print '1>';
 	print "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<B>-Proteins...";
-	my %proteinsInfo;
+	my (%proteinsInfo,%identifierInDb);
 	my $dbh=&promsConfig::dbConnect;
-	my ($parseRules,$identType,$defIdentType)=$dbh->selectrow_array("SELECT PARSE_RULES,IDENTIFIER_TYPE,DEF_IDENT_TYPE FROM DATABANK,DATABANK_TYPE WHERE DATABANK.ID_DBTYPE=DATABANK_TYPE.ID_DBTYPE AND ID_DATABANK=$databankID"); # $databankID global. Only 1 db-search allowed in MSF
-	$defIdentType='UNKNOWN' unless $defIdentType;
-	$dbh->disconnect;
-	$identType=$defIdentType unless $identType;
-	my @rules=split(',:,',$parseRules);
-	my ($idRule)=($rules[0]=~/ID=(.+)/); #<<<<<<<<<<<<<< Synchronise with promsMod::getProtInfo >>>>>>
-	my $tempDbFile;
-	if ($fileID) {
-		($tempDbFile ="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$processingNodeNumber\.$fileID\.$userID.fasta/;
-	}else{
-		($tempDbFile ="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$processingNodeNumber\.$userID.fasta/; # same dir as msf file
+	#my ($parseRules,$identType,$defIdentType)=$dbh->selectrow_array("SELECT PARSE_RULES,IDENTIFIER_TYPE,DEF_IDENT_TYPE FROM DATABANK,DATABANK_TYPE WHERE DATABANK.ID_DBTYPE=DATABANK_TYPE.ID_DBTYPE AND ID_DATABANK=$databankID"); # $databankID global. Only 1 db-search allowed in MSF
+	#$defIdentType='UNKNOWN' unless $defIdentType;
+	#$dbh->disconnect;
+	#$identType=$defIdentType unless $identType;
+	#my @rules=split(',:,',$parseRules);
+	#my ($idRule)=($rules[0]=~/ID=(.+)/); #<<<<<<<<<<<<<< Synchronise with promsMod::getProtInfo >>>>>>
+	
+	my %dbRules;
+	my $sthDB=$dbh->prepare("SELECT PARSE_RULES,IDENTIFIER_TYPE,DEF_IDENT_TYPE FROM DATABANK,DATABANK_TYPE WHERE DATABANK.ID_DBTYPE=DATABANK_TYPE.ID_DBTYPE AND ID_DATABANK=?");
+	foreach my $databankID (@databankIDs) {
+		$sthDB->execute($databankID);
+		my ($parseRules,$identType,$defIdentType)=$sthDB->fetchrow_array;
+		unless ($identType) {$identType=$defIdentType || 'UNKNOWN';}
+		my @rules=split(',:,',$parseRules);
+		my ($idRule)=($rules[0]=~/ID=(.+)/); #<<<<<<<<<<<<<< Synchronise with promsMod::getProtInfo >>>>>>
+		@{$dbRules{$databankID}}=($idRule,$identType);
 	}
-	open (FASTA,">$tempDbFile");
+	$sthDB->finish;
+	# $dbh->disconnect;
+
+	my @tableHeader = ("Target", "Decoy");
+	if (scalar @databankIDs > 1) { # multiple databanks => take annotations from each fasta files
+		
+		foreach my $header (@tableHeader) {
+			my %fastaHeaders;
+			my $sthProt = $dbsqlite->prepare("SELECT UniqueSequenceID, Sequence, FastaTitleLines FROM ${header}Proteins");
+			$sthProt->execute;
+			while (my ($proteinID,$sequence,$header)= $sthProt->fetchrow_array) {
+				$header=~s/^>//;
+				@{$proteinsInfo{$proteinID}}=(
+					{}, 		# 0: identifier(s)
+					$sequence	# 1: sequence
+				);
+				foreach my $entry (split "\001",$header) {push @{$fastaHeaders{$proteinID}},$entry;}
+			}
+			$sthProt->finish;
+			print '.';
+		
+			###<Looping through databanks to track identifiers source databank(s)>###
+			foreach my $databankID (@databankIDs) {
+				my ($idRule,$identType)=@{$dbRules{$databankID}};
+				my %matchedIdentifiers;
+				foreach my $proteinID (keys %fastaHeaders) {
+					foreach my $entry (@{$fastaHeaders{$proteinID}}) {
+						my ($identifier)=($entry=~/$idRule/);
+						next unless $identifier;
+						if ($identType eq 'UNIPROT_ID') { #check for isoforms in 1st keyword before |
+							$entry=~s/^sp\|//;
+							if ($entry=~/^[^|]+-(\d+)\|/) {
+								$identifier.="-$1";
+							}
+						}
+						$matchedIdentifiers{$identifier}=$proteinID;
+					}
+				}
+		
+				##<Fetch protein info & store in temp modified fasta file
+				my $tempDbFile;
+				if ($fileID) {
+					($tempDbFile ="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$processingNodeNumber.$fileID.$userID\_$databankID.fasta/;
+				}
+				else {
+					($tempDbFile ="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$processingNodeNumber.$userID\_$databankID.fasta/; # same dir as msf file
+				}
+			
+				&promsMod::getProtInfo('silent',$dbh,$databankID,[0,$tempDbFile],{},{},{},{},undef,\%matchedIdentifiers); # $anaID=0 + destination fasta!!!!!
+				print '.';
+				##<Extract matched identfiers
+				open(MFAS,$tempDbFile);
+				while (<MFAS>) {
+					if (/^>(.+)/) {
+						my $annotStrg=$1;
+						foreach my $entryStrg (split('',$annotStrg)) {
+							my ($identifier)=($entryStrg=~/^(\S+)/);
+							my $proteinID=$matchedIdentifiers{$identifier};
+							$proteinsInfo{$proteinID}[0]{$identifier}=1; # hash in case same identifier in multiple DB
+							$identifierInDb{$identifier}{ $databankRanks{$databankID} }=1; # identifier found in this DB
+						}
+					}
+				}
+				close MFAS;
+				print '.';
+			}
+		}
+		$dbh->disconnect;
+		
+	}
+
+	else { # single databank => take annotations from msf
+		my ($idRule,$identType)=@{$dbRules{$databankIDs[0]}};
+		my $tempDbFile;
+		if ($fileID) {
+			($tempDbFile ="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$processingNodeNumber.$fileID.$userID\_$databankIDs[0].fasta/;
+		}
+		else{
+			($tempDbFile ="$promsPath{tmp}/pdm/$msfFile")=~s/\.msf\Z/_$processingNodeNumber.$userID\_$databankIDs[0].fasta/; # same dir as msf file
+		}
+		open (FASTA,">$tempDbFile");
 #	print "";
-	my $sthProt = $dbsqlite->prepare("SELECT UniqueSequenceID, Sequence, FastaTitleLines FROM TargetProteins");
-	$sthProt->execute;
-	while (my ($proteinID,$sequence,$description)= $sthProt->fetchrow_array) {
-		print FASTA "$description\n$sequence\n";
-		@{$proteinsInfo{$proteinID}}=(
-			[], 		# 0 identifiers
-			$sequence	# 1
-		);
-		$description=~s/^>//;
-		foreach my $entry (split "\001",$description) { #\001 means SOH<-> Start of header
-			my ($identifier)=($entry=~/$idRule/);
-			if ($identifier && $identType eq 'UNIPROT_ID') { #check for isoforms in 1st keyword before |
-				$entry=~s/^sp\|//;
-				if ($entry=~/^[^|]+-(\d+)\|/) {
-					$identifier.="-$1";
+		foreach my $header (@tableHeader) {
+			my $sthProt = $dbsqlite->prepare("SELECT UniqueSequenceID, Sequence, FastaTitleLines FROM ${header}Proteins");
+			$sthProt->execute;
+			while (my ($proteinID,$sequence,$description)= $sthProt->fetchrow_array) {
+				print FASTA "$description\n$sequence\n";
+				@{$proteinsInfo{$proteinID}}=(
+					{}, 		# 0 identifiers
+					$sequence	# 1
+				);
+				$description=~s/^>//;
+				foreach my $entry (split "\001",$description) { #\001 means SOH<-> Start of header
+					my ($identifier)=($entry=~/$idRule/);
+					if ($identifier && $identType eq 'UNIPROT_ID') { #check for isoforms in 1st keyword before |
+						$entry=~s/^sp\|//;
+						if ($entry=~/^[^|]+-(\d+)\|/) {
+							$identifier.="-$1";
+						}
+					}
+					else {
+						($identifier)=($description=~/^(\S+)/) unless $identifier; # fall back to fasta full identifier
+					}
+					$proteinsInfo{$proteinID}[0]{$identifier}=1;
+					$identifierInDb{$identifier}{1}=1; # single DB => dbRank=1
 				}
 			}
-			else {
-				($identifier)=($description=~/^(\S+)/) unless $identifier; # fall back to fasta full identifier
-			}
-			push @{$proteinsInfo{$proteinID}[0]},$identifier;
+			$sthProt->finish;
+			close FASTA;
 		}
 	}
-	$sthProt->finish;
-	close FASTA;
+	
 	print " Done.</B><BR>\n";
 
 	########################################################
@@ -1893,11 +2022,11 @@ sub printPeptidesMSF2_2 { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber,
 		###<Percolator filtering>###
 		#my $sthPepInfo=$dbsqlite->prepare("SELECT PeptideID,$scoreName,MSnSpectrumInfoSpectrumID,MatchedIonsCount,Sequence,MissedCleavages,PercolatorqValue,PercolatorPEP FROM ${typeName}Psms TP, ${typeName}PsmsMSnSpectrumInfo TPMSI WHERE TP.WorkflowID=TPMSI.${typeName}PsmsWorkflowID AND TP.PeptideID=TPMSI.${typeName}PsmsPeptideID");
 		my $addPepInfoStg=($fileID)?" AND TP.SpectrumFileId=$fileID":" "; # If a merge was done
-		my $sthPepInfo=$dbsqlite->prepare("SELECT PeptideID,$scoreName,MSnSpectrumInfoSpectrumID,MatchedIonsCount,Sequence,MissedCleavages$percolatorStrg FROM ${typeName}Psms TP, ${typeName}PsmsMSnSpectrumInfo TPMSI WHERE TP.WorkflowID=TPMSI.${typeName}PsmsWorkflowID AND TP.PeptideID=TPMSI.${typeName}PsmsPeptideID$addPepInfoStg");
+		my $sthPepInfo=$dbsqlite->prepare("SELECT PeptideID,$scoreName,MSnSpectrumInfoSpectrumID,MatchedIonsCount,Sequence,MissedCleavages,Mass,Charge,MassOverCharge$percolatorStrg FROM ${typeName}Psms TP, ${typeName}PsmsMSnSpectrumInfo TPMSI WHERE TP.WorkflowID=TPMSI.${typeName}PsmsWorkflowID AND TP.PeptideID=TPMSI.${typeName}PsmsPeptideID$addPepInfoStg");
 		#my $step=5000; #1000; # int($numPeptides/10);
 		my $count=0;
 		$sthPepInfo->execute;
-		while (my($peptideID,$score,$spectrumID,$matchedIonsCount,$sequence,$missCut,$qVal,$PEP) = $sthPepInfo->fetchrow_array) {
+		while (my($peptideID,$score,$spectrumID,$matchedIonsCount,$sequence,$missCut,$mass,$charge,$massOverCharge,$qVal,$PEP) = $sthPepInfo->fetchrow_array) {
 			$count++;
 			if ($count>=10000) { # 2500
 				$count=0;
@@ -1913,26 +2042,26 @@ sub printPeptidesMSF2_2 { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber,
 				0.000000,						# 3
 				$missCut,						# 4 only defined if $proteomeDiscovererVersion >= 1.3;
 				"0" x (length($sequence)+2),	# 5 String that explain the modifications on the peptides
-				[]								# 6 matching proteins
+				[],								# 6 matching proteins
+				$mass-$masses{'Hydrogen'}+$masses{'Electron'},							# 7 mass
+				$charge,						# 8 charge
+				$massOverCharge					# 9 mass over charge
 			);
-			if (defined $qVal) {push @{$peptidesInfo{$peptideID}},"$qVal:$PEP";} else {push @{$peptidesInfo{$peptideID}},undef} # 7 Percolator data
+			if (defined $qVal) {push @{$peptidesInfo{$peptideID}},"$qVal:$PEP";} else {push @{$peptidesInfo{$peptideID}},undef} # 10 Percolator data
 			push @{$spectrumPeptides{$spectrumID}},$peptideID; # 1 spectrum <-> several peptides
 		}
 		$sthPepInfo->finish;
 		print '/';
 
-#print "3 $typeName>";
-		if ($typeName eq 'Target') { # Before v1.3: no PeptidesProteins_decoy table
-		    ($workFlowID)=$dbsqlite->selectrow_array("SELECT WorkflowID FROM Workflows");
-			my $sthPepProt = $dbsqlite->prepare("SELECT TargetPsmsPeptideID, TargetProteinsUniqueSequenceID FROM TargetProteinsTargetPsms WHERE TargetPsmsWorkflowID=$workFlowID");
-			$sthPepProt->execute;
-			while( my($peptideID,$proteinID) = $sthPepProt->fetchrow_array){
-				next unless $peptidesInfo{$peptideID};
-				push @{$peptidesInfo{$peptideID}[6]},$proteinID;
-			}
-			$sthPepProt->finish;
-			print '.';
+		($workFlowID)=$dbsqlite->selectrow_array("SELECT WorkflowID FROM Workflows");
+		my $sthPepProt = $dbsqlite->prepare("SELECT ${typeName}PsmsPeptideID, ${typeName}ProteinsUniqueSequenceID FROM ${typeName}Proteins${typeName}Psms WHERE ${typeName}PsmsWorkflowID=$workFlowID");
+		$sthPepProt->execute;
+		while( my($peptideID,$proteinID) = $sthPepProt->fetchrow_array){
+			next unless $peptidesInfo{$peptideID};
+			push @{$peptidesInfo{$peptideID}[6]},$proteinID;
 		}
+		$sthPepProt->finish;
+		print '.';
 
 		#######################################################################
 		###<Update the mass value of the peptide according to modifications>###
@@ -1963,10 +2092,10 @@ sub printPeptidesMSF2_2 { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber,
 				}
 				elsif (uc($refModifications->{$modif}{'PRINTED_NAME'}) =~ /[NC][-_]TERM/){
 					my $substModUC=uc($refModifications->{$modif}{'SUBST'});
-					if ($modificationName =~ /$substModUC/ && uc($refModifications->{$modif}{'PRINTED_NAME'}) =~ /N[-_]TERM/) {
+					if ($modificationName =~ /^$substModUC/ && uc($refModifications->{$modif}{'PRINTED_NAME'}) =~ /N[-_]TERM/) {
 						substr($peptidesInfo{$peptideID}[5] , 0 , 1 , $refModifications->{$modif}{'VALUE'});
 					}
-					if ($modificationName =~ /$substModUC/ && uc($refModifications->{$modif}{'PRINTED_NAME'}) =~ /C[-_]TERM/) {
+					if ($modificationName =~ /^$substModUC/ && uc($refModifications->{$modif}{'PRINTED_NAME'}) =~ /C[-_]TERM/) {
 						substr($peptidesInfo{$peptideID}[5] , length($peptidesInfo{$peptideID}[1])+1 , 1 , $refModifications->{$modif}{'VALUE'});
 					}
 				}
@@ -1976,15 +2105,41 @@ sub printPeptidesMSF2_2 { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber,
 		print '/'; # 3
 
 		###> PhosphoRS information
-		#if ($phosphoRSMeasures{'phosphoRS Site Probabilities'}[0]) {
+		#if ($phosphoRSMeasures{'PhosphoRS Site Probabilities'}[0]) {
 		#	my $sthPRS=$dbsqlite->prepare("SELECT PeptideID,FieldValue FROM CustomDataPeptides$tableFlag WHERE FieldID=$phosphoRSMeasures{'phosphoRS Site Probabilities'}[0]");
 		#	$sthPRS->execute;
 		#	while( my($peptideID,$prsData) = $sthPRS->fetchrow_array) {
 		#		next unless $peptidesInfo{$peptideID};
-		#		$peptidesInfo{$peptideID}[8]=$prsData;
+		#		$peptidesInfo{$peptideID}[11]=$prsData;
 		#	}
 		#	$sthPRS->finish;
 		#}
+		
+		##> PTMRS information
+		if($refSearches->{$processingNodeNumber}{'PTMRS_NODE'} && $typeName eq 'Target') {
+			my $ptmRSFieldName = ($isPhosphoRSOnly) ? "PhosphoRSPhosphoSiteProbabilities" : "ptmRSPhosphoSiteProbabilities";
+			my $sthPRS=$dbsqlite->prepare("SELECT PeptideID,$ptmRSFieldName FROM ${typeName}Psms");
+			$sthPRS->execute;
+			while( my($peptideID,$prsData) = $sthPRS->fetchrow_array) {
+				next unless $peptidesInfo{$peptideID};
+				
+				my $ptmProbStr = "";
+				while($prsData =~ /\w\((\d+)\):\s([\d.]+)/g) {
+					my ($pos, $prob) = ($1, $2);
+					
+					if($prob != 0) {
+						$prob /= 100;
+						$ptmProbStr .= ";" if($ptmProbStr);
+						$ptmProbStr .= "$pos:$prob";
+					}
+					
+					$prsData=~s/\w\(\d+\):\s[\d.]+//;
+				}
+				
+				$peptidesInfo{$peptideID}[12]=$ptmProbStr;
+			}
+			$sthPRS->finish;
+		}
 
 		#####################################################
 		###<Get all the peptides associated to this query>###
@@ -2008,16 +2163,8 @@ sub printPeptidesMSF2_2 { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber,
 			my $i=0;
 			#foreach my $pep (@{$peptideID}){ #}
 			foreach my $peptideID (sort{$peptidesInfo{$b}[0]<=>$peptidesInfo{$a}[0] || $peptidesInfo{$a}[1] cmp $peptidesInfo{$b}[1]} @{$spectrumPeptides{$spectrumID}}) { # score - sequence
-				my ($miscleavages,$proteinString,$termsString)=(0,'','');
-				if($proteomeDiscovererVersion >= 1.3) {
-					$miscleavages=$peptidesInfo{$peptideID}[4];
-				}
-				else {
-					$miscleavages=($peptidesInfo{$peptideID}[1] =~ tr/K^R//);
-					$miscleavages-=1 if $peptidesInfo{$peptideID}[1] =~/R$|K$/; # Prevent to forget to count a miss-cut in a C-Terminal peptide (not necessarily a K or a R that ends the sequence)
-					#my $miscleavages=($peptidesInfo{$peptideID}[1] =~ tr/K^R//)-1;
-					#$miscleavages=0 if $miscleavages==-1; #it is the case when it is C-Terminal type peptide (not necessarily a K or a R that ends the sequence)
-				}
+				my ($miscleavages,$proteinString,$termsString,$databankString)=(0,'','','');
+				$miscleavages=$peptidesInfo{$peptideID}[4];
 
 				if ($typeName eq 'Target') { #< Peptides ####################################
 					foreach my $prot (@{$peptidesInfo{$peptideID}[6]}) {
@@ -2030,9 +2177,10 @@ sub printPeptidesMSF2_2 { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber,
 						else {$resend=substr($proteinsInfo{$prot}[1],$end,1);}
 
 						#Add all identifiers corresponding to the same protein
-						foreach my $ident (@{$proteinsInfo{$prot}[0]}){
-							$proteinString="$proteinString,\"$ident\":0:$beg:$end:0";
-							$termsString="$termsString:$resbeg,$resend";
+						foreach my $ident (sort keys %{$proteinsInfo{$prot}[0]}){
+							$proteinString.=",\"$ident\":0:$beg:$end:0";
+							$termsString.=":$resbeg,$resend";
+							$databankString.="0".join('',sort{$a<=>$b} keys %{$identifierInDb{$ident}}); # possibility to come from multiple DB
 						}
 					}
 				}
@@ -2040,30 +2188,40 @@ sub printPeptidesMSF2_2 { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber,
 					foreach my $prot (@{$peptidesInfo{$peptideID}[6]}) {
 						my $end=length($peptidesInfo{$peptideID}[1]);
 						#Add all identifiers corresponding to the same protein
-						foreach my $ident (@{$proteinsInfo{$prot}[0]}){
-							$proteinString="$proteinString,\"$ident\":0:1:$end:0";
-							$termsString="$termsString:-,-";
+						foreach my $ident (keys %{$proteinsInfo{$prot}[0]}){
+							$proteinString.=",\"$ident\":0:1:$end:0";
+							$termsString.=":-,-";
+							$databankString.="0".join('',sort{$a<=>$b} keys %{$identifierInDb{$ident}}); # possibility to come from multiple DB
 						}
 					}
 				}
 
 				# For Mascot research. Sometimes, data are not imported in the MSF file (there is a peptide with no protein related to it)
 				if ($termsString) {
+					$i++;
+					if ($databankIDs[1]) { # multiple databanks used
+						print FILE "q$queryNum","_p$i","_db=$databankString\n";
+					}
 					$termsString = substr $termsString, 1; # removes starting ','
 					$proteinString = substr $proteinString, 1; # removes starting ':'
 					my $mass=&calculatePeptideMass($peptideID,$refMasses,\%peptidesInfo);
-					my $delta=$refSpectra->{$spectrumID}[0]-$mass;
-					$i++;
+					my $delta=($refSpectra->{$spectrumID}[2] ne $peptidesInfo{$peptideID}[9]) ? $peptidesInfo{$peptideID}[7]-$mass: $refSpectra->{$spectrumID}[0]-$mass;
 					print FILE "q$queryNum","_p$i=$miscleavages,$mass,";
 					printf FILE "\%.6f",$delta;# Avoid to print e-05 for very small values...
 					print FILE ",$peptidesInfo{$peptideID}[2],$peptidesInfo{$peptideID}[1],,$peptidesInfo{$peptideID}[5],$peptidesInfo{$peptideID}[0],,0,0;$proteinString\n";
 					print FILE "q$queryNum","_p$i","_terms=$termsString\n";
 
-					if ($peptidesInfo{$peptideID}[7]) { # Percolator data
-						print FILE "q$queryNum","_p$i","_percolator=$peptidesInfo{$peptideID}[7]\n";
+					if ($refSpectra->{$spectrumID}[2] ne $peptidesInfo{$peptideID}[9]) { # Modified precursor data
+						print FILE "q$queryNum","_p$i","_precursor=$peptidesInfo{$peptideID}[7],$peptidesInfo{$peptideID}[8],$peptidesInfo{$peptideID}[9]\n";
 					}
-					if ($peptidesInfo{$peptideID}[8]) { # PhosphoRS data
-						print FILE "q$queryNum","_p$i","_phosphors=$peptidesInfo{$peptideID}[8]\n";
+					if ($peptidesInfo{$peptideID}[10]) { # Percolator data
+						print FILE "q$queryNum","_p$i","_percolator=$peptidesInfo{$peptideID}[10]\n";
+					}
+					if ($peptidesInfo{$peptideID}[11]) { # PhosphoRS data
+						print FILE "q$queryNum","_p$i","_phosphors=$peptidesInfo{$peptideID}[11]\n";
+					}
+					if ($peptidesInfo{$peptideID}[12]) { # PTMRS data
+						print FILE "q$queryNum","_p$i","_ptmrs=$peptidesInfo{$peptideID}[12]\n";
 					}
 				}
 			}
@@ -2083,6 +2241,14 @@ sub printPeptidesMSF2_2 { # GLOBALS: $pdmFile, $dbsqlite, $processingNodeNumber,
 }
 
 ####>Revision history<####
+# 1.4.5 [ENHANCEMENT] Handles ptmRS node is PhosphoRS only or full mode (VS 04/02/21)
+# 1.4.4 [BUGFIX] Do not try to extract PhosphoRS site probabilities for decoy peptides (VS 03/02/2020)
+# 1.4.3 [ENHANCEMENT] Handles precursor modification nodes in PD Workflow (VS 10/12/2020)
+# 1.4.2 [BUGFIX] Fixed printing of decoy peptides in resulting pdm file (30/11/20)
+# 1.4.1 [BUGFIX] Fixed data import for PD 2.5 WF using multiple node after search step (VS 27/11/20)
+# 1.4.0 [CHANGE] Handles multi-databanks for PD >= 2.2 (PP 05/10/20)
+# 1.3.2 [ENHANCMENT] Retrieve PtmRS PTM localization probabilities (VS 12/08/20)
+# 1.3.1 [BUGFIX] Fixing issue with multi-modifs containing same name that were all considered, i.e. Acetyl & Met-Loss+Acetyl (VS 07/04)
 # 1.3.0 Handles PD v2.4 (VS 15/11/19)
 # 1.2.9 Corrected fasta header parsing in &printPeptidesMSF2_2 (PP 22/01/19)
 # 1.2.8 Bug correction for Acetyl (N-Terminus) modification (GA 18/01/19)

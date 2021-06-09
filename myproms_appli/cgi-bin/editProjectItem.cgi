@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# editProjectItem.cgi    3.2.10                                                 #
+# editProjectItem.cgi         3.2.23                                           #
 # Authors: P. Poullet, G. Arras, F. Yvon, V. Sabatet (Institut Curie)          #
 # Contact: myproms@curie.fr                                                    #
 # Generates the interface allowing                                             #
@@ -64,19 +64,18 @@ my $maxRank = &promsConfig::getMaxRank;
 my $userID=$ENV{'REMOTE_USER'};
 my $date = strftime("%Y-%m-%d %H:%M:%S",localtime);
 
-#print header; warningsToBrowser(1); # DEBUG
+# print header; warningsToBrowser(1); # DEBUG
 #############################
 ####>Fetching parameters<####
 #############################
 &reImportData if param('reval'); # a validated Analysis is being reValidated
 my $action=param('ACT');
-my $rowID=param('ID'); # if action=add => rowID=parentID (undef if item is a project)
-$rowID=0 unless $rowID;
-($rowID)=&promsMod::cleanParameters($rowID);
+my $rowID=param('ID') || 0; # if action=add => rowID=parentID (undef if item is a project)
+($rowID)=&promsMod::cleanNumericalParameters($rowID);
 my $item=uc(param('ITEM')); # item being processed (child if 'add')
 
 if ($action eq 'ajaxMissedCleavage') {&computeMissedCleavages;}
-elsif ($action eq 'ajaxProteinSummary') {&proteinSummary;}
+elsif ($action eq 'ajaxProteinSummary') {&proteinSummary('cgi');}
 elsif ($action eq 'ajaxComputeFDR') {&computeFDR;}
 elsif ($action eq 'downloadSearchFiles') {&downloadSearchFiles;}
 elsif ($action eq 'updateMetadata') { &updateMetadata; }
@@ -88,7 +87,7 @@ my $showParameters=(param('showParam'))? 1 : 0;
 ####################################
 ####>(Re)run identifier mapping<####
 ####################################
-if ($action eq 'force') {
+if ($action eq 'force') { # force => clear current mapping & remap everything! (Project-level only)
 	print header(-charset=>'UTF-8');
 	warningsToBrowser(1);
 	print qq
@@ -97,7 +96,7 @@ if ($action eq 'force') {
 <HEAD>
 <TITLE>Re-Mapping Project</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
-<BODY>
+<BODY background="$promsPath{images}/bgProMS.gif">
 <CENTER>
 <BR><BR><FONT class="title2">Annotations mapping has been launched as a background task. It may take several minutes.
 <BR><BR>You can continue using myProMS in the mean time. </FONT><INPUT type="button" class="title3" value=" Continue " onclick="parent.optionFrame.selectOption()"/>
@@ -105,50 +104,17 @@ if ($action eq 'force') {
 </BODY>
 </HTML>
 |;
-	($userID,$rowID)=&promsMod::cleanParameters($userID,$rowID);
 	system "./mapProteinIdentifiers.pl $userID $rowID 0 force";
 	#window.location="./editProjectItem.cgi?ACT=summary&ITEM=PROJECT&ID=$rowID";
 	exit;
 }
-#if ($action eq 'mapMissing' || $action eq 'mapAll') { # project only
-#	$dbh->disconnect;
-#	my $mappingDir="$promsPath{tmp}/mapping";
-#	system "mkdir $promsPath{tmp}" unless -e "$promsPath{tmp}";
-#	system "mkdir $mappingDir" unless -e $mappingDir;
-#	my $jobListFile="$mappingDir/job_list.txt";
-#	my $jobTimeFile="$mappingDir/job_time.txt";
-#
-#	#>Check time stamp
-#	my $runningJobTime;
-#	if (-e $jobTimeFile) {
-#		$runningJobTime=`head -1 $jobTimeFile`;
-#		chomp($runningJobTime);
-#	}
-#	my $safetyStrg='';
-#	if (!$runningJobTime || time-$runningJobTime > 180) { # more than 3 min since last job was started => problem!
-#		system "rm $jobListFile $jobTimeFile";
-#		$safetyStrg='top.logoFrame.mappingJobRunning=0;'; # JS. just to be safe
-#	}
-#
-#	#>Record new job
-#	my $jobStartTime=strftime("%Y-%m-%d.%H:%M:%S",localtime); # just for info
-#	open (JOBS,">>$jobListFile");
-#	print JOBS "$rowID\tproject\t$rowID\t$userID\t$jobStartTime\n";
-#	close JOBS;
-#	print header(-charset=>'UTF-8');
-#	warningsToBrowser(1);
-#	print qq
-#|<HTML><HEAD><SCRIPT type="text/javascript">
-#$safetyStrg
-#if (top.logoFrame.mappingJobRunning==0) {
-#	top.logoFrame.wgetFrame.location="$promsPath{cgi}/wgetMapIdentifiers.cgi?ACT=$action";
-#	top.logoFrame.mappingJobRunning=1;
-#}
-#window.location="./editProjectItem.cgi?ACT=summary&ITEM=PROJECT&ID=$rowID";
-#</SCRIPT></HEAD></HTML>
-#|;
-#	exit;
-#}
+elsif ($action eq 'mapMissing') { # normal mapping (analysis-level only)
+	print header(-charset=>'UTF-8'); # run inside hidden iframe (mappingFrame)
+	warningsToBrowser(1);
+	print "<HTML><HEAD><BODY>Mapping...</BODY></HEAD></HTML>";
+	system "./mapProteinIdentifiers.pl $userID $rowID";
+	exit;
+}
 
 
 ##########################
@@ -295,9 +261,9 @@ my ($light,$dark)=&promsConfig::getRowColors;
 print qq
 |<HTML>
 <HEAD>
-<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.4.1/jquery.min.js"></script>
+<script src="http://ajax.googleapis.com/ajax/libs/jquery/3.4.1/jquery.min.js"></script>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
-<link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.8.2/css/all.css" integrity="sha384-oS3vJWv+0UjzBfQzYUhtDYW+Pj2yciDJxpsK1OYPAYjqT085Qq/1cq5FLXAZQ7Ay" crossorigin="anonymous">
+<link rel="stylesheet" href="http://use.fontawesome.com/releases/v5.8.2/css/all.css" integrity="sha384-oS3vJWv+0UjzBfQzYUhtDYW+Pj2yciDJxpsK1OYPAYjqT085Qq/1cq5FLXAZQ7Ay" crossorigin="anonymous">
 <STYLE>
 |;
 foreach my $varMod (sort{$a cmp $b} keys %allPostTransModifs) {
@@ -421,7 +387,7 @@ if ($action eq 'summary') {
 function ajaxMissedCleavage() {
 	var mcSpan=document.getElementById('missCleavSPAN');
 	mcSpan.innerHTML="<IMG src=\\"$promsPath{images}/scrollbarGreen.gif\\" width=200>&nbsp;";
-	//Creation of the XMLHTTPRequest object
+	/* Creation of the XMLHTTPRequest object */
 	var XHR = getXMLHTTP();
 	if (!XHR) {
 		return false;
@@ -435,28 +401,37 @@ function ajaxMissedCleavage() {
 	XHR.send(null);
 }
 var proteinSummary=false; // flag for displayed or not protein summary
-function ajaxProteinSummary() {
-	if (proteinSummary) return; // in case called by setTimeout but already called by user
-	proteinSummary=true;
+function ajaxProteinSummary(jobID=0,waitTime=1000) {
+	if (proteinSummary && jobID==0) return; // in case called by BODY setTimeout (not function) but already called by user
 	var protSpan2=document.getElementById('protSPAN2');
-	protSpan2.innerHTML="<IMG src=\\"$promsPath{images}/scrollbarGreen.gif\\" width=300>&nbsp;";
+	if (!proteinSummary) protSpan2.innerHTML="<IMG src=\\"$promsPath{images}/scrollbarGreen.gif\\" width=300>&nbsp;";
+	proteinSummary=true;
 
-	//Creation of the XMLHTTPRequest object
+	/*Creation of the XMLHTTPRequest object*/
 	var XHR = getXMLHTTP();
 	if (!XHR) {
 		return false;
 	}
-	XHR.open("GET","$promsPath{cgi}/editProjectItem.cgi?ACT=ajaxProteinSummary&ID=$rowID&ITEM=$item",true);
+	XHR.open("GET","$promsPath{cgi}/editProjectItem.cgi?ACT=ajaxProteinSummary&ID=$rowID&ITEM=$item&job="+jobID,true);
 	XHR.onreadystatechange=function() {
 		if (XHR.readyState==4 && XHR.responseText) {
-			var [totProt,visProt,pcMapped,numDbTypes]=XHR.responseText.split(',');
-			var [warnStrg1,warnStrg2]=(numDbTypes*1 < 2)? ['',''] : ['<FONT style="color:#DD0000"><SUP>*</SUP></FONT>','<FONT style="font-size:11px;color:#DD0000"><BR>&nbsp;'+numDbTypes+' identifier types used: Different instances of the same protein may occur.</FONT>'];
-			document.getElementById('protSPAN1').innerHTML='&nbsp;'+visProt+warnStrg1;
-			var sStrg=(visProt*1 > 1)? 's' : '';
-			protSpan2.innerHTML='&nbsp;Protein'+sStrg+' ('+totProt+' max) <INPUT type="button" class="font11" value="List ambiguities" onclick="window.location=\\'$promsPath{cgi}/listConflicts.cgi?TYPE=$item&ID=$rowID&ACT=ambiguity\\'"/> <INPUT type="button" class="font11" value="Visible & Hidden" onclick="window.location=\\'$promsPath{cgi}/listConflicts.cgi?TYPE=$item&ID=$rowID&ACT=switch\\'"/>'+warnStrg2;
-			document.getElementById('protSPAN3').innerHTML='&nbsp;'+pcMapped;
-			document.getElementById('protSPAN4').innerHTML='&nbsp;% Proteins mapped to biological resources.';
-			document.getElementById('protMapTR').style.display='';
+			var [job,status,totProt,visProt,pcMapped,numDbTypes]=XHR.responseText.split(',');
+			if (status==='END') { // finished
+				var [warnStrg1,warnStrg2]=(numDbTypes*1 < 2)? ['',''] : ['<FONT style="color:#DD0000"><SUP>*</SUP></FONT>','<FONT style="font-size:11px;color:#DD0000"><BR>&nbsp;'+numDbTypes+' identifier types used: Different instances of the same protein may occur.</FONT>'];
+				document.getElementById('protSPAN1').innerHTML='&nbsp;'+visProt+warnStrg1;
+				var sStrg=(visProt*1 > 1)? 's' : '';
+				protSpan2.innerHTML='&nbsp;Protein'+sStrg+' ('+totProt+' max) <INPUT type="button" class="font11" value="List ambiguities" onclick="window.location=\\'$promsPath{cgi}/listConflicts.cgi?TYPE=$item&ID=$rowID&ACT=ambiguity\\'"/> <INPUT type="button" class="font11" value="Visible & Hidden" onclick="window.location=\\'$promsPath{cgi}/listConflicts.cgi?TYPE=$item&ID=$rowID&ACT=switch\\'"/>'+warnStrg2;
+				document.getElementById('protSPAN3').innerHTML='&nbsp;'+pcMapped;
+				document.getElementById('protSPAN4').innerHTML='&nbsp;% Proteins mapped to biological resources.';
+				document.getElementById('protMapTR').style.display='';
+				//proteinSummary=true;//
+			}
+			else { // On-going
+				waitTime+=500;
+				waitTime=Math.min(10000,waitTime); // max 10 sec wait
+				if (waitTime >= 5000) {protSpan2.innerHTML+='.';}
+				setTimeout(function() {ajaxProteinSummary(job,waitTime);},waitTime);
+			}
 		}
 	}
 	XHR.send(null);
@@ -630,7 +605,10 @@ function showHideScoresDistribution() {
 	document.getElementById('scoresBUTTON').value=buttonValue;
 }
 function getMissingProteins(identifierType) {
-	if (!identifierType) return;
+	if (!identifierType) {
+		alert('ERROR: No identifier selected!');
+		return;
+	}
 	mappingFrame.location="$promsPath{cgi}/editProjectItem.cgi?ITEM=ANALYSIS&ID=$itemID&ACT=mapMissing&IDENT="+identifierType;
 	document.getElementById('mappingDIV').innerHTML='<FONT class="title3" color="#DD0000">Annotation retrieval is running in background.<BR>You can continue using myProMS.</FONT>';
 }
@@ -864,7 +842,8 @@ if ($action eq 'summary' && $item eq 'ANALYSIS' && $showParameters==1) {
 				print "<TR valign=top><TH align=right bgcolor=$dark nowrap>&nbsp;$trueParam$bdRankStrg :</TH><TD nowrap bgcolor=$light>";
 				foreach my $subParam (sort {$a cmp $b} keys %{$infoSubmit{$param}}) {
 					(my $trueSubParam=$subParam)=~s/^\w://; # remove sort tag
-					print "&nbsp;&bull;<B>$trueSubParam:</B>&nbsp;$infoSubmit{$param}{$subParam}[$i]<BR>";
+					print(($subParam =~ /&nbsp;/) ? "&nbsp;&nbsp;&nbsp;" : "&nbsp;&bull;");
+					print "<B>$trueSubParam:</B>&nbsp;$infoSubmit{$param}{$subParam}[$i]<BR>";
 				}
 				print "</TD></TR>\n";
 			}
@@ -884,7 +863,7 @@ if ($missingProteins) { # validated analysis in summary mode
 |<BR><DIV id="mappingDIV">
 <FONT class="title3">$missingProteins protein$protString found with incomplete annotation.<BR>
 |;
-	if (-e "$promsPath{tmp}/mapping.job") {
+	if (-e "$promsPath{logs}/mapping.job") {
 		print "An annotation retrieval is already on-going. Wait for job to end and check again.</FONT></DIV>\n";
 	}
 	else {
@@ -951,13 +930,13 @@ if ($item eq 'ANALYSIS') {
 		print "<DIV id=\"scoresDIV\" style=\"display:none\"><BR><IMG style=\"border:solid 3px $dark\" src=\"$anaDirHtml/scores.png\"/><BR></DIV>\n";
 	}
 }
-if ($action eq 'summary' && $item ne 'ANALYSIS' && $hasValidAna) { # auto display Protein summary
-	print qq
-|<SCRIPT type="text/javascript">
-setTimeout(ajaxProteinSummary,10000);
-</SCRIPT>
-|;
-}
+# if ($action eq 'summary' && $item ne 'ANALYSIS' && $hasValidAna) { # auto display Protein summary
+# 	print qq
+# |<SCRIPT type="text/javascript">
+# setTimeout(ajaxProteinSummary,10000);
+# </SCRIPT>
+# |;
+# }
 print "</CENTER>\n</BODY>\n</HTML>\n";
 
 
@@ -979,7 +958,7 @@ sub project {
 	#my ($name,$description,$protVisibility,$identMappingID,$ptmString,$owner,$workgroup,$startDate,$status,$comments);
 	my ($name,$description,$protVisibility,$identMappingID,$owner,$workgroup,$startDate,$status,$comments);
 	my $statusStrg;
-	my %relevantPTMs;
+	my (%relevantPTMs,%quantifPTMs);
 
 	#<Identifier conversion
 	my %identifierMapping;
@@ -1006,6 +985,22 @@ sub project {
 			$relevantPTMs{$modID}=$allPostTransModifs{$modID}[0];
 		}
 		$sthGetPM->finish;
+		if ($action eq 'edit') {
+			my $sthGetQM=$dbh->prepare("SELECT DISTINCT CONCAT(COALESCE(Q.ID_MODIFICATION,0),',',COALESCE(GROUP_CONCAT(MQ.ID_MODIFICATION),0)) AS MODIF FROM EXPERIMENT E
+									INNER JOIN DESIGN D ON D.ID_EXPERIMENT=E.ID_EXPERIMENT
+									INNER JOIN QUANTIFICATION Q ON Q.ID_DESIGN=D.ID_DESIGN
+									LEFT JOIN MULTIMODIF_QUANTIFICATION MQ ON MQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION
+									WHERE ID_PROJECT=$itemID GROUP BY Q.ID_QUANTIFICATION
+									HAVING MODIF != '0:0'");
+			$sthGetQM->execute;
+			while (my ($modIdStrg)=$sthGetQM->fetchrow_array) {
+				foreach my $modID (split(',',$modIdStrg)) { # "9,0" or "0,1,2,40"
+					next if $modID <= 0; # skip also -1 (virtual "free residue" modif)
+					$quantifPTMs{$modID}=$allPostTransModifs{$modID}[0];
+				}
+			}
+			$sthGetQM->finish;
+		}
 		if ($status <= 0) {
 			$statusStrg='Ongoing';
 			if ($userStatus eq 'bioinfo') {
@@ -1083,7 +1078,7 @@ sub project {
 		#my $mapString="<TR><TH align=right>&nbsp;$pcMapped</TH><TH align=left>&nbsp;% Proteins mapped to biological resources.".&checkOnGoingMapping."</TH></TR>";
 		my ($protString,$mapString)=('','');
 		if ($hasValidAna) {
-			$protString="<TR><TH align=right valign=top><SPAN id=\"protSPAN1\"></SPAN></TH><TH align=left><SPAN id=\"protSPAN2\"><INPUT type=\"button\" class=\"font11\" value=\"Protein summary\" onclick=\"ajaxProteinSummary()\"/></SPAN></TH></TR>";
+			$protString="<TR><TH align=right valign=top><SPAN id=\"protSPAN1\"></SPAN></TH><TH align=left valign=top><SPAN id=\"protSPAN2\"><INPUT type=\"button\" class=\"font11\" value=\"Protein summary\" onclick=\"ajaxProteinSummary()\"/></SPAN></TH></TR>";
 			$mapString="<TR id=\"protMapTR\" style=\"display:none\"><TH align=right><SPAN id=\"protSPAN3\"></SPAN></TH><TH align=left><SPAN id=\"protSPAN4\"></SPAN>".&checkOnGoingMapping."</TH></TR>";
 		}
 		my ($numBioSamples)=$dbh->selectrow_array("SELECT COUNT(ID_BIOSAMPLE) FROM PROJECT_BIOSAMPLE WHERE ID_PROJECT=$itemID");
@@ -1105,7 +1100,7 @@ sub project {
 		}
 		if ($action eq 'edit') {
 			$protVisStrg.=qq
-|&nbsp;<B>Or</B><BR><INPUT type='checkbox' name='upVis' value='1'> Update all proteins' visibility based on current rule.<BR>
+|&nbsp;<B>Or</B><BR><INPUT type='checkbox' name='upVis' value='1'> Update all proteins visibility based on current rule.<BR>
 &nbsp;<I><B>Warning:</B><BR>
 &nbsp;&nbsp;&nbsp;&nbsp;-Changing current selection may modify <B>Custom lists</B> contents.<BR>
 &nbsp;&nbsp;&nbsp;&nbsp;-Analyses with protein quantification or GO data will not be updated.</I>
@@ -1122,7 +1117,7 @@ sub project {
 		}
 		$identMapStrg.="</SELECT>";
 		push @valueText,$identMapStrg;
-		my @ptmList=(sort{lc($allPostTransModifs{$a}[1]) cmp lc($allPostTransModifs{$b}[1])} keys %allPostTransModifs);
+		my @ptmList=(sort{lc($allPostTransModifs{$a}[0]) cmp lc($allPostTransModifs{$b}[0])} keys %allPostTransModifs);
 		my $numRows=(scalar @ptmList)/3;
 		$numRows++ if (int($numRows)<$numRows);
 		$numRows=int($numRows);
@@ -1132,8 +1127,12 @@ sub project {
 			$ptmDisplayString.="<TR>";
 			foreach my $col (1..3) {
 				if ($ptmIndex<=$#ptmList) {
-					my $chkStrg=($relevantPTMs{$ptmList[$ptmIndex]})? ' checked' : '';
-					$ptmDisplayString.="<TD nowrap><INPUT type=\"checkbox\" name=\"relevantPTMs\" value=\"$ptmList[$ptmIndex]\"$chkStrg>$allPostTransModifs{$ptmList[$ptmIndex]}[0] (<FONT class=\"$allPostTransModifs{$ptmList[$ptmIndex]}[2]\">$allPostTransModifs{$ptmList[$ptmIndex]}[1]</FONT>)&nbsp;</TD>";
+					if ($quantifPTMs{$ptmList[$ptmIndex]}) { # hard check, not uncheckable
+						$ptmDisplayString.="<TD nowrap><INPUT type=\"checkbox\" name=\"relevantPTMs\" value=\"$ptmList[$ptmIndex]\" checked style=\"display:none\"><INPUT type=\"checkbox\" name=\"fakePTMs\" value=\"\" checked disabled>$allPostTransModifs{$ptmList[$ptmIndex]}[0] (<FONT class=\"$allPostTransModifs{$ptmList[$ptmIndex]}[2]\">$allPostTransModifs{$ptmList[$ptmIndex]}[1]</FONT>)&nbsp;</TD>";
+					} else {
+						my $chkStrg=($relevantPTMs{$ptmList[$ptmIndex]})? ' checked' : '';
+						$ptmDisplayString.="<TD nowrap><LABEL><INPUT type=\"checkbox\" name=\"relevantPTMs\" value=\"$ptmList[$ptmIndex]\"$chkStrg>$allPostTransModifs{$ptmList[$ptmIndex]}[0] (<FONT class=\"$allPostTransModifs{$ptmList[$ptmIndex]}[2]\">$allPostTransModifs{$ptmList[$ptmIndex]}[1]</FONT>)</LABEL>&nbsp;</TD>";
+					}
 				}
 				else {$ptmDisplayString.="<TD></TD>";}
 				$ptmIndex++;
@@ -1194,7 +1193,7 @@ sub experiment_sample {
 	if ($action ne 'add') { # summary or edit
 		@nameText=('Name','Description','Position','Start date');
 		push @nameText,'Preferred species' if $item eq 'EXPERIMENT';
-		push @nameText,('Summary','False discovery') if($action eq 'summary');
+		push @nameText,('Summary','Hydrophobicity','False discovery') if($action eq 'summary');
 		push @nameText,'Comments';
 		push @nameText,'List' if $action eq 'summary';
 		push @nameText, 'Experiment lock' if($item eq 'EXPERIMENT' && $action eq 'edit' && $projectAccess =~ /bioinfo|mass/);
@@ -1230,6 +1229,7 @@ sub experiment_sample {
 	$startDate=&promsMod::formatDate($startDate);
 	if ($action eq 'summary') {
 		my $summaryString;
+		my $hydroString = '';
 		if ($item eq 'SAMPLE') {
 			#my ($totProt,$visProt,$pcMapped)=(0,0,0);
 			(my $numAna,$hasValidAna)=$dbh->selectrow_array("SELECT COUNT(ID_ANALYSIS),MAX(VALID_STATUS) FROM ANALYSIS WHERE ID_SAMPLE=$itemID");
@@ -1250,12 +1250,60 @@ sub experiment_sample {
 			#$protString.="&nbsp;</TH>";
 			##my $geneString=($numGenes>1)? "<TH align=right>&nbsp;$numGenes</TH><TH align=left>&nbsp;Genes mapped.</TH>" : "<TH align=right>&nbsp;$numGenes</TH><TH align=left>&nbsp;Gene mapped.</TH>";
 			#my $mapString="<TH align=right>&nbsp;$pcMapped</TH><TH align=left>&nbsp;% Proteins mapped to biological resources.".&checkOnGoingMapping."</TH>";
+			my $hydroStrg = '';
+			if ($numAna) {
+				# Check for Peptide hydrophobicity computation
+				my $sthHydroQuantif = $dbh->prepare("SELECT Q.ID_QUANTIFICATION, Q.NAME, Q.STATUS, Q.QUANTIF_ANNOT
+					FROM ANALYSIS A
+					INNER JOIN ANA_QUANTIFICATION AQ ON A.ID_ANALYSIS = AQ.ID_ANALYSIS
+					INNER JOIN QUANTIFICATION Q ON AQ.ID_QUANTIFICATION = Q.ID_QUANTIFICATION
+					INNER JOIN QUANTIFICATION_METHOD QM ON Q.ID_QUANTIFICATION_METHOD = QM.ID_QUANTIFICATION_METHOD
+					WHERE A.ID_SAMPLE = $itemID AND QM.CODE = 'HYDRO'
+					GROUP BY Q.ID_QUANTIFICATION
+					ORDER BY Q.ID_QUANTIFICATION"
+				);				
+				my $sthCountAna = $dbh->prepare("SELECT COUNT(*) FROM ANA_QUANTIFICATION WHERE ID_QUANTIFICATION = ?");
+				$sthHydroQuantif->execute;
+				my $hydroCount = 0;
+				my $hydroQuantifStrg;
+				while (my ($quantifID, $qName, $status, $quantifAnnot) = $sthHydroQuantif->fetchrow_array) {
+					$hydroCount++;
+					if ($hydroQuantifStrg) {
+						$hydroQuantifStrg .= "</TD></TR><TR><TD>";
+					} else {
+						$hydroQuantifStrg = "<TD>";
+					}
+					my $statusImage = ($status==-2)? 'lightRed1.gif' : ($status==-1)? 'lightGray1.gif' : ($status==0)? 'lightYellow1.gif' : 'lightGreen1.gif';
+					$sthCountAna->execute($quantifID);
+					my ($quantifNumAna) = $sthCountAna->fetchrow_array;
+					my ($hydroSoft) = $quantifAnnot =~ /SOFTWARE=([^:]+)/;
+					($hydroSoft, my $version) = split(';', $hydroSoft);
+					$hydroSoft = $hydroSoft . "_SSRCalc" if ($hydroSoft eq "myProMS");
+					my $versionStrg = ($version)? " v$version" : '';
+					$hydroQuantifStrg .= "&nbsp;<IMG src=\"$promsPath{images}/$statusImage\"/>$qName";
+					$hydroQuantifStrg .= " x$quantifNumAna ";
+					$hydroQuantifStrg .= ($quantifNumAna > 1)? "Analyses" : "Analysis";
+					$hydroQuantifStrg .= " [$hydroSoft$versionStrg]";
+					$hydroQuantifStrg .= "&nbsp;&nbsp;<INPUT type=\"button\" class=\"font11\" value=\"Display\" onclick=\"parent.optionFrame.location='./selectOptionHydro.cgi?ID=$quantifID&FROM=sample:$itemID'\"><BR>\n";
+				}
+				$sthCountAna->finish;
+				$sthHydroQuantif->finish;
+
+				if ($hydroQuantifStrg) {
+					$hydroQuantifStrg .= "</TD></TR>";
+					$hydroStrg = "<TH align=right valign=top>&nbsp;$hydroCount</TH><TH align=left valign=top><TABLE border=0 cellpadding=0 cellspacing=0><TH align=left valign=top rowspan=$hydroCount>&nbsp;Computation";
+					$hydroStrg .= "s" if ($hydroCount > 1);
+					$hydroStrg .= "</TH>$hydroQuantifStrg</TABLE></TH>";
+				}
+			}
+
 			my ($protString,$mapString)=('','');
 			if ($hasValidAna) {
-				$protString="<TR><TH align=right><SPAN id=\"protSPAN1\"></SPAN></TH><TH align=left><SPAN id=\"protSPAN2\"><INPUT type=\"button\" class=\"font11\" value=\"Protein summary\" onclick=\"ajaxProteinSummary()\"/></SPAN></TH></TR>";
+				$protString="<TR><TH align=right><SPAN id=\"protSPAN1\"></SPAN></TH><TH align=left valign=top><SPAN id=\"protSPAN2\"><INPUT type=\"button\" class=\"font11\" value=\"Protein summary\" onclick=\"ajaxProteinSummary()\"/></SPAN></TH></TR>";
 				$mapString="<TR id=\"protMapTR\" style=\"display:none\"><TH align=right><SPAN id=\"protSPAN3\"></SPAN></TH><TH align=left><SPAN id=\"protSPAN4\"></SPAN>".&checkOnGoingMapping."</TH></TR>";
 			}
 			$summaryString="<TABLE border=0 cellpadding=0 cellspacing=0><TR>$anaString</TR>$protString$mapString</TABLE>";
+			$hydroString="<TABLE border=0 cellpadding=0 cellspacing=0><TR>$hydroStrg</TR></TABLE>";
 		}
 		else { # EXPERIMENT
 			my ($numSpot,$numSamp,$numAna)=(0,0,0); #$totProt,$visProt,$pcMapped)=(0,0,0);
@@ -1287,9 +1335,56 @@ sub experiment_sample {
 			#$protString.="&nbsp;</TH>";
 			##my $geneString=($numGenes>1)? "<TH align=right>&nbsp;$numGenes</TH><TH align=left>&nbsp;Genes mapped.</TH>" : "<TH align=right>&nbsp;$numGenes</TH><TH align=left>&nbsp;Gene mapped.</TH>";
 			#my $mapString="<TH align=right>&nbsp;$pcMapped</TH><TH align=left>&nbsp;% Proteins mapped to biological resources.".&checkOnGoingMapping."</TH>";
+			my $hydroStrg = '';
+			if ($numAna) {
+				# Check for Peptide hydrophobicity computation
+				my $sthHydroQuantif = $dbh->prepare("SELECT Q.ID_QUANTIFICATION, Q.NAME, Q.STATUS, Q.QUANTIF_ANNOT
+					FROM SAMPLE S
+					INNER JOIN ANALYSIS A ON S.ID_SAMPLE = A.ID_SAMPLE
+					INNER JOIN ANA_QUANTIFICATION AQ ON A.ID_ANALYSIS = AQ.ID_ANALYSIS
+					INNER JOIN QUANTIFICATION Q ON AQ.ID_QUANTIFICATION = Q.ID_QUANTIFICATION
+					INNER JOIN QUANTIFICATION_METHOD QM ON Q.ID_QUANTIFICATION_METHOD = QM.ID_QUANTIFICATION_METHOD
+					WHERE S.ID_EXPERIMENT = $itemID AND QM.CODE = 'HYDRO'
+					GROUP BY Q.ID_QUANTIFICATION
+					ORDER BY Q.ID_QUANTIFICATION"
+				);				
+				my $sthCountAna = $dbh->prepare("SELECT COUNT(*) FROM ANA_QUANTIFICATION WHERE ID_QUANTIFICATION = ?");
+				$sthHydroQuantif->execute;
+				my $hydroCount = 0;
+				my $hydroQuantifStrg;
+				while (my ($quantifID, $qName, $status, $quantifAnnot) = $sthHydroQuantif->fetchrow_array) {
+					$hydroCount++;
+					if ($hydroQuantifStrg) {
+						$hydroQuantifStrg .= "</TD></TR><TR><TD>";
+					} else {
+						$hydroQuantifStrg = "<TD>";
+					}					
+					my $statusImage = ($status==-2)? 'lightRed1.gif' : ($status==-1)? 'lightGray1.gif' : ($status==0)? 'lightYellow1.gif' : 'lightGreen1.gif';
+					$sthCountAna->execute($quantifID);
+					my ($quantifNumAna) = $sthCountAna->fetchrow_array;
+					my ($hydroSoft) = $quantifAnnot =~ /SOFTWARE=([^:]+)/;
+					($hydroSoft, my $version) = split(';', $hydroSoft);
+					$hydroSoft = $hydroSoft . "_SSRCalc" if ($hydroSoft eq "myProMS");
+					my $versionStrg = ($version)? " v$version" : '';
+					$hydroQuantifStrg .= "&nbsp;<IMG src=\"$promsPath{images}/$statusImage\"/>$qName";
+					$hydroQuantifStrg .= " x$quantifNumAna ";
+					$hydroQuantifStrg .= ($quantifNumAna > 1)? "Analyses" : "Analysis";
+					$hydroQuantifStrg .= " [$hydroSoft$versionStrg]";
+					$hydroQuantifStrg .= "&nbsp;&nbsp;<INPUT type=\"button\" class=\"font11\" value=\"Display\" onclick=\"parent.optionFrame.location='./selectOptionHydro.cgi?ID=$quantifID&FROM=experiment:$itemID'\"><BR>\n";
+				}
+				$sthCountAna->finish;
+				$sthHydroQuantif->finish;
+
+				if ($hydroQuantifStrg) {
+					$hydroQuantifStrg .= "</TD></TR>";
+					$hydroStrg = "<TH align=right valign=top>&nbsp;$hydroCount</TH><TH align=left valign=top><TABLE border=0 cellpadding=0 cellspacing=0><TH align=left valign=top rowspan=$hydroCount>&nbsp;Computation";
+					$hydroStrg .= "s" if ($hydroCount > 1);
+					$hydroStrg .= "</TH>$hydroQuantifStrg</TABLE></TH>";
+				}
+			}
 			my ($protString,$mapString,$quantiString,$explorString,$funcString)=('','','','','');
 			if ($hasValidAna) {
-				$protString="<TR><TH align=right><SPAN id=\"protSPAN1\"></SPAN></TH><TH align=left><SPAN id=\"protSPAN2\"><INPUT type=\"button\" class=\"font11\" value=\"Protein summary\" onclick=\"ajaxProteinSummary()\"/></SPAN></TH></TR>";
+				$protString="<TR><TH align=right><SPAN id=\"protSPAN1\"></SPAN></TH><TH align=left valign=top><SPAN id=\"protSPAN2\"><INPUT type=\"button\" class=\"font11\" value=\"Protein summary\" onclick=\"ajaxProteinSummary()\"/></SPAN></TH></TR>";
 				$mapString="<TR id=\"protMapTR\" style=\"display:none\"><TH align=right><SPAN id=\"protSPAN3\"></SPAN></TH><TH align=left><SPAN id=\"protSPAN4\"></SPAN>".&checkOnGoingMapping."</TH></TR>";
 				##>Child items
 				my ($numProtQuant)=$dbh->selectrow_array("SELECT COUNT(ID_QUANTIFICATION) FROM QUANTIFICATION Q,DESIGN D WHERE D.ID_DESIGN=Q.ID_DESIGN AND Q.FOCUS='protein' AND D.ID_EXPERIMENT=$itemID");
@@ -1305,6 +1400,7 @@ sub experiment_sample {
 				$funcString=($numFuncAna > 1)? "<TR><TH align=right>&nbsp;$numFuncAna</TH><TH align=left>&nbsp;Functional analyses</TH></TR>" : "<TR><TH align=right>&nbsp;$numFuncAna</TH><TH align=left>&nbsp;Functional analysis</TH></TR>";
 			}
 			$summaryString="<TABLE border=0 cellpadding=0 cellspacing=0><TR>$gel2dString</TR><TR>$spotString</TR><TR>$sampString</TR><TR>$anaString</TR>$protString$mapString$quantiString$explorString$funcString</TABLE>";
+			$hydroString="<TABLE border=0 cellpadding=0 cellspacing=0><TR>$hydroStrg</TR></TABLE>";
 		}
 		$name=&promsMod::HTMLcompatible($name);
 		push @valueText,"&nbsp;$name";
@@ -1314,6 +1410,7 @@ sub experiment_sample {
 		push @valueText,"&nbsp;$startDate";
 		push @valueText,"&nbsp;$prefSpeciesStrg" if $item eq 'EXPERIMENT';
 		push @valueText,$summaryString;
+		push @valueText,$hydroString;
 		push @valueText,$fdrDivString;
 		$comments=&promsMod::HTMLcompatible($comments);
 		push @valueText,"&nbsp;$comments";
@@ -1333,7 +1430,7 @@ sub experiment_sample {
 						my $strAccessibilitySelect = "";
 						$strAccessibilitySelect .= "<select name='ACCESSIBILITY'>";
 						foreach my $accessibilityValue (@accessibilityValues) {
-							my $selected = ($accessibility eq $accessibilityValue) ? 'selected' : '';
+							my $selected = (($action eq 'edit' && $accessibility eq $accessibilityValue) || ($action eq 'add' && $projectAccess eq $accessibilityValue)) ? 'selected' : '';
 							$strAccessibilitySelect .= "<option value='$accessibilityValue' $selected>".ucfirst($accessibilityValue)."</option>";
 						}
 						$strAccessibilitySelect .= "</select>";
@@ -1416,10 +1513,10 @@ sub experiment_sample {
 				my $lockStatusStr = '';
 				my $lockMsg = '';
 				
-				my $sthUsers=$dbh->prepare("SELECT PA.ID_USER, USER_NAME, LOCK_MSG FROM EXPERIMENT E INNER JOIN PROJECT_ACCESS PA ON PA.ID_PROJECT=E.ID_PROJECT INNER JOIN USER_LIST UL ON UL.ID_USER=PA.ID_USER LEFT JOIN USER_EXPERIMENT_LOCK UEL ON UEL.ID_EXPERIMENT=E.ID_EXPERIMENT AND UEL.ID_USER=UL.ID_USER WHERE E.ID_EXPERIMENT=$itemID");
+				my $sthUsers=$dbh->prepare("SELECT PA.ID_USER, USER_NAME, IF(UEL.ID_USER IS NOT NULL, 'LOCKED', '') AS LOCKED_STATUS, LOCK_MSG FROM EXPERIMENT E INNER JOIN PROJECT_ACCESS PA ON PA.ID_PROJECT=E.ID_PROJECT INNER JOIN USER_LIST UL ON UL.ID_USER=PA.ID_USER LEFT JOIN USER_EXPERIMENT_LOCK UEL ON UEL.ID_EXPERIMENT=E.ID_EXPERIMENT AND UEL.ID_USER=UL.ID_USER WHERE E.ID_EXPERIMENT=$itemID");
 				$sthUsers->execute;
-				while (my ($userID, $userName, $lockMessage)=$sthUsers->fetchrow_array) {
-					@{$usersLockStatus{$userID}} = ($userName, $lockMessage);
+				while (my ($userID, $userName, $lockStatus, $lockMessage)=$sthUsers->fetchrow_array) {
+					@{$usersLockStatus{$userID}} = ($userName, $lockStatus, $lockMessage);
 					$lockMsg = $lockMessage if(!$lockMsg && $lockMessage);
 				}
 				
@@ -1431,8 +1528,8 @@ sub experiment_sample {
 					|;
 					
 					foreach $userID (keys %usersLockStatus) {
-						my $selected = ($usersLockStatus{$userID}[1]) ? 'checked' : '';
-						$lockStatusStr .= "<label><input type='checkbox' name='lockUsers' value='$userID' $selected>".$usersLockStatus{$userID}[0]."</label><br/>"; 
+						my $selected = ($usersLockStatus{$userID}[1] eq 'LOCKED') ? 'checked' : '';
+						$lockStatusStr .= "<LABEL><INPUT type='checkbox' name='lockUsers' value='$userID' style='position: relative; top: 1px;' $selected>&nbsp;".$usersLockStatus{$userID}[0]."</LABEL>&nbsp;<BR/>"; 
 					}
 					
 					$lockStatusStr .= qq |
@@ -1514,7 +1611,7 @@ sub gel2D {
 		#my $mapString="<TH align=right>&nbsp;$pcMapped</TH><TH align=left>&nbsp;% Proteins mapped to biological resources.".&checkOnGoingMapping."</TH>";
 		my ($protString,$mapString)=('','');
 		if ($hasValidAna) {
-			$protString="<TR><TH align=right><SPAN id=\"protSPAN1\"></SPAN></TH><TH align=left><SPAN id=\"protSPAN2\"><INPUT type=\"button\" class=\"font11\" value=\"Protein summary\" onclick=\"ajaxProteinSummary()\"/></SPAN></TH></TR>";
+			$protString="<TR><TH align=right><SPAN id=\"protSPAN1\"></SPAN></TH><TH align=left valign=top><SPAN id=\"protSPAN2\"><INPUT type=\"button\" class=\"font11\" value=\"Protein summary\" onclick=\"ajaxProteinSummary()\"/></SPAN></TH></TR>";
 			$mapString="<TR id=\"protMapTR\" style=\"display:none\"><TH align=right><SPAN id=\"protSPAN3\"></SPAN></TH><TH align=left><SPAN id=\"protSPAN4\"></SPAN>".&checkOnGoingMapping."</TH></TR>";
 		}
 		my $summaryString="<TABLE border=0 cellpadding=0 cellspacing=0><TR>$spotString</TR><TR>$sampString</TR><TR>$anaString</TR>$protString$mapString</TABLE>";
@@ -1604,26 +1701,26 @@ sub getMetadata {
 				$strMetaData .= "<li data-id-metadata='$idMetaItem' class='$disabled meta draggable-line meta-annotation-row' style='list-style: none;' $draggableOptions>\n";
 				if($action eq 'edit') {
 					$strMetaData .= qq |
-							<input type='hidden' name='metaAnnot' value='$idMetaItem' />\n
-							<div class='actionsDiv'>\n
+							<input type='hidden' name='metaAnnot' value='$idMetaItem' />
+							<div class='actionsDiv'>
 					|;
 					
 					if($hasEditRights) {
 						$strMetaData .= qq |
-									<button type="button" class='action' style='cursor: grab'><i class="fas fa-arrows-alt"></i></button>\n
-									<!-- <button type="button" class='action' onclick='window.location="./editProjectItem.cgi?ACT=edit&ITEM=METADATA&ID=$idMetaItem&TYPE=METADATA&PARENT=$item&PARENT_ID=$itemID";'><i class="fas fa-edit"></i></button></i>\n -->
-									<button type="button" class='action' onclick='window.location="./editProjectItem.cgi?ACT=add&ITEM=METADATA&ID=$itemID&TYPE=ANNOTATION_ITEM&PARENT=$item&PREVIOUS_ID=$idMetaItem";'><i class="fas fa-plus"></i></button>\n
-									<!-- <button type="button" class='action' onclick='if(confirm("Do you really want to delete this metadata ? (Save is also required after confirmation)")) { delMetadataRow(this.parentNode.parentNode) }'><i class="fas fa-minus"></i></button>\n -->
+									<button type="button" class='action' style='cursor: grab'><i class="fas fa-arrows-alt"></i></button>
+									<!-- <button type="button" class='action' onclick='window.location="./editProjectItem.cgi?ACT=edit&ITEM=METADATA&ID=$idMetaItem&TYPE=METADATA&PARENT=$item&PARENT_ID=$itemID";'><i class="fas fa-edit"></i></button></i> -->
+									<button type="button" class='action' onclick='window.location="./editProjectItem.cgi?ACT=add&ITEM=METADATA&ID=$itemID&TYPE=ANNOTATION_ITEM&PARENT=$item&PREVIOUS_ID=$idMetaItem";'><i class="fas fa-plus"></i></button>
+									<!-- <button type="button" class='action' onclick='if(confirm("Do you really want to delete this metadata ? (Save is also required after confirmation)")) { delMetadataRow(this.parentNode.parentNode) }'><i class="fas fa-minus"></i></button> -->
 						|;
 					}
 					
 					$strMetaData .= "</div>\n";
 				}
 				$strMetaData .= qq |
-						<div>\n
-							<span class='name'>$metaName</span> &nbsp;<span class='desc'>$metaDes</span>\n
-						</div>\n
-						<ul style='padding: 0px 6px 8px 6px;' class='js-sortable-inner meta-annotation-list' $draggableOptions>\n
+						<div>
+							<span class='name'>$metaName</span> &nbsp;<span class='desc'>$metaDes</span>
+						</div>
+						<ul style='padding: 0px 6px 8px 6px;' class='js-sortable-inner meta-annotation-list' $draggableOptions>
 				|;
 				
 				$previousMetaHasName = 1;
@@ -1644,10 +1741,10 @@ sub getMetadata {
 			
 			if($hasEditRights) {
 				$strMetaData .= qq |
-									<button type="button" class='action' onclick='return false;' style='cursor: grab' formnovalidate><i class="fas fa-arrows-alt"></i></button>\n
-									<button type="button" class='action' onclick='window.location="./editProjectItem.cgi?ACT=edit&ITEM=METADATA&ID=$idAnnotationItem&TYPE=ANNOTATION_ITEM&PARENT=$item&PARENT_ID=$itemID";'><i class="fas fa-edit"></i></button></i>\n
-									<!-- <button type="button" class='action' onclick='window.location="./editProjectItem.cgi?ACT=add&ITEM=METADATA&ID=$itemID&TYPE=ANNOTATION_ITEM&PARENT=$item&PREVIOUS_ID=$idAnnotationItem";'><i class="fas fa-plus"></i></button>\n -->
-									<button type="button" class='action' onclick='if(confirm("Do you really want to delete this metadata ? (Save is also required after confirmation)")) { delMetadataRow(this.parentNode.parentNode) }'><i class="fas fa-minus"></i></button>\n
+									<button type="button" class='action' onclick='return false;' style='cursor: grab' formnovalidate><i class="fas fa-arrows-alt"></i></button>
+									<button type="button" class='action' onclick='window.location="./editProjectItem.cgi?ACT=edit&ITEM=METADATA&ID=$idAnnotationItem&TYPE=ANNOTATION_ITEM&PARENT=$item&PARENT_ID=$itemID";'><i class="fas fa-edit"></i></button></i>
+									<!-- <button type="button" class='action' onclick='window.location="./editProjectItem.cgi?ACT=add&ITEM=METADATA&ID=$itemID&TYPE=ANNOTATION_ITEM&PARENT=$item&PREVIOUS_ID=$idAnnotationItem";'><i class="fas fa-plus"></i></button> -->
+									<button type="button" class='action' onclick='if(confirm("Do you really want to delete this metadata ? (Save is also required after confirmation)")) { delMetadataRow(this.parentNode.parentNode) }'><i class="fas fa-minus"></i></button>
 				|;
 			}
 			
@@ -1776,7 +1873,7 @@ sub spot {
 		#my $mapString="<TH align=right>&nbsp;$pcMapped</TH><TH align=left>&nbsp;% Proteins mapped to biological resources.".&checkOnGoingMapping."</TH>";
 		my ($protString,$mapString)=('','');
 		if ($hasValidAna) {
-			$protString="<TR><TH align=right><SPAN id=\"protSPAN1\"></SPAN></TH><TH align=left><SPAN id=\"protSPAN2\"><INPUT type=\"button\" class=\"font11\" value=\"Protein summary\" onclick=\"ajaxProteinSummary()\"/></SPAN></TH></TR>";
+			$protString="<TR><TH align=right><SPAN id=\"protSPAN1\"></SPAN></TH><TH align=left valign=top><SPAN id=\"protSPAN2\"><INPUT type=\"button\" class=\"font11\" value=\"Protein summary\" onclick=\"ajaxProteinSummary()\"/></SPAN></TH></TR>";
 			$mapString="<TR id=\"protMapTR\" style=\"display:none\"><TH align=right><SPAN id=\"protSPAN3\"></SPAN></TH><TH align=left><SPAN id=\"protSPAN4\"></SPAN>".&checkOnGoingMapping."</TH></TR>";
 		}
 		my $summaryString="<TABLE border=0 cellpadding=0 cellspacing=0><TR>$anaString</TR>$protString$mapString</TABLE>"; #<TR>$sampString</TR>
@@ -1827,7 +1924,7 @@ sub spot {
 ##################
 sub analysis {
 	my ($name,$description,$displayPos,$startDate,$msType,$instrument,$dataFile,$wiffFile,$labCode,$FDRdata,$taxonomy,$validUserID,$validDate,$comments,$verifMG,$labelMethod,$maxRankImport,$minScore,$lowerScores);
-	my ($dataBankString,$statusString,$pepQuantifStrg,$bioSampleStrg,$searchEngine,$minScoreString,$fdrString,$validUser,$refRetTimeString);
+	my ($dataBankString,$statusString,$pepQuantifStrg,$hydroQuantifStrg,$bioSampleStrg,$searchEngine,$minScoreString,$fdrString,$validUser,$refRetTimeString);
 	my $stringMG='';
 	my $scanDBString='<SELECT name="scanDB"><OPTION value="auto" selected>auto (* recommanded *)</OPTION><OPTION value="now">now</OPTION></SELECT>';
 	#if ($action ne 'add') { # summary or edit (no longer add)
@@ -1840,7 +1937,7 @@ sub analysis {
 	if ($validStatus>=1) {
 		#push @nameText,'Match groups';
 		#push @nameText,'Validation date' if $validStatus>=2;
-		push @nameText,('Match groups','Status','Peptide quantification(s)','Biological sample(s)','Validation date');
+		push @nameText,('Match groups','Status','Hydrophobicity computation(s)','Peptide quantification(s)','Biological sample(s)','Validation date');
 		my (%referenceRT,%pepQuantifName);
 		my $maxSrcRank=0;
 		#my $sthQRT=$dbh->prepare("SELECT RT.ID_REFERENCE_RT,RT.NAME,Q.ID_QUANTIFICATION,Q.NAME,QR.SOURCE_RANK,QR.NUM_PEP,CORRELATION FROM REFERENCE_RT RT,ANALYSIS_REFRT A,QUANTIF_REFRT QR,QUANTIFICATION Q,ANA_QUANTIFICATION AQ WHERE RT.ID_REFERENCE_RT=A.ID_REFERENCE_RT AND RT.ID_REFERENCE_RT=QR.ID_REFERENCE_RT AND QR.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND A.ID_ANALYSIS=$itemID AND AQ.ID_ANALYSIS=$itemID");
@@ -1903,7 +2000,7 @@ sub analysis {
 		else {$refRetTimeString='None detected';}
 	}
 	else {
-		push @nameText,'Status';
+		push @nameText,('Status','Hydrophobicity computation(s)');
 		$refRetTimeString='N/A (Data not reported)';
 	}
 	push @nameText,'Comments';
@@ -1973,7 +2070,7 @@ sub analysis {
 		while (my ($visibility,$confLevel,$count)=$sthcountProt->fetchrow_array){
 			$totProt+=$count;
 			if ($visibility){
-				$beforeMCQvisProt=$count if $confLevel==2;
+				$beforeMCQvisProt+=$count if $confLevel==2;
 				$visProt+=$count;
 			}
 			$beforeMCQtotProt+=$count if $confLevel==2;
@@ -2013,7 +2110,8 @@ sub analysis {
 			$stringMG="<FONT style=\"font-weight:bold;color:#DD0000\">Not verified</FONT>";
 			$stringMG.="&nbsp;&nbsp;<INPUT type=\"button\" class=\"font11\" value=\"Set as 'Verified'\" onclick=\"window.location='./storeProjectItem.cgi?MG=1&ITEM=ANALYSIS&ITEM_ID=$itemID'\">" if ($action eq 'summary' && $projStatus<=0 && $projectAccess ne 'guest');
 		}
-		##>Peptide quantification(s)
+		##>Peptide quantification(s) or hydrophobicity
+		my ($hydroQuantMethID) = $dbh->selectrow_array("SELECT ID_QUANTIFICATION_METHOD FROM QUANTIFICATION_METHOD WHERE CODE = 'HYDRO'");
 		my $sthPQ=$dbh->prepare("SELECT Q.ID_QUANTIFICATION,ID_QUANTIFICATION_METHOD,NAME,STATUS,QUANTIF_ANNOT,IS_REFERENCE FROM ANA_QUANTIFICATION AQ,QUANTIFICATION Q WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND ID_ANALYSIS=$itemID AND FOCUS='peptide' ORDER BY Q.ID_QUANTIFICATION");
 		my $sthQM=$dbh->prepare("SELECT NAME FROM QUANTIFICATION_METHOD WHERE ID_QUANTIFICATION_METHOD=?");
 		my $sthOA=$dbh->prepare("SELECT COUNT(*) FROM ANA_QUANTIFICATION WHERE ID_QUANTIFICATION=?");
@@ -2027,16 +2125,28 @@ sub analysis {
 			}
 			$sthOA->execute($quantifID);
 			my ($numAna)=$sthOA->fetchrow_array;
-			my ($xicSoftCode,$xicSoftware,$version)=&promsQuantif::getXicSoftware($dbh,$quantifID,$quantifAnnot);
-			my $versionStrg=($version)? " v$version" :'';
-			$pepQuantifStrg.="&nbsp;&bull;<IMG src=\"$promsPath{images}/$statusImage\"/>$qName";
-			$pepQuantifStrg.=" x$numAna Analyses" if $numAna > 1;
-			$pepQuantifStrg.=" [<B>$quantifMehtods{$quantifMethID}</B> - $xicSoftware$versionStrg]<BR>\n";
+			if ($quantifMethID == $hydroQuantMethID) {  # Hyrophobicity computations
+				my ($hydroSoft) = $quantifAnnot =~ /SOFTWARE=([^:]+)/;
+				($hydroSoft, my $version) = split(';', $hydroSoft);
+				$hydroSoft = $hydroSoft . "_SSRCalc" if ($hydroSoft eq "myProMS");
+				my $versionStrg = ($version)? " v$version" : '';
+				$hydroQuantifStrg .= "&nbsp;&bull;<IMG src=\"$promsPath{images}/$statusImage\"/>$qName";
+				$hydroQuantifStrg .= " x$numAna Analyses" if $numAna > 1;
+				$hydroQuantifStrg .= " [$hydroSoft$versionStrg]";
+				$hydroQuantifStrg .= "&nbsp;&nbsp;<INPUT type=\"button\" class=\"font11\" value=\"Display\" onclick=\"parent.optionFrame.location='./selectOptionHydro.cgi?ID=$quantifID&FROM=analysis:$rowID'\"><BR>\n";
+			} else {  # Other peptide quantifications (XIC, etc.)
+				my ($xicSoftCode,$xicSoftware,$version)=&promsQuantif::getXicSoftware($dbh,$quantifID,$quantifAnnot);
+				my $versionStrg=($version)? " v$version" :'';
+				$pepQuantifStrg.="&nbsp;&bull;<IMG src=\"$promsPath{images}/$statusImage\"/>$qName";
+				$pepQuantifStrg.=" x$numAna Analyses" if $numAna > 1;
+				$pepQuantifStrg.=" [<B>$quantifMehtods{$quantifMethID}</B> - $xicSoftware$versionStrg]<BR>\n";
+			}
 		}
 		$sthOA->finish;
 		$sthQM->finish;
 		$sthPQ->finish;
 		$pepQuantifStrg='&nbsp;None' unless $pepQuantifStrg;
+		$hydroQuantifStrg = '&nbsp;None' unless $hydroQuantifStrg;
 
 		##>BioSamples
 		my $sthBS=$dbh->prepare("SELECT BS.NAME FROM BIOSAMPLE BS INNER JOIN OBSERVATION O ON BS.ID_BIOSAMPLE=O.ID_BIOSAMPLE WHERE O.ID_ANALYSIS=$itemID ORDER BY BS.NAME");
@@ -2066,6 +2176,27 @@ sub analysis {
 			$protString=($filtProt>1)? "<BR>&nbsp;$filtProt excluded proteins." : ($filtProt==1)? "<BR>&nbsp;$filtProt excluded protein." : '';
 		}
 		$statusString.="$lowerScoresString$protString";
+
+		# Hydrophobicity computations
+		my ($hydroQuantMethID, $hydroMethName) = $dbh->selectrow_array("SELECT ID_QUANTIFICATION_METHOD, NAME FROM QUANTIFICATION_METHOD WHERE CODE = 'HYDRO'");
+		my $sthPQ = $dbh->prepare("SELECT Q.ID_QUANTIFICATION,ID_QUANTIFICATION_METHOD,NAME,STATUS,QUANTIF_ANNOT,IS_REFERENCE FROM ANA_QUANTIFICATION AQ,QUANTIFICATION Q WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND ID_ANALYSIS=$itemID AND FOCUS='peptide' AND ID_QUANTIFICATION_METHOD = $hydroQuantMethID ORDER BY Q.ID_QUANTIFICATION");
+		my $sthOA=$dbh->prepare("SELECT COUNT(*) FROM ANA_QUANTIFICATION WHERE ID_QUANTIFICATION=?");
+		$sthPQ->execute;
+		while (my ($quantifID, $quantifMethID, $qName, $status, $quantifAnnot) = $sthPQ->fetchrow_array) {
+			my $statusImage = ($status == -2)? 'lightRed1.gif' : ($status == -1)? 'lightGray1.gif' : ($status == 0)? 'lightYellow1.gif' : 'lightGreen1.gif';
+			$sthOA->execute($quantifID);
+			my ($numAna) = $sthOA->fetchrow_array;
+			my ($hydroSoft) = $quantifAnnot =~ /SOFTWARE=([^:]+)/;
+			($hydroSoft, my $version) = split(';', $hydroSoft);
+			my $versionStrg = ($version)? " v$version" : '';
+			$hydroQuantifStrg .= "&nbsp;&bull;<IMG src=\"$promsPath{images}/$statusImage\"/>$qName";
+			$hydroQuantifStrg .= " x$numAna Analyses" if $numAna > 1;
+			$hydroQuantifStrg .= " [<B>$hydroMethName</B> - $hydroSoft$versionStrg]";
+			$hydroQuantifStrg .= "&nbsp;&nbsp;<INPUT type=\"button\" class=\"font11\" value=\"Display\" onclick=\"parent.optionFrame.location='./selectOptionHydro.cgi?quantifID=$quantifID&from=analysis:$rowID'\"><BR>\n";
+		}
+		$sthOA->finish;
+		$sthPQ->finish;
+		$hydroQuantifStrg = '&nbsp;None' unless $hydroQuantifStrg;
 	}
 	else { # valid_status=-1 databank data not imported
 		$statusString="<B>Protein annotations not yet imported. $historyButtonStrg</B>$lowerScoresString<BR>";
@@ -2083,7 +2214,8 @@ sub analysis {
 			$fdrString="<B>Targeted FDR:</B> $maxFDR% - ";
 			$minScoreString.=($FDRalgo eq 'precomputed')? ' [precomputed FDR]' : ' [FDR-based]';
 			#if ($minScore || $FDRalgo eq 'precomputed') {#}
-			if (-e "$promsPath{peptide}/proj_$projectID/ana_$itemID/scores.png") {
+			my $anaDir = ($validStatus <= 1)? "$promsPath{data}/validation/ana_$itemID" : "$promsPath{peptide}/peptide_data/proj_$projectID/ana_$itemID";
+			if (-e "$anaDir/scores.png") {
 				$minScoreString.="&nbsp;&nbsp;<INPUT type=\"button\" id=\"scoresBUTTON\" class=\"font11\" value=\"Show scores distribution\" onclick=\"showHideScoresDistribution()\"/>";
 				$okScoreDistrib=1;
 			}
@@ -2231,6 +2363,7 @@ sub analysis {
 		push @valueText,"&nbsp;$stringMG" if $validStatus>=1;
 		push @valueText,"&nbsp;$statusString";
 		#if ($statusString !~ /not |in progress/i) { #} fully or partially validated (Not validated | ... annotations not imported | Validation in progress)
+		push @valueText,"$hydroQuantifStrg";
 		if ($validStatus >= 1) {
 			push @valueText,$pepQuantifStrg;
 			push @valueText,$bioSampleStrg;
@@ -2322,6 +2455,7 @@ sub analysis {
 			push @valueText,"&nbsp;$stringMG" if $validStatus>=1;
 			push @valueText,"&nbsp;$statusString";
 			#if ($statusString !~ /not /i) { #} fully or partially validated (Not validated | ... annotations not imported)
+			push @valueText,"$hydroQuantifStrg";
 			if ($validStatus >= 1) {
 				push @valueText,$pepQuantifStrg;
 				push @valueText,$bioSampleStrg;
@@ -2494,9 +2628,7 @@ sub downloadSearchFiles {
 <HEAD>
 <TITLE>Downloading search files</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
-<SCRIPT type="text/javascript">
-</SCRIPT>
-<BODY>
+<BODY background="$promsPath{images}/bgProMS.gif">
 |;
 	my $jobID=strftime("%Y%m%d%H%M%S",localtime);
 	if (-e "$promsPath{tmp}/export") {
@@ -2563,8 +2695,13 @@ sub downloadSearchFiles {
 	}
 	$sthDF->finish;
 
-	my $archiveFile="dataset_$jobID";
+	$dbh->disconnect;
 
+	my $archiveFile="dataset_$jobID";
+	# TODO: to be completed  with archive file generation and web interface for download 
+
+
+	print "</BODY>\n</HTML>\n";
 	exit;
 
 }
@@ -2580,7 +2717,13 @@ sub computeMissedCleavages {
 	###<Connecting to the database>###
 	my $dbh=&promsConfig::dbConnect;
 
-	my $anaStrg=($item eq 'ANALYSIS')? $rowID : &getItemAnalyses($dbh,$item,$rowID);
+	my $anaStrg;
+	if ($item eq 'ANALYSIS'){$anaStrg=$rowID;}
+	else {
+		my @anaList;
+		&getItemAnalyses($dbh,$item,$rowID,\@anaList);
+		$anaStrg=join(',',@anaList);
+	}
 	my $sthMC=$dbh->prepare("SELECT MISS_CUT,VALID_STATUS,COUNT(ID_PEPTIDE) FROM PEPTIDE WHERE ID_ANALYSIS IN ($anaStrg) GROUP BY MISS_CUT,VALID_STATUS");
 	$sthMC->execute;
 	my %pepCount=(VALID_CUT=>0,VALID_MISS=>0,GHOST_CUT=>0,GHOST_MISS=>0);
@@ -2605,36 +2748,87 @@ sub computeMissedCleavages {
 ###############################################################
 ####<Compute protein summary for an item (except Analysis)>####
 ###############################################################
-sub proteinSummary {
-
-	####<Starting HTML>###
+sub proteinSummary { # called from AJAX
+	my $jobID=param('job');
+	
+	###<Starting HTML>###
 	print header(-type=>'text/plain',-charset=>'UTF-8'); warningsToBrowser(1);
 
-	###<Connecting to the database>###
-	my $dbh=&promsConfig::dbConnect;
-
-	my $anaStrg=&getItemAnalyses($dbh,$item,$rowID);
-
-	my (%allProteins,%visProteins);
-	my $sthProt=$dbh->prepare("SELECT ID_PROTEIN,VISIBILITY FROM ANALYSIS_PROTEIN WHERE ID_ANALYSIS IN ($anaStrg)");
-	$sthProt->execute;
-	while (my ($protID,$vis)=$sthProt->fetchrow_array) {
-		$allProteins{$protID}=1;
-		$visProteins{$protID}=1 if $vis;
+	if ($jobID) { # fork has occured in a previous call
+		my $jobFile="$promsPath{tmp}/scratch/$jobID\_$userID.job";
+		if (-e $jobFile) { # check if job has ended
+			open (JOB,$jobFile);
+			my @data=<JOB>;
+			close JOB;
+			if ($data[0] && $data[0]=~/,.+,.+,.+,.+,/) { # job has ended
+				print $data[0];
+				unlink $jobFile;
+				exit;
+			}
+		}
+		print "$jobID,RUN"; # ongoing
+		exit;
 	}
-	$sthProt->finish;
+
+	###<Start new job
+	$jobID=strftime("%Y%m%d%H%M%S",localtime);
+	mkdir "$promsPath{tmp}/scratch" unless -e "$promsPath{tmp}/scratch";
+	
+	my $dbh=&promsConfig::dbConnect;
+	my @anaList;
+	&getItemAnalyses($dbh,$item,$rowID,\@anaList);
+	
+	my $hasForked=0;
+	if (scalar @anaList > 10) {
+		$dbh->disconnect; # disconnect before fork
+		
+		my $childPid = fork;
+		if ($childPid) { # parent here
+			print "$jobID,RUN";
+			exit; # returns 1srt AJAX response
+		}
+	
+		##<Child here
+		$hasForked=1;
+		#<Disconnecting from web server
+		open (STDOUT, '>/dev/null') or die "Can't open /dev/null: $!";
+		open (STDIN, '</dev/null');
+		open (STDERR, '>/dev/null');
+		
+		$dbh=&promsConfig::dbConnect('no_user');
+	}
+	
+	##<Child or no fork
+	my $fullAnaStrg=join(',',@anaList);
+	my (%allProteins,%visProteins);
+	while (my @subAnaList=splice(@anaList,0,100)) { # chuncks of 100 analysis
+		my $anaStrg=join(',',@subAnaList);
+		my $sthProt=$dbh->prepare("SELECT DISTINCT ID_PROTEIN,VISIBILITY FROM ANALYSIS_PROTEIN WHERE ID_ANALYSIS IN ($anaStrg)");
+		$sthProt->execute;
+		while (my ($protID,$vis)=$sthProt->fetchrow_array) {
+			$allProteins{$protID}=1;
+			$visProteins{$protID}=1 if $vis;
+		}
+		$sthProt->finish;
+	}
 	my $totProt=scalar keys %allProteins;
 	my $visProt=scalar keys %visProteins;
 	my ($numMapped,$numDbTypes)=(0,0);
 	if ($totProt) {
 		($numMapped)=$dbh->selectrow_array("SELECT COUNT(DISTINCT ID_PROTEIN) FROM PROTEIN WHERE ID_MASTER_PROTEIN IS NOT NULL AND ID_PROTEIN IN (".(join(',',keys %allProteins)).")");			
-		($numDbTypes)=$dbh->selectrow_array("SELECT COUNT(DISTINCT DB.ID_DBTYPE) FROM DATABANK DB,ANALYSIS_DATABANK AD WHERE DB.ID_DATABANK=AD.ID_DATABANK AND DB.IS_CRAP=0 AND ID_ANALYSIS IN ($anaStrg)");
+		($numDbTypes)=$dbh->selectrow_array("SELECT COUNT(DISTINCT DB.ID_DBTYPE) FROM DATABANK DB,ANALYSIS_DATABANK AD WHERE DB.ID_DATABANK=AD.ID_DATABANK AND DB.IS_CRAP=0 AND ID_ANALYSIS IN ($fullAnaStrg)");
 	}
 	$dbh->disconnect;
 	
 	my $pcMapped=($totProt && $numMapped)? 1*(sprintf "%.1f",($numMapped/$totProt)*100) : 0;
-
-	print "$totProt,$visProt,$pcMapped,$numDbTypes";
+	if ($hasForked) {
+		open(JOB,">$promsPath{tmp}/scratch/$jobID\_$userID.job");
+		print JOB "$jobID,END,$totProt,$visProt,$pcMapped,$numDbTypes";
+		close JOB;
+	}
+	else {
+		print "$jobID,END,$totProt,$visProt,$pcMapped,$numDbTypes";
+	}
 	exit;
 }
 
@@ -2735,9 +2929,8 @@ sub checkOnGoingMapping {
 }
 
 
-
 sub getItemAnalyses {
-	my ($dbh,$item,$rowID)=@_;
+	my ($dbh,$item,$rowID,$refAnaList)=@_;
 	my $sthAna;
 	if ($item eq 'PROJECT') {
 		$sthAna=$dbh->prepare("SELECT ID_ANALYSIS FROM ANALYSIS A,SAMPLE S,EXPERIMENT E WHERE A.ID_SAMPLE=S.ID_SAMPLE AND S.ID_EXPERIMENT=E.ID_EXPERIMENT AND E.ID_PROJECT=?");
@@ -2754,11 +2947,9 @@ sub getItemAnalyses {
 	elsif ($item eq 'SAMPLE') {
 		$sthAna=$dbh->prepare("SELECT ID_ANALYSIS FROM ANALYSIS WHERE ID_SAMPLE=?");
 	}
-	my @anaList;
 	$sthAna->execute($rowID);
-	while (my ($anaID)=$sthAna->fetchrow_array) {push @anaList,$anaID;}
+	while (my ($anaID)=$sthAna->fetchrow_array) {push @{$refAnaList},$anaID;}
 	$sthAna->finish;
-	return join(',',@anaList);
 }
 
 
@@ -2785,6 +2976,19 @@ sub getRemapButton {
 }
 
 ####>Revision history<####
+# 3.2.23 [FEATURE] Add Hydrophobicity computations to analyses table (VL 15/02/21)
+# 3.2.22 [CHANGE] Relevant PTMs used in quantification are no longer deselectable (PP 04/05/21)
+# 3.2.21 [BUGFIX] Fix analysis-level identifier mapping (PP 19/04/21)
+# 3.2.20 [MINOR] Reorder PTMs list at project creation/edit with better selectability (PP 17/03/21)
+# 3.2.19 [BUGFIX] Added background image to protein re-annotation window (PP 11/03/21)
+# 3.2.18 [BUGFIX] Fixed protein count before MassChroQ (PP 12/13/21)
+# 3.2.17 [BUGFIX] Fixed peptide score distribution graph displaying (VS 30/11/20)
+# 3.2.16 [CHANGE] Use http instead of https to get jquery and fontawesome libraries (VS 22/10/20)
+# 3.2.15 [CHANGE] Changes in "Protein summary": No JS auto-fire and split SQL query by set of 100 analyses (PP 05/10/20)
+# 3.2.14 [BUGFIX] Fix users checkbox that were always checked regardless of the locking status (VS 10/09/20)
+# 3.2.13 [BUGFIX] Locked users are properly checked when editing a project item (VS 15/07/20) 
+# 3.2.12 [MINOR] Change default metadata accessibility value to user's project access status (VS 15/07/20)
+# 3.2.11 [MINOR] Improve search parameters displayin (VS 22/06/20)
 # 3.2.10 [BUGFIX] Changed default value of metadata ID to numeric instead of string to avoid NaN error (VS 08/01/20)
 # 3.2.9 [FEATURE] Option to compute % of missed-cleavage peptides (PP 15/11/19)
 # 3.2.8 [ENHANCEMENT] Optimized SQL queries for Protein summary display (PP 07/11/19)

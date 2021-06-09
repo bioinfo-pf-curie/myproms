@@ -1,5 +1,5 @@
 ################################################################################
-# prepareExplorAna.R       1.0.6                                               #
+# prepareExplorAna.R       1.0.7                                               #
 # Authors: Patrick Poullet, Stephane Liva, Guillaume Arras (Institut Curie)    #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -69,7 +69,7 @@ inputMat <- t(inputMat)
 numbNA <- length(which(is.na(inputMat)))
 
 ##Launch missMDA if missing values
-if (paramR$MISSING_VALUE != 0 && numbNA > 0) { # missMDA fails if no NA at all
+if (numbNA > 0) { # missMDA fails if no NA at all
 
 	library(missMDA)
 	### Estimate number of composantes required
@@ -142,6 +142,7 @@ if (paramR$PROTEIN_SELECTION == "none") {
 }
 
 ####>Revision history<####
+# 1.0.7 [CHANGE] No parameter required to impute missing values (PP 17/04/20)
 # 1.0.6 [BUGFIX] NA distribution plot is not drawn is no NA (PP 13/11/19)
 # 1.0.5 [FEATURE] Add density plot (count normalized) as imputation quality representation (VS 14/10/19)
 # 1.0.4 rename AGREGATE to AGGREGATE and comment ambiguity exclusion, manage by perl(SL 28/09/18)

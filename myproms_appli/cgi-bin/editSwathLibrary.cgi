@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# editSwathLibrary.cgi         1.8.9	                                       #
+# editSwathLibrary.cgi         1.9.5	                                       #
 # Authors: M. Le Picard, V. Sabatet (Institut Curie)                           #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -65,7 +65,7 @@ my %clusterInfo=&promsConfig::getClusterInfo;#('debian'); # default is 'centos'
 my $tppPath=($clusterInfo{'on'}) ? $clusterInfo{'path'}{'tpp'} : $promsPath{'tpp'};
 my $pythonPath=($clusterInfo{'on'})? $clusterInfo{'path'}{'python'} : $promsPath{'python'};
 my $MAX_NB_THREAD = 4; # Number of threads to use when parallelization is available
-		
+
 my ($lightColor,$darkColor)=&promsConfig::getRowColors;
 my $userID=$ENV{'REMOTE_USER'};
 
@@ -79,6 +79,8 @@ my $dbh=&promsConfig::dbConnect;
 #############################
 my $action=(param('ACT'))? param('ACT') : "" ;
 my $libraryID=(param('ID'))? param('ID') : 0; # 0 if ACT=add
+my ($software) = (param('SOFTWARE')) ? param('SOFTWARE') : $dbh->selectrow_array("SELECT IF(PARAM_STRG LIKE '%Spectronaut%', 'Spectronaut', 'TPP') AS FORMAT FROM SWATH_LIB WHERE ID_SWATH_LIB=$libraryID"); # import format [TPP, Spectronaut]
+
 if ($action eq 'delete') {&deleteSwathLib;exit;}
 if ($action eq 'archive') {&archiveSwathLib;exit;}
 my $projectID=(param('projectID'))? param('projectID') : 'NULL';
@@ -574,18 +576,19 @@ print qq
 	}
 
 	function ajaxSelectSpecie(species){
-		if(species){
-			document.getElementById('db').style.display='';
-			document.getElementById('db').innerHTML='';
-			var XHR = getXMLHTTP();
-			XHR.onreadystatechange=function() {
-				if (XHR.readyState==4 && XHR.responseText) {
-				   document.getElementById('db').innerHTML=XHR.responseText;
-				}
+		if(!species)
+			species = '';
+			
+		document.getElementById('db').style.display='';
+		document.getElementById('db').innerHTML='';
+		var XHR = getXMLHTTP();
+		XHR.onreadystatechange=function() {
+			if (XHR.readyState==4 && XHR.responseText) {
+			   document.getElementById('db').innerHTML=XHR.responseText;
 			}
-			XHR.open("GET","$promsPath{cgi}/editSwathLibrary.cgi?ACT=ajaxSelectSpecieDB&species="+species,true);
-			XHR.send(null);
 		}
+		XHR.open("GET","$promsPath{cgi}/editSwathLibrary.cgi?ACT=ajaxSelectSpecieDB&species="+species+"&SOFTWARE=$software",true);
+		XHR.send(null);
 	}
 
 
@@ -628,109 +631,159 @@ print qq
 	
 	
 	function checkFileForm (form){
-		
-		if (form.serverDir.value){
-			return true;
-		}
-		else if (form.inputfiles1.files.length==0 && form.inputfiles2.files.length==0 && form.inputfiles3.files.length==0 && form.archfiles.files.length==0 && !form.sharedDirFiles){
-			alert('ERROR: Select data files.');
+		if(form.selSource === undefined \|\| !form.selSource.value) {
+			alert("ERROR: Choose a data source option");
 			return false;
 		}
-		var nameMzXML=[],
-				nameDat=[],
-				nameTandem=[],
-				nameSequest=[];
-		if(form.inputfiles1.files.length \|\| form.inputfiles2.files.length \|\| form.inputfiles3.files.length){
+		if(form.selSource.value == 'UseServerDirectory' && !form.serverDir.value){
+			alert("ERROR: Specify a server path to use");
+			return false;
+		}
+		else if ('$software' == 'TPP') {
+			if(form.inputfiles1.files.length==0 && form.inputfiles2.files.length==0 && form.inputfiles3.files.length==0 && form.archfiles.files.length==0 && !form.sharedDirFiles){
+				alert('ERROR: Select data files.');
+				return false;
+			}
+			var nameMzXML=[],
+					nameDat=[],
+					nameTandem=[],
+					nameSequest=[];
+			if(form.inputfiles1.files.length \|\| form.inputfiles2.files.length \|\| form.inputfiles3.files.length){
+				
+				var nbMzXML=0,
+					nbDat=0,
+					nbTandem=0,
+					nbSequest=0;
+				for (var j=1; j<4 ; j++){
+					var files = document.getElementById('inputfiles'+ j).files;
+					for (var i=0; i<files.length; i++){
+						var fileInfo=files[i].name.split(".");
+						var fileType=fileInfo[fileInfo.length-1];
+						if (fileType == 'mzXML'){
+							nameMzXML.push(fileInfo[0]);
+							nbMzXML++;
+						}
+						else if (fileType == 'dat'){
+							nameDat.push(fileInfo[0]);
+							nbDat++;
+						}
+						else if ((fileType == 'xml' && fileInfo[fileInfo.length-3] == 'tandem') \|\| fileType == 'tandem' \|\| (fileType == 'xml' && fileInfo[fileInfo.length-2] != 'pep')){			//tandem.pep.xml ; .tandem ; .xml -> xtandem
+							nameTandem.push(fileInfo[0]);
+							nbTandem++;
+						}
+						else if (fileType == 'xml' && fileInfo[fileInfo.length-2] == 'pep'){		//pep.xml -> sequest
+							nameSequest.push(fileInfo[0]);
+							nbSequest++;
+						}
+					}
+				}
+			}
+			else if (form.sharedDirFiles.length){		// multiple files found
+				for(let i=0 ; i<form.sharedDirFiles.length ; i++){
+					var file=form.sharedDirFiles[i].value;
+					if (form.sharedDirFiles[i].checked==true) {
+						var fileInfo=file.split(".");
+						var fileType=fileInfo[fileInfo.length-1];
+						if(fileType == 'dat'){
+							nameDat.push(fileInfo[0]);
+						}
+						else if ((fileType == 'xml' && fileInfo[fileInfo.length-3] == 'tandem') \|\| fileType == 'tandem' \|\| (fileType == 'xml' && fileInfo[fileInfo.length-2] != 'pep')){
+							nameTandem.push(fileInfo[0]);
+						}
+						else if (fileType == 'xml' && fileInfo[fileInfo.length-2] == 'pep'){
+							nameSequest.push(fileInfo[0]);
+						}
+						else if (fileType == 'mzXML'){
+							nameMzXML.push(fileInfo[0]);
+						}
+					}
+				}
+				if(nameMzXML.length==0){
+					alert("Wrong files number");
+					return false;
+				}
+			}
+			else if (form.sharedDirFiles.checked \|\| !form.sharedDirFiles.checked){	// single file found
+				alert("Wrong files number");
+				return false;
+			}
+			if ((nameDat.length && nameMzXML.length != nameDat.length)  \|\| (nameTandem.length && nameMzXML.length != nameTandem.length) \|\| (nameSequest.length && nameMzXML.length != nameSequest.length)){
+					alert("Wrong files number");
+					return false;
+			}
+			nameMzXML.sort();
+			nameTandem.sort();
+			nameDat.sort();
+			nameSequest.sort();
+			if ((nameDat.length && nameDat.join() !== nameMzXML.join()) \|\| (nameTandem.length && nameTandem.join() !== nameMzXML.join()) \|\| (nameSequest.length && nameSequest.join() !== nameMzXML.join())){
+				alert("Wrong files names");
+				return false;
+			}
+		} else if('$software' == 'Spectronaut') {
+			var error = false;
+			var specLibFile = [];
 			
-			var nbMzXML=0,
-				nbDat=0,
-				nbTandem=0,
-				nbSequest=0;
-			for (var j=1; j<4 ; j++){
-				var files = document.getElementById('inputfiles'+ j).files;
-				for (var i=0; i<files.length; i++){
-					var fileInfo=files[i].name.split(".");
-					var fileType=fileInfo[fileInfo.length-1];
-					if (fileType == 'mzXML'){
-						nameMzXML.push(fileInfo[0]);
-						nbMzXML++;
-					}
-					else if (fileType == 'dat'){
-						nameDat.push(fileInfo[0]);
-						nbDat++;
-					}
-					else if ((fileType == 'xml' && fileInfo[fileInfo.length-3] == 'tandem') \|\| fileType == 'tandem' \|\| (fileType == 'xml' && fileInfo[fileInfo.length-2] != 'pep')){			//tandem.pep.xml ; .tandem ; .xml -> xtandem
-						nameTandem.push(fileInfo[0]);
-						nbTandem++;
-					}
-					else if (fileType == 'xml' && fileInfo[fileInfo.length-2] == 'pep'){		//pep.xml -> sequest
-						nameSequest.push(fileInfo[0]);
-						nbSequest++;
+			if(form.selSource.value == 'UseLocalDirectory' && form.spcLibFile.files.length == 0) {
+				error = true;
+			} else if(form.selSource.value == 'UseArchiveFiles' && form.archfiles.files.length == 0) {
+				error = true;
+			} else if (form.selSource.value == 'UseSharedDirectory') {
+				if(form.sharedDirFiles.length) {	// multiple files found
+					for(let i=0 ; i<form.sharedDirFiles.length ; i++){
+						var file=form.sharedDirFiles[i].value;
+						if (form.sharedDirFiles[i].checked==true) {
+							var fileInfo=file.split(".");
+							var fileType=fileInfo[fileInfo.length-1];
+							if(fileType == 'xls' \|\| fileType == 'tsv' \|\| fileType == 'xslx'){
+								specLibFile.push(fileInfo[0]);
+							}
+						}
 					}
 				}
-			}
-		}
-		else if (form.sharedDirFiles.length){		// multiple files found
-			for(let i=0 ; i<form.sharedDirFiles.length ; i++){
-				var file=form.sharedDirFiles[i].value;
-				if (form.sharedDirFiles[i].checked==true) {
-					var fileInfo=file.split(".");
-					var fileType=fileInfo[fileInfo.length-1];
-					if(fileType == 'dat'){
-						nameDat.push(fileInfo[0]);
-					}
-					else if ((fileType == 'xml' && fileInfo[fileInfo.length-3] == 'tandem') \|\| fileType == 'tandem' \|\| (fileType == 'xml' && fileInfo[fileInfo.length-2] != 'pep')){
-						nameTandem.push(fileInfo[0]);
-					}
-					else if (fileType == 'xml' && fileInfo[fileInfo.length-2] == 'pep'){
-						nameSequest.push(fileInfo[0]);
-					}
-					else if (fileType == 'mzXML'){
-						nameMzXML.push(fileInfo[0]);
-					}
+				
+				if(specLibFile.length==0) {
+					error = true;
 				}
 			}
-			if(nameMzXML.length==0){
-				alert("Wrong files number");
+			
+			if(error) {
+				alert('ERROR: Select a Spectronaut spectral library files (.tsv, .xls or .xlsx).');
 				return false;
 			}
-		}
-		else if (form.sharedDirFiles.checked \|\| !form.sharedDirFiles.checked){	// single file found
-			alert("Wrong files number");
-			return false;
-		}
-		if ((nameDat.length && nameMzXML.length != nameDat.length)  \|\| (nameTandem.length && nameMzXML.length != nameTandem.length) \|\| (nameSequest.length && nameMzXML.length != nameSequest.length)){
-				alert("Wrong files number");
-				return false;
-		}
-		nameMzXML.sort();
-		nameTandem.sort();
-		nameDat.sort();
-		nameSequest.sort();
-		if ((nameDat.length && nameDat.join() !== nameMzXML.join()) \|\| (nameTandem.length && nameTandem.join() !== nameMzXML.join()) \|\| (nameSequest.length && nameSequest.join() !== nameMzXML.join())){
-			alert("Wrong files names");
-			return false;
 		}
 	}
 	
 	function selectSource (source){
 		var myForm=document.parameters;
 		
-		myForm.projectFiles.disabled=true;
 		myForm.archfiles.disabled=true;
 		myForm.serverDir.disabled=true;
-		for(var i=1; i<=3; i++){
-			document.getElementById('inputfiles'+i).disabled=true;
+		
+		if('$software' == 'TPP') {
+			myForm.projectFiles.disabled=true;
+			for(var i=1; i<=3; i++){
+				document.getElementById('inputfiles'+i).disabled=true;
+			}
+		} else if('$software' == 'Spectronaut') {
+			document.getElementById('spcLibFile').disabled=true;
 		}
+		
+		
 		if (document.getElementById('sharedDirDIV')) {document.getElementById('sharedDirDIV').style.display='none';}
 		
 		if(source=='UseLocalDirectory'){
-			for(var i=1; i<=3; i++){
-				document.getElementById('inputfiles'+i).disabled=false;
+			if('$software' == 'TPP') {
+				for(var i=1; i<=3; i++){
+					document.getElementById('inputfiles'+i).disabled=false;
+				}
+			} else if('$software' == 'Spectronaut') {
+				document.getElementById('spcLibFile').disabled=false;
 			}
 		}
-		else if(source=='UseProjectDirectory'){
-			myForm.projectFiles.disabled=false;
+		else if(source=='UseProjectDirectory') {
+			if('$software' == 'TPP') {
+				myForm.projectFiles.disabled=false;
+			}
 		}
 		else if(source=='UseArchiveFiles'){
 			myForm.archfiles.disabled=false;
@@ -742,6 +795,10 @@ print qq
 			document.getElementById('sharedDirDIV').style.display='';
 		}
 		
+	}
+	
+	function reloadForm(format) {
+		window.location = "./editSwathLibrary.cgi?ACT=add&SOFTWARE="+format;
 	}
 
 </SCRIPT>
@@ -761,9 +818,9 @@ print qq
     <CENTER>|;
 if ($submit eq "") {
     if ($action eq "add" || $action eq "update" || $action eq "addDB2") {
-		my ($splitLibUpdate,$selectLibraryName,$fdrType);
+		my ($splitLibUpdate,$selectLibraryName,$fdrType,$des);
         if ($action eq 'update'){
-            ($selectLibraryName,$splitLibUpdate,my $paramStrg)=$dbh->selectrow_array("SELECT NAME,SPLIT,PARAM_STRG FROM SWATH_LIB WHERE ID_SWATH_LIB='$libraryID' ") or die "Couldn't prepare statement: " . $dbh->errstr;
+            ($selectLibraryName,$splitLibUpdate,my $paramStrg,$des)=$dbh->selectrow_array("SELECT NAME,SPLIT,PARAM_STRG,DES FROM SWATH_LIB WHERE ID_SWATH_LIB='$libraryID' ") or die "Couldn't prepare statement: " . $dbh->errstr;
             print qq
             |<FONT class="title1">Update <FONT class="title1" color="#DD0000">$selectLibraryName</FONT></FONT><BR>
             <BR><BR><BR>
@@ -786,291 +843,357 @@ if ($submit eq "") {
 			$fdrType=($fdrType)? $fdrType : '';
         }
         else{
-            print qq
-            |<FONT class="title1">Adding new spectral library to Server</FONT><BR><BR><BR><BR>
-            <FORM method="POST" action="./editSwathLibrary.cgi" name="parameters" enctype="multipart/form-data" onsubmit="return(checkFileForm(this));">
-            <TABLE bgcolor="$darkColor">
-            <TR><TH align="right" valign="top">Task : </TH>
-            <TD bgcolor="$lightColor">
-            <INPUT type="radio" name="libcons" id="libcons" value="mergelib" onClick="ajaxSelectLibrary(this.value)" >Merge with an other library<BR>
-            <INPUT type="radio" name="libcons" id="libcons" value="new" onClick="ajaxSelectLibrary(this.value)" onChange="selectLibraryName(this.value)">Create new library<BR>
-            <SPAN id="chooseLibrary"></SPAN></TD></TR>
-            <TR id="libNameDIV" style="display:none"><TH align=right>Library name : </TH><TD bgcolor='$lightColor'><SPAN id="libraryName"></SPAN></TD></TR>
+            print qq |
+				<FONT class="title1">Adding new spectral library to Server</FONT><BR><BR><BR><BR>
 			|;
-			my %speciesHash;
-            my $sthSpeciesList=$dbh->prepare("SELECT ID_SPECIES,COMMON_NAME,SCIENTIFIC_NAME FROM SPECIES WHERE IS_REFERENCE=1") or die "Couldn't prepare statement: " . $dbh->errstr;
-            $sthSpeciesList->execute;
-            if ($sthSpeciesList->rows==0) {print "No species.";}
-            else{
-                while (my($speciesID,$commonSpeciesName,$scientSpeciesName)=$sthSpeciesList->fetchrow_array){
-                    @{$speciesHash{$speciesID}}=($commonSpeciesName,$scientSpeciesName);
-                }
-            }
-            $sthSpeciesList->finish;
-			print qq
-			|<TR><TH align="right" valign="top">Species :</TH>
-			<TD bgcolor='$lightColor'>
-			&nbsp;<SELECT name="species" onChange="ajaxSelectSpecie(this.value)">
-                <option value="">-= Select species =-</option>
-            |;
-            foreach my $speciesID (sort {$speciesHash{$a}[1] cmp $speciesHash{$b}[1]} keys %speciesHash){
-				my $speciesName=($speciesHash{$speciesID}[1])? $speciesHash{$speciesID}[1]: $speciesHash{$speciesID}[0];
-                print "<option value=\"$speciesHash{$speciesID}[0]_$speciesHash{$speciesID}[1]\">$speciesName</option>";
-            }
-            print qq
-            |</SELECT><BR>&nbsp;<SMALL>(Update list of reference species if your species is not listed)</SMALL>
-			</TD>
-			</TR>
-            |;
-        }
-		print "<INPUT type=\"hidden\" name=\"libfilename\" value=\"$selectLibraryName\">" if $action eq 'update';
-        print qq
-        |<INPUT type="hidden" name="ACT" id="ACT" value="$action"><INPUT type="hidden" name="libfile" value="$libraryID">
-		 <TR><TH align="right" valign="top">&nbspConsensus library options : </TH>
-           <TD bgcolor="$lightColor"><INPUT onmouseover="popup('This option additionnaly considers retention times when merging spectra.')" onmouseout="popout()" type="radio" name="liboption" id="split" value="split" |; if ($action eq 'update' && $splitLibUpdate==1) {print "checked";} else {print "required";} print qq |>Split
-              <INPUT onmouseover="popup('This option assumes that all fragment ion spectra are correctly assigned.')" onmouseout="popout()" type="radio" name="liboption" value="unsplit" id="unsplit" |; if ($action eq 'update' && $splitLibUpdate==0) {print "checked";} print qq |>Unsplit<BR>
-           </TD>
-        </TR>
-        <TR><TH align="right" valign="top">Files : </TH>
-		<TD bgcolor="$lightColor"><B><INPUT type="radio" name="selSource" value="UseLocalDirectory" onclick="selectSource(this.value);"> Import files : </B><BR>
-            &nbsp;&nbsp;&nbsp;&nbsp;<INPUT type="file" accept=".dat,.mzXML,.xml" name="inputfiles1" id="inputfiles1" multiple="multiple" disabled ><BR>
-            &nbsp;&nbsp;&nbsp;&nbsp;<INPUT accept=".xml,.dat,.mzXML" type="file" name="inputfiles2" id="inputfiles2" multiple="multiple" disabled ><BR>
-            &nbsp;&nbsp;&nbsp;&nbsp;<INPUT accept=".xml,.dat,.mzXML" type="file" name="inputfiles3" id="inputfiles3" multiple="multiple" disabled><BR>
-            &nbsp;&nbsp;&nbsp;&nbsp;(.dat, .mzXML and .tandem.pep.xml)<BR><BR>
-            <B><INPUT type="radio" name="selSource" value="UseProjectDirectory" onclick="selectSource(this.value);"> Import from project :</B>
-            |;
-            my %projectHash;
-            my $sthProjectList=$dbh->prepare("SELECT NAME, ID_PROJECT FROM PROJECT") or die "Couldn't prepare statement: " . $dbh->errstr;
-            $sthProjectList->execute;
-            if ($sthProjectList->rows==0) {print "No project. Create a new project.";}
-            else{
-                while (my($projectName,$projID)=$sthProjectList->fetchrow_array){
-                    $projectHash{$projectName}=$projID;
-                }
-            }
-            $sthProjectList->finish;
-
-            print qq
-            |<TABLE>
-            <TR><TD valign="top">&nbsp;&nbsp;&nbsp;&nbsp;<SELECT name="projectFiles" onChange="ajaxSelectExperiment(this.value)" disabled>
-                <option value="">-= Select Project =-</option>
-            |;
-            foreach my $projectName (sort {lc $a cmp lc $b} keys %projectHash){
-                print "<option value=\"$projectHash{$projectName}\">$projectName</option>";
-            }
-
-            print qq
-            |</SELECT>
-			</TD>
-            <TD valign="top"><SPAN id="experimentSPAN"></SPAN></TD>
-            <TD valign="top"><SPAN id="sampleSPAN" ></SPAN></TD>
-            </TR></TABLE>
 			
-			<BR><B><INPUT type="radio" name="selSource" value="UseArchiveFiles" onclick="selectSource(this.value);"> Import archive file :</B><BR>
-			&nbsp;&nbsp;&nbsp;&nbsp;<INPUT type="file" accept=".zip,.gz" name="archfiles" id="archfiles" disabled><BR><SMALL>&nbsp;&nbsp;&nbsp;&nbsp;(zip or gz archive)</SMALL><BR>
-			
-			<BR><B><INPUT type="radio" name="selSource" value="UseServerDirectory" onclick="selectSource(this.value);"> Select directory from server :</B><BR>
-			&nbsp;&nbsp;&nbsp;&nbsp;<INPUT type="text" name="serverDir" id="serverDir" disabled><BR><SMALL>&nbsp;&nbsp;&nbsp;&nbsp;(only for bioinformatician)</SMALL><BR>
-			
-			<BR><B><INPUT type="radio" name="selSource" value="UseSharedDirectory" onclick="selectSource(this.value);"> Shared data directory </B><BR>
-			&nbsp;&nbsp;&nbsp;&nbsp;<DIV id="sharedDirDIV" style="width:600px;max-height:300px;overflow:auto;display:none">
-			|;
-			&promsMod::browseDirectory_getFiles($promsPath{'shared'},'sharedDirFiles',{fileMatch=>qr/\.(dat|xml|mzXML)$/i});
+			my $TPPSelected = ($software eq 'TPP') ? "selected" : '';
+			my $spectronautSelected = ($software eq 'Spectronaut') ? "selected" : '';
 			print qq |
-			</DIV><BR>
-			</TD>
-		</TR>	
-        <TR><TH align="right">PTMProphet : </TH>
-			<TD bgcolor="$lightColor">
-				<label> <input type="checkbox" onclick="document.getElementById('PTMProphetOptions').style.display = (this.checked) ? '' : 'none';" name="PTMProphet" value="1" /> Use PTMs localization improvement (PTMProphet)</label><br/>
-				<FIELDSET id="PTMProphetOptions" style='display:none; margin-top: 10px;'>
-					<LEGEND><B>Options:</B></LEGEND>
-					<label> Model to apply :&nbsp;
-						<SELECT name ="PTMProphetEMModel" required>
-							<option value="">-= Select fragmentation type =-</option>
-							<option value="0">No EM Model</option>
-							<option value="1">Intensity EM Model</option>
-							<option value="2" selected>Intensity and matched peaks EM Model</option>
-						</SELECT>
-					</label><br/>
-					<label> Min probability to evaluate peptide : <input type='text' name='PTMProphetMinProb' value='0.9' size='3' /></label></br>
-					<label> MS1 PPM tolerance : <input stype='text' name='PTMProphetPPMTol' value='1' size='3' /></label><br/>
-					<label> Fragments PPM tolerance : <input type='text' name='PTMProphetFragPPMTol' value='10' size='3' /></label><br/>
-					Modifications to process :
-							<label><input type='checkbox' name='PTMProphetModifs' value='STY:79.9663' />Phospho (S,T,Y)&nbsp;&nbsp;</label>
-							<label><input type='checkbox' name='PTMProphetModifs' value='M:15.9949' />Oxydation (M)&nbsp;&nbsp;</label>
-							<label><input type='checkbox' name='PTMProphetModifs' value='C:57.0214' />Carbamidomethyl (C)&nbsp;&nbsp;</label>
-				</FIELDSET>
-            </TD>
-		</TR>
-        <TR><TH align="right">Fragmentation type : </TH>
-            <TD bgcolor="$lightColor">
-            &nbsp;<SELECT name ="fragmentation" required>
-			<option value="">-= Select fragmentation type =-</option>
-				<option value="CID-QTOF">CID-QTOF</option>
-				<option value="HCD">HCD</option>
-				<option value="ETD">ETD</option>
-				<option value="CID">CID</option>
-            </SELECT>
-            </TD>
-		</TR>
-		<TR><TH align="right">Instrument : </TH>
-            <TD bgcolor="$lightColor">
-            |;
-            my $sthInstrumList=$dbh->prepare("SELECT NAME FROM INSTRUMENT") or die "Couldn't prepare statement: " . $dbh->errstr;
-            $sthInstrumList->execute;
-            print qq
-            |&nbsp;<SELECT name ="instrument" >
-                <option value="">-= Select Instrument =-</option>
-            |;
-            if ($sthInstrumList->rows==0) {print "No experiment in that project. Choose an other project.";}
-            else{
-                while (my ($instrumName)=$sthInstrumList->fetchrow_array){
-                    print "<option value=\"$instrumName\"";
-                    if ($instrumName eq 'ESI-TRAP' ){
-                        print " selected";
-                    }
-                    print ">$instrumName</option>";
-                }
-            }
-            $sthInstrumList->finish;
-            print qq
-            |</SELECT>
-            </TD>
-        </TR>|;
-		if ($action eq 'update'){
-			print "<TR><TH align=\"right\">Databank : </TH><TD bgcolor=\"$lightColor\">";
-			my ($nameDBLib,$organismLib,$DBTypeLibUpdate)=$dbh->selectrow_array("SELECT D.NAME, ORGANISM, DT.ID_DBTYPE FROM DATABANK D, DATABANK_SWATHLIB DS, DATABANK_TYPE DT WHERE ID_SWATH_LIB=$libraryID AND DS.ID_DATABANK=D.ID_DATABANK AND D.ID_DBTYPE=DT.ID_DBTYPE");
-			my $sthDBUpdateList=$dbh->prepare("SELECT D.NAME, D.ID_DATABANK,D.FASTA_FILE,D.DECOY_TAG,DT.NAME FROM DATABANK D,DATABANK_TYPE DT WHERE D.DECOY_TAG='yes' or D.DECOY_TAG LIKE '%rev%' AND D.USE_STATUS='yes' AND D.ID_DBTYPE=DT.ID_DBTYPE AND ORGANISM=\"$organismLib\" AND D.ID_DBTYPE=$DBTypeLibUpdate") or die "Couldn't prepare statement: " . $dbh->errstr;
-			$sthDBUpdateList->execute;
-			if ($sthDBUpdateList->rows==0) {
-                print "No databank available for SWATH.";
-            }
-            else{
-                my %dbHash;
-                while (my($dbName,$dbID,$dbFileName,$decoyTag,$dbTypeName)=$sthDBUpdateList->fetchrow_array){
-                    next if ($dbFileName=~m/:/) ;
-                    next if ($decoyTag eq "No" || $decoyTag eq "");
-                    $dbHash{"$dbName&nbsp;\[$dbTypeName\]"}=$dbID;
-                }
-                
-                print qq
-                |&nbsp;<SELECT name ="dbfile" required>
-                    <option value="">-= Select Databank =-</option>
-                |;
-                foreach my $dbName (sort {lc $a cmp lc $b} keys %dbHash){
-                    print "<option value=\"$dbHash{$dbName}\">$dbName</option>";
-                }
-				print "</SELECT></TD></TR>";
-            }
-			$sthDBUpdateList->finish;
-		}
-		else{
-        print qq |<TR>
-
-			<TH align="right">Databank : </TH>
-
-            <TD bgcolor="$lightColor"><SPAN id="db">
-            |;
-            my $sthDBList=$dbh->prepare("SELECT D.NAME, D.ID_DATABANK,D.FASTA_FILE,D.DECOY_TAG,DT.NAME FROM DATABANK D,DATABANK_TYPE DT WHERE D.DECOY_TAG='yes' or D.DECOY_TAG LIKE '%rev%' AND D.USE_STATUS='yes' AND D.ID_DBTYPE=DT.ID_DBTYPE ") or die "Couldn't prepare statement: " . $dbh->errstr;
-            $sthDBList->execute;
-
-            if ($sthDBList->rows==0) {
-                print "No databank available for SWATH.";
-            }
-            else{
-                my %dbHash;
-                while (my($dbName,$dbID,$dbFileName,$decoyTag,$dbTypeName)=$sthDBList->fetchrow_array){
-                    next if ($dbFileName=~m/:/) ;
-                    next if ($decoyTag eq "No" || $decoyTag eq "");
-                    $dbHash{"$dbName&nbsp;\[$dbTypeName\]"}=$dbID;
-                }
-                
-                print qq
-                |&nbsp;<SELECT name ="dbfile" required>
-                    <option value="">-= Select Databank =-</option>
-                |;
-                foreach my $dbName (sort {lc $a cmp lc $b} keys %dbHash){
-                    print "<option value=\"$dbHash{$dbName}\">$dbName</option>";
-                }
-				print "</SELECT>";
-            }
-			$sthDBList->finish;
-            print "</SPAN></TD></TR>";
-		}
-
-        print qq |<TR><TH align="right" valign="top">Mayu options: </TH>
-            <TD bgcolor="$lightColor">&nbsp;FDR estimation with Mayu software. <BR>
-                &nbsp;Missed cleavage :  <INPUT type="text" value="2" name="missedcleav" size="3" required><BR>
-                &nbsp;FDR :  <INPUT type="text" value="0.01" name="fdr" size="4" required>
-		|;
-		if($action eq 'update' && $fdrType){
-			print qq |
-				Type : <SELECT name="fdrtype" required>
-						<option value="$fdrType" selected>$fdrType</option>";
-					   </SELECT>
-			|;
-		}else{
-			print qq |
-				Type : <SELECT name="fdrtype" required>
-					<option value="mFDR">mFDR</option>
-					<option value="pepFDR">pepFDR</option>
-					<option value="protFDR" selected>protFDR</option>
+				<CENTER>
+					<b>Format :</b> 
+					<SELECT name="format" onChange="reloadForm(this.value)">
+						<option value="">-= Select format =-</option>
+						<option value='TPP' $TPPSelected>TPP</option>
+						<option value='Spectronaut' $spectronautSelected>Spectronaut</option>
 					</SELECT>
+				</CENTER><br/>
+			|;
+			
+			if($software) {
+				print qq |
+					<FORM method="POST" action="./editSwathLibrary.cgi" name="parameters" enctype="multipart/form-data" onsubmit="return(checkFileForm(this));">
+					<input type='hidden' name='SOFTWARE' value='$software'/>
+					<TABLE bgcolor="$darkColor">
+				|;
+				
+				if($software eq 'TPP') {
+					print qq |
+						<TR><TH align="right" valign="top">Task : </TH>
+						<TD bgcolor="$lightColor">
+						<INPUT type="radio" name="libcons" id="libcons" value="mergelib" onClick="ajaxSelectLibrary(this.value)" >Merge with an other library<BR>
+						<INPUT type="radio" name="libcons" id="libcons" value="new" onClick="ajaxSelectLibrary(this.value)" onChange="selectLibraryName(this.value)">Create new library<BR>
+						<SPAN id="chooseLibrary"></SPAN></TD></TR>
+						<TR id="libNameDIV" style="display:none"><TH align=right>Library name : </TH><TD bgcolor='$lightColor'><SPAN id="libraryName"></SPAN></TD></TR>
+					|;
+				} else {
+					print qq | <TR id="libNameDIV"><TH align=right>Library name : </TH><TD bgcolor='$lightColor'><SPAN id="libraryName"><INPUT size="40%" type='text' name='libname' id='libname' pattern='[0-9a-zA-Z_-]+' required>&nbsp;(Accepted 0-9,a-z,A-Z,_,-)</SPAN></TD></TR> |;
+				}
+				
+				my %speciesHash;
+				my $sthSpeciesList=$dbh->prepare("SELECT ID_SPECIES,COMMON_NAME,SCIENTIFIC_NAME FROM SPECIES WHERE IS_REFERENCE=1") or die "Couldn't prepare statement: " . $dbh->errstr;
+				$sthSpeciesList->execute;
+				if ($sthSpeciesList->rows==0) {print "No species.";}
+				else{
+					while (my($speciesID,$commonSpeciesName,$scientSpeciesName)=$sthSpeciesList->fetchrow_array){
+						@{$speciesHash{$speciesID}}=($commonSpeciesName,$scientSpeciesName);
+					}
+				}
+				$sthSpeciesList->finish;
+				print qq |
+					<TR><TH align="right" valign="top">Species :</TH>
+					<TD bgcolor='$lightColor'>
+					&nbsp;<SELECT name="species" onChange="ajaxSelectSpecie(this.value)">
+						<option value="">-= Select species =-</option>
+				|;
+				foreach my $speciesID (sort {$speciesHash{$a}[1] cmp $speciesHash{$b}[1]} keys %speciesHash){
+					my $speciesName=($speciesHash{$speciesID}[1])? $speciesHash{$speciesID}[1]: $speciesHash{$speciesID}[0];
+					print "<option value=\"$speciesHash{$speciesID}[0]_$speciesHash{$speciesID}[1]\">$speciesName</option>";
+				}
+				print qq
+				|</SELECT><BR>&nbsp;<SMALL>(Update list of reference species if your species is not listed)</SMALL>
+				</TD>
+				</TR>
+				|;
+			}
+		}
+			
+		if($software) {
+			print "<INPUT type=\"hidden\" name=\"libfilename\" value=\"$selectLibraryName\">" if $action eq 'update';
+			print "<INPUT type=\"hidden\" name=\"SOFTWARE\" value=\"$software\">";
+			print qq | <INPUT type="hidden" name="ACT" id="ACT" value="$action"><INPUT type="hidden" name="libfile" value="$libraryID"> |;
+			if($software eq 'TPP') {
+				print qq
+				|
+				 <TR><TH align="right" valign="top">&nbspConsensus library options : </TH>
+				   <TD bgcolor="$lightColor"><INPUT onmouseover="popup('This option additionnaly considers retention times when merging spectra.')" onmouseout="popout()" type="radio" name="liboption" id="split" value="split" |; if ($action eq 'update' && $splitLibUpdate==1) {print "checked";} else {print "required";} print qq |>Split
+					  <INPUT onmouseover="popup('This option assumes that all fragment ion spectra are correctly assigned.')" onmouseout="popout()" type="radio" name="liboption" value="unsplit" id="unsplit" |; if ($action eq 'update' && $splitLibUpdate==0) {print "checked";} print qq |>Unsplit<BR>
+				   </TD>
+				</TR>
+				<TR><TH align="right" valign="top">Files : </TH>
+				<TD bgcolor="$lightColor"><B><INPUT type="radio" name="selSource" value="UseLocalDirectory" onclick="selectSource(this.value);"> Import files : </B><BR>
+					&nbsp;&nbsp;&nbsp;&nbsp;<INPUT type="file" accept=".dat,.mzXML,.xml" name="inputfiles1" id="inputfiles1" multiple="multiple" disabled ><BR>
+					&nbsp;&nbsp;&nbsp;&nbsp;<INPUT accept=".xml,.dat,.mzXML" type="file" name="inputfiles2" id="inputfiles2" multiple="multiple" disabled ><BR>
+					&nbsp;&nbsp;&nbsp;&nbsp;<INPUT accept=".xml,.dat,.mzXML" type="file" name="inputfiles3" id="inputfiles3" multiple="multiple" disabled><BR>
+					&nbsp;&nbsp;&nbsp;&nbsp;(.dat, .mzXML and .tandem.pep.xml)<BR><BR>
+					<B><INPUT type="radio" name="selSource" value="UseProjectDirectory" onclick="selectSource(this.value);"> Import from project :</B>
+					|;
+					my %projectHash;
+					my $sthProjectList=$dbh->prepare("SELECT NAME, ID_PROJECT FROM PROJECT") or die "Couldn't prepare statement: " . $dbh->errstr;
+					$sthProjectList->execute;
+					if ($sthProjectList->rows==0) {print "No project. Create a new project.";}
+					else{
+						while (my($projectName,$projID)=$sthProjectList->fetchrow_array){
+							$projectHash{$projectName}=$projID;
+						}
+					}
+					$sthProjectList->finish;
+		
+					print qq
+					|<TABLE>
+					<TR><TD valign="top">&nbsp;&nbsp;&nbsp;&nbsp;<SELECT name="projectFiles" onChange="ajaxSelectExperiment(this.value)" disabled>
+						<option value="">-= Select Project =-</option>
+					|;
+					foreach my $projectName (sort {lc $a cmp lc $b} keys %projectHash){
+						print "<option value=\"$projectHash{$projectName}\">$projectName</option>";
+					}
+		
+					print qq
+					|</SELECT>
+					</TD>
+					<TD valign="top"><SPAN id="experimentSPAN"></SPAN></TD>
+					<TD valign="top"><SPAN id="sampleSPAN" ></SPAN></TD>
+					</TR></TABLE>
+					
+					<BR><B><INPUT type="radio" name="selSource" value="UseArchiveFiles" onclick="selectSource(this.value);"> Import archive file :</B><BR>
+					&nbsp;&nbsp;&nbsp;&nbsp;<INPUT type="file" accept=".zip,.gz" name="archfiles" id="archfiles" disabled><BR><SMALL>&nbsp;&nbsp;&nbsp;&nbsp;(zip or gz archive)</SMALL><BR>
+					
+					<BR><B><INPUT type="radio" name="selSource" value="UseServerDirectory" onclick="selectSource(this.value);"> Select directory from server :</B><BR>
+					&nbsp;&nbsp;&nbsp;&nbsp;<INPUT type="text" name="serverDir" id="serverDir" disabled><BR><SMALL>&nbsp;&nbsp;&nbsp;&nbsp;(only for bioinformatician)</SMALL><BR>
+					
+					<BR><B><INPUT type="radio" name="selSource" value="UseSharedDirectory" onclick="selectSource(this.value);"> Shared data directory </B><BR>
+					&nbsp;&nbsp;&nbsp;&nbsp;<DIV id="sharedDirDIV" style="width:600px;max-height:300px;overflow:auto;display:none">
+					|;
+					&promsMod::browseDirectory_getFiles($promsPath{'shared'},'sharedDirFiles',{fileMatch=>qr/\.(dat|xml|mzXML)$/i});
+					print qq |
+					</DIV><BR>
+					</TD>
+				</TR>	
+				<TR><TH align="right">PTMProphet : </TH>
+					<TD bgcolor="$lightColor">
+						<label> <input type="checkbox" onclick="document.getElementById('PTMProphetOptions').style.display = (this.checked) ? '' : 'none';" name="PTMProphet" value="1" /> Use PTMs localization improvement (PTMProphet)</label><br/>
+						<FIELDSET id="PTMProphetOptions" style='display:none; margin-top: 10px;'>
+							<LEGEND><B>Options:</B></LEGEND>
+							<label> Model to apply :&nbsp;
+								<SELECT name ="PTMProphetEMModel" required>
+									<option value="">-= Select fragmentation type =-</option>
+									<option value="0">No EM Model</option>
+									<option value="1">Intensity EM Model</option>
+									<option value="2" selected>Intensity and matched peaks EM Model</option>
+								</SELECT>
+							</label><br/>
+							<label> Min probability to evaluate peptide : <input type='text' name='PTMProphetMinProb' value='0.9' size='3' /></label></br>
+							<label> MS1 PPM tolerance : <input stype='text' name='PTMProphetPPMTol' value='10' size='3' /></label><br/>
+							<label> Fragments PPM tolerance : <input type='text' name='PTMProphetFragPPMTol' value='10' size='3' /></label><br/>
+							Modifications to process :
+									<label><input type='checkbox' name='PTMProphetModifs' value='n:42.0105' />Acetylation (n-ter)&nbsp;&nbsp;</label>
+									<label><input type='checkbox' name='PTMProphetModifs' value='STY:79.9663' />Phospho (S,T,Y)&nbsp;&nbsp;</label>
+									<label><input type='checkbox' name='PTMProphetModifs' value='M:15.9949' />Oxydation (M)&nbsp;&nbsp;</label>
+									<label><input type='checkbox' name='PTMProphetModifs' value='C:57.0214' />Carbamidomethyl (C)&nbsp;&nbsp;</label>
+						</FIELDSET>
+					</TD>
+				</TR>
+				<TR><TH align="right">Fragmentation type : </TH>
+					<TD bgcolor="$lightColor">
+					&nbsp;<SELECT name ="fragmentation" required>
+					<option value="">-= Select fragmentation type =-</option>
+						<option value="CID-QTOF">CID-QTOF</option>
+						<option value="HCD">HCD</option>
+						<option value="ETD">ETD</option>
+						<option value="CID">CID</option>
+					</SELECT>
+					</TD>
+				</TR>
+				<TR><TH align="right">Instrument : </TH>
+					<TD bgcolor="$lightColor">
+					|;
+					my $sthInstrumList=$dbh->prepare("SELECT NAME FROM INSTRUMENT") or die "Couldn't prepare statement: " . $dbh->errstr;
+					$sthInstrumList->execute;
+					print qq
+					|&nbsp;<SELECT name ="instrument" >
+						<option value="">-= Select Instrument =-</option>
+					|;
+					if ($sthInstrumList->rows==0) {print "No experiment in that project. Choose an other project.";}
+					else{
+						while (my ($instrumName)=$sthInstrumList->fetchrow_array){
+							print "<option value=\"$instrumName\"";
+							if ($instrumName eq 'ESI-TRAP' ){
+								print " selected";
+							}
+							print ">$instrumName</option>";
+						}
+					}
+					$sthInstrumList->finish;
+					print qq
+					|</SELECT>
+					</TD>
+				</TR>|;
+			}
+			
+			if ($action eq 'update') {
+				print "<TR><TH align=\"right\">Databank : </TH><TD bgcolor=\"$lightColor\">";
+				my ($nameDBLib,$organismLib,$DBTypeLibUpdate)=$dbh->selectrow_array("SELECT D.NAME, ORGANISM, DT.ID_DBTYPE FROM DATABANK D, DATABANK_SWATHLIB DS, DATABANK_TYPE DT WHERE ID_SWATH_LIB=$libraryID AND DS.ID_DATABANK=D.ID_DATABANK AND D.ID_DBTYPE=DT.ID_DBTYPE");
+				my $sthDBUpdateList=$dbh->prepare("SELECT D.NAME, D.ID_DATABANK,D.FASTA_FILE,D.DECOY_TAG,DT.NAME FROM DATABANK D,DATABANK_TYPE DT WHERE D.USE_STATUS='yes' AND D.ID_DBTYPE=DT.ID_DBTYPE AND ORGANISM=\"$organismLib\" AND D.ID_DBTYPE=$DBTypeLibUpdate") or die "Couldn't prepare statement: " . $dbh->errstr;
+				$sthDBUpdateList->execute;
+				if ($sthDBUpdateList->rows==0) {
+					print "No databank available for SWATH.";
+				}
+				else{
+					my %dbHash;
+					while (my($dbName,$dbID,$dbFileName,$decoyTag,$dbTypeName)=$sthDBUpdateList->fetchrow_array){
+						next if ($dbFileName=~m/:/) ;
+						next if ($software eq 'TPP' && ($decoyTag eq "No" || $decoyTag eq ""));
+						$dbHash{"$dbName&nbsp;\[$dbTypeName\]"}=$dbID;
+					}
+					
+					print qq
+					|&nbsp;<SELECT name ="dbfile" style="resize:vertical" multiple required>|;
+					foreach my $dbName (sort {lc $a cmp lc $b} keys %dbHash){
+						print "<option value=\"$dbHash{$dbName}\" selected>$dbName</option>";
+					}
+					print "</SELECT></TD></TR>";
+				}
+				$sthDBUpdateList->finish;
+			}
+			else{
+				print qq |<TR>
+		
+					<TH align="right">Databank(s) : </TH>
+		
+					<TD bgcolor="$lightColor"><SPAN id="db">
+					|;
+					
+					my $uniprotAccOnly = ''; #($software and $software eq 'Spectronaut') ? "AND DT.NAME='UniProt - ACC'" : '';
+					my $sthDBList=$dbh->prepare("SELECT D.NAME, D.ID_DATABANK,D.FASTA_FILE,D.DECOY_TAG,DT.NAME FROM DATABANK D,DATABANK_TYPE DT WHERE D.USE_STATUS='yes' AND D.ID_DBTYPE=DT.ID_DBTYPE $uniprotAccOnly") or die "Couldn't prepare statement: " . $dbh->errstr;
+					$sthDBList->execute;
+		
+					if ($sthDBList->rows==0) {
+						print "No databank available for SWATH.";
+					}
+					else{
+						my %dbHash;
+						while (my($dbName,$dbID,$dbFileName,$decoyTag,$dbTypeName)=$sthDBList->fetchrow_array){
+							next if ($dbFileName=~m/:/) ;
+							next if ($software eq 'TPP' && ($decoyTag eq "No" || $decoyTag eq ""));
+							$dbHash{"$dbName&nbsp;\[$dbTypeName\]"}=$dbID;
+						}
+						
+						print qq
+						|&nbsp;<SELECT name ="dbfile" style="resize:vertical" multiple required>|;
+						foreach my $dbName (sort {lc $a cmp lc $b} keys %dbHash){
+							print "<option value=\"$dbHash{$dbName}\">$dbName</option>";
+						}
+						print "</SELECT>";
+					}
+					$sthDBList->finish;
+					print "</SPAN></TD></TR>";
+			}
+			
+			if($software eq 'TPP') {
+				print qq |<TR><TH align="right" valign="top">Mayu options: </TH>
+					<TD bgcolor="$lightColor">&nbsp;FDR estimation with Mayu software. <BR>
+						&nbsp;Missed cleavage :  <INPUT type="text" value="2" name="missedcleav" size="3" required><BR>
+						&nbsp;FDR :  <INPUT type="text" value="0.01" name="fdr" size="4" required>
+				|;
+				if($action eq 'update' && $fdrType){
+					print qq |
+						Type : <SELECT name="fdrtype" required>
+								<option value="$fdrType" selected>$fdrType</option>";
+							   </SELECT>
+					|;
+				}else{
+					print qq |
+						Type : <SELECT name="fdrtype" required>
+							<option value="mFDR">mFDR</option>
+							<option value="pepFDR">pepFDR</option>
+							<option value="protFDR" selected>protFDR</option>
+							</SELECT>
+					|;
+				}
+				print qq |		
+					</TD>
+				</TR>
+		
+				<TR><TH align="right" valign="top">RT file : </TH>
+					<TD bgcolor="$lightColor">
+					|;
+					my $sthRTList=$dbh->prepare("SELECT NAME,ID_REFERENCE_RT FROM REFERENCE_RT") or die "Couldn't prepare statement: " . $dbh->errstr;
+					$sthRTList->execute;
+					my %rtHash;
+					if ($sthRTList->rows==0) {print "No experiment in that project. Choose an other project.";}
+					else{
+						while (my($rtName,$rtID)=$sthRTList->fetchrow_array){
+							$rtHash{$rtName}=$rtID;
+						}
+						print qq
+						|&nbsp;<SELECT name="refrtfile"  onChange="ajaxSelectRT(this.value)" required>
+							<option value="">-= Select RT File =-</option>
+						|;
+						foreach my $rtName (sort {lc $a cmp lc $b} keys %rtHash){
+							print "<option value=\"$rtHash{$rtName}\" >$rtName</option>";
+						}
+					}
+					$sthRTList->finish;
+					print "</SELECT>";
+					print "<DIV id=\"rtdata\"></DIV>";
+					print qq |
+					</TD>
+				</TR>
+		
+		
+				<!--<TR><TH align="right">Convertion to Windows file : </TH>
+				   <TD bgcolor="$lightColor"><INPUT type="radio" name="convdos" value="oui"  >Oui<INPUT type="radio" name="convdos" value="non">Non</TD>
+				</TR>--!>
+				|;
+			} elsif($software eq 'Spectronaut') {
+				print qq |
+					<TR>
+						<TH align="right">Spectral library file : </TH>
+						<TD bgcolor="$lightColor">
+							<B><INPUT type="radio" name="selSource" value="UseLocalDirectory" onclick="selectSource(this.value);"> Import files : </B><BR>
+							&nbsp;&nbsp;&nbsp;&nbsp;<INPUT type="file" accept=".tsv,.xls" name="spcLibFile" id="spcLibFile" multiple="multiple" disabled ><BR>
+					
+							<BR><B><INPUT type="radio" name="selSource" value="UseArchiveFiles" onclick="selectSource(this.value);"> Import archive file :</B><BR>
+							&nbsp;&nbsp;&nbsp;&nbsp;<INPUT type="file" accept=".zip,.gz" name="archfiles" id="archfiles" disabled><BR><SMALL>&nbsp;&nbsp;&nbsp;&nbsp;(zip or gz archive)</SMALL><BR>
+							
+							<BR><B><INPUT type="radio" name="selSource" value="UseServerDirectory" onclick="selectSource(this.value);"> Select directory from server :</B><BR>
+							&nbsp;&nbsp;&nbsp;&nbsp;<INPUT type="text" name="serverDir" id="serverDir" disabled><BR><SMALL>&nbsp;&nbsp;&nbsp;&nbsp;(only for bioinformatician)</SMALL><BR>
+							
+							<BR><B><INPUT type="radio" name="selSource" value="UseSharedDirectory" onclick="selectSource(this.value);"> Shared data directory </B><BR>
+							&nbsp;&nbsp;&nbsp;&nbsp;<DIV id="sharedDirDIV" style="width:600px;max-height:300px;overflow:auto;display:none">
+				|;
+				
+				&promsMod::browseDirectory_getFiles($promsPath{'shared'},'sharedDirFiles',{fileMatch=>qr/\.(tsv|xls)$/i});
+				
+				print qq |
+						</TD>
+					</TR>
+				|;
+			}
+			
+			
+			$des = '' unless($des);
+			print qq |
+	
+			<TR><TH align="right" valign="top">Description : </TH>
+			   <TD bgcolor="$lightColor">&nbsp;<TEXTAREA rows="4" cols="43" name="descript" id="descript">$des</TEXTAREA></TD>
+			</TR>
+			<TR ><TH colspan=2><BR><input type="submit" name="submit" value="Submit" > 
+			<!-- CLEAR button -->
+			&nbsp &nbsp &nbsp<INPUT type="reset" value="Clear" />
+			<!-- CANCEL button -->
 			|;
 		}
-		print qq |		
-            </TD>
-        </TR>
-
-        <TR><TH align="right" valign="top">RT file : </TH>
-            <TD bgcolor="$lightColor">
-            |;
-            my $sthRTList=$dbh->prepare("SELECT NAME,ID_REFERENCE_RT FROM REFERENCE_RT") or die "Couldn't prepare statement: " . $dbh->errstr;
-            $sthRTList->execute;
-			my %rtHash;
-            if ($sthRTList->rows==0) {print "No experiment in that project. Choose an other project.";}
-            else{
-                while (my($rtName,$rtID)=$sthRTList->fetchrow_array){
-                    $rtHash{$rtName}=$rtID;
-                }
-                print qq
-                |&nbsp;<SELECT name="refrtfile"  onChange="ajaxSelectRT(this.value)" required>
-                    <option value="">-= Select RT File =-</option>
-                |;
-                foreach my $rtName (sort {lc $a cmp lc $b} keys %rtHash){
-                    print "<option value=\"$rtHash{$rtName}\" >$rtName</option>";
-				}
-            }
-			$sthRTList->finish;
-            print "</SELECT>";
-			print "<DIV id=\"rtdata\"></DIV>";
-			print qq |
-            </TD>
-        </TR>
-
-
-        <!--<TR><TH align="right">Convertion to Windows file : </TH>
-           <TD bgcolor="$lightColor"><INPUT type="radio" name="convdos" value="oui"  >Oui<INPUT type="radio" name="convdos" value="non">Non</TD>
-        </TR>--!>
-
-
-        <TR><TH align="right" valign="top">Description : </TH>
-           <TD bgcolor="$lightColor">&nbsp;<TEXTAREA rows="4" cols="43" name="descript" id="descript"></TEXTAREA></TD>
-        </TR>
-        <TR ><TH colspan=2><BR><input type="submit" name="submit" value="Submit" > 
-        <!-- CLEAR button -->
-        &nbsp &nbsp &nbsp<INPUT type="reset" value="Clear" />
-        <!-- CANCEL button -->
-        &nbsp &nbsp &nbsp<INPUT type="button" value="Cancel" onclick="window.location='./listSwathLibraries.cgi'"></TH></TR>
-        </TABLE>
-        </FORM>
-        <DIV id="divDescription" class="clDescriptionCont">
-        <!--Empty div-->
-        </DIV>
-        <SCRIPT type="text/javascript">setPopup()</SCRIPT>
-        |;
-    }
+		print qq |
+			&nbsp &nbsp &nbsp<INPUT type="button" value="Cancel" onclick="window.location='./listSwathLibraries.cgi'"></TH></TR>
+			</TABLE>
+			</FORM>
+			<DIV id="divDescription" class="clDescriptionCont">
+			<!--Empty div-->
+			</DIV>
+			<SCRIPT type="text/javascript">setPopup()</SCRIPT>
+			|;
+	}
 
     elsif ($action eq "merge"){
         print qq |
@@ -1117,7 +1240,7 @@ if ($submit eq "") {
         |;
     }
     elsif($action eq 'edit'){
-        my ($selectLibraryName)=$dbh->selectrow_array("SELECT NAME FROM SWATH_LIB WHERE ID_SWATH_LIB='$libraryID' ") or die "Couldn't prepare statement: " . $dbh->errstr;
+        my ($selectLibraryName,$selectLibraryDes)=$dbh->selectrow_array("SELECT NAME, DES FROM SWATH_LIB WHERE ID_SWATH_LIB='$libraryID' ") or die "Couldn't prepare statement: " . $dbh->errstr;
         print qq |
         <FONT class="title1">Edit  <FONT class="title1" color="#DD0000">$selectLibraryName</FONT></FONT><BR><BR><BR><BR>
         <FORM method="POST" action="./editSwathLibrary.cgi" name="parameters" enctype="multipart/form-data">
@@ -1125,9 +1248,9 @@ if ($submit eq "") {
         <INPUT type="hidden" name="ACT" id="ACT" value="$action">
         <INPUT type="hidden" name="ID" id="ID" value="$libraryID">
         <TR><TH align="right" valign="top">New name : </TH>
-        <TD bgcolor="$lightColor"><INPUT onmouseover="popup('Accepted 0-9,a-z,A-Z,_,-')" onmouseout="popout()" size=45% type='text' name='libname' id='libname' pattern='[0-9a-zA-Z_-]+'></TD></TR>
+        <TD bgcolor="$lightColor"><INPUT onmouseover="popup('Accepted 0-9,a-z,A-Z,_,-')" onmouseout="popout()" size=45% type='text' name='libname' id='libname' pattern='[0-9a-zA-Z_-]+' value='$selectLibraryName'></TD></TR>
         <TR><TH align="right" valign="top">Description : </TH>
-            <TD bgcolor="$lightColor"><TEXTAREA rows="4" cols="43" name="descript" id="descript"></TEXTAREA></TD>
+            <TD bgcolor="$lightColor"><TEXTAREA rows="4" cols="43" name="descript" id="descript">$selectLibraryDes</TEXTAREA></TD>
         </TR>
         <TR ><TH colspan=2><BR><input type="submit" name="submit" value="Submit">
         <!-- CLEAR button -->
@@ -1139,23 +1262,28 @@ if ($submit eq "") {
     }
 }
 else{
+	my ($libName,$split)=$dbh->selectrow_array("SELECT NAME,SPLIT FROM SWATH_LIB WHERE ID_SWATH_LIB=$libraryID");
+	
 	if ($action eq 'edit') {
 		print "<BR><BR><IMG src='$promsPath{images}/engrenage.gif'><BR><BR>";
 		my ($libNewName,$des)=&promsMod::cleanParameters(param('libname'),param('descript'));
-		
-		my ($libName,$split)=$dbh->selectrow_array("SELECT NAME,SPLIT FROM SWATH_LIB WHERE ID_SWATH_LIB=$libraryID");
 		my $sthLibUpdate=$dbh->prepare ("UPDATE SWATH_LIB SET NAME=? ,DES=? WHERE ID_SWATH_LIB=$libraryID");
 		$sthLibUpdate->execute($libNewName,$des);
 		$sthLibUpdate->finish;
-		if ($split==0) {
-			system "mv $promsPath{swath_lib}/SwLib_$libraryID/$libName.sptxt $promsPath{swath_lib}/SwLib_$libraryID/$libNewName.sptxt";
-			system "mv $promsPath{swath_lib}/SwLib_$libraryID/$libName.splib $promsPath{swath_lib}/SwLib_$libraryID/$libNewName.splib";
-			system "mv $promsPath{swath_lib}/SwLib_$libraryID/$libName.spidx $promsPath{swath_lib}/SwLib_$libraryID/$libNewName.spidx";
-			system "mv $promsPath{swath_lib}/SwLib_$libraryID/$libName.pepidx $promsPath{swath_lib}/SwLib_$libraryID/$libNewName.pepidx";
-			system "mv $promsPath{swath_lib}/SwLib_$libraryID/$libName.mrm $promsPath{swath_lib}/SwLib_$libraryID/$libNewName.mrm" if(-s "$promsPath{swath_lib}/SwLib_$libraryID/$libName.mrm");
-		}
-		elsif($split==1){
-			system "mv $promsPath{swath_lib}/SwLib_$libraryID/$libName.sptxt $promsPath{swath_lib}/SwLib_$libraryID/$libNewName.sptxt";
+		
+		if($software eq 'TPP') {
+			if ($split==0) {
+				system "mv $promsPath{swath_lib}/SwLib_$libraryID/$libName.sptxt $promsPath{swath_lib}/SwLib_$libraryID/$libNewName.sptxt";
+				system "mv $promsPath{swath_lib}/SwLib_$libraryID/$libName.splib $promsPath{swath_lib}/SwLib_$libraryID/$libNewName.splib";
+				system "mv $promsPath{swath_lib}/SwLib_$libraryID/$libName.spidx $promsPath{swath_lib}/SwLib_$libraryID/$libNewName.spidx";
+				system "mv $promsPath{swath_lib}/SwLib_$libraryID/$libName.pepidx $promsPath{swath_lib}/SwLib_$libraryID/$libNewName.pepidx";
+				system "mv $promsPath{swath_lib}/SwLib_$libraryID/$libName.mrm $promsPath{swath_lib}/SwLib_$libraryID/$libNewName.mrm" if(-s "$promsPath{swath_lib}/SwLib_$libraryID/$libName.mrm");
+			}
+			elsif($split==1){
+				system "mv $promsPath{swath_lib}/SwLib_$libraryID/$libName.sptxt $promsPath{swath_lib}/SwLib_$libraryID/$libNewName.sptxt";
+			}
+		} elsif($software eq 'Spectronaut') {
+			system "mv $promsPath{swath_lib}/SwLib_$libraryID/$libName.tsv $promsPath{swath_lib}/SwLib_$libraryID/$libNewName.tsv";
 		}
 		print "<B>Done.</B>";
 		$dbh->commit;
@@ -1175,7 +1303,7 @@ else{
 	my $status="Run time : $waitTime ";
 	
 		
-	my (@inputFiles,$oldVersion,$instrument,$fdrType,$des,$workDir,$decoyTag,$missedCleavage,$identifierDB,$organismDB,$fastaDBFile,$fdr,$libName,$libPath,$libIDFile,$libFileName,$rtFileID,$split,$libName1,$versionLib1,$libName2,$versionLib2,$libID1,$libID2);	
+	my (@inputFiles,$oldVersion,$instrument,$fdrType,$des,$workDir,$decoyTag,$missedCleavage,$identifierDB,$organismDB,$fastaDBFile,$fdr,$libPath,$libIDFile,$libFileName,$rtFileID,$libName1,$versionLib1,$libName2,$versionLib2,$libID1,$libID2);	
 	my $libOption=(param('liboption'))? param('liboption') :'' ;
 	my $libCons=(param('libcons'))? param('libcons') :'' ;
 	my $fragmentation=(param('fragmentation'))? param('fragmentation') : 'HCD';
@@ -1197,7 +1325,7 @@ else{
 		if ($clusterInfo{'on'}) {
 			print "<SCRIPT LANGUAGE=\"JavaScript\">$divID.innerHTML=\"\";$divID.innerHTML='$status';</SCRIPT>";
 		}
-		$workDir=(param('workDir'))? param('workDir') : "$promsPath{data}/tmp/Swath/$time";
+		$workDir= (param('workDir'))? param('workDir') : "$promsPath{data}/tmp/Swath/$time";
 		$libPath="$promsPath{swath_lib}";
 		mkdir $libPath unless -e $libPath;
 		mkdir $workDir unless -e $workDir;
@@ -1223,7 +1351,8 @@ else{
 		
 		
 		my $serverDir=(param('serverDir')) ? &promsMod::cleanParameters(param('serverDir')) : '';
-		($des,$missedCleavage,$fdr,$libName)=&promsMod::cleanParameters(param('descript'),param('missedcleav'),param('fdr'),param('libname'));
+		($des,$missedCleavage,$fdr)=&promsMod::cleanParameters(param('descript'),param('missedcleav'),param('fdr'),);
+		$libName = &promsMod::cleanParameters(param('libname')) unless($libName);
 		$fdrType=param('fdrtype');
 		
 		print "<BR><BR><BR><BR><B><FONT size=\"4pt\">Updating <FONT color=\"red\">$libFileName</FONT></FONT></B><BR><BR>" if $action eq "update";
@@ -1238,49 +1367,51 @@ else{
 		$script="editSwathLibrary.cgi?ACT=update&ID=$libIDFile" if $action eq 'update';
 		
 		
-		##########################
-		####>Recovering files<####
-		##########################
+		#########################################
+		####>Recovering iRT file from FASTA <####
+		#########################################
 		###> Recovering fasta file's name chosen by the user
 		($fastaDBFile,$identifierDB,$organismDB,$decoyTag)=$dbh->selectrow_array("SELECT D.FASTA_FILE,DT.DEF_IDENT_TYPE,D.ORGANISM,D.DECOY_TAG FROM DATABANK D, DATABANK_TYPE DT WHERE ID_DATABANK='$dbID[0]' AND D.ID_DBTYPE=DT.ID_DBTYPE ") or die "Couldn't prepare statement: " . $dbh->errstr;
 		$dbDir="$promsPath{data}/banks/db_$dbID[0]";
 		$dbFile="$dbDir/$fastaDBFile";
-		
-		#$dbFileID2=$dbFileID;
-		open(FASTA,"<",$dbFile) or die ("open :$!");
-		my ($irtFastaSeq,$match);
-		while (<FASTA>) {
-			if ($_=~/>/) {
-				if ($_=~/iRT/ && $_!~/reverse/) {$match=1;}
-				else{$match=0;}
-			}
-			else{
-				if ($match) {
-					$_=~s/\s//;
-					chomp ($_);
-					$irtFastaSeq.=$_;
+
+		if($software eq 'TPP') {
+			#$dbFileID2=$dbFileID;
+			open(FASTA,"<",$dbFile) or die ("open :$!");
+			my ($irtFastaSeq,$match);
+			while (<FASTA>) {
+				if ($_=~/>/) {
+					if ($_=~/iRT/ && $_!~/reverse/) {$match=1;}
+					else{$match=0;}
+				}
+				else{
+					if ($match) {
+						$_=~s/\s//;
+						chomp ($_);
+						$irtFastaSeq.=$_;
+					}
 				}
 			}
-		}
-		
-		###> Recovering RT file in database to put it in workDir
-		(my $rtData,$rtFileName)=$dbh->selectrow_array("SELECT DATA,NAME FROM REFERENCE_RT WHERE ID_REFERENCE_RT='$rtFileID' ") or die "Couldn't prepare statement: " . $dbh->errstr;
-		open(RTFILE,">>","$workDir/$rtFileName.txt") or die ("open: $!");
-		my $xmlRT =XML::Simple-> new (KeepRoot=>1);
-		my $xmlData = $xmlRT->XMLin($rtData);
-		foreach my $pepInfo (@{$xmlData->{'PEPTIDE_DATA'}->{'PEPTIDE'}}) {
-			if (! $pepInfo->{'excluded'}) {
-				my $pepiRTSeq=$pepInfo->{'sequence'};
-				if ($irtFastaSeq!~/$pepiRTSeq/) {
-					print "<SCRIPT LANGUAGE=\"JavaScript\">alert('Wrong iRT file selected. Select an other file.'); window.location=\"$promsPath{cgi}/$script\";</SCRIPT>";
-					exit;
+			
+			###> Recovering RT file in database to put it in workDir
+			(my $rtData,$rtFileName)=$dbh->selectrow_array("SELECT DATA,NAME FROM REFERENCE_RT WHERE ID_REFERENCE_RT='$rtFileID' ") or die "Couldn't prepare statement: " . $dbh->errstr;
+			open(RTFILE,">>","$workDir/$rtFileName.txt") or die ("open: $!");
+			my $xmlRT =XML::Simple-> new (KeepRoot=>1);
+			my $xmlData = $xmlRT->XMLin($rtData);
+			foreach my $pepInfo (@{$xmlData->{'PEPTIDE_DATA'}->{'PEPTIDE'}}) {
+				if (! $pepInfo->{'excluded'}) {
+					my $pepiRTSeq=$pepInfo->{'sequence'};
+					if ($irtFastaSeq!~/$pepiRTSeq/) {
+						print "<SCRIPT LANGUAGE=\"JavaScript\">alert('Wrong iRT file selected. Select an other file.'); window.location=\"$promsPath{cgi}/$script\";</SCRIPT>";
+						exit;
+					}
+					print RTFILE ($pepInfo->{'sequence'},"\t",$pepInfo->{'iRT'},"\n");
 				}
-				print RTFILE ($pepInfo->{'sequence'},"\t",$pepInfo->{'iRT'},"\n");
+				$now=strftime("%s",localtime); # in sec
+				$waitTime=strftime("%Hh %Mm %Ss",localtime($now-$startTime-3600));
+				$status="Run time : $waitTime ";
+				print "<SCRIPT LANGUAGE=\"JavaScript\">$divID.innerHTML=\"\";$divID.innerHTML='$status';</SCRIPT>";
 			}
-			$now=strftime("%s",localtime); # in sec
-			$waitTime=strftime("%Hh %Mm %Ss",localtime($now-$startTime-3600));
-			$status="Run time : $waitTime ";
-			print "<SCRIPT LANGUAGE=\"JavaScript\">$divID.innerHTML=\"\";$divID.innerHTML='$status';</SCRIPT>";
 		}
 		
 		
@@ -1294,43 +1425,72 @@ else{
 			########################################################################################################
 			###> Recovering files names selected by the user, upload input files and move them in work directory<###
 			########################################################################################################
-			###> From input 
-			for (my $i=1; $i<=3; $i++){
-				if (param("inputfiles$i")){
-					foreach my $name (param("inputfiles$i")){
-						if($name=~m/\.dat$/){push @inputFilesDat,$name;}
-						if($name=~m/\.tandem\./){push @inputFilesTandem,$name;}
-						if($name=~m/\.mzXML$/){push @inputFilesMZXML,$name;}
-						if($name=~m/\.pep.xml$/ && $name!~/\.tandem\.pep\.xml$/){push @inputFilesPEPXML,$name;}
-						if($name=~m/\.xml$/ && $name!~/\.tandem\.pep\.xml$/ && $name!~/\.pep\.xml$/) {push @inputFilesXML,$name;}
-						
-						##> allocates a temporary address at input files
-						my $newFile=tmpFileName($name);
-						my $NewFileDir="$workDir/$name";
-						
-						##>move them in work directory
-						copy($newFile,$NewFileDir);
-						
-						push @inputFiles,$name unless $name=~/\.xml$/ && $name!~/\.tandem\.pep\.xml$/ && $name!~/\.pep\.xml$/; 
-						my $taille=`stat -c "%s" $workDir/$name`;
-						if ($taille == 0 ) {
-							print "<SCRIPT LANGUAGE=\"JavaScript\">alert('Error during importation of upload files. Please retry.'); window.location=\"$promsPath{cgi}/$script\";</SCRIPT>";
-							exit;
+			###> From input
+			if($software eq 'TPP') {
+				for (my $i=1; $i<=3; $i++){
+					if (param("inputfiles$i")){
+						foreach my $name (param("inputfiles$i")){
+							if($name=~m/\.dat$/){push @inputFilesDat,$name;}
+							if($name=~m/\.tandem\./){push @inputFilesTandem,$name;}
+							if($name=~m/\.mzXML$/){push @inputFilesMZXML,$name;}
+							if($name=~m/\.pep.xml$/ && $name!~/\.tandem\.pep\.xml$/){push @inputFilesPEPXML,$name;}
+							if($name=~m/\.xml$/ && $name!~/\.tandem\.pep\.xml$/ && $name!~/\.pep\.xml$/) {push @inputFilesXML,$name;}
+							
+							##> allocates a temporary address at input files
+							my $newFile=tmpFileName($name);
+							my $NewFileDir="$workDir/$name";
+							
+							##>move them in work directory
+							copy($newFile,$NewFileDir);
+							
+							push @inputFiles,$name unless $name=~/\.xml$/ && $name!~/\.tandem\.pep\.xml$/ && $name!~/\.pep\.xml$/; 
+							my $taille=`stat -c "%s" $workDir/$name`;
+							if ($taille == 0 ) {
+								print "<SCRIPT LANGUAGE=\"JavaScript\">alert('Error during importation of upload files. Please retry.'); window.location=\"$promsPath{cgi}/$script\";</SCRIPT>";
+								exit;
+							}
+							push(@taille,int($taille));
+							
+							$now=strftime("%s",localtime); # in sec
+							$waitTime=strftime("%Hh %Mm %Ss",localtime($now-$startTime-3600));
+							$status="Run time : $waitTime ";
+							print "<SCRIPT LANGUAGE=\"JavaScript\">$divID.innerHTML=\"\";$divID.innerHTML='$status';</SCRIPT>";
 						}
-						push(@taille,int($taille));
-						
-						$now=strftime("%s",localtime); # in sec
-						$waitTime=strftime("%Hh %Mm %Ss",localtime($now-$startTime-3600));
-						$status="Run time : $waitTime ";
-						print "<SCRIPT LANGUAGE=\"JavaScript\">$divID.innerHTML=\"\";$divID.innerHTML='$status';</SCRIPT>";
+					}
+				}
+			} elsif($software eq 'Spectronaut') {
+				if(param("spcLibFile")) {
+					foreach my $spectronautLibFileName (param("spcLibFile")) {
+						if($spectronautLibFileName && ($spectronautLibFileName=~/\.tsv$/ || $spectronautLibFileName=~/\.xls$/)) {
+							##> allocates a temporary address at input files
+							my $newFile=tmpFileName($spectronautLibFileName);
+							my $NewFileDir="$workDir/$spectronautLibFileName";
+							
+							##>move them in work directory
+							copy($newFile,$NewFileDir);
+							
+							my $taille=`stat -c "%s" "$workDir/$spectronautLibFileName"`;
+							if ($taille == 0 ) {
+								print "<SCRIPT LANGUAGE=\"JavaScript\">alert('Error during the importation of Spectronaut library file. Please retry.'); window.location=\"$promsPath{cgi}/$script\";</SCRIPT>";
+								exit;
+							}
+							
+							push @inputFiles, $spectronautLibFileName;
+							
+							$now=strftime("%s",localtime); # in sec
+							$waitTime=strftime("%Hh %Mm %Ss",localtime($now-$startTime-3600));
+							$status="Run time : $waitTime";
+							print "<SCRIPT LANGUAGE=\"JavaScript\">$divID.innerHTML=\"\";$divID.innerHTML='$status';</SCRIPT>";
+						}
 					}
 				}
 			}
+			
 			###> From server directory
 			if($serverDir){
 				foreach my $file (glob ("$serverDir/*")){
 					(my $name=$file)=~s/.*\///;
-					next unless $name=~/[\.dat|\.xml|\.mzXML]/;
+					next unless $name=~/[\.dat|\.xml|\.mzXML|\.tsv|\.xls]/;
 					if($name=~m/\.dat$/){push @inputFilesDat,$name;}
 					if($name=~m/\.tandem\./){push @inputFilesTandem,$name;}
 					if($name=~m/\.mzXML$/){push @inputFilesMZXML,$name;}
@@ -1344,7 +1504,7 @@ else{
 					copy("$serverDir/$name",$NewFileDir);
 					
 					push @inputFiles,$name unless $name=~/\.xml$/ && $name!~/\.tandem\.pep\.xml$/ && $name!~/\.pep\.xml$/; 
-					my $taille=`stat -c "%s" $workDir/$name`;
+					my $taille=`stat -c "%s" "$workDir/$name"`;
 					if ($taille == 0 ) {
 						print "<SCRIPT LANGUAGE=\"JavaScript\">alert('Error during importation of upload files. Please retry.'); window.location=\"$promsPath{cgi}/$script\";</SCRIPT>";
 						exit;
@@ -1434,61 +1594,65 @@ else{
 					if($file=~/\.xml$/ && $file!~/\.tandem\.pep\.xml$/ && $file!~/\.pep\.xml$/) {push @inputFilesXML,$file;}
 					
 					push @inputFiles,$file unless $file=~/\.xml$/ && $file!~/\.tandem\.pep\.xml$/ && $file!~/\.pep\.xml$/; 
-					my $taille=`stat -c "%s" $workDir/$file`;
+					my $taille=`stat -c "%s" "$workDir/$file"`;
 					if ($taille == 0 ) {
 						print "<SCRIPT LANGUAGE=\"JavaScript\">alert('Error during importation of upload files. Please retry.'); window.location=\"$promsPath{cgi}/$script\";</SCRIPT>";
 						exit;
 					}
 					push(@taille,int($taille));
 				}
-				if (scalar @inputFilesMZXML == 0){
-					print "<SCRIPT LANGUAGE=\"JavaScript\">alert('No .mzXML files selected.'); window.location=\"$promsPath{cgi}/$script\";</SCRIPT>";
+				
+				if($software eq 'TPP') {
+					if (scalar @inputFilesMZXML == 0){
+						print "<SCRIPT LANGUAGE=\"JavaScript\">alert('No .mzXML files selected.'); window.location=\"$promsPath{cgi}/$script\";</SCRIPT>";
+						exit;
+					}
+					####> check that for each search file there is a mzXML associated file
+					if(@inputFilesDat){
+						foreach my $datFile (@inputFilesDat){
+							(my $datFileName=$datFile)=~s/.dat$//;
+							my $msxmlRequired=$datFileName.'.mzXML';
+							unless (first {$_ eq $msxmlRequired} @inputFilesMZXML) {
+								print "<SCRIPT LANGUAGE=\"JavaScript\">alert('The names of the .dat and .mzXML selected files are not the same. Select other files or change the names.'); window.location=\"$promsPath{cgi}/$script\";</SCRIPT>";
+								exit;
+							}
+						}
+						if (scalar @inputFilesDat != scalar @inputFilesMZXML){
+							print "<SCRIPT LANGUAGE=\"JavaScript\">alert('The number of the .dat and .mzXML files are not the same.'); window.location=\"$promsPath{cgi}/$script\";</SCRIPT>";
+							exit;
+						}	
+					}
+					if(@inputFilesTandem){
+						foreach my $tandemFile (@inputFilesTandem){
+							(my $tandemFileName=$tandemFile)=~s/.tandem.pep.xml$//;
+							my $msxmlRequired=$tandemFileName.'.mzXML';
+							unless (first {$_ eq $msxmlRequired} @inputFilesMZXML) {
+								print "<SCRIPT LANGUAGE=\"JavaScript\">alert('The names of the .tandem and .mzXML selected files are not the same. Select other files or change the names.'); window.location=\"$promsPath{cgi}/$script\";</SCRIPT>";
+								exit;
+							}
+						}
+						if (scalar @inputFilesTandem != scalar @inputFilesMZXML){
+							print "<SCRIPT LANGUAGE=\"JavaScript\">alert('The number of the .tandem and .mzXML files are not the same.'); window.location=\"$promsPath{cgi}/$script\";</SCRIPT>";
+							exit;
+						}
+					}
+					if(@inputFilesPEPXML){
+						foreach my $sequestFile (@inputFilesPEPXML){
+							(my $sequestFileName=$sequestFile)=~s/.pep.xml$//;
+							my $msxmlRequired=$sequestFileName.'.mzXML';
+							unless (first {$_ eq $msxmlRequired} @inputFilesMZXML) {
+								print "<HTML><BODY><SCRIPT LANGUAGE=\"JavaScript\">alert('The names of the .pep.xml and .mzXML selected files are not the same. Select other files or change the names.'); window.location=\"$promsPath{cgi}/$script\";</SCRIPT></BODY></HTML>";
+								exit;
+							}
+						}
+						if (scalar @inputFilesPEPXML != scalar @inputFilesMZXML){
+							print "<HTML><BODY><SCRIPT LANGUAGE=\"JavaScript\">alert('The number of the .pep.xml and .mzXML files are not the same.'); window.location=\"$promsPath{cgi}/$script\";</SCRIPT></BODY></HTML>";
+							exit;
+						}
+					}
+				} elsif($software eq 'Spectronaut' && !@inputFiles) {
+					print "<SCRIPT LANGUAGE=\"JavaScript\">alert('No Spectronaut library file (.tsv or .xls) was found in the archive'); window.location=\"$promsPath{cgi}/$script\";</SCRIPT>";
 					exit;
-				}
-				
-				
-				####> check that for each search file there is a mzXML associated file
-				if(@inputFilesDat){
-					foreach my $datFile (@inputFilesDat){
-						(my $datFileName=$datFile)=~s/.dat$//;
-						my $msxmlRequired=$datFileName.'.mzXML';
-						unless (first {$_ eq $msxmlRequired} @inputFilesMZXML) {
-							print "<SCRIPT LANGUAGE=\"JavaScript\">alert('The names of the .dat and .mzXML selected files are not the same. Select other files or change the names.'); window.location=\"$promsPath{cgi}/$script\";</SCRIPT>";
-							exit;
-						}
-					}
-					if (scalar @inputFilesDat != scalar @inputFilesMZXML){
-						print "<SCRIPT LANGUAGE=\"JavaScript\">alert('The number of the .dat and .mzXML files are not the same.'); window.location=\"$promsPath{cgi}/$script\";</SCRIPT>";
-						exit;
-					}	
-				}
-				if(@inputFilesTandem){
-					foreach my $tandemFile (@inputFilesTandem){
-						(my $tandemFileName=$tandemFile)=~s/.tandem.pep.xml$//;
-						my $msxmlRequired=$tandemFileName.'.mzXML';
-						unless (first {$_ eq $msxmlRequired} @inputFilesMZXML) {
-							print "<SCRIPT LANGUAGE=\"JavaScript\">alert('The names of the .tandem and .mzXML selected files are not the same. Select other files or change the names.'); window.location=\"$promsPath{cgi}/$script\";</SCRIPT>";
-							exit;
-						}
-					}
-					if (scalar @inputFilesTandem != scalar @inputFilesMZXML){
-						print "<SCRIPT LANGUAGE=\"JavaScript\">alert('The number of the .tandem and .mzXML files are not the same.'); window.location=\"$promsPath{cgi}/$script\";</SCRIPT>";
-						exit;
-					}
-				}
-				if(@inputFilesPEPXML){
-					foreach my $sequestFile (@inputFilesPEPXML){
-						(my $sequestFileName=$sequestFile)=~s/.pep.xml$//;
-						my $msxmlRequired=$sequestFileName.'.mzXML';
-						unless (first {$_ eq $msxmlRequired} @inputFilesMZXML) {
-							print "<HTML><BODY><SCRIPT LANGUAGE=\"JavaScript\">alert('The names of the .pep.xml and .mzXML selected files are not the same. Select other files or change the names.'); window.location=\"$promsPath{cgi}/$script\";</SCRIPT></BODY></HTML>";
-							exit;
-						}
-					}
-					if (scalar @inputFilesPEPXML != scalar @inputFilesMZXML){
-						print "<HTML><BODY><SCRIPT LANGUAGE=\"JavaScript\">alert('The number of the .pep.xml and .mzXML files are not the same.'); window.location=\"$promsPath{cgi}/$script\";</SCRIPT></BODY></HTML>";
-						exit;
-					}
 				}
 			}
 			###> from shared directory
@@ -1506,7 +1670,7 @@ else{
 					my $NewFileDir="$workDir/$fileName";
 					copy("$promsPath{shared}/$sharedFile",$NewFileDir);
 					
-					my $taille=`stat -c "%s" $NewFileDir`;
+					my $taille=`stat -c "%s" "$NewFileDir"`;
 					if ($taille == 0 ) {
 						print "<SCRIPT LANGUAGE=\"JavaScript\">alert('Error during importation of upload files. Please retry.'); window.location=\"$promsPath{cgi}/$script\";</SCRIPT>";
 						exit;
@@ -1522,34 +1686,37 @@ else{
 				}
 			}
 			
-			####################################################
-			###> Converting .xml files into .tandem.pep.xml <###
-			####################################################
-			if (scalar @inputFilesXML != 0) {
-				foreach my $xmlFile (@inputFilesXML){
-					(my $xmlFileName=$xmlFile)=~s/\.xml$//;
-					open(XMLFILE,"<","$workDir/$xmlFile") or die ("open : $!");
-					open(OUT,">","$workDir/Mod$xmlFile") or die ("open : $!");
-					while (<XMLFILE>) {
-						if ($_=~/protein, cleavage N-terminal mass change/) {
-							(my $line=$_)=~s/protein, cleavage N-terminal mass change">.*<\/note>/protein, cleavage N-terminal mass change"><\/note>/;
-							print OUT $line;
-						} elsif($_=~/protein, cleavage C-terminal mass change/){
-							(my $line=$_)=~s/protein, cleavage C-terminal mass change">.*<\/note>/protein, cleavage C-terminal mass change"><\/note>/;
-							print OUT $line;
-						} elsif($_=~/spectrum, path/){
-							(my $line=$_)=~s/spectrum, path\">.*$xmlFileName\.mzXML/spectrum, path\">$workDir\/$xmlFileName\.mzXML/;
-							print OUT $line;
-						} else{ print OUT $_; }
-					}
-					close XMLFILE;
-					close OUT;
-					
-					move("$workDir/Mod$xmlFile","$workDir/$xmlFileName.tandem");
-					system "$tppPath/Tandem2XML $workDir/$xmlFileName.tandem $workDir/$xmlFileName.tandem.pep.xml";
-					push @inputFilesTandem, "$xmlFileName.tandem.pep.xml";
-					push @inputFiles,"$xmlFileName.tandem.pep.xml";
-				}	
+			
+			if($software eq 'TPP') {
+				####################################################
+				###> Converting .xml files into .tandem.pep.xml <###
+				####################################################
+				if (scalar @inputFilesXML != 0) {
+					foreach my $xmlFile (@inputFilesXML){
+						(my $xmlFileName=$xmlFile)=~s/\.xml$//;
+						open(XMLFILE,"<","$workDir/$xmlFile") or die ("open : $!");
+						open(OUT,">","$workDir/Mod$xmlFile") or die ("open : $!");
+						while (<XMLFILE>) {
+							if ($_=~/protein, cleavage N-terminal mass change/) {
+								(my $line=$_)=~s/protein, cleavage N-terminal mass change">.*<\/note>/protein, cleavage N-terminal mass change"><\/note>/;
+								print OUT $line;
+							} elsif($_=~/protein, cleavage C-terminal mass change/){
+								(my $line=$_)=~s/protein, cleavage C-terminal mass change">.*<\/note>/protein, cleavage C-terminal mass change"><\/note>/;
+								print OUT $line;
+							} elsif($_=~/spectrum, path/){
+								(my $line=$_)=~s/spectrum, path\">.*$xmlFileName\.mzXML/spectrum, path\">$workDir\/$xmlFileName\.mzXML/;
+								print OUT $line;
+							} else{ print OUT $_; }
+						}
+						close XMLFILE;
+						close OUT;
+						
+						move("$workDir/Mod$xmlFile","$workDir/$xmlFileName.tandem");
+						system "$tppPath/Tandem2XML $workDir/$xmlFileName.tandem $workDir/$xmlFileName.tandem.pep.xml";
+						push @inputFilesTandem, "$xmlFileName.tandem.pep.xml";
+						push @inputFiles,"$xmlFileName.tandem.pep.xml";
+					}	
+				}
 			}
 		   
 
@@ -1583,6 +1750,10 @@ else{
 							$matchIdent=1;
 							last;
 						}
+					} elsif($file=~m/\.tsv$|\.xls$/){ # TODO Check better for protein identType
+						$matchIdent=1;
+						$fileIdentType = "UNIPROT_ALL";
+						last;
 					}
 					else{next;}
 				}
@@ -1592,8 +1763,11 @@ else{
 					elsif($file=~m/\.tandem\./ || $file=~m/\.pep\.xml/){
 						my $res=`grep -m 1 "<search_hit " $workDir/$file`; # ' | cut -d\\" -f10' is not safe (XML attributes not always in same order)
 						($fileIdent)=($res=~/protein="([^"]+)/);
-					}
-					else{next;}
+					} elsif($file=~m/\.tsv$|\.xls$/) { # TODO Check better for protein identType
+						$fileIdentType = "UNIPROT_ALL";
+						$matchIdent=1;
+						last;
+					} else{next;}
 					chomp $fileIdent;
 					next unless $fileIdent;
 					$fileIdent=~s/$decoyTag//;
@@ -1638,11 +1812,11 @@ else{
 				$status="Run time : $waitTime ";
 				print "<SCRIPT LANGUAGE=\"JavaScript\">$divID.innerHTML=\"\";$divID.innerHTML='$status';</SCRIPT>";
 			}
-			$fileIdentType=($fileIdentType) ? $fileIdentType : '';
+			$fileIdentType= '' unless($fileIdentType);
 			if (!$matchIdent) {
 				if ($libCons eq 'new') {
 					print "<BR><BR><BR><B>***ERROR*** Identifiers from input files ($fileIdentType) and Databank ($identType) are different! <BR>Select an other Databank.</B><BR><BR><BR>";
-					my $sthNewDBList=$dbh->prepare("SELECT D.NAME, D.ID_DATABANK,D.FASTA_FILE,D.DECOY_TAG,DT.NAME FROM DATABANK D,DATABANK_TYPE DT WHERE D.DECOY_TAG IS NOT NULL AND D.USE_STATUS='yes' AND DT.DEF_IDENT_TYPE=\"$fileIdentType\" AND D.ID_DBTYPE=DT.ID_DBTYPE  ") or die "Couldn't prepare statement: " . $dbh->errstr;
+					my $sthNewDBList=$dbh->prepare("SELECT D.NAME, D.ID_DATABANK,D.FASTA_FILE,D.DECOY_TAG,DT.NAME FROM DATABANK D,DATABANK_TYPE DT WHERE D.USE_STATUS='yes' AND DT.DEF_IDENT_TYPE=\"$fileIdentType\" AND D.ID_DBTYPE=DT.ID_DBTYPE  ") or die "Couldn't prepare statement: " . $dbh->errstr;
 					$sthNewDBList->execute;
 					if ($sthNewDBList->rows==0) {
 						print "<INPUT type=\"button\" class=\"buttonadd\" value=\"Return to form.\" onclick=\"window.location='./editSwathLibrary.cgi?ACT=add'\">";
@@ -1652,7 +1826,7 @@ else{
 						my %dbHash;
 						while (my($dbName,$dbID,$dbFileName,$decoyTag,$dbTypeName)=$sthNewDBList->fetchrow_array){
 							next if ($dbFileName=~m/:/) ;
-							next if ($decoyTag eq "No" || $decoyTag eq "");
+							next if ($software eq 'TPP' && ($decoyTag eq "No" || $decoyTag eq ""));
 							$dbHash{"$dbName&nbsp;\[$dbTypeName\]"}=$dbID;
 						}
 						$sthNewDBList->finish;
@@ -1721,7 +1895,7 @@ else{
 				if($file=~/\.xml$/ && $file!~/\.tandem\.pep\.xml$/ && $file!~/\.pep\.xml$/) {push @inputFilesXML,$file;}
 				
 				
-				my $taille=`stat -c "%s" $workDir/$fileName`;
+				my $taille=`stat -c "%s" "$workDir/$fileName"`;
 				push(@taille,int($taille));
 				push(@inputFiles,$fileName) unless $fileName=~/iRT/;
 			}
@@ -1771,7 +1945,7 @@ else{
 	
 	my $fileInfo="$workDir/info_$libID.out";
 	open(FILEINFO,">$fileInfo") || die "Error while opening $fileInfo";
-	print FILEINFO "User=$userID\nSoftware=TPP";
+	print FILEINFO "User=$userID\nSoftware=$software";
 	close FILEINFO;
    
 		
@@ -1783,12 +1957,12 @@ else{
 	my $fileError="$workDir/status_$libID\_error.out";
 
 	# Create new job to monitor
-	$dbh->do("INSERT INTO JOB_HISTORY (ID_JOB, ID_USER, ID_PROJECT, TYPE, STATUS, FEATURES, SRC_PATH, LOG_PATH, ERROR_PATH, STARTED) VALUES('$time', '$userID', $projectID, 'Import [TPP]', 'Queued', 'SOFTWARE=TPP;ID_LIBRARY=$libID;ACTION=$action', '$workDir', '$fileStat', '$fileError', NOW())");
+	$dbh->do("INSERT INTO JOB_HISTORY (ID_JOB, ID_USER, ID_PROJECT, TYPE, JOB_STATUS, FEATURES, SRC_PATH, LOG_PATH, ERROR_PATH, STARTED) VALUES('$time', '$userID', $projectID, 'Spectral Library [$software]', 'Queued', 'SOFTWARE=$software;ID_LIBRARY=$libID;ACTION=$action', '$workDir', '$fileStat', '$fileError', NOW())");
 	$dbh->commit;
 	
 	print qq |
 		<SCRIPT type="text/javascript">
-			var monitorJobsWin=window.open("$promsPath{cgi}/monitorJobs.cgi?filterType=Import [TPP]&filterDateNumber=1&filterDateType=DAY&filterStatus=Queued&filterStatus=Running",'monitorJobsWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
+			var monitorJobsWin=window.open("$promsPath{cgi}/monitorJobs.cgi?filterType=Spectral Library [$software]&filterDateNumber=1&filterDateType=DAY&filterStatus=Queued&filterStatus=Running",'monitorJobsWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
 			monitorJobsWin.focus();
 		</SCRIPT>
 	|;
@@ -1796,673 +1970,129 @@ else{
 	my $childConvert=fork;
 	unless($childConvert){
 		#>Disconnecting from server
-		open STDOUT, '>/dev/null' or die "Can't open /dev/null: $!";
-		open STDIN, '</dev/null' or die "Can't open /dev/null: $!";
-		open STDERR, '>/dev/null' or die "Can't open /dev/null: $!";
+		open STDOUT, ">/dev/null" or die "Can't open /dev/null: $!";
+		open STDIN,  '</dev/null' or die "Can't open /dev/null: $!";
+		open STDERR, ">$fileError" or die "Can't open /dev/null: $!";
 		
 		# Add process PID to current job in DB
 		my $dbh = &promsConfig::dbConnect('no_user');
 		$dbh->do("UPDATE JOB_HISTORY SET ID_JOB_CLUSTER='L$$' WHERE ID_JOB='$time'");
 		$dbh->commit;
-		
-		if ($action eq "add" || $action eq "update" || $action eq "addDB2") {
-			open(FILESTAT,">>$fileStat");
-			print FILESTAT "Fetching files.\n";
-			close(FILESTAT);
-			###>Modification of sequest files
-			if(@inputFilesPEPXML){
-				foreach my $sequestFile (@inputFilesPEPXML){
-					(my $fileName=$sequestFile)=~s/\.pep\.xml//;
-					open(INFILE,"<$workDir/$sequestFile");
-					open(OUTFILE,">$workDir/$fileName.sequest.pep.xml");
-					my $match;
-					while (<INFILE>){
-						if($_=~/<search_summary>/){
-							$match=1;
-						}elsif($_=~/<\/WorkflowMessages>/){
-							$match=0;
-							next;
-						}
-						if($_=~/<msms_run_summary base_name/){
-							$_=~s/base_name=".*(\w|\))\.msf"/base_name="$workDir\/$fileName"/;
-							$_=~s/raw_data=".msf"/raw_data=".mzXML"/;
-							print OUTFILE $_;
-						}
-						elsif($_=~/<search_summary base_name/){
-							$_=~s/base_name=".*\.msf"/base_name="$workDir\/$fileName.msf"/;
-							$_=~s/search_engine="Sequest HT"/search_engine="SEQUEST"/;
-							print OUTFILE $_;
-						}
-						elsif($_=~/<sample_enzyme name="/){
-							$_=~s/<sample_enzyme name=".*"/<sample_enzyme name="Trypsin"/;
-							print OUTFILE $_;
-						}
-						elsif($_=~/<search_database/){
-							$_=~s/local_path=""/local_path="$dbFile"/;
-							print OUTFILE $_;
-						}
-						elsif($_=~/<parameter name="FastaDatabase"/){
-							$_=~s/value="$fastaDBFile"/value="$dbFile"/;
-							print OUTFILE $_;
-						}
-						elsif(!$match){print OUTFILE $_;}
-					}
-					close INFILE;
-					close OUTFILE;
-					push @inputFilesSequest, "$fileName.sequest.pep.xml";
-				}
-			}
-		
-			####> recovering non consensus library 
-			if ($action eq 'update' || $libCons eq 'mergelib'){
-				opendir (DIR, "$libPath/SwLib_$libIDFile/");
-				while (my $file = readdir (DIR)){
-					if ($file =~/\.tar\.gz/){
-						(my $folderName=$file)=~s/\.tar\.gz//;
-						system "cd $libPath/SwLib_$libIDFile; tar -zxf $file;";
-						system "rm $libPath/SwLib_$libIDFile/dbinfo_$folderName.txt;" if -e "$libPath/SwLib_$libIDFile/dbinfo_$folderName.txt";
-						system "rm $libPath/SwLib_$libIDFile/filelist_$folderName.txt;" if -e "$libPath/SwLib_$libIDFile/filelist_$folderName.txt";
-						system "rm $libPath/SwLib_$libIDFile/sortie_$folderName.txt;" if -e "$libPath/SwLib_$libIDFile/sortie_$folderName.txt";
-						system "rm $libPath/SwLib_$libIDFile/script_$folderName.sh;" if -e "$libPath/SwLib_$libIDFile/script_$folderName.sh";
-					}
-				}
-				close DIR;
-				opendir (CONS,"$libPath/SwLib_$libIDFile/");
-				while (my $file2 = readdir (CONS)){
-					if ($file2=~/SpecLib_Lib\d+_v\d+/){
-						move ("$libPath/SwLib_$libIDFile/$file2",$workDir);
-					}
-				}
-				close CONS;
-			}
-			
-			
-			
-			##############################################
-			###> Convert .dat files in .pep.xml files <###
-			##############################################
-			my $nbDat=1;
-			my @inputMascotFiles;
-			my $convDIV;
-			my $last='Upload';
-			if (@inputFilesDat) {
+		if($software eq 'TPP') {
+			if($action eq "add" || $action eq "update" || $action eq "addDB2") {
 				open(FILESTAT,">>$fileStat");
-				print FILESTAT "Conversion of dat files to pep.xml.\n";
+				print FILESTAT "Fetching files.\n";
 				close(FILESTAT);
-				$last="Conversion";
-			}
-			
-			my $maxHours=int(48);
-			foreach my $datFile (@inputFilesDat){
-				my $mascotFile=$workDir.'/'.$datFile;
-				(my $datName=$datFile)=~s/.dat//;
-				if ($clusterInfo{'on'}){
-					my $dir=$workDir."/datConversion_".$nbDat;
-					mkdir $dir unless -e $dir;
-					my $outFile=$dir.'/sortie.txt';
-					my $datBashName='datConv.sh';
-					open (BASH, ">$dir/$datBashName");
-					print BASH "#!/bin/bash\n";
-					print BASH "$tppPath/Mascot2XML $mascotFile -D$dbFile -Etrypsin -notgz >>$outFile 2>&1;";
-					close BASH;
-					my $bashName='datConvertion.sh';
-					my $clusterCommandString=$clusterInfo{'buildCommand'}->($dir,"$dir/$datBashName");
-					#my $maxHours=int(48);
-					my $datSize=`stat -c "%s" $mascotFile`;
-					$maxMem=($datSize/1073741824)*3;
-					$maxMem=($maxMem < 5) ? 5 : ($maxMem > 30) ? 30 : sprintf("%.0f",$maxMem);
-					$maxMem.='Gb';
-					
-					my $bashFile="$dir/$bashName";
-					open (BASHDAT,">$bashFile");
-					print BASHDAT qq
-|#!/bin/bash
-
-##resources
-#PBS -l mem=$maxMem
-#PBS -l nodes=1:ppn=1
-#PBS -l walltime=$maxHours:00:00
-#PBS -q batch
-
-##Information
-#PBS -N Dat_conversion_$nbDat
-#PBS -M marine.le-picard\@curie.fr
-#PBS -m abe
-#PBS -o $dir/PBS.txt 
-#PBS -e $dir/PBSerror.txt
-
-## Command
-$clusterCommandString
-|;
-					close BASHDAT;
-					
-					###> Execute bash file
-					system "chmod 775 $dir/$datBashName";
-					
-					my ($jobClusterID) = $clusterInfo{'sendToCluster'}->($bashFile);
-					
-					$dbh->do("UPDATE JOB_HISTORY SET ID_JOB_CLUSTER = CONCAT(ID_JOB_CLUSTER, ';C$jobClusterID') WHERE ID_JOB='$time'");
-					$dbh->commit;
-				}
-				else{
-					my $outFile=$workDir.'/sortie'.$nbDat.'.txt';
-					system "$tppPath/Mascot2XML $mascotFile -D$dbFile -Etrypsin -notgz >>$outFile 2>&1";
-					if (-s $outFile && `tail $outFile`=~/error/){
-						my $error=`tail $outFile`.'\n';
-						open(FILEERROR,">>$fileError");
-						print FILEERROR $error;
-						close(FILEERROR);
-						exit;
-					}
-				}
-				$nbDat++;
-				sleep 30;
-			}
-			
-			my ($count,$nbFiles,$PBSerror)=(0,0,'');
-			if ($clusterInfo{'on'}){
-				my $nbWhile=0;
-				my $maxNbWhile=$maxHours*60*2;
-				while ($nbFiles != scalar @inputFilesDat && !$PBSerror){
-					$nbFiles=`ls $workDir/*.pep.xml | grep -v .tandem.pep.xml |wc -l `;
-					for (my $i=1;$i<=scalar @inputFilesDat ;$i++){
-						$PBSerror=$clusterInfo{'checkError'}->("$workDir/datConversion_$i/PBSerror.txt") if -s "$workDir/datConversion_$i/PBSerror.txt";
-						#$PBSerror=`grep -v 'InfluxDB\\|getcwd' $workDir/datConversion_$i/PBSerror.txt` if -s "$workDir/datConversion_$i/PBSerror.txt";
-						if (-s "$workDir/datConversion_$i/sortie.txt" && `tail $workDir/datConversion_$i/sortie.txt`=~/Error/){
-							$PBSerror=`tail $workDir/datConversion_$i/sortie.txt`;
-						}
-						last if $PBSerror;
-					}
-					sleep 30;
-					$nbWhile++;
-					if ($nbWhile > $maxNbWhile) {
-						open(FILEERROR,">>$fileError");
-						print FILEERROR "Aborting: Dat files conversion is taking too long.\n";
-						close(FILEERROR);
-						exit;
-					}
-				}
-				if ($PBSerror){
-					open(FILEERROR,">>$fileError");
-					print FILEERROR "Dat files conversion failed.<BR>$PBSerror";
-					close(FILEERROR);
-					exit;
-				}
-			}
-			sleep 30;
-			
-			
-			foreach my $datFile (@inputFilesDat){
-				(my $datName=$datFile)=~s/\.dat+//;
-				my $pepXMLFile=$workDir.'/'.$datName.'.pep.xml';
-				my $mascotPepXMLFile=$workDir.'/'.$datName.'.mascot.pep.xml';
-				if (-s $pepXMLFile){
-					push(@inputMascotFiles,$mascotPepXMLFile);                        #retrieve mascot files's names for xinteract
-					move($pepXMLFile,$mascotPepXMLFile);
-				}
-				else{
-					open(FILEERROR,">>$fileError");
-					print FILEERROR "Dat file ($datFile) conversion failed.\n";
-					close(FILEERROR);
-					exit;
-				}
-			}
-			
-			
-			###############################################################
-			###> Change destination addresses in .tandem.pep.xml files <###
-			###############################################################
-			my $qServerPath=quotemeta($tppPath);
-			my $qFastaDbFile=quotemeta($fastaDBFile);
-			my $qDbDir=quotemeta($dbDir);
-			my $qWorkDir=quotemeta($workDir);
-			my $modifDIV;
-			if (@inputFilesTandem){
-				open(FILESTAT,">>$fileStat");
-				print FILESTAT "Modification of X! TANDEM files.\n";
-				close(FILESTAT);
-				$last="Modification";
-			}
-			my $nbTandem=1;
-			#my $maxHours=int(48);
-			foreach my $tandemPepFile (@inputFilesTandem){
-				(my $fileBaseName=$tandemPepFile)=~s/\.tandem.+//;
-				my $qFileBaseName=quotemeta($fileBaseName);
-				my $tandemFile=$workDir.'/'.$tandemPepFile;
-				my $dir=$workDir."/tandemModification_".$nbTandem;
-				mkdir $dir unless -e $dir;
-				my $outFile=$dir.'/sortie.txt';
-				my $tandemBashName='tandemModif.sh';
-				open (BASH, ">$dir/$tandemBashName");
-				print BASH "#!/bin/bash \n";
-				print BASH "sed -r -i -e 's/[^\"]+\\\/$qFileBaseName\.?\"\/$qWorkDir\\\/$qFileBaseName\"/g' $workDir/$tandemPepFile >>$outFile 2>&1; \n";
-					 #Taxonomy file
-				print BASH "sed -r -i -e 's/[^\"]+\\\/taxonomy\.xml\/$qServerPath\\\/taxonomy\.xml/g' $workDir/$tandemPepFile >>$outFile 2>&1; \n";
-					 #Database file
-				print BASH "sed -r -i -e 's/local_path=\".*\.fasta\"/local_path=\"$qDbDir\\\/$qFastaDbFile\"/g' $workDir/$tandemPepFile >>$outFile 2>&1; \n";
-				print BASH "sed -r -i -e 's/<parameter name=\"list path, sequence source #1\" value=\".*\.fasta\"/<parameter name=\"list path, sequence source #1\" value=\"$qDbDir\\\/$qFastaDbFile\"/g' $workDir/$tandemPepFile >>$outFile 2>&1; \n";
-				print BASH "echo END >>$workDir/END.txt;";
-				close BASH;
 				
-				if ($clusterInfo{'on'}){
-					my $bashName='tandemModification.sh';
-					my $clusterCommandString=$clusterInfo{'buildCommand'}->($dir,"$dir/$tandemBashName");
-					#my $maxHours=int(48);
-					my $datSize=`stat -c "%s" $tandemFile`;
-					$maxMem=($datSize/1073741824)*3;
-					$maxMem=($maxMem < 5) ? 5 : ($maxMem > 20) ? 20 : sprintf("%.0f",$maxMem);
-					$maxMem.='Gb';
-					
-					my $bashFile="$dir/$bashName";
-					open (BASHTANDEM,">$bashFile");
-					print BASHTANDEM qq
-|#!/bin/bash
-
-##resources
-#PBS -l mem=$maxMem
-#PBS -l nodes=1:ppn=1
-#PBS -l walltime=$maxHours:00:00
-#PBS -q batch
-
-##Information
-#PBS -N Tandem_modification_$nbTandem
-#PBS -M marine.le-picard\@curie.fr
-#PBS -m abe
-#PBS -o $dir/PBS.txt 
-#PBS -e $dir/PBSerror.txt
-
-## Command
-$clusterCommandString
-echo END_Tandem_modification_$nbTandem
-|;
-					close BASHTANDEM;
-					
-					###> Execute bash file
-					system "chmod 775 $dir/$tandemBashName";
-					my ($jobClusterID) = $clusterInfo{'sendToCluster'}->($bashFile);
-					
-					$dbh->do("UPDATE JOB_HISTORY SET ID_JOB_CLUSTER = CONCAT(ID_JOB_CLUSTER, ';C$jobClusterID') WHERE ID_JOB='$time'");
-					$dbh->commit;
-				}
-				else{
-					system "bash $dir/$tandemBashName";
-				}
-				$nbTandem++;
-				sleep 30;
-			}
-			
-			####> wait loop for cluster job
-			($PBSerror,$count)=('',0);
-			my $checkFiles=0;
-			if ($clusterInfo{'on'}){
-				my $nbWhile=0;
-				my $maxNbWhile=$maxHours*60*2;
-				while ($checkFiles != scalar @inputFilesTandem && !$PBSerror){
-					for (my $i=1;$i<=scalar @inputFilesTandem ;$i++){
-						$PBSerror=$clusterInfo{'checkError'}->("$workDir/tandemModification_$i/PBSerror.txt") if -s "$workDir/tandemModification_$i/PBSerror.txt";
-						#$PBSerror=`grep -v 'InfluxDB\\|getcwd' $workDir/tandemModification_$i/PBSerror.txt` if -s "$workDir/tandemModification_$i/PBSerror.txt";
-						last if $PBSerror;
-						my $file=`head $workDir/tandemModification_$i/PBS.txt` if -s "$workDir/tandemModification_$i/PBS.txt";
-						next unless $file;
-						$checkFiles++ if $file=~/END_Tandem_modification_$i/;
-					}
-					$checkFiles=0 unless $checkFiles==scalar @inputFilesTandem;
-					
-					sleep 30;
-					$nbWhile++;
-					if ($nbWhile > $maxNbWhile) {
-						open(FILEERROR,">>$fileError");
-						print FILEERROR "Aborting: Tandem files conversion is taking too long.\n";
-						close(FILEERROR);
-						exit;
+				###>Modification of sequest files
+				if(@inputFilesPEPXML){
+					foreach my $sequestFile (@inputFilesPEPXML){
+						(my $fileName=$sequestFile)=~s/\.pep\.xml//;
+						open(INFILE,"<$workDir/$sequestFile");
+						open(OUTFILE,">$workDir/$fileName.sequest.pep.xml");
+						my $match;
+						while (<INFILE>){
+							if($_=~/<search_summary>/){
+								$match=1;
+							}elsif($_=~/<\/WorkflowMessages>/){
+								$match=0;
+								next;
+							}
+							if($_=~/<msms_run_summary base_name/){
+								$_=~s/base_name=".*(\w|\))\.msf"/base_name="$workDir\/$fileName"/;
+								$_=~s/raw_data=".msf"/raw_data=".mzXML"/;
+								print OUTFILE $_;
+							}
+							elsif($_=~/<search_summary base_name/){
+								$_=~s/base_name=".*\.msf"/base_name="$workDir\/$fileName.msf"/;
+								$_=~s/search_engine="Sequest HT"/search_engine="SEQUEST"/;
+								print OUTFILE $_;
+							}
+							elsif($_=~/<sample_enzyme name="/){
+								$_=~s/<sample_enzyme name=".*"/<sample_enzyme name="Trypsin"/;
+								print OUTFILE $_;
+							}
+							elsif($_=~/<search_database/){
+								$_=~s/local_path=""/local_path="$dbFile"/;
+								print OUTFILE $_;
+							}
+							elsif($_=~/<parameter name="FastaDatabase"/){
+								$_=~s/value="$fastaDBFile"/value="$dbFile"/;
+								print OUTFILE $_;
+							}
+							elsif(!$match){print OUTFILE $_;}
+						}
+						close INFILE;
+						close OUTFILE;
+						push @inputFilesSequest, "$fileName.sequest.pep.xml";
 					}
 				}
-				if ($PBSerror){
-					open(FILEERROR,">>$fileError");
-					print FILEERROR "Tandem files conversion failed.<BR>$PBSerror.";
-					close(FILEERROR);
-					exit;
-				}
-				system "rm $workDir/END.txt;" if -e "$workDir/END.txt";
-			}
 			
-			
-			my @tandemFiles=map({$workDir.'/'.$_} @inputFilesTandem);
-			my @sequestFiles=map({$workDir.'/'.$_} @inputFilesSequest);
-			
-			##############################
-			####>Bash script commands<####
-			##############################
-			###> Create new bash file to store system commands
-			open(BASH,"+>","$workDir/script.sh");
-			print BASH "#!/bin/bash \n";
-		
-		
-		
-			############################
-			###> iProphet xinteract <###
-			############################
-			
-				#Xtandem files
-			if (@tandemFiles) {	#if there are xtandem input files
-				print BASH "echo \"Xinteract on X! TANDEM files.\" >>$fileStat; \n";
-				print BASH "$tppPath/xinteract -OARPd -d$decoyTag -N$workDir/interact.tandem.pep.xml @tandemFiles >>$outputFile 2>&1;  \n ";
-			}
-			
-				#Mascot files
-			if (@inputMascotFiles) {   #if there are mascot input files
-				print BASH "echo \"Xinteract on MASCOT files.\" >>$fileStat; \n";
-				print BASH "$tppPath/xinteract -OARPd -d$decoyTag -N$workDir/interact.mascot.pep.xml @inputMascotFiles >>$outputFile 2>&1;  \n";
-			}
-			
-				#Sequest files
-			if(@sequestFiles){
-				print BASH "echo \"Xinteract on SEQUEST files.\" >>$fileStat; \n";
-				print BASH "$tppPath/xinteract -OARPd -d$decoyTag -N$workDir/interact.sequest.pep.xml @sequestFiles >>$outputFile 2>&1;  \n";
-			}
-			
-			############################
-			###> InterProphetParser <###		
-			############################
-			
-			if (@tandemFiles){
-				if(@inputMascotFiles){
-					if(@sequestFiles){		## Tandem, Mascot and Sequest Files
-						print BASH qq
-|nbmascot=\`find $workDir/interact.mascot.pep* -type f \| wc -l\`;
-nbtandem=\`find $workDir/interact.tandem.pep* -type f \| wc -l\`;
-nbsequest=\`find $workDir/interact.sequest.pep* -type f \| wc -l\`;
-if [ -e $workDir/interact.mascot.pep.xml ] && [ -e $workDir/interact.tandem.pep.xml ] && [ -e $workDir/interact.sequest.pep.xml ] && [ "\$nbtandem" -gt "4" ] && [ "\$nbmascot" -gt "4" ] && [ "\$nbsequest" -gt "4" ]
-then
-	echo "iProphet on X! TANDEM, MASCOT and SEQUEST files." >>$fileStat;
-	$tppPath/InterProphetParser DECOY=$decoyTag $workDir/interact.tandem.pep.xml $workDir/interact.mascot.pep.xml $workDir/interact.sequest.pep.xml $workDir/iProphet.pep.xml >>$outputFile  2>&1;
-else
-	if [ -e $workDir/interact.mascot.pep.xml ]
-	then
-		if [ -e $workDir/interact.tandem.pep.xml ]
-		then 
-			echo "Xinteract on SEQUEST files did not work." >>$workDir/ERROR.txt;
-			exit -1;
-		else
-			if [ -e $workDir/interact.sequest.pep.xml ]
-			then
-				echo "Xinteract on X! TANDEM files did not work." >>$workDir/ERROR.txt;
-				exit -1;
-			else
-				echo "Xinteract on X! TANDEM and SEQUEST files did not work." >>$workDir/ERROR.txt;
-				exit -1;
-			fi
-		fi
-	else
-		if [ -e $workDir/interact.tandem.pep.xml ]
-		then
-			if [ -e $workDir/interact.sequest.pep.xml ]
-			then
-				echo "Xinteract on MASCOT files did not work." >>$workDir/ERROR.txt;
-				exit -1;
-			else
-				echo "Xinteract on MASCOT and SEQUEST files did not work." >>$workDir/ERROR.txt;
-				exit -1;
-			fi
-		else
-			if [ -e $workDir/interact.sequest.pep.xml ]
-			then
-				echo "Xinteract on MASCOT and X! TANDEM files did not work." >>$workDir/ERROR.txt;
-				exit -1;
-			else
-				echo "Xinteract on MASCOT, X! TANDEM and SEQUEST files did not work." >>$workDir/ERROR.txt;
-				exit -1;
-			fi
-		fi
-	fi
-fi
-|;
+				####> recovering non consensus library 
+				if ($action eq 'update' || $libCons eq 'mergelib'){
+					opendir (DIR, "$libPath/SwLib_$libIDFile/");
+					while (my $file = readdir (DIR)){
+						if ($file =~/\.tar\.gz/){
+							(my $folderName=$file)=~s/\.tar\.gz//;
+							system "cd $libPath/SwLib_$libIDFile; tar -zxf $file;";
+							system "rm $libPath/SwLib_$libIDFile/dbinfo_$folderName.txt;" if -e "$libPath/SwLib_$libIDFile/dbinfo_$folderName.txt";
+							system "rm $libPath/SwLib_$libIDFile/filelist_$folderName.txt;" if -e "$libPath/SwLib_$libIDFile/filelist_$folderName.txt";
+							system "rm $libPath/SwLib_$libIDFile/sortie_$folderName.txt;" if -e "$libPath/SwLib_$libIDFile/sortie_$folderName.txt";
+							system "rm $libPath/SwLib_$libIDFile/script_$folderName.sh;" if -e "$libPath/SwLib_$libIDFile/script_$folderName.sh";
+						}
 					}
-					else{						## Tandem and Mascot Files
-						print BASH qq 
-|nbmascot=\`find $workDir/interact.mascot.pep* -type f \| wc -l\`;
-nbtandem=\`find $workDir/interact.tandem.pep* -type f \| wc -l\`;
-if [ -e $workDir/interact.mascot.pep.xml ] && [ -e $workDir/interact.tandem.pep.xml ] && [ "\$nbtandem" -gt "4" ] && [ "\$nbmascot" -gt "4" ]
-then
-	echo "iProphet on X! TANDEM and MASCOT files." >>$fileStat;
-	$tppPath/InterProphetParser DECOY=$decoyTag $workDir/interact.tandem.pep.xml $workDir/interact.mascot.pep.xml $workDir/iProphet.pep.xml >>$outputFile  2>&1;
-else
-	if [ -e $workDir/interact.mascot.pep.xml ]
-	then
-		echo "Xinteract on X! TANDEM files did not work." >>$workDir/ERROR.txt;
-		exit -1;
-	else
-		if [ -e $workDir/interact.tandem.pep.xml ]
-		then
-			echo "Xinteract on MASCOT files did not work." >>$workDir/ERROR.txt;
-			exit -1;
-		else
-			echo "Xinteract on MASCOT and X! TANDEM files did not work." >>$workDir/ERROR.txt;
-			exit -1;
-		fi
-	fi
-fi
-|;
+					close DIR;
+					opendir (CONS,"$libPath/SwLib_$libIDFile/");
+					while (my $file2 = readdir (CONS)){
+						if ($file2=~/SpecLib_Lib\d+_v\d+/){
+							move ("$libPath/SwLib_$libIDFile/$file2",$workDir);
+						}
 					}
+					close CONS;
 				}
-				elsif(@sequestFiles){		## Tandem and Sequest Files
-					print BASH qq
-|nbsequest=\`find $workDir/interact.sequest.pep* -type f \| wc -l\`;
-nbtandem=\`find $workDir/interact.tandem.pep* -type f \| wc -l\`;
-if [ -e $workDir/interact.sequest.pep.xml ] && [ -e $workDir/interact.tandem.pep.xml ] && [ "\$nbtandem" -gt "4" ] && [ "\$nbsequest" -gt "4" ]
-then
-	echo "iProphet on X! TANDEM and SEQUEST files." >>$fileStat;
-	$tppPath/InterProphetParser DECOY=$decoyTag $workDir/interact.tandem.pep.xml $workDir/interact.sequest.pep.xml $workDir/iProphet.pep.xml >>$outputFile  2>&1;
-else
-	if [ -e $workDir/interact.sequest.pep.xml ]
-	then
-		echo "Xinteract on X! TANDEM files did not work." >>$workDir/ERROR.txt;
-		exit -1;
-	else
-		if [ -e $workDir/interact.tandem.pep.xml ]
-		then
-			echo "Xinteract on SEQUEST files did not work." >>$workDir/ERROR.txt;
-			exit -1;
-		else
-			echo "Xinteract on SEQUEST and X! TANDEM files did not work." >>$workDir/ERROR.txt;
-			exit -1;
-		fi
-	fi
-fi
-|;
+				
+				
+				
+				##############################################
+				###> Convert .dat files in .pep.xml files <###
+				##############################################
+				my $nbDat=1;
+				my @inputMascotFiles;
+				my $convDIV;
+				my $last='Upload';
+				if (@inputFilesDat) {
+					open(FILESTAT,">>$fileStat");
+					print FILESTAT "Conversion of dat files to pep.xml.\n";
+					close(FILESTAT);
+					$last="Conversion";
 				}
-				else{							## Tandem Files
-					print BASH qq
-|nbtandem=\`find $workDir/interact.tandem.pep* -type f \| wc -l\`;
-if [ -e $workDir/interact.tandem.pep.xml ] && [ "\$nbtandem" -gt "4" ]
-then
-	echo "iProphet on X! TANDEM files." >>$fileStat;
-	$tppPath/InterProphetParser DECOY=$decoyTag $workDir/interact.tandem.pep.xml $workDir/iProphet.pep.xml >>$outputFile  2>&1;
-else
-	echo "Xinteract on X! TANDEM files did not work." >>$workDir/ERROR.txt;
-	exit -1;
-fi
-|;
-				}
-			}
-			elsif(@inputMascotFiles){ 		
-				if(@sequestFiles){			## Mascot and Sequest Files
-					print BASH qq
-|nbsequest=\`find $workDir/interact.sequest.pep* -type f \| wc -l\`;
-nbmascot=\`find $workDir/interact.mascot.pep* -type f \| wc -l\`;
-if [ -e $workDir/interact.sequest.pep.xml ] && [ -e $workDir/interact.mascot.pep.xml ] && [ "\$nbmascot" -gt "4" ] && [ "\$nbsequest" -gt "4" ]
-then
-	echo "iProphet on MASCOT and SEQUEST files." >>$fileStat;
-	$tppPath/InterProphetParser DECOY=$decoyTag $workDir/interact.mascot.pep.xml $workDir/interact.sequest.pep.xml iProphet.pep.xml >>$outputFile  2>&1;
-else
-	if [ -e $workDir/interact.sequest.pep.xml ]
-	then
-		echo "Xinteract on MASCOT files did not work." >>$workDir/ERROR.txt;
-		exit -1;
-	else
-		if [ -e $workDir/interact.mascot.pep.xml ]
-		then
-			echo "Xinteract on SEQUEST files did not work." >>$workDir/ERROR.txt;
-			exit -1;
-		else
-			echo "Xinteract on SEQUEST and MASCOT files did not work." >>$workDir/ERROR.txt;
-			exit -1;
-		fi
-	fi
-fi
-|;
-				}
-				else{							## Mascot Files
-					print BASH qq
-|nbmascot=\`find $workDir/interact.mascot.pep* -type f \| wc -l\`;
-if [ -e $workDir/interact.mascot.pep.xml ] && [ "\$nbmascot" -gt "4" ]
-then
-	echo "iProphet on MASCOT files." >>$fileStat;
-	$tppPath/InterProphetParser DECOY=$decoyTag $workDir/interact.mascot.pep.xml $workDir/iProphet.pep.xml >>$outputFile  2>&1;
-else
-	echo "Xinteract on MASCOT files did not work." >>$workDir/ERROR.txt;
-	exit -1;
-fi
-|;
-				}
-			}
-			else{								## Sequest Files
-				print BASH qq
-|nbsequest=\`find $workDir/interact.sequest.pep* -type f \| wc -l\`;
-if [ -e $workDir/interact.sequest.pep.xml ] && [ "\$nbsequest" -gt "4" ]
-then
-	echo "iProphet on SEQUEST files." >>$fileStat;
-	$tppPath/InterProphetParser DECOY=$decoyTag $workDir/interact.sequest.pep.xml $workDir/iProphet.pep.xml >>$outputFile  2>&1;
-else
-	echo "Xinteract on SEQUEST files did not work." >>$workDir/ERROR.txt;
-	exit -1;
-fi
-|;
-			}
-
-			
-if(param("PTMProphet")) {
-	my $modifications = (param("PTMProphetModifs")) ? join(',', promsMod::cleanParameters(param("PTMProphetModifs"))) : "STY:79.9663,M:15.9949,C:57.0214";
-	my $nIons = ($fragmentation eq 'ETD') ? 'c' : 'b';
-	my $cIons = ($fragmentation eq 'ETD') ? 'z' : 'y';
-	my $ms1PPMTol = (param('PTMProphetPPMTol')) ? (param('PTMProphetPPMTol')) : 1;
-	my $fragPPMTol = (param('PTMProphetFragPPMTol')) ? (param('PTMProphetFragPPMTol')) : 10;
-	my $EMmodel = (param('PTMProphetEMModel')) ? param('PTMProphetEMModel') : 2;
-	my $minProb = (param('PTMProphetMinProb')) ? param('PTMProphetMinProb') : 0.9;
-	
- 			##########################
-			###> PTMProphetParser <###
-			##########################
-			print BASH qq
-|if [ -e $workDir/iProphet.pep.xml ]
-then
-	echo "PTMProphetParser: on iProphet file." >>$fileStat;
-	cd $workDir;
-	$tppPath/PTMProphetParser VERBOSE EM=$EMmodel MINPROB=$minProb PPMTOL=$ms1PPMTol FRAGPPMTOL=$fragPPMTol MAXTHREADS=$MAX_NB_THREAD NIONS=$nIons CIONS=$cIons $modifications $workDir/iProphet.pep.xml >> $outputFile  2>&1;
-else
-	echo "PTMProphetParser did not work." >>$workDir/ERROR.txt;
-	exit -1;
-fi
-|;
-}
-	
-			
-			##############
-			###> Mayu <###
-			##############
-			print BASH qq
-|if [ -e $workDir/iProphet.pep.xml ]
-then
-	echo "Mayu on iProphet file." >>$fileStat;
-	cd $workDir;
-	$tppPath/Mayu.pl -A $workDir/iProphet.pep.xml -C $dbFile -E $decoyTag -G 0.01 -H 51 -I $missedCleavage -P $fdrType=$fdr:t >>$outputFile  2>&1;
-else
-	echo "InterProphetParser did not work." >>$workDir/ERROR.txt;
-	exit -1;
-fi
-|;
-			
-			print BASH qq
-|wait;
-sleep 30;
-if [ -e $workDir/*FDR0.01_t_1.07.csv ]
-then
-	cd $workDir;
-	sort -t, -k5n $workDir/*FDR0.01_t_1.07.csv >>$workDir/tabFDR1.csv;
-	wait;
-	fdrMin=`sed '2q;d' $workDir/tabFDR1.csv \| cut -f5 -d,`;
-	if [ \$fdrMin ]
-	then
-		echo "\$fdrMin" >>$workDir/FDRscore.txt;
-		echo "The minimum score is : \$fdrMin." >>$fileStat;
-	else
-		echo "%Mayu : Not enough input files.\n" >>$workDir/ERROR.txt;
-		exit -1;
-	fi
-|;
-	
-	
-			###################
-			###> Spectrast <###
-			###################
-			
-			print BASH qq
-|	sleep 30;
-	echo "Creating spectras library." >>$fileStat;
-	$tppPath/spectrast -cN$workDir/SpecLib -cI$fragmentation -cf \"Protein!~ $decoyTag\" -cP\$fdrMin -c_IRT$rtFileName.txt -c_IRR $workDir/iProphet.pep.xml >>$outputFile 2>&1;
-|;
-	
-			###> Create consensus library
-			if ($libOption eq 'unsplit'){ #unsplit mode
-				print BASH "echo \"Creating consensus library with unsplit mode in progress.\" >>$fileStat;\n";
-				if ($libCons eq 'mergelib' || $action eq 'update') {
-					print BASH "cd $workDir; $tppPath/spectrast -cN$workDir/SpecLib_cons -cI$fragmentation -cAC -cM $workDir/SpecLib*.splib >>$outputFile 2>&1;\n";
-				}
-				elsif ($libCons eq 'new' ){
-					print BASH "cd $workDir; $tppPath/spectrast -cN$workDir/SpecLib_cons -cI$fragmentation -cAC -cM $workDir/SpecLib.splib >>$outputFile 2>&1;\n";
-				}
-				$split=0;
-			}
-			else{	#split mode
-				print BASH qq
-|	echo "Creating consensus library with split mode in progress." >>$fileStat;
-	$pythonPath/spectrast_cluster.py -d 2 $workDir/SpecLib.sptxt >>$outputFile 2>&1;
-	for file in $workDir/SpecLib_*.sptxt; do $tppPath/spectrast -cNsplit-\${file%%.*} -cI$fragmentation \$file >>$outputFile 2>&1;  done 
-	for file in $workDir/split-SpecLib_*.splib; do $tppPath/spectrast -cNcons-\${file%%.*} -cI$fragmentation -cAC \$file >>$outputFile 2>&1;  done 
-|;
-				if ($libCons eq 'mergelib'|| $action eq 'update') {
-					print BASH "grep -hUv '###' $workDir/cons-split-SpecLib_*.sptxt $libPath/SwLib_$libIDFile/$libFileName.sptxt >>$workDir/SpecLib_cons_concat.sptxt;\n";
-				}
-				else{
-					print BASH "grep -hUv '###' $workDir/cons-split-SpecLib_*.sptxt >>$workDir/SpecLib_cons_concat.sptxt;\n";
-				}
-				$split=1;
-			}
-			print BASH qq
-|else
-	echo "Mayu did not work, missing file : FDR0.01_t_1.07.csv." >>$workDir/ERROR.txt;
-	exit -1;
-fi
-echo "END" >>$workDir/END.txt;
-|;
-			close BASH;
-			
-			###########################
-			###> Execute bash file <###
-			###########################
-			
-			if ($clusterInfo{'on'}) {
-				my $clusterCommandString=$clusterInfo{'buildCommand'}->($workDir,"$workDir/script.sh");
+				
 				my $maxHours=int(48);
-				$maxMem=($tailleSort[-1]/1073741824)*10;
-				$maxMem*=2 if $clusterInfo{'name'} eq 'CentOS';
-				$maxMem=($maxMem < 30) ? 30 : ($maxMem > 100) ? 100: sprintf("%.0f",$maxMem) ;
-				$maxMem.='Gb';
-				
-				my $bashFile="$workDir/createLib.sh";
-				open(BASH2,">$bashFile");
-				print BASH2 qq
+				foreach my $datFile (@inputFilesDat){
+					my $mascotFile=$workDir.'/'.$datFile;
+					(my $datName=$datFile)=~s/.dat//;
+					if ($clusterInfo{'on'}){
+						my $dir=$workDir."/datConversion_".$nbDat;
+						mkdir $dir unless -e $dir;
+						my $outFile=$dir.'/sortie.txt';
+						my $datBashName='datConv.sh';
+						open (BASH, ">$dir/$datBashName");
+						print BASH "#!/bin/bash\n";
+						print BASH "$tppPath/Mascot2XML $mascotFile -D$dbFile -Etrypsin -notgz >>$outFile 2>&1;";
+						close BASH;
+						my $bashName='datConvertion.sh';
+						my $clusterCommandString=$clusterInfo{'buildCommand'}->($dir,"$dir/$datBashName");
+						#my $maxHours=int(48);
+						my $datSize=`stat -c "%s" $mascotFile`;
+						$maxMem=($datSize/1073741824)*3;
+						$maxMem=($maxMem < 5) ? 5 : ($maxMem > 30) ? 30 : sprintf("%.0f",$maxMem);
+						$maxMem.='Gb';
+						
+						my $bashFile="$dir/$bashName";
+						open (BASHDAT,">$bashFile");
+						print BASHDAT qq
 	|#!/bin/bash
+	
 	##resources
 	#PBS -l mem=$maxMem
 	#PBS -l nodes=1:ppn=1
@@ -2470,298 +2100,867 @@ echo "END" >>$workDir/END.txt;
 	#PBS -q batch
 	
 	##Information
-	#PBS -N Swath_Lib_$time
+	#PBS -N Dat_conversion_$nbDat
 	#PBS -M marine.le-picard\@curie.fr
 	#PBS -m abe
-	#PBS -o $workDir/PBS.txt
-	#PBS -e $workDir/PBSerror.txt
+	#PBS -o $dir/PBS.txt 
+	#PBS -e $dir/PBSerror.txt
 	
 	## Command
 	$clusterCommandString
-	echo End_Swath_Lib_$time >>$workDir/END.txt
 	|;
-				close BASH2;
-				
-				system "chmod 775 $workDir/script.sh";
-				###> Execute bash file
-				my ($jobClusterID) = $clusterInfo{'sendToCluster'}->($bashFile);
-				
-				# Add to DB
-				$dbh->do("UPDATE JOB_HISTORY SET ID_JOB_CLUSTER = CONCAT(ID_JOB_CLUSTER, ';C$jobClusterID') WHERE ID_JOB='$time'");
-				$dbh->commit;
-				
-				###>Waiting for job to run
-				my $pbsError;
-				my $j=1;
-				my $nbWhile=0;
-				my $maxNbWhile=$maxHours*60*2;
-				while (!$pbsError  && !-s "$workDir/ERROR.txt" && !-s "$workDir/END.txt") {
+						close BASHDAT;
+						
+						###> Execute bash file
+						system "chmod 775 $dir/$datBashName";
+						
+						my ($jobClusterID) = $clusterInfo{'sendToCluster'}->($bashFile);
+						
+						$dbh->do("UPDATE JOB_HISTORY SET ID_JOB_CLUSTER = CONCAT(ID_JOB_CLUSTER, ';C$jobClusterID') WHERE ID_JOB='$time'");
+						$dbh->commit;
+					}
+					else{
+						my $outFile=$workDir.'/sortie'.$nbDat.'.txt';
+						system "$tppPath/Mascot2XML $mascotFile -D$dbFile -Etrypsin -notgz >>$outFile 2>&1";
+						if (-s $outFile && `tail $outFile`=~/error/){
+							my $error=`tail $outFile`.'\n';
+							open(FILEERROR,">>$fileError");
+							print FILEERROR $error;
+							close(FILEERROR);
+							exit;
+						}
+					}
+					$nbDat++;
 					sleep 30;
-					$nbWhile++;
-					if ($nbWhile > $maxNbWhile) {
+				}
+				
+				my ($count,$nbFiles,$PBSerror)=(0,0,'');
+				if ($clusterInfo{'on'}){
+					my $nbWhile=0;
+					my $maxNbWhile=$maxHours*60*2;
+					while ($nbFiles != scalar @inputFilesDat && !$PBSerror){
+						$nbFiles=`ls $workDir/*.pep.xml | grep -v .tandem.pep.xml |wc -l `;
+						for (my $i=1;$i<=scalar @inputFilesDat ;$i++){
+							$PBSerror=$clusterInfo{'checkError'}->("$workDir/datConversion_$i/PBSerror.txt") if -s "$workDir/datConversion_$i/PBSerror.txt";
+							#$PBSerror=`grep -v 'InfluxDB\\|getcwd' $workDir/datConversion_$i/PBSerror.txt` if -s "$workDir/datConversion_$i/PBSerror.txt";
+							if (-s "$workDir/datConversion_$i/sortie.txt" && `tail $workDir/datConversion_$i/sortie.txt`=~/Error/){
+								$PBSerror=`tail $workDir/datConversion_$i/sortie.txt`;
+							}
+							last if $PBSerror;
+						}
+						sleep 30;
+						$nbWhile++;
+						if ($nbWhile > $maxNbWhile) {
+							open(FILEERROR,">>$fileError");
+							print FILEERROR "Aborting: Dat files conversion is taking too long.\n";
+							close(FILEERROR);
+							exit;
+						}
+					}
+					if ($PBSerror){
 						open(FILEERROR,">>$fileError");
-						print FILEERROR "Aborting: File processing is taking too long.";
+						print FILEERROR "Dat files conversion failed.<BR>$PBSerror";
 						close(FILEERROR);
 						exit;
 					}
-					$pbsError=$clusterInfo{'checkError'}->("$workDir/PBSerror.txt") if -s "$workDir/PBSerror.txt";
-					#$pbsError=`grep -v 'InfluxDB\\|getcwd' $workDir/PBSerror.txt` if -s "$workDir/PBSerror.txt";
+				}
+				sleep 30;
+				
+				
+				foreach my $datFile (@inputFilesDat){
+					(my $datName=$datFile)=~s/\.dat+//;
+					my $pepXMLFile=$workDir.'/'.$datName.'.pep.xml';
+					my $mascotPepXMLFile=$workDir.'/'.$datName.'.mascot.pep.xml';
+					if (-s $pepXMLFile){
+						push(@inputMascotFiles,$mascotPepXMLFile);                        #retrieve mascot files's names for xinteract
+						move($pepXMLFile,$mascotPepXMLFile);
+					}
+					else{
+						open(FILEERROR,">>$fileError");
+						print FILEERROR "Dat file ($datFile) conversion failed.\n";
+						close(FILEERROR);
+						exit;
+					}
 				}
 				
-				if ($pbsError) {
-					open(FILEERROR,">>$fileError");
-					print FILEERROR $pbsError;
-					close(FILEERROR);
-					exit;
+				
+				###############################################################
+				###> Change destination addresses in .tandem.pep.xml files <###
+				###############################################################
+				my $qServerPath=quotemeta($tppPath);
+				my $qFastaDbFile=quotemeta($fastaDBFile);
+				my $qDbDir=quotemeta($dbDir);
+				my $qWorkDir=quotemeta($workDir);
+				my $modifDIV;
+				if (@inputFilesTandem){
+					open(FILESTAT,">>$fileStat");
+					print FILESTAT "Modification of X! TANDEM files.\n";
+					close(FILESTAT);
+					$last="Modification";
+				}
+				my $nbTandem=1;
+				#my $maxHours=int(48);
+				foreach my $tandemPepFile (@inputFilesTandem){
+					(my $fileBaseName=$tandemPepFile)=~s/\.tandem.+//;
+					my $qFileBaseName=quotemeta($fileBaseName);
+					my $tandemFile=$workDir.'/'.$tandemPepFile;
+					my $dir=$workDir."/tandemModification_".$nbTandem;
+					mkdir $dir unless -e $dir;
+					my $outFile=$dir.'/sortie.txt';
+					my $tandemBashName='tandemModif.sh';
+					open (BASH, ">$dir/$tandemBashName");
+					print BASH "#!/bin/bash \n";
+					print BASH "sed -r -i -e 's/[^\"]+\\\/$qFileBaseName\.?\"\/$qWorkDir\\\/$qFileBaseName\"/g' $workDir/$tandemPepFile >>$outFile 2>&1; \n";
+						 #Taxonomy file
+					print BASH "sed -r -i -e 's/[^\"]+\\\/taxonomy\.xml\/$qServerPath\\\/taxonomy\.xml/g' $workDir/$tandemPepFile >>$outFile 2>&1; \n";
+						 #Database file
+					print BASH "sed -r -i -e 's/local_path=\".*\.fasta\"/local_path=\"$qDbDir\\\/$qFastaDbFile\"/g' $workDir/$tandemPepFile >>$outFile 2>&1; \n";
+					print BASH "sed -r -i -e 's/<parameter name=\"list path, sequence source #1\" value=\".*\.fasta\"/<parameter name=\"list path, sequence source #1\" value=\"$qDbDir\\\/$qFastaDbFile\"/g' $workDir/$tandemPepFile >>$outFile 2>&1; \n";
+					print BASH "echo END >>$workDir/END.txt;";
+					close BASH;
+					
+					if ($clusterInfo{'on'}){
+						my $bashName='tandemModification.sh';
+						my $clusterCommandString=$clusterInfo{'buildCommand'}->($dir,"$dir/$tandemBashName");
+						#my $maxHours=int(48);
+						my $datSize=`stat -c "%s" $tandemFile`;
+						$maxMem=($datSize/1073741824)*3;
+						$maxMem=($maxMem < 5) ? 5 : ($maxMem > 20) ? 20 : sprintf("%.0f",$maxMem);
+						$maxMem.='Gb';
+						
+						my $bashFile="$dir/$bashName";
+						open (BASHTANDEM,">$bashFile");
+						print BASHTANDEM qq
+	|#!/bin/bash
+	
+	##resources
+	#PBS -l mem=$maxMem
+	#PBS -l nodes=1:ppn=1
+	#PBS -l walltime=$maxHours:00:00
+	#PBS -q batch
+	
+	##Information
+	#PBS -N Tandem_modification_$nbTandem
+	#PBS -M marine.le-picard\@curie.fr
+	#PBS -m abe
+	#PBS -o $dir/PBS.txt 
+	#PBS -e $dir/PBSerror.txt
+	
+	## Command
+	$clusterCommandString
+	echo END_Tandem_modification_$nbTandem
+	|;
+						close BASHTANDEM;
+						
+						###> Execute bash file
+						system "chmod 775 $dir/$tandemBashName";
+						my ($jobClusterID) = $clusterInfo{'sendToCluster'}->($bashFile);
+						
+						$dbh->do("UPDATE JOB_HISTORY SET ID_JOB_CLUSTER = CONCAT(ID_JOB_CLUSTER, ';C$jobClusterID') WHERE ID_JOB='$time'");
+						$dbh->commit;
+					}
+					else{
+						system "bash $dir/$tandemBashName";
+					}
+					$nbTandem++;
+					sleep 30;
 				}
 				
-				if (-s "$workDir/ERROR.txt" ) {
-					open(FILEERROR,">>$fileError");
-					print FILEERROR `head -1 $workDir/ERROR.txt `;
-					close(FILEERROR);
-					if(-s $outputFile){
-						if (`grep "Found 0 Decoys" $outputFile`){
-							my $errorDecoy=`grep "Decoys" $outputFile`;
-							my $nbErrorDecoy=`grep -c "Decoys" $outputFile`;
-							if ($nbErrorDecoy>=2) {
-								my ($errorTandem,$errorDat)=split(/\n/,$errorDecoy);
-								if ($errorTandem=~/Found 0 Decoys/) {
-									open(FILEERROR,">>$fileError");
-									print FILEERROR "No DECOY found in X! Tandem data.";
-									close(FILEERROR);
-									exit;
+				####> wait loop for cluster job
+				($PBSerror,$count)=('',0);
+				my $checkFiles=0;
+				if ($clusterInfo{'on'}){
+					my $nbWhile=0;
+					my $maxNbWhile=$maxHours*60*2;
+					while ($checkFiles != scalar @inputFilesTandem && !$PBSerror){
+						for (my $i=1;$i<=scalar @inputFilesTandem ;$i++){
+							$PBSerror=$clusterInfo{'checkError'}->("$workDir/tandemModification_$i/PBSerror.txt") if -s "$workDir/tandemModification_$i/PBSerror.txt";
+							#$PBSerror=`grep -v 'InfluxDB\\|getcwd' $workDir/tandemModification_$i/PBSerror.txt` if -s "$workDir/tandemModification_$i/PBSerror.txt";
+							last if $PBSerror;
+							my $file=`head $workDir/tandemModification_$i/PBS.txt` if -s "$workDir/tandemModification_$i/PBS.txt";
+							next unless $file;
+							$checkFiles++ if $file=~/END_Tandem_modification_$i/;
+						}
+						$checkFiles=0 unless $checkFiles==scalar @inputFilesTandem;
+						
+						sleep 30;
+						$nbWhile++;
+						if ($nbWhile > $maxNbWhile) {
+							open(FILEERROR,">>$fileError");
+							print FILEERROR "Aborting: Tandem files conversion is taking too long.\n";
+							close(FILEERROR);
+							exit;
+						}
+					}
+					if ($PBSerror){
+						open(FILEERROR,">>$fileError");
+						print FILEERROR "Tandem files conversion failed.<BR>$PBSerror.";
+						close(FILEERROR);
+						exit;
+					}
+					system "rm $workDir/END.txt;" if -e "$workDir/END.txt";
+				}
+				
+				
+				my @tandemFiles=map({$workDir.'/'.$_} @inputFilesTandem);
+				my @sequestFiles=map({$workDir.'/'.$_} @inputFilesSequest);
+				
+				##############################
+				####>Bash script commands<####
+				##############################
+				###> Create new bash file to store system commands
+				open(BASH,"+>","$workDir/script.sh");
+				print BASH "#!/bin/bash \n";
+			
+			
+			
+				############################
+				###> iProphet xinteract <###
+				############################
+				
+					#Xtandem files
+				if (@tandemFiles) {	#if there are xtandem input files
+					print BASH "echo \"Xinteract on X! TANDEM files.\" >>$fileStat; \n";
+					print BASH "$tppPath/xinteract -OARPd -d$decoyTag -N$workDir/interact.tandem.pep.xml @tandemFiles >>$outputFile 2>&1;  \n ";
+				}
+				
+					#Mascot files
+				if (@inputMascotFiles) {   #if there are mascot input files
+					print BASH "echo \"Xinteract on MASCOT files.\" >>$fileStat; \n";
+					print BASH "$tppPath/xinteract -OARPd -d$decoyTag -N$workDir/interact.mascot.pep.xml @inputMascotFiles >>$outputFile 2>&1;  \n";
+				}
+				
+					#Sequest files
+				if(@sequestFiles){
+					print BASH "echo \"Xinteract on SEQUEST files.\" >>$fileStat; \n";
+					print BASH "$tppPath/xinteract -OARPd -d$decoyTag -N$workDir/interact.sequest.pep.xml @sequestFiles >>$outputFile 2>&1;  \n";
+				}
+				
+				############################
+				###> InterProphetParser <###		
+				############################
+				my $iProphetFile = "iProphet.pep.xml";
+				if (@tandemFiles){
+					if(@inputMascotFiles){
+						if(@sequestFiles){		## Tandem, Mascot and Sequest Files
+							print BASH qq
+	|nbmascot=\`find $workDir/interact.mascot.pep* -type f \| wc -l\`;
+	nbtandem=\`find $workDir/interact.tandem.pep* -type f \| wc -l\`;
+	nbsequest=\`find $workDir/interact.sequest.pep* -type f \| wc -l\`;
+	if [ -e $workDir/interact.mascot.pep.xml ] && [ -e $workDir/interact.tandem.pep.xml ] && [ -e $workDir/interact.sequest.pep.xml ] && [ "\$nbtandem" -gt "4" ] && [ "\$nbmascot" -gt "4" ] && [ "\$nbsequest" -gt "4" ]
+	then
+		echo "iProphet on X! TANDEM, MASCOT and SEQUEST files." >>$fileStat;
+		$tppPath/InterProphetParser DECOY=$decoyTag $workDir/interact.tandem.pep.xml $workDir/interact.mascot.pep.xml $workDir/interact.sequest.pep.xml $workDir/$iProphetFile >>$outputFile  2>&1;
+	else
+		if [ -e $workDir/interact.mascot.pep.xml ]
+		then
+			if [ -e $workDir/interact.tandem.pep.xml ]
+			then 
+				echo "Xinteract on SEQUEST files did not work." >>$workDir/ERROR.txt;
+				exit -1;
+			else
+				if [ -e $workDir/interact.sequest.pep.xml ]
+				then
+					echo "Xinteract on X! TANDEM files did not work." >>$workDir/ERROR.txt;
+					exit -1;
+				else
+					echo "Xinteract on X! TANDEM and SEQUEST files did not work." >>$workDir/ERROR.txt;
+					exit -1;
+				fi
+			fi
+		else
+			if [ -e $workDir/interact.tandem.pep.xml ]
+			then
+				if [ -e $workDir/interact.sequest.pep.xml ]
+				then
+					echo "Xinteract on MASCOT files did not work." >>$workDir/ERROR.txt;
+					exit -1;
+				else
+					echo "Xinteract on MASCOT and SEQUEST files did not work." >>$workDir/ERROR.txt;
+					exit -1;
+				fi
+			else
+				if [ -e $workDir/interact.sequest.pep.xml ]
+				then
+					echo "Xinteract on MASCOT and X! TANDEM files did not work." >>$workDir/ERROR.txt;
+					exit -1;
+				else
+					echo "Xinteract on MASCOT, X! TANDEM and SEQUEST files did not work." >>$workDir/ERROR.txt;
+					exit -1;
+				fi
+			fi
+		fi
+	fi
+	|;
+						}
+						else{						## Tandem and Mascot Files
+							print BASH qq 
+	|nbmascot=\`find $workDir/interact.mascot.pep* -type f \| wc -l\`;
+	nbtandem=\`find $workDir/interact.tandem.pep* -type f \| wc -l\`;
+	if [ -e $workDir/interact.mascot.pep.xml ] && [ -e $workDir/interact.tandem.pep.xml ] && [ "\$nbtandem" -gt "4" ] && [ "\$nbmascot" -gt "4" ]
+	then
+		echo "iProphet on X! TANDEM and MASCOT files." >>$fileStat;
+		$tppPath/InterProphetParser DECOY=$decoyTag $workDir/interact.tandem.pep.xml $workDir/interact.mascot.pep.xml $workDir/$iProphetFile >>$outputFile  2>&1;
+	else
+		if [ -e $workDir/interact.mascot.pep.xml ]
+		then
+			echo "Xinteract on X! TANDEM files did not work." >>$workDir/ERROR.txt;
+			exit -1;
+		else
+			if [ -e $workDir/interact.tandem.pep.xml ]
+			then
+				echo "Xinteract on MASCOT files did not work." >>$workDir/ERROR.txt;
+				exit -1;
+			else
+				echo "Xinteract on MASCOT and X! TANDEM files did not work." >>$workDir/ERROR.txt;
+				exit -1;
+			fi
+		fi
+	fi
+	|;
+						}
+					}
+					elsif(@sequestFiles){		## Tandem and Sequest Files
+						print BASH qq
+	|nbsequest=\`find $workDir/interact.sequest.pep* -type f \| wc -l\`;
+	nbtandem=\`find $workDir/interact.tandem.pep* -type f \| wc -l\`;
+	if [ -e $workDir/interact.sequest.pep.xml ] && [ -e $workDir/interact.tandem.pep.xml ] && [ "\$nbtandem" -gt "4" ] && [ "\$nbsequest" -gt "4" ]
+	then
+		echo "iProphet on X! TANDEM and SEQUEST files." >>$fileStat;
+		$tppPath/InterProphetParser DECOY=$decoyTag $workDir/interact.tandem.pep.xml $workDir/interact.sequest.pep.xml $workDir/$iProphetFile >>$outputFile  2>&1;
+	else
+		if [ -e $workDir/interact.sequest.pep.xml ]
+		then
+			echo "Xinteract on X! TANDEM files did not work." >>$workDir/ERROR.txt;
+			exit -1;
+		else
+			if [ -e $workDir/interact.tandem.pep.xml ]
+			then
+				echo "Xinteract on SEQUEST files did not work." >>$workDir/ERROR.txt;
+				exit -1;
+			else
+				echo "Xinteract on SEQUEST and X! TANDEM files did not work." >>$workDir/ERROR.txt;
+				exit -1;
+			fi
+		fi
+	fi
+	|;
+					}
+					else{							## Tandem Files
+						print BASH qq
+	|nbtandem=\`find $workDir/interact.tandem.pep* -type f \| wc -l\`;
+	if [ -e $workDir/interact.tandem.pep.xml ] && [ "\$nbtandem" -gt "4" ]
+	then
+		echo "iProphet on X! TANDEM files." >>$fileStat;
+		$tppPath/InterProphetParser DECOY=$decoyTag $workDir/interact.tandem.pep.xml $workDir/$iProphetFile >>$outputFile  2>&1;
+	else
+		echo "Xinteract on X! TANDEM files did not work." >>$workDir/ERROR.txt;
+		exit -1;
+	fi
+	|;
+					}
+				}
+				elsif(@inputMascotFiles){ 		
+					if(@sequestFiles){			## Mascot and Sequest Files
+						print BASH qq
+	|nbsequest=\`find $workDir/interact.sequest.pep* -type f \| wc -l\`;
+	nbmascot=\`find $workDir/interact.mascot.pep* -type f \| wc -l\`;
+	if [ -e $workDir/interact.sequest.pep.xml ] && [ -e $workDir/interact.mascot.pep.xml ] && [ "\$nbmascot" -gt "4" ] && [ "\$nbsequest" -gt "4" ]
+	then
+		echo "iProphet on MASCOT and SEQUEST files." >>$fileStat;
+		$tppPath/InterProphetParser DECOY=$decoyTag $workDir/interact.mascot.pep.xml $workDir/interact.sequest.pep.xml $iProphetFile >>$outputFile  2>&1;
+	else
+		if [ -e $workDir/interact.sequest.pep.xml ]
+		then
+			echo "Xinteract on MASCOT files did not work." >>$workDir/ERROR.txt;
+			exit -1;
+		else
+			if [ -e $workDir/interact.mascot.pep.xml ]
+			then
+				echo "Xinteract on SEQUEST files did not work." >>$workDir/ERROR.txt;
+				exit -1;
+			else
+				echo "Xinteract on SEQUEST and MASCOT files did not work." >>$workDir/ERROR.txt;
+				exit -1;
+			fi
+		fi
+	fi
+	|;
+					}
+					else{							## Mascot Files
+						print BASH qq
+	|nbmascot=\`find $workDir/interact.mascot.pep* -type f \| wc -l\`;
+	if [ -e $workDir/interact.mascot.pep.xml ] && [ "\$nbmascot" -gt "4" ]
+	then
+		echo "iProphet on MASCOT files." >>$fileStat;
+		$tppPath/InterProphetParser DECOY=$decoyTag $workDir/interact.mascot.pep.xml $workDir/$iProphetFile >>$outputFile  2>&1;
+	else
+		echo "Xinteract on MASCOT files did not work." >>$workDir/ERROR.txt;
+		exit -1;
+	fi
+	|;
+					}
+				}
+				else{								## Sequest Files
+					print BASH qq
+	|nbsequest=\`find $workDir/interact.sequest.pep* -type f \| wc -l\`;
+	if [ -e $workDir/interact.sequest.pep.xml ] && [ "\$nbsequest" -gt "4" ]
+	then
+		echo "iProphet on SEQUEST files." >>$fileStat;
+		$tppPath/InterProphetParser DECOY=$decoyTag $workDir/interact.sequest.pep.xml $workDir/$iProphetFile >>$outputFile  2>&1;
+	else
+		echo "Xinteract on SEQUEST files did not work." >>$workDir/ERROR.txt;
+		exit -1;
+	fi
+	|;
+				}
+	
+	if(param("PTMProphet")) {
+		my $modifications = (param("PTMProphetModifs")) ? join(',', promsMod::cleanParameters(param("PTMProphetModifs"))) : "STY:79.9663,M:15.9949,C:57.0214";
+		my $nIons = ($fragmentation eq 'ETD') ? 'c' : 'b';
+		my $cIons = ($fragmentation eq 'ETD') ? 'z' : 'y';
+		my $ms1PPMTol = (param('PTMProphetPPMTol')) ? (param('PTMProphetPPMTol')) : 1;
+		my $fragPPMTol = (param('PTMProphetFragPPMTol')) ? (param('PTMProphetFragPPMTol')) : 10;
+		my $EMmodel = (param('PTMProphetEMModel')) ? param('PTMProphetEMModel') : 2;
+		my $minProb = (param('PTMProphetMinProb')) ? param('PTMProphetMinProb') : 0.9;
+		my $iProphetFilePTM = "PTM_$iProphetFile";
+		
+				##########################
+				###> PTMProphetParser <###
+				##########################
+				print BASH qq
+	|if [ -e $workDir/$iProphetFile ]
+	then
+		echo "PTMProphetParser: on iProphet file." >>$fileStat;
+		cd $workDir;
+		$tppPath/PTMProphetParser VERBOSE EM=$EMmodel MINPROB=$minProb PPMTOL=$ms1PPMTol FRAGPPMTOL=$fragPPMTol MAXTHREADS=$MAX_NB_THREAD NIONS=$nIons CIONS=$cIons $modifications $workDir/$iProphetFile $workDir/$iProphetFilePTM >> $outputFile  2>&1;
+	else
+		echo "PTMProphetParser did not work." >>$workDir/ERROR.txt;
+		exit -1;
+	fi
+	|;
+		
+		$iProphetFile = $iProphetFilePTM;
+	}
+		
+				
+				##############
+				###> Mayu <###
+				##############
+				print BASH qq
+	|if [ -e $workDir/$iProphetFile ]
+	then
+		echo "Mayu on iProphet file." >>$fileStat;
+		cd $workDir;
+		$tppPath/Mayu.pl -A $workDir/$iProphetFile -C $dbFile -E $decoyTag -G 0.01 -H 51 -I $missedCleavage -P $fdrType=$fdr:t >>$outputFile  2>&1;
+	else
+		echo "InterProphetParser did not work." >>$workDir/ERROR.txt;
+		exit -1;
+	fi
+	|;
+				
+				print BASH qq
+	|wait;
+	sleep 30;
+	if [ -e $workDir/*FDR0.01_t_1.07.csv ]
+	then
+		cd $workDir;
+		sort -t, -k5n $workDir/*FDR0.01_t_1.07.csv >>$workDir/tabFDR1.csv;
+		wait;
+		fdrMin=`sed '2q;d' $workDir/tabFDR1.csv \| cut -f5 -d,`;
+		if [ \$fdrMin ]
+		then
+			echo "\$fdrMin" >>$workDir/FDRscore.txt;
+			echo "The minimum score is : \$fdrMin." >>$fileStat;
+		else
+			echo "%Mayu : Not enough input files.\n" >>$workDir/ERROR.txt;
+			exit -1;
+		fi
+	|;
+		
+		
+				###################
+				###> Spectrast <###
+				###################
+				
+				print BASH qq
+	|	sleep 30;
+		echo "Creating spectras library." >>$fileStat;
+		$tppPath/spectrast -cN$workDir/SpecLib -cI$fragmentation -cf \"Protein!~ $decoyTag\" -cP\$fdrMin -c_IRT$rtFileName.txt -c_IRR $workDir/$iProphetFile >>$outputFile 2>&1;
+	|;
+		
+				###> Create consensus library
+				if ($libOption eq 'unsplit'){ #unsplit mode
+					print BASH "echo \"Creating consensus library with unsplit mode in progress.\" >>$fileStat;\n";
+					if ($libCons eq 'mergelib' || $action eq 'update') {
+						print BASH "cd $workDir; $tppPath/spectrast -cN$workDir/SpecLib_cons -cI$fragmentation -cAC -cM $workDir/SpecLib*.splib >>$outputFile 2>&1;\n";
+					}
+					elsif ($libCons eq 'new' ){
+						print BASH "cd $workDir; $tppPath/spectrast -cN$workDir/SpecLib_cons -cI$fragmentation -cAC -cM $workDir/SpecLib.splib >>$outputFile 2>&1;\n";
+					}
+					$split=0;
+				}
+				else{	#split mode
+					print BASH qq
+	|	echo "Creating consensus library with split mode in progress." >>$fileStat;
+		$pythonPath/spectrast_cluster.py -d 2 $workDir/SpecLib.sptxt >>$outputFile 2>&1;
+		for file in $workDir/SpecLib_*.sptxt; do $tppPath/spectrast -cNsplit-\${file%%.*} -cI$fragmentation \$file >>$outputFile 2>&1;  done 
+		for file in $workDir/split-SpecLib_*.splib; do $tppPath/spectrast -cNcons-\${file%%.*} -cI$fragmentation -cAC \$file >>$outputFile 2>&1;  done 
+	|;
+					if ($libCons eq 'mergelib'|| $action eq 'update') {
+						print BASH "grep -hUv '###' $workDir/cons-split-SpecLib_*.sptxt $libPath/SwLib_$libIDFile/$libFileName.sptxt >>$workDir/SpecLib_cons_concat.sptxt;\n";
+					}
+					else{
+						print BASH "grep -hUv '###' $workDir/cons-split-SpecLib_*.sptxt >>$workDir/SpecLib_cons_concat.sptxt;\n";
+					}
+					$split=1;
+				}
+				print BASH qq
+	|else
+		echo "Mayu did not work, missing file : FDR0.01_t_1.07.csv." >>$workDir/ERROR.txt;
+		exit -1;
+	fi
+	echo "END" >>$workDir/END.txt;
+	|;
+				close BASH;
+				
+				###########################
+				###> Execute bash file <###
+				###########################
+				
+				if ($clusterInfo{'on'}) {
+					my $clusterCommandString=$clusterInfo{'buildCommand'}->($workDir,"$workDir/script.sh");
+					my $maxHours=int(48);
+					$maxMem=($tailleSort[-1]/1073741824)*10;
+					$maxMem*=2 if $clusterInfo{'name'} eq 'CentOS';
+					$maxMem=($maxMem < 30) ? 30 : ($maxMem > 100) ? 100: sprintf("%.0f",$maxMem) ;
+					$maxMem.='Gb';
+					
+					my $bashFile="$workDir/createLib.sh";
+					open(BASH2,">$bashFile");
+					print BASH2 qq
+		|#!/bin/bash
+		##resources
+		#PBS -l mem=$maxMem
+		#PBS -l nodes=1:ppn=1
+		#PBS -l walltime=$maxHours:00:00
+		#PBS -q batch
+		
+		##Information
+		#PBS -N Swath_Lib_$time
+		#PBS -M marine.le-picard\@curie.fr
+		#PBS -m abe
+		#PBS -o $workDir/PBS.txt
+		#PBS -e $workDir/PBSerror.txt
+		
+		## Command
+		$clusterCommandString
+		echo End_Swath_Lib_$time >>$workDir/END.txt
+		|;
+					close BASH2;
+					
+					system "chmod 775 $workDir/script.sh";
+					###> Execute bash file
+					my ($jobClusterID) = $clusterInfo{'sendToCluster'}->($bashFile);
+					
+					# Add to DB
+					$dbh->do("UPDATE JOB_HISTORY SET ID_JOB_CLUSTER = CONCAT(ID_JOB_CLUSTER, ';C$jobClusterID') WHERE ID_JOB='$time'");
+					$dbh->commit;
+					
+					###>Waiting for job to run
+					my $pbsError;
+					my $j=1;
+					my $nbWhile=0;
+					my $maxNbWhile=$maxHours*60*2;
+					while (!$pbsError  && !-s "$workDir/ERROR.txt" && !-s "$workDir/END.txt") {
+						sleep 30;
+						$nbWhile++;
+						if ($nbWhile > $maxNbWhile) {
+							open(FILEERROR,">>$fileError");
+							print FILEERROR "Aborting: File processing is taking too long.";
+							close(FILEERROR);
+							exit;
+						}
+						$pbsError=$clusterInfo{'checkError'}->("$workDir/PBSerror.txt") if -s "$workDir/PBSerror.txt";
+						#$pbsError=`grep -v 'InfluxDB\\|getcwd' $workDir/PBSerror.txt` if -s "$workDir/PBSerror.txt";
+					}
+					
+					if ($pbsError) {
+						open(FILEERROR,">>$fileError");
+						print FILEERROR $pbsError;
+						close(FILEERROR);
+						exit;
+					}
+					
+					if (-s "$workDir/ERROR.txt" ) {
+						open(FILEERROR,">>$fileError");
+						print FILEERROR `head -1 $workDir/ERROR.txt `;
+						close(FILEERROR);
+						if(-s $outputFile){
+							if (`grep "Found 0 Decoys" $outputFile`){
+								my $errorDecoy=`grep "Decoys" $outputFile`;
+								my $nbErrorDecoy=`grep -c "Decoys" $outputFile`;
+								if ($nbErrorDecoy>=2) {
+									my ($errorTandem,$errorDat)=split(/\n/,$errorDecoy);
+									if ($errorTandem=~/Found 0 Decoys/) {
+										open(FILEERROR,">>$fileError");
+										print FILEERROR "No DECOY found in X! Tandem data.";
+										close(FILEERROR);
+										exit;
+									}
+									elsif($errorDat=~/Found 0 Decoys/){
+										open(FILEERROR,">>$fileError");
+										print FILEERROR "No DECOY found in Mascot data (.dat).";
+										close(FILEERROR);
+										exit;
+									}
 								}
-								elsif($errorDat=~/Found 0 Decoys/){
-									open(FILEERROR,">>$fileError");
-									print FILEERROR "No DECOY found in Mascot data (.dat).";
-									close(FILEERROR);
-									exit;
+								else{
+									if ($errorDecoy=~/Found 0 Decoys/) {
+										open(FILEERROR,">>$fileError");
+										print FILEERROR "No DECOY found in selected files.";
+										close(FILEERROR);
+										exit;
+									}
 								}
 							}
 							else{
-								if ($errorDecoy=~/Found 0 Decoys/) {
-									open(FILEERROR,">>$fileError");
-									print FILEERROR "No DECOY found in selected files.";
-									close(FILEERROR);
-									exit;
+								open(FILEERROR,">>$fileError");
+								print FILEERROR `tail -3 $outputFile `;
+								close(FILEERROR);
+								exit;
+							}
+						}
+					}
+					elsif(-e $outputFile && `tail -1 $outputFile` !~ /SpectraST\sfinished\sat\s\D+\s\D+\s+\d+\s\d{2}:\d{2}:\d{2}\s\d{4}\swithout\serror.\s/){		## Consensus library error
+						open(FILEERROR,">>$fileError");
+						print FILEERROR "***WARNING***",`tail -1 $outputFile`;
+						close(FILEERROR);
+						last;
+					}
+					
+				
+				}
+				else { ###>Run job on Web server
+					system "bash $workDir/script.sh";
+					if (-s "$workDir/ERROR.txt") {
+						open(FILEERROR,">>$fileError");
+						print FILEERROR `tail $workDir/ERROR.txt `;
+						close(FILEERROR);
+						if(-s $outputFile){
+							if (`grep "Found 0 Decoys" $outputFile`){
+								my $errorDecoy=`grep "Decoys" $outputFile`;
+								my $nbErrorDecoy=`grep -c "Decoys" $outputFile`;
+								if ($nbErrorDecoy>=2) {
+									my ($errorTandem,$errorDat)=split(/\n/,$errorDecoy);
+									if ($errorTandem=~/Found 0 Decoys/) {
+										open(FILEERROR,">>$fileError");
+										print FILEERROR "No DECOY found in X! Tandem data.";
+										close(FILEERROR);
+										exit;
+									}
+									elsif($errorDat=~/Found 0 Decoys/){
+										open(FILEERROR,">>$fileError");
+										print FILEERROR "No DECOY found in Mascot data (.dat).";
+										close(FILEERROR);
+										exit;
+									}
+								}
+								else{
+									if ($errorDecoy=~/Found 0 Decoys/) {
+										open(FILEERROR,">>$fileError");
+										print FILEERROR "No DECOY found in selected files.";
+										close(FILEERROR);
+										exit;
+									}
 								}
 							}
 						}
 						else{
 							open(FILEERROR,">>$fileError");
-							print FILEERROR `tail -3 $outputFile `;
+							print FILEERROR `tail -3 $outputFile`;
 							close(FILEERROR);
 							exit;
 						}
 					}
+					elsif(-e $outputFile && `tail -1 $outputFile` !~ /SpectraST\sfinished\sat\s\D+\s\D+\s+\d+\s\d{2}:\d{2}:\d{2}\s\d{4}\swithout\serror.\s/){		## Consensus library error
+						open(FILEERROR,">>$fileError");
+						print FILEERROR "***WARNING***",`tail -1 $outputFile`;
+						close(FILEERROR);
+						last;
+					}
 				}
-				elsif(-e $outputFile && `tail -1 $outputFile` !~ /SpectraST\sfinished\sat\s\D+\s\D+\s+\d+\s\d{2}:\d{2}:\d{2}\s\d{4}\swithout\serror.\s/){		## Consensus library error
-					open(FILEERROR,">>$fileError");
-					print FILEERROR "***WARNING***",`tail -1 $outputFile`;
-					close(FILEERROR);
-					last;
-				}
-				
-			
+				sleep 15;			
 			}
-			else { ###>Run job on Web server
-				system "bash $workDir/script.sh";
-				if (-s "$workDir/ERROR.txt") {
-					open(FILEERROR,">>$fileError");
-					print FILEERROR `tail $workDir/ERROR.txt `;
-					close(FILEERROR);
-					if(-s $outputFile){
-						if (`grep "Found 0 Decoys" $outputFile`){
-							my $errorDecoy=`grep "Decoys" $outputFile`;
-							my $nbErrorDecoy=`grep -c "Decoys" $outputFile`;
-							if ($nbErrorDecoy>=2) {
-								my ($errorTandem,$errorDat)=split(/\n/,$errorDecoy);
-								if ($errorTandem=~/Found 0 Decoys/) {
-									open(FILEERROR,">>$fileError");
-									print FILEERROR "No DECOY found in X! Tandem data.";
-									close(FILEERROR);
-									exit;
-								}
-								elsif($errorDat=~/Found 0 Decoys/){
-									open(FILEERROR,">>$fileError");
-									print FILEERROR "No DECOY found in Mascot data (.dat).";
-									close(FILEERROR);
-									exit;
-								}
-							}
-							else{
-								if ($errorDecoy=~/Found 0 Decoys/) {
-									open(FILEERROR,">>$fileError");
-									print FILEERROR "No DECOY found in selected files.";
-									close(FILEERROR);
-									exit;
-								}
-							}
+			elsif ($action eq "merge"){
+				open(FILESTAT,">>$fileStat");
+				print FILESTAT "Recovering library's files.\n";
+				close(FILESTAT);
+				foreach my $libIDFile ($libID1,$libID2){
+					opendir (DIR, "$libPath/SwLib_$libIDFile/");
+					while (my $file = readdir (DIR)){
+						if ($file =~/\.tar\.gz/){
+							(my $folderName=$file)=~s/\.tar\.gz//;
+							system "cd $libPath/SwLib_$libIDFile; tar -zxf $file;";
+							system "rm $libPath/SwLib_$libIDFile/dbinfo_$folderName.txt;" if -e "$libPath/SwLib_$libIDFile/dbinfo_$folderName.txt";
+							system "rm $libPath/SwLib_$libIDFile/filelist_$folderName.txt;" if -e "$libPath/SwLib_$libIDFile/filelist_$folderName.txt";
+							system "rm $libPath/SwLib_$libIDFile/sortie_$folderName.txt;" if -e "$libPath/SwLib_$libIDFile/sortie_$folderName.txt";
+							system "rm $libPath/SwLib_$libIDFile/script_$folderName.sh;" if -e "$libPath/SwLib_$libIDFile/script_$folderName.sh";
 						}
 					}
-					else{
-						open(FILEERROR,">>$fileError");
-						print FILEERROR `tail -3 $outputFile`;
-						close(FILEERROR);
-						exit;
+					close DIR;
+					opendir (CONS,"$libPath/SwLib_$libIDFile/");
+					while (my $file2 = readdir (CONS)){
+						if ($file2=~/SpecLib_Lib\d+_v\d+/){
+							my $taille=`stat -c "%s" $libPath/SwLib_$libIDFile/$file2`;
+							push(@taille,int($taille));
+							move ("$libPath/SwLib_$libIDFile/$file2",$workDir);
+						}
 					}
+					close CONS;
 				}
-				elsif(-e $outputFile && `tail -1 $outputFile` !~ /SpectraST\sfinished\sat\s\D+\s\D+\s+\d+\s\d{2}:\d{2}:\d{2}\s\d{4}\swithout\serror.\s/){		## Consensus library error
-					open(FILEERROR,">>$fileError");
-					print FILEERROR "***WARNING***",`tail -1 $outputFile`;
-					close(FILEERROR);
-					last;
-				}
-			}
-			sleep 15;			
-		}
-		elsif ($action eq "merge"){
-			open(FILESTAT,">>$fileStat");
-			print FILESTAT "Recovering library's files.\n";
-			close(FILESTAT);
-			foreach my $libIDFile ($libID1,$libID2){
-				opendir (DIR, "$libPath/SwLib_$libIDFile/");
-				while (my $file = readdir (DIR)){
-					if ($file =~/\.tar\.gz/){
-						(my $folderName=$file)=~s/\.tar\.gz//;
-						system "cd $libPath/SwLib_$libIDFile; tar -zxf $file;";
-						system "rm $libPath/SwLib_$libIDFile/dbinfo_$folderName.txt;" if -e "$libPath/SwLib_$libIDFile/dbinfo_$folderName.txt";
-						system "rm $libPath/SwLib_$libIDFile/filelist_$folderName.txt;" if -e "$libPath/SwLib_$libIDFile/filelist_$folderName.txt";
-						system "rm $libPath/SwLib_$libIDFile/sortie_$folderName.txt;" if -e "$libPath/SwLib_$libIDFile/sortie_$folderName.txt";
-						system "rm $libPath/SwLib_$libIDFile/script_$folderName.sh;" if -e "$libPath/SwLib_$libIDFile/script_$folderName.sh";
-					}
-				}
-				close DIR;
-				opendir (CONS,"$libPath/SwLib_$libIDFile/");
-				while (my $file2 = readdir (CONS)){
-					if ($file2=~/SpecLib_Lib\d+_v\d+/){
-						my $taille=`stat -c "%s" $libPath/SwLib_$libIDFile/$file2`;
-						push(@taille,int($taille));
-						move ("$libPath/SwLib_$libIDFile/$file2",$workDir);
-					}
-				}
-				close CONS;
-			}
-			@tailleSort=sort @taille;
-			
-			open(FILESTAT,">>$fileStat");
-			print FILESTAT "Creation of spectra librairies.\n";
-			close(FILESTAT);
-			my $command;
-			if ($split == 1) {
-				$command="grep -hUv '###' $libPath/SwLib_$libID1/$libName1.sptxt $libPath/SwLib_$libID2/$libName2.sptxt >>$workDir/SpecLib_cons_concat.sptxt";
-			}
-			elsif ($split == 0) {
-				$command="$tppPath/spectrast -cN$workDir/SpecLib_cons -cI$fragmentation -cAC $workDir/*.splib >>$outputFile 2>&1";
-			}
-			
-			my $clusterCommandString;
-			if ($clusterInfo{'on'}){
-				$clusterCommandString=$clusterInfo{'buildCommand'}->($workDir,$command);
-			}
-			else{
-				$clusterCommandString=$command;
-			}
-			my $maxHours=20;
-			my $bashFile="$workDir/script.sh";
-			$maxMem=($tailleSort[-1]/1073741824)*10;
-			$maxMem*=2 if $clusterInfo{'name'} eq 'CentOS';
-			$maxMem=($maxMem < 20) ? 20 : ($maxMem > 100) ? 100: sprintf("%.0f",$maxMem) ;
-			$maxMem.='Gb';
-			open(BASH,"+>",$bashFile);
-			print BASH qq
-	|#!/bin/bash
-	
-	##resources
-	#PBS -l mem=$maxMem
-	#PBS -l nodes=1:ppn=1
-	#PBS -l walltime=$maxHours:00:00
-	#PBS -q batch
-	
-	##Information
-	#PBS -N Swath_Lib_$time
-	#PBS -M marine.le-picard\@curie.fr
-	#PBS -m abe
-	#PBS -o $workDir/PBS.txt
-	#PBS -e $workDir/PBSerror.txt
-	
-	## Command
-	$clusterCommandString
-	echo "<BR><BR>End_Swath_Lib_$time" >>$workDir/END.txt
-	|;
-			close BASH;
-			
-			
-			###> Execute bash 
-			if ($clusterInfo{'on'}) {
-				my ($jobClusterID) = $clusterInfo{'sendToCluster'}->($bashFile);
+				@tailleSort=sort @taille;
 				
-				# Add job to DB
-				$dbh->do("UPDATE JOB_HISTORY SET ID_JOB_CLUSTER = CONCAT(ID_JOB_CLUSTER, ';C$jobClusterID') WHERE ID_JOB='$time'");
-				$dbh->commit;
+				open(FILESTAT,">>$fileStat");
+				print FILESTAT "Creation of spectra librairies.\n";
+				close(FILESTAT);
+				my $command;
+				if ($split == 1) {
+					$command="grep -hUv '###' $libPath/SwLib_$libID1/$libName1.sptxt $libPath/SwLib_$libID2/$libName2.sptxt >>$workDir/SpecLib_cons_concat.sptxt";
+				}
+				elsif ($split == 0) {
+					$command="$tppPath/spectrast -cN$workDir/SpecLib_cons -cI$fragmentation -cAC $workDir/*.splib >>$outputFile 2>&1";
+				}
 				
-				###>Waiting for job to run
-				my $pbsError;
-				my $nbWhile=0;
-				my $maxNbWhile=$maxHours*60*2;
-				while (!$pbsError  && !-s "$workDir/END.txt") {
-					sleep 30;
-					$nbWhile++;
-					if ($nbWhile > $maxNbWhile) {
-						open(FILEERROR,">>$fileError");
-						print FILEERROR "Aborting: File merge is taking too long.";
-						close(FILEERROR);
-						exit;
-					}
-					$pbsError=$clusterInfo{'checkError'}->("$workDir/PBSerror.txt") if -s "$workDir/PBSerror.txt";
-					#$pbsError=`grep -v getcwd $workDir/PBSerror.txt` if -s "$workDir/PBSerror.txt";
-				}
-				if ($pbsError) {
-					open(FILEERROR,">>$fileError");
-					print FILEERROR $pbsError;
-					close(FILEERROR);
-					exit;
-				}
-			}
-			else { ###>Run job on Web server
-				system "bash $bashFile";
-			}
-			sleep 5;
-		}
-		
-		## check errors in SpectraST
-		if (-s "$workDir/spectrast.log") {
-			my $numSpectraError=`grep -c ERROR $workDir/spectrast.log`;
-			my $numNterModError=`grep -c 'Peptide ID has unknown modification: ' $workDir/spectrast.log`;		 ### skip N-term modifications : in sequest file N-term modification are tag with +42, in mascot or Xtandem : +43 ; spectrast do not recognize +42 modification
-			chomp $numNterModError;
-			if ($numSpectraError!=0) {
-				if($numNterModError!=$numSpectraError){
-					open(FILEERROR,">>$fileError");
-					print FILEERROR "You had $numSpectraError errors during SpectraST process.";
-					close(FILEERROR);
-					exit;
+				my $clusterCommandString;
+				if ($clusterInfo{'on'}){
+					$clusterCommandString=$clusterInfo{'buildCommand'}->($workDir,$command);
 				}
 				else{
-					open(FILESTAT,">>$fileStat");
-					print FILESTAT "You had $numNterModError \"Peptide has unknown modification\" errors";
-					close(FILESTAT);
+					$clusterCommandString=$command;
+				}
+				my $maxHours=20;
+				my $bashFile="$workDir/script.sh";
+				$maxMem=($tailleSort[-1]/1073741824)*10;
+				$maxMem*=2 if $clusterInfo{'name'} eq 'CentOS';
+				$maxMem=($maxMem < 20) ? 20 : ($maxMem > 100) ? 100: sprintf("%.0f",$maxMem) ;
+				$maxMem.='Gb';
+				open(BASH,"+>",$bashFile);
+				print BASH qq
+		|#!/bin/bash
+		
+		##resources
+		#PBS -l mem=$maxMem
+		#PBS -l nodes=1:ppn=1
+		#PBS -l walltime=$maxHours:00:00
+		#PBS -q batch
+		
+		##Information
+		#PBS -N Swath_Lib_$time
+		#PBS -M marine.le-picard\@curie.fr
+		#PBS -m abe
+		#PBS -o $workDir/PBS.txt
+		#PBS -e $workDir/PBSerror.txt
+		
+		## Command
+		$clusterCommandString
+		echo "<BR><BR>End_Swath_Lib_$time" >>$workDir/END.txt
+		|;
+				close BASH;
+				
+				
+				###> Execute bash 
+				if ($clusterInfo{'on'}) {
+					my ($jobClusterID) = $clusterInfo{'sendToCluster'}->($bashFile);
+					
+					# Add job to DB
+					$dbh->do("UPDATE JOB_HISTORY SET ID_JOB_CLUSTER = CONCAT(ID_JOB_CLUSTER, ';C$jobClusterID') WHERE ID_JOB='$time'");
+					$dbh->commit;
+					
+					###>Waiting for job to run
+					my $pbsError;
+					my $nbWhile=0;
+					my $maxNbWhile=$maxHours*60*2;
+					while (!$pbsError  && !-s "$workDir/END.txt") {
+						sleep 30;
+						$nbWhile++;
+						if ($nbWhile > $maxNbWhile) {
+							open(FILEERROR,">>$fileError");
+							print FILEERROR "Aborting: File merge is taking too long.";
+							close(FILEERROR);
+							exit;
+						}
+						$pbsError=$clusterInfo{'checkError'}->("$workDir/PBSerror.txt") if -s "$workDir/PBSerror.txt";
+						#$pbsError=`grep -v getcwd $workDir/PBSerror.txt` if -s "$workDir/PBSerror.txt";
+					}
+					if ($pbsError) {
+						open(FILEERROR,">>$fileError");
+						print FILEERROR $pbsError;
+						close(FILEERROR);
+						exit;
+					}
+				}
+				else { ###>Run job on Web server
+					system "bash $bashFile";
+				}
+				sleep 5;
+			}
+			
+			## check errors in SpectraST
+			if (-s "$workDir/spectrast.log") {
+				my $numSpectraError=`grep -c ERROR $workDir/spectrast.log`;
+				my $numNterModError=`grep -c 'Peptide ID has unknown modification: ' $workDir/spectrast.log`;		 ### skip N-term modifications : in sequest file N-term modification are tag with +42, in mascot or Xtandem : +43 ; spectrast do not recognize +42 modification
+				chomp $numNterModError;
+				if ($numSpectraError!=0) {
+					if($numNterModError!=$numSpectraError){
+						open(FILEERROR,">>$fileError");
+						print FILEERROR "You had $numSpectraError errors during SpectraST process.";
+						close(FILEERROR);
+						exit;
+					}
+					else{
+						open(FILESTAT,">>$fileStat");
+						print FILESTAT "You had $numNterModError \"Peptide has unknown modification\" errors";
+						close(FILESTAT);
+					}
 				}
 			}
+			
+			
 		}
 		
-		
-		if (-e "$workDir/SpecLib_cons_concat.sptxt" || -e "$workDir/SpecLib_cons.sptxt"){
+
+		if($software eq 'Spectronaut' || ($software eq 'TPP' && ( -e "$workDir/SpecLib_cons_concat.sptxt" || -e "$workDir/SpecLib_cons.sptxt"))) {
 			my ($numPep,$finalFileLib);
+			my (%colName2Index); # Headers index in spectronaut library file
 			####> Recovering the number of spectra in the library
-			if (-e "$workDir/SpecLib_cons_concat.sptxt") {
-				$numPep=`grep -c LibID  $workDir/SpecLib_cons_concat.sptxt`;
-				open (INFILE,"<","$workDir/SpecLib_cons_concat.sptxt") or die("open: $!");
-				$finalFileLib="$workDir/SpecLib_cons_concat.sptxt";
-			}
-			elsif(-e "$workDir/SpecLib_cons.sptxt"){
-				$numPep=`grep -c LibID  $workDir/SpecLib_cons.sptxt`;
-				open (INFILE,"<","$workDir/SpecLib_cons.sptxt") or die("open: $!");
-				$finalFileLib="$workDir/SpecLib_cons.sptxt";
+			if($software eq 'TPP') {
+				if (-e "$workDir/SpecLib_cons_concat.sptxt") {
+					$numPep=`grep -c LibID  $workDir/SpecLib_cons_concat.sptxt`;
+					open (INFILE,"<","$workDir/SpecLib_cons_concat.sptxt") or die("open: $!");
+					$finalFileLib="$workDir/SpecLib_cons_concat.sptxt";
+				}
+				elsif(-e "$workDir/SpecLib_cons.sptxt"){
+					$numPep=`grep -c LibID  $workDir/SpecLib_cons.sptxt`;
+					open (INFILE,"<","$workDir/SpecLib_cons.sptxt") or die("open: $!");
+					$finalFileLib="$workDir/SpecLib_cons.sptxt";
+				}
+			} elsif($software eq 'Spectronaut') {
+				my $spectronautLibFileName = $inputFiles[0];
+				if(-e "$workDir/$spectronautLibFileName") {
+					open (INFILE,"<","$workDir/$spectronautLibFileName") or die("open: $!");
+					
+					# Parse header to retrieve specific columns
+					my $line=<INFILE>;
+					my @headers = split(/[,;\t\s]+/, $line);
+					foreach my $i (0 .. $#headers) {
+						$colName2Index{$headers[$i]} = $i;
+					}
+					
+					my $cutCmdFieldIndex = $colName2Index{'IntModifiedPeptide'}+1;
+					$numPep=`tail -n+2  $workDir/$spectronautLibFileName | cut -f$cutCmdFieldIndex | sort | uniq | wc -l`;
+					$finalFileLib="$workDir/$spectronautLibFileName";
+				}
 			}
 			chomp $numPep;
 			
@@ -2773,55 +2972,92 @@ echo "END" >>$workDir/END.txt;
 			print FILESTAT "Recovering peptides modifications.\n";
 			close(FILESTAT);
 			my $line;
-			my (%swathModifications,%protLibList,%protSpecificList,%numPepMod);
+			my (%swathModifications,%protLibList,%protSpecificList,%numPepMod,%parsedPeptides);
 			while (($line=<INFILE>)){
-				if ($line=~/Mods=(\d)\/(\S*)/){
-					my($varModCode,$residues,$positions);
-					my $modList=$2;
-					my @result=&promsMod::convertVarModStringSwath($modList);
-					foreach my $res (@result){
-						my @resTab=split(/!/,$res);
-						$varModCode=$resTab[0];
-						$residues=$resTab[1];
-						$positions=$resTab[2];
-						$residues='=' if $positions eq '=';
-						if ($varModCode eq 'GlyGly' || $varModCode eq 'Phospho' || $varModCode eq 'Acetyl'){
-							$numPepMod{$varModCode}{'Multiple'}++;
+				if($software eq 'TPP') {
+					if ($line=~/Mods=(\d)\/(\S*)/){
+						my($varModCode,$residues,$positions);
+						my $modList=$2;
+						my @result=&promsMod::convertVarModStringSwath($modList);
+						foreach my $res (@result){
+							my @resTab=split(/!/,$res);
+							$varModCode=$resTab[0];
+							$residues=$resTab[1];
+							$positions=$resTab[2];
+							$residues='=' if $positions eq '=';
+							if ($varModCode eq 'GlyGly' || $varModCode eq 'Phospho' || $varModCode eq 'Acetyl'){
+								$numPepMod{$varModCode}{'Multiple'}++;
+							}
+						}
+						$numPepMod{'GlyGly'}{'Single'}++ if $modList=~/GlyGly/;
+						$numPepMod{'Phospho'}{'Single'}++ if $modList=~/Phospho/;
+						$numPepMod{'Acetyl'}{'Single'}++ if $modList=~/Acetyl/;
+						$swathModifications{$varModCode}{$residues}=1;
+					}
+					if($line=~/Protein=\d\/(\S+)/){
+						if ($split==0) {
+							my @protIDs=split(/\//,$1);
+							for (my $i=0; $i<@protIDs; $i++){
+								next if $protIDs[$i]=~/reverse/;
+								my $quoteProt=quotemeta($protIDs[$i]);
+								$protLibList{$protIDs[$i]}=1;
+								$protSpecificList{$protIDs[$i]}=1 if(scalar @protIDs == 1);
+							}
+						}
+						elsif ($split==1){
+							my @protIDs=split(/\//,substr($1,10));
+							for (my $i=0; $i<@protIDs; $i++){
+								next if $protIDs[$i]=~/reverse/;
+								my $quoteProt=quotemeta($protIDs[$i]);
+								$protLibList{$protIDs[$i]}=1;
+								$protSpecificList{$protIDs[$i]}=1 if(scalar @protIDs == 1);
+							}
 						}
 					}
-					$numPepMod{'GlyGly'}{'Single'}++ if $modList=~/GlyGly/;
-					$numPepMod{'Phospho'}{'Single'}++ if $modList=~/Phospho/;
-					$numPepMod{'Acetyl'}{'Single'}++ if $modList=~/Acetyl/;
-					$swathModifications{$varModCode}{$residues}=1;
-				}
-				if($line=~/Protein=\d\/(\S+)/){
-					if ($split==0) {
-						my @protIDs=split(/\//,$1);
-						for (my $i=0; $i<@protIDs; $i++){
-							next if $protIDs[$i]=~/reverse/;
-							my $quoteProt=quotemeta($protIDs[$i]);
-							$protLibList{$protIDs[$i]}=1;
-							$protSpecificList{$protIDs[$i]}=1 unless scalar @protIDs>2;
+				} elsif($software eq 'Spectronaut') {
+					my @lineContent = split(/\t/, $line);
+					
+					# Fetch peptide modifications
+					my $referenceRun = $lineContent[$colName2Index{'ReferenceRun'}];
+					my $modifiedPeptide = $lineContent[$colName2Index{'ModifiedPeptide'}];
+					my $chargePeptide = $lineContent[$colName2Index{'PrecursorCharge'}];
+					my $iRTPeptide = $lineContent[$colName2Index{'iRT'}];
+					
+					next if($parsedPeptides{"$referenceRun\_$modifiedPeptide\_$iRTPeptide\_$chargePeptide"});
+					if(index($modifiedPeptide, '[') != -1) {
+						while($modifiedPeptide =~ /([A-Z]?)\[([^\s\]]+)\]?(?:\s\([^)]+\)\])?/g) {
+							my ($residue, $varModCode) = ($1, $2);
+							$residue = "=" if(!$residue eq "1");
+							if ($varModCode eq 'GlyGly' || $varModCode eq 'Phospho' || $varModCode eq 'Acetyl') {
+								$numPepMod{$varModCode}{'Multiple'}++;
+							}
+							$swathModifications{$varModCode}{$residue}=1;
 						}
+						$numPepMod{'GlyGly'}{'Single'}++ if($modifiedPeptide=~/GlyGly/);
+						$numPepMod{'Phospho'}{'Single'}++ if($modifiedPeptide=~/Phospho/);
+						$numPepMod{'Acetyl'}{'Single'}++ if($modifiedPeptide=~/Acetyl/);
 					}
-					elsif ($split==1){
-						my @protIDs=split(/\//,substr($1,10));
-						for (my $i=0; $i<@protIDs; $i++){
-							next if $protIDs[$i]=~/reverse/;
-							my $quoteProt=quotemeta($protIDs[$i]);
-							$protLibList{$protIDs[$i]}=1;
-							$protSpecificList{$protIDs[$i]}=1 unless scalar @protIDs>2;
-						}
+					
+					# Fetch fragment related proteins
+					my $proteins = ($colName2Index{'UniProtIds'}) ? $lineContent[$colName2Index{'UniProtIds'}] : $lineContent[$colName2Index{'Protein Name'}];
+					my @proteinsList = split(/;/, $proteins);
+					foreach my $protein (@proteinsList) {
+						$protLibList{$protein}=1;
+						$protSpecificList{$protein}=1 if(scalar @proteinsList == 1);
 					}
+					
+					$parsedPeptides{"$referenceRun\_$modifiedPeptide\_$iRTPeptide\_$chargePeptide"} = 1;
 				}
 			}
 			close INFILE;
 			
-			###> Convertion of modifications that are not on a mass format (K[GlyGly] -> K[242])	#error during spectrast2tsv.py if K[GlyGly] !!!
-			my %TPPModifCode=&promsConfig::getTPPModificationCode;
-			foreach my $code (keys %TPPModifCode){
-				if ($swathModifications{$code}){
-					system "sed -i 's/\\\[$code\\\]/\\\[$TPPModifCode{$code}\\\]/g' $finalFileLib";			
+			###> Convert modifications that are not on a mass format (K[GlyGly] -> K[242])	#error during spectrast2tsv.py if K[GlyGly] !!!
+			if($software eq 'TPP') {
+				my %TPPModifCode=&promsConfig::getTPPModificationCode;
+				foreach my $code (keys %TPPModifCode){
+					if ($swathModifications{$code}){
+						system "sed -i 's/\\\[$code\\\]/\\\[$TPPModifCode{$code}\\\]/g' $finalFileLib";			
+					}
 				}
 			}
 			
@@ -2831,7 +3067,7 @@ echo "END" >>$workDir/END.txt;
 			my $numPepMod;
 			if(%numPepMod){
 				foreach my $mod (keys %numPepMod){
-					$numPepMod.='&' if $numPepMod;
+					$numPepMod.='..' if $numPepMod;
 					$numPepMod.="$mod".':'.$numPepMod{$mod}{'Single'}.'/'.$numPepMod{$mod}{'Multiple'};
 				}
 			}
@@ -2867,7 +3103,8 @@ echo "END" >>$workDir/END.txt;
 				$updateUserS=($updateUserS)? $updateUserS : '';
 				open(SAVEFILE,">","$finalDir/dbinfo_Lib$libIDFile\_$oldVersion.txt");
 				print SAVEFILE "des=$desS\tversion=$oldVersion\tdate=$updateDateS\tuser=$updateUserS\tdatabank=$dbS\tpep=$pepS\tprot=$protS\tprotspe=$protSpeS\n";
-				print SAVEFILE "$paramStrgS";
+				print SAVEFILE "$paramStrgS\n";
+				print SAVEFILE "$statS";
 				close SAVEFILE;
 				
 				$oldVersion=~s/v//;
@@ -2875,7 +3112,9 @@ echo "END" >>$workDir/END.txt;
 				
 				my $xmlOldParam = $xmlS->XMLin($paramStrgS);
 				open(FILELIST,">>","$finalDir/filelist_Lib$libIDFile\_v$oldVersion.txt");
-				foreach my $paramFiles (@{$xmlOldParam->{'SWATH_LIB_DATA'}->{'FILES'}->{'FILE'}}) {
+				
+				my @files = (ref($xmlOldParam->{'SWATH_LIB_DATA'}->{'FILES'}->{'FILE'}) eq 'ARRAY') ? @{$xmlOldParam->{'SWATH_LIB_DATA'}->{'FILES'}->{'FILE'}} : ($xmlOldParam->{'SWATH_LIB_DATA'}->{'FILES'}->{'FILE'});
+				foreach my $paramFiles (@files) {
 					my $oldFile=$paramFiles->{'FileName'};
 					my $olVersionFile=$paramFiles->{'version'};
 					print FILELIST "$oldFile,$olVersionFile&";
@@ -2894,8 +3133,10 @@ echo "END" >>$workDir/END.txt;
 				my $archive=$finalDir.'/Lib'.$libIDFile.'_v'.$oldVersion.'.tar';
 				move("$finalDir/sortie.txt","$finalDir/sortie_Lib$libIDFile\_v$oldVersion.txt");
 				move("$finalDir/script.sh","$finalDir/script_Lib$libIDFile\_v$oldVersion.sh");
-				system "cd $finalDir; gunzip $archiveGZ; tar -rf $archive filelist_Lib$libIDFile\_v$oldVersion.txt;tar -rf $archive dbinfo_Lib$libIDFile\_v$oldVersion.txt; tar -rf $archive sortie_Lib$libIDFile\_v$oldVersion.txt;tar -rf $archive script_Lib$libIDFile\_v$oldVersion.sh; gzip $archive; rm dbinfo_Lib$libIDFile\_v$oldVersion.txt; rm filelist_Lib$libIDFile\_v$oldVersion.txt; rm sortie_Lib$libIDFile\_v$oldVersion.txt; rm script_Lib$libIDFile\_v$oldVersion.sh";
-				
+				system("cd $finalDir; gunzip $archiveGZ; tar -rf $archive filelist_Lib$libIDFile\_v$oldVersion.txt;");
+				system("tar -rf $archive dbinfo_Lib$libIDFile\_v$oldVersion.txt") if(-e "dbinfo_Lib$libIDFile\_v$oldVersion.txt");
+				system("tar -rf $archive sortie_Lib$libIDFile\_v$oldVersion.txt;tar -rf $archive script_Lib$libIDFile\_v$oldVersion.sh;") if(-e "script_Lib$libIDFile\_v$oldVersion.sh" && -e "sortie_Lib$libIDFile\_v$oldVersion.txt");
+				system("gzip $archive; rm -f dbinfo_Lib$libIDFile\_v$oldVersion.txt; rm -f filelist_Lib$libIDFile\_v$oldVersion.txt; rm -f sortie_Lib$libIDFile\_v$oldVersion.txt; rm -f script_Lib$libIDFile\_v$oldVersion.sh");
 				
 				if (defined $xmlOldParam->{'SWATH_LIB_DATA'}->{'PARENT_LIB'}){			## for merge libraries && mergelib
 					if (defined $xmlOldParam->{'SWATH_LIB_DATA'}->{'PARENT_LIB'}->{'PARENT'}){
@@ -2936,52 +3177,59 @@ echo "END" >>$workDir/END.txt;
 				$xmlParams=$xmlParser->XMLout($params);
 			}
 			else{
+				my $fileNumberTot;
+				
+				### Specify software used for library importation/creation
+				$params-> {'SOFTWARE'}->{'NAME'}=$software;
+				
 				###> Recovering files names
 				foreach my $file (@inputFiles) {
 					push @{$params-> {'FILES'} -> {'FILE'}},{'FileName'=>"$file",'version'=>"v$versionFile"};
 				}
-	
-				open(FDR,"<","$workDir/FDRscore.txt");
-				my $fdrMin;
-				while (my $line=<FDR>) {
-					$fdrMin=$line;
-				}
-				chomp $fdrMin;
 				
-				###> Recovering of all parameters used in bash script
-				push @{$params-> {'COMMANDS_LINES'}->{'COMMAND'}},{'CommandName'=>'Mascot2XML','CommandRank'=>1,'PARAMS'=>[{'opvalue' => 'database','selectby' => 'user', 'option'=>'-D'},{'opvalue' => 'trypsin','selectby' => 'auto','option'=>'-E'},{'opvalue' => 'otgz','selectby' => 'auto','option'=>'-n'}]};
-				push @{$params-> {'COMMANDS_LINES'}->{'COMMAND'}},{'CommandName'=>'xinteract','CommandRank'=>2,'PARAMS'=>[{'opvalue' => 'ARPd','selectby' => 'auto', 'option'=>'-O'},{'opvalue' => "$decoyTag",'selectby' => 'auto','option'=>'-d'},{'opvalue' => 'outputfile','selectby' => 'auto','option'=>'-N'}]};
-				push @{$params-> {'COMMANDS_LINES'}->{'COMMAND'}},{'CommandName'=>'InterProphetParser','CommandRank'=>3,'PARAMS'=>{'opvalue' => "$decoyTag",'selectby' => 'auto', 'option'=>'DECOY'}};
-				push @{$params-> {'COMMANDS_LINES'}->{'COMMAND'}},{'CommandName'=>'Mayu.pl','CommandRank'=>4,'PARAMS'=>[{'opvalue' => 'inputfile','selectby' => 'auto', 'option'=>'-A'},{'opvalue' => 'database','selectby' => 'user','option'=>'-C'},{'opvalue' => "$decoyTag",'selectby' => 'auto','option'=>'-E'},{'opvalue' => '0.01','selectby' => 'auto','option'=>'-G'},{'pvalue' => '51','selectby' => 'auto','option'=>'-H'},{'opvalue' => "$missedCleavage",'selectby' => 'user','option'=>'-I'},{'opvalue' => "$fdr:t",'selectby' => 'user','option'=>'-P'},{'opvalue' => "$fdrType",'selectby' => 'user','option'=>'-fdr'}]};
-				push @{$params-> {'COMMANDS_LINES'}->{'COMMAND'}},{'CommandName'=>'spectrast','CommandRank'=>5,'PARAMS'=>[{'opvalue' => 'outputfile','selectby' => 'auto', 'option'=>'-cN'},{'opvalue' => "$fragmentation",'selectby' => 'auto','option'=>'-cI'},{'opvalue' => "Protein! ~ $decoyTag",'selectby' => 'auto','option'=>'-cf'},{'opvalue' => "$fdrMin",'selectby' => 'auto','option'=>'-cP'},{'opvalue' => 'irtfile','selectby' => 'user','option'=>'-c_IRT'},{'opvalue' => 'inputfile','selectby' => 'auto','option'=>'-c_IRR'}]};
-	
-				if ($libOption eq 'unsplit'){
-					push @{$params-> {'COMMANDS_LINES'}->{'COMMAND'}},{'CommandName'=>'spectrast','CommandRank'=>6,'PARAMS'=>[{'opvalue' => 'outputfile','selectby' => 'auto', 'option'=>'-cN'},{'opvalue' => "$fragmentation",'selectby' => 'auto','option'=>'-cI'},{'opvalue' => 'no value','option'=>'-cAC'}]};
-				}
-				elsif ($libOption eq 'split'){
-					push @{$params-> {'COMMANDS_LINES'}->{'COMMAND'}},{'CommandName'=>'spectrast_cluster.py','CommandRank'=>6,'PARAMS'=>{'opvalue' => '2','selectby' => 'auto', 'option'=>'-d'}};
-					push @{$params-> {'COMMANDS_LINES'}->{'COMMAND'}},{'CommandName'=>'spectrast','CommandRank'=>7,'PARAMS'=>[{'opvalue' => 'outputfile','selectby' => 'auto', 'option'=>'-cN'},{'opvalue' => "$fragmentation",'selectby' => 'auto','option'=>'-cI'}]};
-					push @{$params-> {'COMMANDS_LINES'}->{'COMMAND'}},{'CommandName'=>'spectrast','CommandRank'=>8,'PARAMS'=>[{'opvalue' => 'outputfile','selectby' => 'auto', 'option'=>'-cN'},{'opvalue' => "$fragmentation",'selectby' => 'auto','option'=>'-cI'},{'opvalue' => 'no value','option'=>'-cAC'}]};
-				}
-				if (("@inputFiles"=~ m/.dat/) && ("@inputFiles"=~ m/.tandem/)) {$params-> {'SEARCH_ENGINES'}->{'NAME'}='MASCOT,XTANDEM';}
-				elsif ("@inputFiles"=~ m/.dat/) {
-					if ($oldEngine) {
-						$params-> {'SEARCH_ENGINES'}->{'NAME'}=($oldEngine eq 'MASCOT,XTANDEM' || $oldEngine eq 'XTANDEM') ? 'MASCOT,XTANDEM' : 'MASCOT';
-					}else{$params-> {'SEARCH_ENGINES'}->{'NAME'}='MASCOT';}
-				}
-				elsif ("@inputFiles"=~ m/.tandem/) {
-					if ($oldEngine) {
-						$params-> {'SEARCH_ENGINES'}->{'NAME'}=($oldEngine eq 'MASCOT,XTANDEM' || $oldEngine eq 'MASCOT') ? 'MASCOT,XTANDEM' : 'XTANDEM';
-					}else{$params-> {'SEARCH_ENGINES'}->{'NAME'}='XTANDEM';}
-				}
-				my $fileNumberTot;
-				if ($libCons eq 'mergelib') {
-					push @{$params->{'PARENT_LIB'}->{'PARENT'}},{'LibName'=>"$libFileName",'ID'=>"$libIDFile"};
-					my $xmlS =XML::Simple-> new (KeepRoot=>1);
-					my $paramStrg1=$dbh->selectrow_array("SELECT PARAM_STRG FROM SWATH_LIB WHERE ID_SWATH_LIB=$libIDFile");
-					my $xmlOldParam1=$xmlS->XMLin($paramStrg1);
-					my $nbFiles1=$xmlOldParam1->{'SWATH_LIB_DATA'}->{'FILE_NUMBER'}->{'NUMBER'};
-					$fileNumberTot=$nbFiles1+scalar @inputFiles;
+				if($software eq 'TPP') {
+					open(FDR,"<","$workDir/FDRscore.txt");
+					my $fdrMin;
+					while (my $line=<FDR>) {
+						$fdrMin=$line;
+					}
+					chomp $fdrMin;
+				
+				
+					###> Recovering of all parameters used in bash script
+					push @{$params-> {'COMMANDS_LINES'}->{'COMMAND'}},{'CommandName'=>'Mascot2XML','CommandRank'=>1,'PARAMS'=>[{'opvalue' => 'database','selectby' => 'user', 'option'=>'-D'},{'opvalue' => 'trypsin','selectby' => 'auto','option'=>'-E'},{'opvalue' => 'otgz','selectby' => 'auto','option'=>'-n'}]};
+					push @{$params-> {'COMMANDS_LINES'}->{'COMMAND'}},{'CommandName'=>'xinteract','CommandRank'=>2,'PARAMS'=>[{'opvalue' => 'ARPd','selectby' => 'auto', 'option'=>'-O'},{'opvalue' => "$decoyTag",'selectby' => 'auto','option'=>'-d'},{'opvalue' => 'outputfile','selectby' => 'auto','option'=>'-N'}]};
+					push @{$params-> {'COMMANDS_LINES'}->{'COMMAND'}},{'CommandName'=>'InterProphetParser','CommandRank'=>3,'PARAMS'=>{'opvalue' => "$decoyTag",'selectby' => 'auto', 'option'=>'DECOY'}};
+					push @{$params-> {'COMMANDS_LINES'}->{'COMMAND'}},{'CommandName'=>'Mayu.pl','CommandRank'=>4,'PARAMS'=>[{'opvalue' => 'inputfile','selectby' => 'auto', 'option'=>'-A'},{'opvalue' => 'database','selectby' => 'user','option'=>'-C'},{'opvalue' => "$decoyTag",'selectby' => 'auto','option'=>'-E'},{'opvalue' => '0.01','selectby' => 'auto','option'=>'-G'},{'pvalue' => '51','selectby' => 'auto','option'=>'-H'},{'opvalue' => "$missedCleavage",'selectby' => 'user','option'=>'-I'},{'opvalue' => "$fdr:t",'selectby' => 'user','option'=>'-P'},{'opvalue' => "$fdrType",'selectby' => 'user','option'=>'-fdr'}]};
+					push @{$params-> {'COMMANDS_LINES'}->{'COMMAND'}},{'CommandName'=>'spectrast','CommandRank'=>5,'PARAMS'=>[{'opvalue' => 'outputfile','selectby' => 'auto', 'option'=>'-cN'},{'opvalue' => "$fragmentation",'selectby' => 'auto','option'=>'-cI'},{'opvalue' => "Protein! ~ $decoyTag",'selectby' => 'auto','option'=>'-cf'},{'opvalue' => "$fdrMin",'selectby' => 'auto','option'=>'-cP'},{'opvalue' => 'irtfile','selectby' => 'user','option'=>'-c_IRT'},{'opvalue' => 'inputfile','selectby' => 'auto','option'=>'-c_IRR'}]};
+		
+					if ($libOption eq 'unsplit'){
+						push @{$params-> {'COMMANDS_LINES'}->{'COMMAND'}},{'CommandName'=>'spectrast','CommandRank'=>6,'PARAMS'=>[{'opvalue' => 'outputfile','selectby' => 'auto', 'option'=>'-cN'},{'opvalue' => "$fragmentation",'selectby' => 'auto','option'=>'-cI'},{'opvalue' => 'no value','option'=>'-cAC'}]};
+					}
+					elsif ($libOption eq 'split'){
+						push @{$params-> {'COMMANDS_LINES'}->{'COMMAND'}},{'CommandName'=>'spectrast_cluster.py','CommandRank'=>6,'PARAMS'=>{'opvalue' => '2','selectby' => 'auto', 'option'=>'-d'}};
+						push @{$params-> {'COMMANDS_LINES'}->{'COMMAND'}},{'CommandName'=>'spectrast','CommandRank'=>7,'PARAMS'=>[{'opvalue' => 'outputfile','selectby' => 'auto', 'option'=>'-cN'},{'opvalue' => "$fragmentation",'selectby' => 'auto','option'=>'-cI'}]};
+						push @{$params-> {'COMMANDS_LINES'}->{'COMMAND'}},{'CommandName'=>'spectrast','CommandRank'=>8,'PARAMS'=>[{'opvalue' => 'outputfile','selectby' => 'auto', 'option'=>'-cN'},{'opvalue' => "$fragmentation",'selectby' => 'auto','option'=>'-cI'},{'opvalue' => 'no value','option'=>'-cAC'}]};
+					}
+					if (("@inputFiles"=~ m/.dat/) && ("@inputFiles"=~ m/.tandem/)) {$params-> {'SEARCH_ENGINES'}->{'NAME'}='MASCOT,XTANDEM';}
+					elsif ("@inputFiles"=~ m/.dat/) {
+						if ($oldEngine) {
+							$params-> {'SEARCH_ENGINES'}->{'NAME'}=($oldEngine eq 'MASCOT,XTANDEM' || $oldEngine eq 'XTANDEM') ? 'MASCOT,XTANDEM' : 'MASCOT';
+						}else{$params-> {'SEARCH_ENGINES'}->{'NAME'}='MASCOT';}
+					}
+					elsif ("@inputFiles"=~ m/.tandem/) {
+						if ($oldEngine) {
+							$params-> {'SEARCH_ENGINES'}->{'NAME'}=($oldEngine eq 'MASCOT,XTANDEM' || $oldEngine eq 'MASCOT') ? 'MASCOT,XTANDEM' : 'XTANDEM';
+						}else{$params-> {'SEARCH_ENGINES'}->{'NAME'}='XTANDEM';}
+					}
+					if ($libCons eq 'mergelib') {
+						push @{$params->{'PARENT_LIB'}->{'PARENT'}},{'LibName'=>"$libFileName",'ID'=>"$libIDFile"};
+						my $xmlS =XML::Simple-> new (KeepRoot=>1);
+						my $paramStrg1=$dbh->selectrow_array("SELECT PARAM_STRG FROM SWATH_LIB WHERE ID_SWATH_LIB=$libIDFile");
+						my $xmlOldParam1=$xmlS->XMLin($paramStrg1);
+						my $nbFiles1=$xmlOldParam1->{'SWATH_LIB_DATA'}->{'FILE_NUMBER'}->{'NUMBER'};
+						$fileNumberTot=$nbFiles1+scalar @inputFiles;
+					}
 				}
 				$fileNumberTot=($fileNumberTot) ? $fileNumberTot : ($oldFileNumberTot)? $oldFileNumberTot + scalar @inputFiles : scalar @inputFiles;
 				$params-> {'FILE_NUMBER'}->{'NUMBER'}=$fileNumberTot;
@@ -2993,11 +3241,11 @@ echo "END" >>$workDir/END.txt;
 			}
 			
 			###> Insertion into table SWATH_LIB
+			my $dbRank=0;
 			if ($action eq 'update') {
 				my $sthLibUpdate2=$dbh->prepare("UPDATE SWATH_LIB SET DES=?, PARAM_STRG=?,USE_STATUS=?, VERSION_NAME=?,UPDATE_DATE=NOW(),UPDATE_USER=?,STATISTICS=?  WHERE ID_SWATH_LIB=?") or die "Couldn't prepare statement: " . $dbh->errstr;
 				$sthLibUpdate2->execute($des,$xmlParams,'yes',"v$version",$userID,$Stat,$libIDFile);
 				$sthLibUpdate2->finish;
-				my $dbRank=0;
 				my $match=0;
 				my $sthOldDB=$dbh->prepare("SELECT ID_DATABANK,DB_RANK FROM DATABANK_SWATHLIB WHERE ID_SWATH_LIB=?");
 				$sthOldDB->execute($libIDFile);
@@ -3009,11 +3257,11 @@ echo "END" >>$workDir/END.txt;
 					}
 				}
 				$sthOldDB->finish;
-				$dbRank+=1;
 				if ($match) {
 					my $sthLibDBUpdate=$dbh->prepare("INSERT INTO DATABANK_SWATHLIB (ID_DATABANK,ID_SWATH_LIB,DB_RANK) VALUES (?,?,?)") or die "Couldn't prepare statement: " . $dbh->errstr;
-					$sthLibDBUpdate->execute($dbID[0],$libIDFile,$dbRank);
-					$sthLibDBUpdate->finish;
+					foreach my $db (@dbID) {
+						$sthLibDBUpdate->execute($db,$libIDFile,++$dbRank);
+					}
 				}
 			}
 			else{
@@ -3022,17 +3270,17 @@ echo "END" >>$workDir/END.txt;
 				$sthLibUpdate2->finish;
 				$nameFinalFiles=$libName;    ##final files names= new library name
 				##Insertion into DATABANK_SWATHLIB
-				if($libCons eq 'new'){
+				if($libCons eq 'new' || $software eq 'Spectronaut'){
 					my $sthDatabankLib=$dbh->prepare("INSERT INTO DATABANK_SWATHLIB (ID_SWATH_LIB,ID_DATABANK,DB_RANK) values (?,?,?)");
-					$sthDatabankLib->execute($libID,$dbID[0],1);
-					$sthDatabankLib->finish;
+					foreach my $db (@dbID) {
+						$sthDatabankLib->execute($libID,$db,++$dbRank);
+						$sthDatabankLib->finish;
+					}
 				}
 				elsif( $action eq 'merge'){
-					my $dbRank=0;
+					my $sthDatabankLib=$dbh->prepare("INSERT INTO DATABANK_SWATHLIB (ID_SWATH_LIB,ID_DATABANK,DB_RANK) values (?,?,?)");
 					foreach my $dbID (@dbID){
-						$dbRank++;
-						my $sthDatabankLib=$dbh->prepare("INSERT INTO DATABANK_SWATHLIB (ID_SWATH_LIB,ID_DATABANK,DB_RANK) values (?,?,?)");
-						$sthDatabankLib->execute($libID,$dbID,$dbRank);
+						$sthDatabankLib->execute($libID,$dbID,++$dbRank);
 						$sthDatabankLib->finish;
 					}
 					my $sthParentLib1=$dbh->prepare("INSERT INTO PARENT_SWATH_LIB (ID_SWATH_LIB,ID_PARENT_SWATH_LIB,VERSION_NAME) values (?,?,?)");
@@ -3043,12 +3291,10 @@ echo "END" >>$workDir/END.txt;
 					$sthParentLib2->finish;
 				}
 				elsif($libCons eq 'mergelib'){
-					my $dbRank=0;
 					foreach my $dbID (@dbID){
 						next if $dbID eq '';
-						$dbRank++;
 						my $sthDatabankLib=$dbh->prepare("INSERT INTO DATABANK_SWATHLIB (ID_SWATH_LIB,ID_DATABANK,DB_RANK) values (?,?,?)");
-						$sthDatabankLib->execute($libID,$dbID,$dbRank);
+						$sthDatabankLib->execute($libID,$dbID,++$dbRank);
 						$sthDatabankLib->finish;
 					}
 					my $sthParentLib=$dbh->prepare("INSERT INTO PARENT_SWATH_LIB (ID_SWATH_LIB,ID_PARENT_SWATH_LIB,VERSION_NAME) values (?,?,?)");
@@ -3079,7 +3325,7 @@ echo "END" >>$workDir/END.txt;
 						}
 					}
 				}
-				elsif ($libCons eq 'new' || $libCons eq 'mergelib' || $action eq 'merge'){
+				elsif ($software eq 'Spectronaut' || ($software eq 'TPP' && ($libCons eq 'new' || $libCons eq 'mergelib' || $action eq 'merge'))) {
 					$sthLibMod=$dbh->prepare("INSERT INTO SWATH_LIB_MODIFICATION (ID_SWATH_LIB,ID_MODIFICATION,SPECIFICITY) values (?,?,?)");
 					$sthLibMod->execute($libID,$modID,$residuesList);
 					$sthLibMod->finish;
@@ -3098,49 +3344,59 @@ echo "END" >>$workDir/END.txt;
 			mkdir $finalDir unless -e $finalDir;
 			my $versionDir='Lib'.$libID.'_v'.$version;
 			
-			if ($action eq 'merge'){
-				system "cd $workDir; tar -czf $versionDir.tar.gz SpecLib_Lib*";
-			}
-			else{
-				###> Moving final files to Swath_Lib and removing temp folder
-				rename ("$workDir/SpecLib.sptxt","$workDir/SpecLib_Lib$libID\_v$version.sptxt");
-				rename ("$workDir/SpecLib.splib","$workDir/SpecLib_Lib$libID\_v$version.splib");
-				rename ("$workDir/SpecLib.pepidx","$workDir/SpecLib_Lib$libID\_v$version.pepidx");
-				rename ("$workDir/SpecLib.spidx","$workDir/SpecLib_Lib$libID\_v$version.spidx");
-				rename ("$workDir/SpecLib.mrm","$workDir/SpecLib_Lib$libID\_v$version.mrm") if(-s "$workDir/SpecLib.mrm");
-				if ($libCons eq 'mergelib'){
+			if($software eq 'TPP') {
+				if ($action eq 'merge'){
 					system "cd $workDir; tar -czf $versionDir.tar.gz SpecLib_Lib*";
 				}
 				else{
-					system "cd $workDir; tar -cf $versionDir.tar SpecLib_Lib$libID\_v$version.sptxt";
-					system "cd $workDir; tar -rf $versionDir.tar SpecLib_Lib$libID\_v$version.splib";
-					system "cd $workDir; tar -rf $versionDir.tar SpecLib_Lib$libID\_v$version.pepidx";
-					system "cd $workDir; tar -rf $versionDir.tar SpecLib_Lib$libID\_v$version.spidx";
-					system "cd $workDir; tar -rf $versionDir.tar SpecLib_Lib$libID\_v$version.mrm" if(-s "SpecLib_Lib$libID\_v$version.mrm");
+					###> Moving final files to Swath_Lib and removing temp folder
+					rename ("$workDir/SpecLib.sptxt","$workDir/SpecLib_Lib$libID\_v$version.sptxt");
+					rename ("$workDir/SpecLib.splib","$workDir/SpecLib_Lib$libID\_v$version.splib");
+					rename ("$workDir/SpecLib.pepidx","$workDir/SpecLib_Lib$libID\_v$version.pepidx");
+					rename ("$workDir/SpecLib.spidx","$workDir/SpecLib_Lib$libID\_v$version.spidx");
+					rename ("$workDir/SpecLib.mrm","$workDir/SpecLib_Lib$libID\_v$version.mrm") if(-s "$workDir/SpecLib.mrm");
+					if ($libCons eq 'mergelib'){
+						system "cd $workDir; tar -czf $versionDir.tar.gz SpecLib_Lib*";
+					}
+					else{
+						system "cd $workDir; tar -cf $versionDir.tar SpecLib_Lib$libID\_v$version.sptxt";
+						system "cd $workDir; tar -rf $versionDir.tar SpecLib_Lib$libID\_v$version.splib";
+						system "cd $workDir; tar -rf $versionDir.tar SpecLib_Lib$libID\_v$version.pepidx";
+						system "cd $workDir; tar -rf $versionDir.tar SpecLib_Lib$libID\_v$version.spidx";
+						system "cd $workDir; tar -rf $versionDir.tar SpecLib_Lib$libID\_v$version.mrm" if(-s "SpecLib_Lib$libID\_v$version.mrm");
+						system "cd $workDir; gzip $versionDir.tar";
+					}
+				}
+				system "mv $workDir/$versionDir.tar.gz $finalDir";
+				
+				open(FILESTAT,">>$fileStat");
+				print FILESTAT "Moving consensus library.\n";
+				close(FILESTAT);
+				
+				#move ("$workDir/$versionDir.tar.gz","$finalDir/$versionDir.tar.gz");
+				
+				###> moving final files (consensus library)
+				if ($libOption eq 'split' || ($action eq 'merge' && $split==1)){
+					system "mv $workDir/SpecLib_cons_concat.sptxt $finalDir/$nameFinalFiles.sptxt";
+				}
+				elsif($libOption eq 'unsplit' || ($action eq 'merge' && $split==0)){
+					system "mv $workDir/SpecLib_cons.sptxt $finalDir/$nameFinalFiles.sptxt";
+					system "mv $workDir/SpecLib_cons.splib $finalDir/$nameFinalFiles.splib";
+					system "mv $workDir/SpecLib_cons.pepidx $finalDir/$nameFinalFiles.pepidx";
+					system "mv $workDir/SpecLib_cons.spidx $finalDir/$nameFinalFiles.spidx";
+					system "mv $workDir/SpecLib_cons.mrm $finalDir/$nameFinalFiles.mrm" if(-s "$workDir/SpecLib_cons.mrm");
+				}
+				system "cp $workDir/sortie.txt $finalDir";
+				system "cp $workDir/script.sh $finalDir" if (-e "$workDir/script.sh");
+			} elsif($software eq 'Spectronaut') {
+				foreach my $spectronautLibFile (@inputFiles) {
+					rename ("$workDir/$spectronautLibFile","$workDir/$nameFinalFiles.tsv");
+					system "cd $workDir; tar -cf $versionDir.tar $nameFinalFiles.tsv";
 					system "cd $workDir; gzip $versionDir.tar";
+					system "mv $workDir/$versionDir.tar.gz $finalDir";
+					system "mv $workDir/$nameFinalFiles.tsv $finalDir";
 				}
 			}
-			system "mv $workDir/$versionDir.tar.gz $finalDir";
-			
-			open(FILESTAT,">>$fileStat");
-			print FILESTAT "Moving consensus library.\n";
-			close(FILESTAT);
-			
-			#move ("$workDir/$versionDir.tar.gz","$finalDir/$versionDir.tar.gz");
-			
-			###> moving final files (consensus library)
-			if ($libOption eq 'split' || ($action eq 'merge' && $split==1)){
-				system "mv $workDir/SpecLib_cons_concat.sptxt $finalDir/$nameFinalFiles.sptxt";
-			}
-			elsif($libOption eq 'unsplit' || ($action eq 'merge' && $split==0)){
-				system "mv $workDir/SpecLib_cons.sptxt $finalDir/$nameFinalFiles.sptxt";
-				system "mv $workDir/SpecLib_cons.splib $finalDir/$nameFinalFiles.splib";
-				system "mv $workDir/SpecLib_cons.pepidx $finalDir/$nameFinalFiles.pepidx";
-				system "mv $workDir/SpecLib_cons.spidx $finalDir/$nameFinalFiles.spidx";
-				system "mv $workDir/SpecLib_cons.mrm $finalDir/$nameFinalFiles.mrm" if(-s "$workDir/SpecLib_cons.mrm");
-			}
-			system "cp $workDir/sortie.txt $finalDir";
-			system "cp $workDir/script.sh $finalDir" if (-e "$workDir/script.sh");
 	
 			open(FILESTAT,">>$fileStat");
 			print FILESTAT "Ended";
@@ -3153,9 +3409,20 @@ echo "END" >>$workDir/END.txt;
 			exit;
 		}
 	}
+	
+	print qq |
+			<SCRIPT LANGUAGE="JavaScript">
+				window.location="$promsPath{cgi}/listSwathLibraries.cgi";
+			</SCRIPT>
+	|;
 }
-print "</CENTER></BODY></HTML>";
 
+
+print qq |
+		</CENTER>
+	</BODY>
+</HTML>
+|;
 
 sub ajaxSelectSecondMergeLib{
     my $libID1=param('libID1');
@@ -3229,7 +3496,7 @@ sub ajaxSelectExperiment {
 }
 
 sub ajaxSelectSample{
-    my $sthSampleList=$dbh->prepare("SELECT S.NAME, S.ID_SAMPLE, A.DATA_FILE, A.ID_ANALYSIS ,D.DECOY_TAG FROM SAMPLE S LEFT JOIN ANALYSIS A ON S.ID_SAMPLE=A.ID_SAMPLE LEFT JOIN ANALYSIS_DATABANK AD ON AD.ID_ANALYSIS=A.ID_ANALYSIS LEFT JOIN DATABANK D ON AD.ID_DATABANK=D.ID_DATABANK WHERE ID_EXPERIMENT=$experimentID AND (D.DECOY_TAG='yes' or D.DECOY_TAG LIKE '%rev%')") or die "Couldn't prepare statement: " . $dbh->errstr;
+    my $sthSampleList=$dbh->prepare("SELECT S.NAME, S.ID_SAMPLE, A.DATA_FILE, A.ID_ANALYSIS ,D.DECOY_TAG FROM SAMPLE S LEFT JOIN ANALYSIS A ON S.ID_SAMPLE=A.ID_SAMPLE LEFT JOIN ANALYSIS_DATABANK AD ON AD.ID_ANALYSIS=A.ID_ANALYSIS LEFT JOIN DATABANK D ON AD.ID_DATABANK=D.ID_DATABANK WHERE ID_EXPERIMENT=$experimentID") or die "Couldn't prepare statement: " . $dbh->errstr;
     $sthSampleList->execute;
     if ($sthSampleList->rows==0){ print "No sample generated with a decoy databank found.";}
     else{
@@ -3284,9 +3551,11 @@ sub ajaxRTData{
 
 sub ajaxSelectSpecieDB{
 	my ($commonName,$scientName)=split(/_/,param('species'));
-	($scientName)=quotemeta($scientName);
-	($commonName)=quotemeta($commonName);
-	my $sthDBSpeciesList=$dbh->prepare("SELECT D.NAME, D.ID_DATABANK,D.FASTA_FILE,D.DECOY_TAG,DT.NAME,D.ORGANISM FROM DATABANK D,DATABANK_TYPE DT WHERE D.DECOY_TAG='yes' or D.DECOY_TAG LIKE '%rev%' AND D.USE_STATUS='yes' AND D.ID_DBTYPE=DT.ID_DBTYPE AND (D.ORGANISM='$commonName' OR D.ORGANISM='$scientName' OR D.ORGANISM='')") or die "Couldn't prepare statement: " . $dbh->errstr;
+	my $scientNameMeta = quotemeta($scientName);
+	my $commonNameMeta = quotemeta($commonName);
+	my $uniprotAccOnly = ''; #($software and $software eq 'Spectronaut') ? "AND DT.NAME='UniProt - ACC'" : '';
+	my $speciesFilter = ($commonName && $scientName) ? "AND (D.ORGANISM='$commonNameMeta' OR D.ORGANISM='$scientNameMeta' OR D.ORGANISM='')" : '';
+	my $sthDBSpeciesList=$dbh->prepare("SELECT D.NAME, D.ID_DATABANK,D.FASTA_FILE,D.DECOY_TAG,DT.NAME,D.ORGANISM FROM DATABANK D,DATABANK_TYPE DT WHERE D.USE_STATUS='yes' AND D.ID_DBTYPE=DT.ID_DBTYPE $speciesFilter $uniprotAccOnly") or die "Couldn't prepare statement: " . $dbh->errstr;
 	$sthDBSpeciesList->execute;
 
 	if ($sthDBSpeciesList->rows==0) {
@@ -3296,27 +3565,24 @@ sub ajaxSelectSpecieDB{
 		my %dbHash;
 		while (my($dbName,$dbID,$dbFileName,$decoyTag,$dbTypeName,$organismDB)=$sthDBSpeciesList->fetchrow_array){
 			next if ($dbFileName=~m/:/) ;
-			next if ($decoyTag eq "No" || $decoyTag eq "");
+			next if ($software eq 'TPP' && ($decoyTag eq "No" || $decoyTag eq ""));
 			my $matchSpecies;
 			if ($organismDB eq '' || !$organismDB) {$matchSpecies=0;}
             else{$matchSpecies=1;}
 			$dbHash{$matchSpecies}{"$dbName&nbsp;\[$dbTypeName\]"}=$dbID;
 		}
 		
-		print qq
-		|&nbsp;<SELECT name ="dbfile" >
-			<option value="">-= Select Databank =-</option>
-		|;
+		print qq | &nbsp;<SELECT name ="dbfile" style="resize:vertical" multiple> |;
 		foreach my $optgroup (sort {$a cmp $b} keys %dbHash){
 			if ($optgroup == 0) {
                 print "<OPTGROUP label=\"Databank without species name.\">";
             }
-            else{print "<OPTGROUP label=\"$scientName\">";}
+            elsif($speciesFilter) {print "<OPTGROUP label=\"$scientName\">";}
 
 			foreach my $dbName (sort {lc $a cmp lc $b} keys %{$dbHash{$optgroup}}){
 				print "<option value=\"$dbHash{$optgroup}{$dbName}\">$dbName</option>";
 			}
-			print "</OPTGROUP>";
+			print "</OPTGROUP>" if($optgroup == 0 || $speciesFilter);
 		}
 		print "</SELECT>";
 	}
@@ -3325,14 +3591,14 @@ sub ajaxSelectSpecieDB{
 
 sub selectDBMergeLib{
 	my $dbTypeID=$dbh->selectrow_array("SELECT ID_DBTYPE FROM DATABANK D,DATABANK_SWATHLIB DS WHERE ID_SWATH_LIB=$libraryID AND D.ID_DATABANK=DS.ID_DATABANK AND DS.DB_RANK=1") or die "Couldn't prepare statement: " . $dbh->errstr;
-	my $sthDBUpdateList=$dbh->prepare("SELECT D.NAME, D.ID_DATABANK,D.FASTA_FILE,D.DECOY_TAG,DT.NAME FROM DATABANK D,DATABANK_TYPE DT WHERE D.DECOY_TAG='yes' or D.DECOY_TAG LIKE '%rev%' AND D.USE_STATUS='yes' AND DT.ID_DBTYPE=$dbTypeID AND D.ID_DBTYPE=DT.ID_DBTYPE ") or die "Couldn't prepare statement: " . $dbh->errstr;
+	my $sthDBUpdateList=$dbh->prepare("SELECT D.NAME, D.ID_DATABANK,D.FASTA_FILE,D.DECOY_TAG,DT.NAME FROM DATABANK D,DATABANK_TYPE DT WHERE D.USE_STATUS='yes' AND DT.ID_DBTYPE=$dbTypeID AND D.ID_DBTYPE=DT.ID_DBTYPE ") or die "Couldn't prepare statement: " . $dbh->errstr;
     $sthDBUpdateList->execute;
     if ($sthDBUpdateList->rows==0){ print "No sample generated with a decoy databank found.";}
     else{
 		my %dbHash;
 		while (my($dbName,$dbID,$dbFileName,$decoyTag,$dbTypeName)=$sthDBUpdateList->fetchrow_array){
 			next if ($dbFileName=~m/:/) ;
-			next if ($decoyTag eq "No" || $decoyTag eq "");
+			next if ($software eq 'TPP' && ($decoyTag eq "No" || $decoyTag eq ""));
 			$dbHash{"$dbName&nbsp;\[$dbTypeName\]"}=$dbID;
 		}
 		
@@ -3354,6 +3620,12 @@ $dbh->disconnect;
 
 
 ####>Revision history<#####
+# 1.9.5 [CHANGE] Force all databank selection to be UniProt - ACC to fit spectronaut export format (VS 03/11/20)
+# 1.9.4 [ENHANCEMENT] Spectronaut libraries compatibility with Edit/Archive/Delete functions (VS 22/10/20)
+# 1.9.3 [UPDATE] Changed JOB_HISTORY.STATUS to JOB_HISTORY.JOB_STATUS (PP 28/08/20)
+# 1.9.2 [MINOR] Added project selection when opening monitor jobs windows (VS 02/09/20)
+# 1.9.1 [BUGFIX] Fix uploaded file names that contained spaces (VS 21/08/20)
+# 1.9.0 [FEATURE] Create spectral library based on a Spectronaut file (VS 06/20/20)
 # 1.8.9 [FIX] Fix output and error path of child processes (VS 08/01/20)
 # 1.8.8 [ENHANCEMENT] Add PTMProphet to spectral library building (VS 18/11/19)
 # 1.8.7 Handles new job monitoring system (VS 10/05/19)

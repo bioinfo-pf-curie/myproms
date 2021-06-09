@@ -1,6 +1,6 @@
 /*
 ################################################################################
-# chartLibrary2.js         1.5.0                                               #
+# chartLibrary2.js         1.5.4                                               #
 # Authors: P. Poullet (Institut Curie)                                         #
 # Contact: patrick.poullet@curie.fr                                            #
 ################################################################################
@@ -200,7 +200,8 @@ function initializeForm(mainC) { // *public*
 	}
 
 	/* Point highlighting */
-	if (mainC.allowHighlight) {
+	if (mainC.allowHighlight && mainC.editHighlight !== false) {
+		mainC.editHighlight=true;
 		var highlightDivID=mainC.divID+'_hlight';
 		htmlString+='<FIELDSET style="padding:2px;white-space:nowrap"><LEGEND><B>Highlighting:</B></LEGEND><DIV id="'+highlightDivID+'">None</DIV></FIELDSET>\n';
 	}
@@ -665,36 +666,47 @@ function addHighlighting(mainC,hName,hColor,pointSet,matchPattern) { // *public*
 		alert('Highlighting is not allowed on chart #'+mainC.chartID);
 		return false;
 	}
+	if (!mainC.highlightedPoints) {
+		mainC.highlightedPoints={};
+	}
+	if (!mainC.highlightOrder) { // keeps track of order of layers of highlights
+		mainC.highlightOrder=[];
+	}
 	if (mainC.highlightedPoints[hName]) {
 		alert(hName+' is already used.');
 		return false;
 	}
 	mainC.highlightedPoints[hName]={color:hColor,visible:true,dataPoints:[]};
+	mainC.highlightOrder.push(hName);
 	var dsIdxList={};
-	for (var psIdx in pointSet) {
+	for (let psIdx in pointSet) {
 		if (psIdx==-1) { // use all dataSets
-			for (var i=0; i < mainC.dataSets.length; i++) {dsIdxList[i]=-1;}
+			for (let i=0; i < mainC.dataSets.length; i++) {dsIdxList[i]=-1;}
 			break;
 		}
 		else {dsIdxList[psIdx]=psIdx;}
 	}
 	// Points update
-	for (var dsIdx in dsIdxList) {
+	for (let dsIdx in dsIdxList) {
 		var psIdx=dsIdxList[dsIdx];
-		P1:for (var i=0; i < pointSet[psIdx].length; i++) {
+		P1:for (let i=0; i < pointSet[psIdx].length; i++) {
 			var matchRegExp=(matchPattern)? new RegExp(matchPattern.replace('###',pointSet[psIdx][i])) : null;
-			for (var j=0; j < mainC.dataSets[dsIdx].data.length; j++) {
+			for (let j=0; j < mainC.dataSets[dsIdx].data.length; j++) {
 				if ((matchPattern && matchRegExp.exec(mainC.dataSets[dsIdx].data[j].externalID)) || (!matchRegExp && mainC.dataSets[dsIdx].data[j].externalID==pointSet[psIdx][i])) {
 					mainC.highlightedPoints[hName].dataPoints.push(mainC.dataSets[dsIdx].data[j]);
 					mainC.dataSets[dsIdx].data[j].highlightNames.push(hName);
 					mainC.dataSets[dsIdx].data[j].isVisble=true; // in case hideUnmatchedPoints is true & 1st active highlight
 					var p=mainC.dataSets[dsIdx].data[j].point;
-					p.show(); // in case hideUnmatchedPoints is true & 1st active highlight
-					if (p.data('showLabel')) {
+					if (mainC.dataSets[dsIdx].params.visible) {p.show();} // in case hideUnmatchedPoints is true & 1st active highlight
+					p.toFront();
+					if (p.data('showLabel')) { // fill is "Red" do not change color
 						if (p.data('labelObj')) {
+							changeLabelColor(p.data('labelObj'),hColor);
+/*
 							p.data('labelObj').remove();
 							p.removeData('labelObj');
 							displayPointLabel(p,p.data('showLabel')); // label type
+*/
 						}
 					}
 					else {p.attr('fill',hColor);}
@@ -703,7 +715,9 @@ function addHighlighting(mainC,hName,hColor,pointSet,matchPattern) { // *public*
 			}
 		}
 	}
-
+	//Make sure all displayed labels above highlighted points
+	moveLabelsToFront(mainC);
+	
 	//Update legends on chart itself
 	updateHighlightLegends(mainC);
 
@@ -716,11 +730,15 @@ function deleteHighlighting(mainC,hName) { // *public*
 	var hlPoints=mainC.highlightedPoints[hName].dataPoints;
 	for (var i=0; i < hlPoints.length; i++) { // dataPoints
 		//Removing this hl from list
-		var newHlNames=new Array();
-		for (var j=0; j < hlPoints[i].highlightNames.length; j++) {
-			if (hlPoints[i].highlightNames[j] != hName) {newHlNames.push(hlPoints[i].highlightNames[j]);}
+		//var newHlNames=[];
+		for (let j=0; j < hlPoints[i].highlightNames.length; j++) {
+			//if (hlPoints[i].highlightNames[j] != hName) {newHlNames.push(hlPoints[i].highlightNames[j]);}
+			if (hlPoints[i].highlightNames[j] === hName) {
+				hlPoints[i].highlightNames.splice(j,1);
+			}
 		}
-		hlPoints[i].highlightNames=newHlNames;
+		//hlPoints[i].highlightNames=newHlNames;
+		var newHlNames=hlPoints[i].highlightNames;
 		var p=hlPoints[i].point;
 		if (mainC.hideUnmatchedPoints && newHlNames.length==0) {
 			hlPoints[i].isHidden=true;
@@ -728,9 +746,12 @@ function deleteHighlighting(mainC,hName) { // *public*
 		}
 		if (p.data('showLabel')) { // point is selected: color=#f00. Do not change it!
 			if (p.data('labelObj')) {
+				changeLabelColor(p.data('labelObj'),findPointColor(p.data('ownerPoint')));
+				/*
 				p.data('labelObj').remove();
 				p.removeData('labelObj');
 				if (!hlPoints[i].isHidden) {displayPointLabel(p,p.data('showLabel'));} // change only label color
+				*/
 			}
 		}
 		else {
@@ -747,6 +768,14 @@ function deleteHighlighting(mainC,hName) { // *public*
 		}
 	}
 	delete mainC.highlightedPoints[hName];
+	let mustRefresh=false;
+	for (let i=0; i<mainC.highlightOrder.length; i++) {
+		if (mainC.highlightOrder[i]===hName) {
+			mainC.highlightOrder.splice(i,1); // remove hName from list
+			if (i > 0) mustRefresh=true;
+			break;
+		}
+	}
 
 	if (mainC.hideUnmatchedPoints) {
 		var noHighlighting=true;
@@ -761,6 +790,8 @@ function deleteHighlighting(mainC,hName) { // *public*
 		}
 		mainC.hideUnmatchedPoints=false;
 	}
+
+	if (mustRefresh) redrawHighlightings(mainC);
 
 	//Update legends on chart itself
 	updateHighlightLegends(mainC);
@@ -803,6 +834,12 @@ function applyHighlightNameEdition(mainC) { // *public*
 	}
 	mainC.highlightedPoints[oldName].dataPoints=[];
 	delete mainC.highlightedPoints[oldName];
+	for (let i=0; i<mainC.highlightOrder.length; i++) {
+		if (mainC.highlightOrder[i]===oldName) {
+			mainC.highlightOrder[i]=newName;
+			break;
+		}
+	}
 
 	//Update legends on chart itself
 	updateHighlightLegends(mainC);
@@ -821,8 +858,8 @@ function updateHighlightLegends(mainC) { // private
 	else {mainC.highlightLegends.remove();} // clear previous legend if any
 	var posY=25;
 	var numAnnot=0;
-	for (var hName in mainC.highlightedPoints) {
-		if (!mainC.highlightedPoints[hName].visible) {continue;} // hidden highlighting
+	mainC.highlightOrder.forEach(function(hName) { // mainC.highlightedPoints
+		if (!mainC.highlightedPoints[hName].visible) {return;} // (<=> "continue" in for loop) hidden highlighting
 		numAnnot++;
 		if (numAnnot==1) {
 			mainC.highlightLegends.push(canvas.text(mainC.legendX,posY,'Legends:').attr({'font-size':12,'font-weight':'bold','text-anchor':'start'}));
@@ -831,30 +868,54 @@ function updateHighlightLegends(mainC) { // private
 		mainC.highlightLegends.push(canvas.rect(mainC.legendX+5,posY-5,10,10).attr({fill:mainC.highlightedPoints[hName].color,stroke:mainC.highlightedPoints[hName].color}));
 		mainC.highlightLegends.push(canvas.text(mainC.legendX+20,posY,hName).attr({'font-size':12,'text-anchor':'start'}));
 		posY+=15;
-	}
+	});
 	/*Readjust chart size if necessary */
-	var newWidth=Math.max(mainC.legendX,mainC.highlightLegends.getBBox().x2+15);
+	var newWidth=Math.max(mainC.legendX,mainC.highlightLegends.getBBox().x2+15),
+		oldWidth=canvas.width;
 	canvas.setSize(newWidth,canvas.height);
 	canvas.bottom.attr({width:newWidth}); // adjust background panel too
+	if (oldWidth > newWidth) { // make sure that all labels are still visible
+		var redrawn=false;
+		for (let dsIdx=0; dsIdx<mainC.dataSets.length; dsIdx++) {
+			for (let i=0; i < mainC.dataSets[dsIdx].data.length; i++) {
+				let p=mainC.dataSets[dsIdx].data[i].point;
+				if (p.data('labelObj') && !p.data('ownerPoint').isHidden) {
+					let tBox=p.data('labelObj')[0];
+					if (tBox.attr('x')+tBox.attr('width') > newWidth) { // label is not fully visible +> redraw
+						p.data('labelObj').remove();
+						p.removeData('labelObj');
+						displayPointLabel(p,p.data('showLabel')); // label type
+						redrawn=true;
+					}
+				}
+			}
+		}
+		if (redrawn==true) {
+			moveDragAreasToFront(mainC);
+		}
+	}
 }
 function updateHighlightList(mainC) { //DIV content update
-	var hlNameList=new Array();
-	for (var name in mainC.highlightedPoints) {hlNameList.push(name);}
+	if (mainC.editHighlight === false) return; // No highglighting edition (only legends are visible)
+	//var hlNameList=[];
+	//for (var name in mainC.highlightedPoints) {hlNameList.push(name);}
 	//hlNameList=hlNameList.sort(); // sort is conflicting with point highlightNames order
+	var hlNameList=[...mainC.highlightOrder]; // array copy
+	hlNameList.sort(); // sort is conflicting with point highlightNames order
 	var hCode='';
 	if (hlNameList.length) {
 		hCode='<INPUT type="checkbox" value="1" onclick="setUnmatchedPointsVisibility(cubiojsCharts['+mainC.chartID+'],this.checked)"';
 		if (mainC.hideUnmatchedPoints) {hCode+=' checked';}
 		hCode+='>Hide unmatched points<BR>';
-		for (var i=0; i<hlNameList.length; i++) {
-			name=hlNameList[i];
-			hCode+='<INPUT type="checkbox" value="'+name+'" onclick="setHighlightVisibility(cubiojsCharts['+mainC.chartID+'],this.value,this.checked)"';
-			if (mainC.highlightedPoints[name].visible) hCode+=' checked';
-			hCode+='><A href="javascript:selectHighlightedPoints(cubiojsCharts['+mainC.chartID+'],\''+name+'\')" style="font-size:12px;color:'+mainC.highlightedPoints[name].color+'">'+name+' ('+mainC.highlightedPoints[name].dataPoints.length+')</A>&nbsp;';
+		for (let i=0; i<hlNameList.length; i++) {
+			var hlName=hlNameList[i];
+			hCode+='<INPUT type="checkbox" value="'+hlName+'" onclick="setHighlightVisibility(cubiojsCharts['+mainC.chartID+'],this.value,this.checked)"';
+			if (mainC.highlightedPoints[hlName].visible) hCode+=' checked';
+			hCode+='><A href="javascript:selectHighlightedPoints(cubiojsCharts['+mainC.chartID+'],\''+hlName+'\')" style="font-size:12px;color:'+mainC.highlightedPoints[hlName].color+'">'+hlName+' ('+mainC.highlightedPoints[hlName].dataPoints.length+')</A>&nbsp;';
 			if (mainC.updateHighlight && mainC.updateHighlight.editable) {
-				hCode+='<INPUT type="button" value="E" style="font-size:10px;font-weight:bold;width:20px" onclick="editHighlighting(cubiojsCharts['+mainC.chartID+'],\'edit\',\''+name+'\')">';
+				hCode+='<INPUT type="button" value="E" style="font-size:10px;font-weight:bold;width:20px" onclick="editHighlighting(cubiojsCharts['+mainC.chartID+'],\'edit\',\''+hlName+'\')">';
 			}
-			hCode+='<INPUT type="button" value="X" style="font-size:10px;font-weight:bold;width:20px" onclick="deleteHighlighting(cubiojsCharts['+mainC.chartID+'],\''+name+'\')"><BR>';
+			hCode+='<INPUT type="button" value="X" style="font-size:10px;font-weight:bold;width:20px" onclick="deleteHighlighting(cubiojsCharts['+mainC.chartID+'],\''+hlName+'\')"><BR>';
 		}
 		if (mainC.updateHighlight && mainC.updateHighlight.editable) {
 			hCode+='<DIV id="'+mainC.divID+'_hlightEditDIV" style="display:none">'; //<FONT style="font-size:12px;font-weight:bold">Name:</FONT>
@@ -865,7 +926,6 @@ function updateHighlightList(mainC) { //DIV content update
 		}
 	}
 	else {hCode='None';}
-
 	document.getElementById(mainC.divID+'_hlight').innerHTML=hCode;
 }
 function selectHighlightedPoints(mainC,hName) { // *public*
@@ -874,11 +934,12 @@ function selectHighlightedPoints(mainC,hName) { // *public*
 			selectPoint(mainC.highlightedPoints[hName].dataPoints[i].point,'on','min');
 		}
 	}
+	moveLabelsToFront(mainC);
 }
 function setHighlightVisibility(mainC,hName,visStatus) { // *public*
 	mainC.highlightedPoints[hName].visible=visStatus;
 	var hlPoints=mainC.highlightedPoints[hName].dataPoints;
-	for (var i=0; i < hlPoints.length; i++) { // dataPoints
+	for (let i=0; i < hlPoints.length; i++) { // dataPoints
 		var dp=hlPoints[i];
 		//if (dp.highlightNames[dp.highlightNames.length-1] != hName) {continue;} // no effects on point color
 		if (visStatus==false && !dp.isHidden && mainC.hideUnmatchedPoints) {
@@ -898,10 +959,13 @@ function setHighlightVisibility(mainC,hName,visStatus) { // *public*
 				//p.hide();
 			}
 			else if (p.data('labelObj')) {
+				changeLabelColor(p.data('labelObj'),findPointColor(p.data('ownerPoint')));
+				/*
 				p.data('labelObj').remove();
 				p.removeData('labelObj');
 				displayPointLabel(p,p.data('showLabel')); // change only label color
 				//if (!dp.isHidden) displayPointLabel(p,p.data('showLabel')); // change only label color
+				*/
 			}
 		}
 		else {
@@ -930,7 +994,38 @@ function setHighlightVisibility(mainC,hName,visStatus) { // *public*
 			}
 			p.attr('fill',newColor);
 		}
-		if (dp.isHidden) {p.hide();} else {p.show();}
+		
+		if (dp.dataSet.params.visible) {
+			if (dp.isHidden) {p.hide();} else {p.show();}
+		}
+		if (visStatus===true) {
+			p.toFront();
+		}
+	}
+	//Make sure all displayed labels above highlighted points
+	if (visStatus === true) {  // move hName above all others
+		for (let i=0; i<mainC.highlightOrder.length; i++) {
+			if (mainC.highlightOrder[i]===hName) {
+				mainC.highlightOrder.splice(i,1); // remove hName from list
+				break;
+			}
+		}
+		mainC.highlightOrder.push(hName);
+		moveLabelsToFront(mainC);
+	}
+	else { // move other highlightings above these "unhighlighted" points
+		let lastHiddenIdx=-1;
+		for (let i=0; i<mainC.highlightOrder.length; i++) {
+			if (mainC.highlightOrder[i]===hName) {
+				mainC.highlightOrder.splice(i,1); // remove hName from list
+				break;
+			}
+			else if (!mainC.highlightedPoints[ mainC.highlightOrder[i] ].visible) {
+				lastHiddenIdx=i; // records latest non-visible
+			}
+		}
+		mainC.highlightOrder.splice(lastHiddenIdx+1,0,hName); // insert after last non-visible
+		redrawHighlightings(mainC);
 	}
 
 	//Update legends on chart itself
@@ -958,7 +1053,16 @@ function setUnmatchedPointsVisibility(mainC,hideStatus) {
 		}
 	}
 }
-
+function redrawHighlightings(mainC) {
+	mainC.highlightOrder.forEach(function(hName) {
+		if (!mainC.highlightedPoints[hName].visible) {return;} // (<=> "continue" in for loop) hidden highlighting
+		let hlPoints=mainC.highlightedPoints[hName].dataPoints;
+		for (let i=0; i < hlPoints.length; i++) {
+			hlPoints[i].point.toFront();
+		}
+	});
+	moveLabelsToFront(mainC);
+}
 
 /******************* Search ***********************/
 function searchDataPoints(mainC,searchText,searchResDivID,extSearchChkID,extSearchJobID) { // *public*
@@ -1022,6 +1126,7 @@ function searchDataPoints(mainC,searchText,searchResDivID,extSearchChkID,extSear
 		//emphasizePoint(matchList[i].point,'on','min');
 		selectPoint(matchList[i].point,'on','min');
 	}
+	moveLabelsToFront(mainC); // make sure all displayed labels stay above matched points
 	searchResDiv.innerHTML=matchList.length+' match(es) found!';
 }
 
@@ -1389,13 +1494,13 @@ function selectPoint(p,action,type) {
 			emphasizePoint(p,'off');
 		}
 		else { // set ON
-			p.data('showLabel',type);
+			p.data('showLabel',type).toFront();
 			emphasizePoint(p,'on',type);
 		}
 	}
 	else if (action=='on') { // set ON
 		if (!p.data('showLabel')) {
-			p.data('showLabel',type);
+			p.data('showLabel',type).toFront();
 			emphasizePoint(p,'on',type);
 		}
 	}
@@ -1449,7 +1554,7 @@ function setLabelDisplay(p,action,type) { // point hover event  // *public*
 	}
 	else {emphasizePoint(p,action,type);}
 }
-function emphasizePoint(p,action,type) { // point hover & click events
+function emphasizePoint(p,action,type) { // point hover, click events & search matched
     var pColor;
 	var dp=p.data('ownerPoint');
 	var mainC=dp.dataSet.params.chart;
@@ -1509,21 +1614,26 @@ if (type != 'none') {
 	}
 	p.attr('fill',pColor);
 }
+function findPointColor(dp) { // After removing 1 highlighting: point can still have another one
+	let C=dp.dataSet.params.chart;
+	//var lColor=(dp.highlightNames.length)? C.highlightedPoints[dp.highlightNames[dp.highlightNames.length-1]].color : dp.dataSet.params.color;
+	var pColor=dp.dataSet.params.color;// default
+	if (dp.highlightNames && dp.highlightNames.length) {
+		for (var h=dp.highlightNames.length-1; h>=0; h--) { // pick the newest visible highlight
+			if (C.highlightedPoints[dp.highlightNames[h]].visible) {
+				pColor=C.highlightedPoints[dp.highlightNames[h]].color;
+				break;
+			}
+		}
+	}
+	return pColor;
+}
 function displayPointLabel(p,type) { // !!! also in peptidePlot.js !!!
 	var dp=p.data('ownerPoint');
 	var C=dp.dataSet.params.chart;
 	var text=(C.customPointLabel)? C.customPointLabel(dp,type) : dp.info(type); //user-defined text
 	//var lColor=(dp.highlightNames.length)? C.highlightedPoints[dp.highlightNames[dp.highlightNames.length-1]].color : dp.dataSet.params.color;
-	var lColor=dp.dataSet.params.color;// default
-	if (dp.highlightNames && dp.highlightNames.length) {
-		for (var h=dp.highlightNames.length-1; h>=0; h--) { // pick the newest visible highlight
-			if (C.highlightedPoints[dp.highlightNames[h]].visible) {
-				lColor=C.highlightedPoints[dp.highlightNames[h]].color;
-				break;
-			}
-		}
-	}
-
+	var lColor=findPointColor(dp);
 	var tSet=drawLabel(p.paper,p.attr('cx'),p.attr('cy'),p.attr('r')+1,text,lColor);
 	if (dp.dataSet.params.chart.pointOnclick) {
 		tSet.click(function(){dp.dataSet.params.chart.pointOnclick(dp.dataSet.params.index,dp.label,dp.externalID)})
@@ -1568,8 +1678,31 @@ function drawLabel(canvas,x,y,d,text,lColor) { // !!! also in peptidePlot.js !!!
 	var tl=canvas.path('M'+sx+' '+sy+' L'+ex+' '+ey).attr({stroke:lColor});
 	var tb=canvas.rect(Math.round(tx)-1.5,Math.round(ty)-1.5,tw+4,th+2,4).attr({stroke:lColor,fill:'#fff','fill-opacity':0.7});
 	t.toFront();
-
 	return canvas.set(tb,tl,t);
+}
+function changeLabelColor(labelObj,newColor) { // labelObj is a set
+	labelObj[0].attr('stroke',newColor); // box
+	labelObj[1].attr('stroke',newColor); // link
+	labelObj[2].attr('fill',newColor); // text
+}
+function moveLabelsToFront(mainC) { // Moves all displayed labels to front to make sure they stay visible after a search or highlighting
+	for (let dsIdx=0; dsIdx<mainC.dataSets.length; dsIdx++) {
+		for (let i=0; i < mainC.dataSets[dsIdx].data.length; i++) {
+			let p=mainC.dataSets[dsIdx].data[i].point;
+			if (p.data('labelObj')) {
+				p.data('labelObj').toFront();
+			}
+		}
+	}
+	moveDragAreasToFront(mainC);
+}
+function moveDragAreasToFront(mainC) {
+	if (mainC.subChart) { // multi-chart
+		for (let c=0; c < mainC.activeCharts.length; c++) {
+			if (mainC.subChart[mainC.activeCharts[c]].dragArea) {mainC.subChart[mainC.activeCharts[c]].dragArea.toFront();}
+		}
+	}
+	else if (mainC.dragArea) {mainC.dragArea.toFront();}
 }
 
 /********** Path drawing **********/
@@ -1844,6 +1977,10 @@ function exportSVGtoImg (svgDivId,imgName,exportScript,format) {
 
 /*
 ####>Revision history<####
+# 1.5.4 [FEATURE] Compatibility with "editHighlight" parameter (PP 07/10/20)
+# 1.5.3 [BUGFIX] Renamed conflicting global variable "name" and made it local to updateHighlightList function (PP 03/09/20)
+# 1.5.2 [ENHANCEMENT] Improved highlighting display order (PP 25/06/20)
+# 1.5.1 [UX] Selected/highlighted points are moved to front (PP 14/05/20)
 # 1.5.0 [FEATURE] Search: Optional external user-provided pre-search (PP 04/10/19)
 # 1.4.5 Double click removes drag area on non-zoomable charts (PP 15/05/19)
 # 1.4.4 Displays both PNG and SVG image export options if format is not specified by user (PP 06/06/18)

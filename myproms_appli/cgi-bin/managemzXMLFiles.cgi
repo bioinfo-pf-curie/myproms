@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# managemzXMLFiles.cgi      1.1.0                                              #
+# managemzXMLFiles.cgi      1.2.0                                              #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Script that allows to import (1 by 1) or delete mzXML files in a project     #
@@ -45,7 +45,7 @@ $| = 1;
 use strict;
 use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI ':standard';
-use POSIX qw(strftime); # to get the time
+use POSIX qw(strftime :sys_wait_h);  # Core module
 use promsConfig;
 use promsMod;
 use File::Copy qw(copy move);
@@ -89,7 +89,7 @@ if ($action eq 'delete') {
 
 	sleep 5;
 	print qq
-|<SCRIPT LANGUAGE="JavaScript">
+|<SCRIPT type="text/javascript">
 	window.location="./managemzXMLFiles.cgi?ID=$branchID&id_project=$projectID";
 </SCRIPT>
 </BODY>
@@ -122,7 +122,7 @@ elsif ($action eq 'import') {
 	}
 	sleep 3;
 	print qq
-|<SCRIPT LANGUAGE="JavaScript">
+|<SCRIPT type="text/javascript">
 window.location="$promsPath{cgi}/managemzXMLFiles.cgi?ID=$branchID&id_project=$projectID";
 </SCRIPT>
 </BODY>
@@ -146,15 +146,12 @@ elsif ($action eq 'UseSharedDirectory') {
 |;
 	mkdir $mzXMLPath unless -e $mzXMLPath;
 	foreach my $sharedFile (param('sharedDirFiles')) {
-		#my $fileName=(split(/\//,$sharedFile))[-1];
 		my (undef,$path,$fileName)=splitpath($sharedFile);
 		print "<B>&nbsp;-$fileName...";
 		my $newFile="$mzXMLPath/$fileName";
-		move("$promsPath{shared}/$sharedFile",$newFile);
+		&copyAndPrint("$promsPath{shared}/$sharedFile",$newFile);
 		if ($fileName=~/\.zip$/) {
 			print " Extracting files...<BR>\n";
-			#system "unzip -q -d $batchFilesDir $newFile"; # Inflating archive
-			#unlink $newFile; # Deleting archive
 			&promsMod::unzipArchive($newFile,$mzXMLPath,{move2Top=>1,mode=>'verbose',txtBefore=>'&nbsp;&nbsp;-',txtAfter=>"<BR>\n"});
 			print "&nbsp;Done.</B><BR>\n";
 		}
@@ -172,7 +169,7 @@ elsif ($action eq 'UseSharedDirectory') {
 	}
 	sleep 3;
 	print qq
-|<SCRIPT LANGUAGE="JavaScript">
+|<SCRIPT type="text/javascript">
 window.location="$promsPath{cgi}/managemzXMLFiles.cgi?ID=$branchID&id_project=$projectID";
 </SCRIPT>
 </BODY>
@@ -196,7 +193,7 @@ if ($action ne 'delete') {
 <STYLE type="text/css">
 TD.center {text-align:center} //{font-weight:bold;}
 </STYLE>
-<SCRIPT LANGUAGE="JavaScript">
+<SCRIPT type="text/javascript">
 var fileSource;
 function cancelAction() {
 	//top.promsFrame.optionFrame.selectOption();
@@ -311,7 +308,7 @@ setTimeout(function(){document.getElementById('waitDIV').style.display='none';},
 		opendir (DIR, $mzXMLPath) || print "ERROR: Unable to read '$mzXMLPath' !<BR>\n";
 		while (defined (my $currentmzXMLFile = readdir (DIR))) {
 			next unless $currentmzXMLFile =~ /.+\.mzX*ML\Z/;
-			$filesList{$currentmzXMLFile}=0;
+			$filesList{$currentmzXMLFile}=(stat "$mzXMLPath/$currentmzXMLFile")[7]; # size
 		}
 		closedir DIR;
 	}
@@ -375,7 +372,8 @@ setTimeout(function(){document.getElementById('waitDIV').style.display='none';},
 	my $bgColor=$lightColor;
 	my $boxIdx=0;
 	foreach my $dataFile (sort {lc($a) cmp lc($b)} keys %filesList) {
-		print "<TR bgcolor=$bgColor><TH align=left nowrap><INPUT type=\"checkbox\" name=\"filebox\" id=\"filebox\" value=\"$dataFile\" onchange=\"checkAutoExtend($boxIdx,this.checked);\">$dataFile</TH></TR>\n";
+		my $fileSizeStrg=1*(sprintf "%.2f",$filesList{$dataFile} / (1024 ** 2))." Mo";
+		print "<TR bgcolor=$bgColor><TH align=left nowrap><LABEL><INPUT type=\"checkbox\" name=\"filebox\" id=\"filebox\" value=\"$dataFile\" onchange=\"checkAutoExtend($boxIdx,this.checked);\">$dataFile</LABEL> - <I>$fileSizeStrg</I></TH></TR>\n";
 		$boxIdx++;
 		$bgColor=($bgColor eq $darkColor)? $lightColor : $darkColor;
 	}
@@ -396,7 +394,62 @@ setTimeout(function(){document.getElementById('waitDIV').style.display='none';},
 |;
 }
 
+
+sub copyAndPrint {
+	my ($sourceFile, $targetFile) = @_;
+	my (undef, $path, $fileName) = splitpath($sourceFile);
+
+	my $sourceFileSize = (stat $sourceFile)[7];
+	my $sourceSizeGo = $sourceFileSize / (1024 ** 3);
+	
+	if ($sourceSizeGo < 0.1) {
+		copy($sourceFile, $targetFile);
+	}
+	else { # fork and wait
+		my $maxCopyTime = ($sourceSizeGo > 1)? $sourceSizeGo * 20 : 20;  # max 20min or 20min per Go
+		my $targetFileSize = 0;
+		my $loopNb = 0;  # To avoid infinite loop
+	
+		# Fork to copy files (makes it possible to keep the page active and avoid timeout for big files)
+		my $childPid = fork;
+		unless ($childPid) { # child here
+			#>Disconnecting from server
+			open STDOUT, '>/dev/null' or die "Can't open /dev/null: $!";
+			open STDIN, '</dev/null' or die "Can't open /dev/null: $!";
+			open STDERR, ">>/dev/null";
+			copy($sourceFile, $targetFile);
+			exit;
+		}
+		# print "<BR>&nbsp;&nbsp;&nbsp;&nbsp;- Storing $fileName.";
+		sleep 1;  # To avoid sleeping 10 sec after in most cases
+	
+		# Start tracking target file and check if the copy is actually being done
+		while ($loopNb < 6 * $maxCopyTime) {  # 10sec loops -> loopNb = 6 * nb of minutes passed
+			my $res = waitpid($childPid, WNOHANG); # WNOHANG (from POSIX ":sys_wait_h"): parent doesn't hang during waitpid
+			last if $res; # child has ended
+	
+			sleep 10;
+			print ".";
+			# print "<BR>" if ($loopNb > 30);  # End line every 5 minutes
+			$loopNb++;
+		}
+		if ($loopNb >= 6 * $maxCopyTime) {
+			print "Killing child process $childPid" if ($childPid);
+			kill "SIGKILL", $childPid if ($childPid);
+			die "Retrieving file is taking too long or process died silently before completion";
+		} else {
+			$targetFileSize = (-e "$targetFile") ? (stat $targetFile)[7] : 0;
+			if ($targetFileSize == $sourceFileSize) {
+				print("<BR>&nbsp;&nbsp;&nbsp;&nbsp;Done.");
+			} else {
+				die "Copy of file was not done properly. Exiting...";
+			}
+		}
+	}
+}
+
 ####> Revision history
+# 1.2.0 [ENHANCEMENT] Copy no move from shared directory with fork to wait for large files & file size added (PP 08/06/21)
 # 1.1.0 Uses &promsMod::cleanDirectory to delete all XML files older than 3 months & fixed JavaScript errors (PP 06/02/18)
 # 1.0.11 Update to share directory (GA 20/11/17)
 # 1.0.10 Set default CGI upload directory to $promsPath{tmp}/upload (PP 18/09/17)

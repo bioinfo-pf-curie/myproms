@@ -1,8 +1,8 @@
 ################################################################################
-# analysisCounting.R         1.0.6                                            #
-# Authors: Alexandre Sta (Institut Curie)                                      #
+# analysisCounting.R         1.1.1                                             #
+# Authors: A. Sta, P. Poullet (Institut Curie)                                 #
 # Contact: myproms@curie.fr                                                    #
-# Description : 
+# Description : Computes SSPA                                                  #
 ################################################################################
 #----------------------------------CeCILL License-------------------------------
 # This file is part of myProMS
@@ -41,6 +41,7 @@
 
 # Wokrdirectory
 #setwd("")
+repertory = "" # Depository repertory, empty or ends by a "/" please
 
 #####################################################
 # Library 
@@ -49,22 +50,66 @@ library(reshape2)
 library(ggplot2)
 library(tidyverse)
 library(MASS)
+library(data.table)
 
 #####################################################
 # Load Data
 #####################################################
-data = read.table("data/table.txt",head=TRUE)
+data = read.table("data/table.txt",head=TRUE) # WARNING: only integer values are ollowed
 
 #####################################################
 # Change the shape of the data
 #####################################################
 data$Protein = as.character(data$Protein)
-Data = melt(data,id="Protein") # Short to long : one line per count
-Data$variable = as.character(Data$variable) # factor -> character
-Data$Protein = as.character(Data$Protein) # factor -> character
+#Data0 = melt(data,id="Protein") # Short to long : one line per count
+Data0 = reshape2::melt(data,id="Protein") # Short to long : one line per count
+# <- WARNING: reshape2::melt is obsolete: Find alternative (PP 02/07/20)
+Data0$variable = as.character(Data0$variable) # factor -> character
+Data0$Protein = as.character(Data0$Protein) # factor -> character
 
-Data$grp = unlist(lapply(Data$variable,function(b)unlist(strsplit(b,split="\\."))[1])) # Groups information
-Data$sample = unlist(lapply(Data$variable,function(b)unlist(strsplit(b,split="\\."))[2])) # Sample information
+Data0$grp = unlist(lapply(Data0$variable,function(b)unlist(strsplit(b,split="\\."))[1])) # Groups information
+Data0$sample = unlist(lapply(Data0$variable,function(b)unlist(strsplit(b,split="\\."))[2])) # Sample information
+
+#####################################################
+# Detect and exclude outliers
+#####################################################
+cat("\n######\nRemoving outliers...\n")
+remove_outliers <- function(x) {
+	qnt <- quantile(x$value, probs=c(.25, .75), na.rm = TRUE)
+	H <- 1.5 * IQR(x$value, na.rm = TRUE)
+	y <- x
+	y$value[x$value < (qnt[1] - H)] <- NA
+	y$value[x$value > (qnt[2] + H)] <- NA
+	return(y)
+}
+n = length(unique(Data0$Protein))
+c=1
+percent = 0 # To print the progression of the analysis
+percent.old = -1  # To print the progression of the analysis
+DataFrag <- list()
+for(i in unique(Data0$Protein)) # Loop on each protein
+{
+	prot <- Data0[Data0$Protein == i,]
+	for(j in unique(prot$grp)) # Loop on each group
+	{  
+		grp <- prot[prot$grp == j,]
+		DataFrag <- c(DataFrag, list( remove_outliers(grp) ))	
+	}
+
+  # Progression informations (plot information each %)
+  c=c+1
+  percent.old = percent
+  percent = round(c/n,2)*100
+  if(percent.old!=percent)
+  {
+    cat(paste("######\n",percent," %\n",sep=""))
+  }
+}
+Data <- as.data.frame(rbindlist(DataFrag))
+outliers <- Data[is.na(Data$value),c(1,2)]
+colnames(outliers)[2] <- "BioRep"
+Data <- na.omit(Data)
+cat(paste(dim(outliers)[1]," outliers found.\n\n",sep=""))
 
 #####################################################
 # Create the output table
@@ -74,19 +119,42 @@ data.out$couple = "0"  # Couple selected
 data.out$effect = "-1" # Effect of the second second group compared to the first
 data.out$pvalue = "2"  # p-value of the associated efect
 data.out[,paste(unique(Data$grp),"mean",sep=".")] = "-1" # mean of each groups
+data.out$bestDelta = 0
 data.out$model = "a"
 
 #####################################################
 # Compute the univariate analysis
 #####################################################
+cat("\n######\nComputing analysis...\n")
+testGlmNb <- function(dt) {
+	result <- tryCatch(
+		{
+			summary(suppressWarnings(glm.nb(as.numeric(value) ~ step,data = dt)))
+		},
+		error=function(err) {
+			return ("error")
+		},
+		warning = function(war) {
+			#return ("***WARNIGNS")
+		},
+		finally = {
+			# do nothing
+		}
+	)
+	return (result)
+}
+
 n = length(unique(Data$Protein))
+#g = length(unique(Data$grp))
 j=1
 percent = 0 # To print the progression of the analysis
 percent.old = -1  # To print the progression of the analysis
 for(i in unique(Data$Protein)) # Loop on each protein for separate analysis
 {
+#cat(paste(i,"\n",sep="")) # DEBUG <----------------------------------------------------------------
   dt = Data[Data$Protein == i,] # Current data
   dimnames(dt)[[1]] = seq(1:length( dimnames(dt)[[1]] )) # Change the numbering of the data.frame dt
+  
   # Compute the mean of each groups, order them and chose the higer steep (ordinate difference)
    mean = unlist(lapply(unique(dt$grp),function(b)mean(dt$value[dt$grp==b]))) # Compute the mean
    names(mean) = unique(dt$grp) # Name the mean with the correct names of the groups
@@ -95,6 +163,11 @@ for(i in unique(Data$Protein)) # Loop on each protein for separate analysis
    nn = length(mean) # number of groups
    names(df) = paste(names(mean)[1:(nn-1)],names(df),sep="/") # Name the steps
    cpl.selected = names(which.max(abs(df))) # Chose the best one
+  
+  # Compute best delta % (PP)
+  data.out$bestDelta[data.out$Protein==i] = 100 * max(abs(df)) / mean[1] # negative.binomial & poisson
+  #data.out$bestDelta[data.out$Protein==i] = 100 * max(abs(df)) / (mean[1]-mean[nn]) # gaussian
+  
   # compute models 
    cp1 = unlist(strsplit(cpl.selected,split="/"))[1] # Extract the first group of the best couple selected
    cp2 = unlist(strsplit(cpl.selected,split="/"))[2] # Extract the second group of the best couple selected
@@ -110,24 +183,25 @@ for(i in unique(Data$Protein)) # Loop on each protein for separate analysis
     #scan()
    #cpl.selected = paste(c(cp1,cp2)[order(c(cp1,cp2))],collapse="/") # Order the couple selected by alphabetical order like : grp1/grp2
    # Add one observation if a step is empty : it is like adding one sample where the protein have been seen once
-    if(sum(as.numeric(dt$value[dt$step=="left"]))==0){
-      dt[dim(dt)[1]+1,c("grp","value","step")] = c(cp1,1,"left") 
-    }
-    if(sum(as.numeric(dt$value[dt$step=="right"]))==0){
-      dt[dim(dt)[1]+1,c("grp","value","step")] = c(cp2,1,"right")
-    }
-   # Compute a Poisson model : model of counting observation, the effect correspond of the effect of the second cluster (alphabetically ordered previously)
+			if(sum(as.numeric(dt$value[dt$step=="left"]))==0){
+					dt[dim(dt)[1]+1,c("grp","value","step")] = c(cp1,1,"left") 
+			}
+			if(sum(as.numeric(dt$value[dt$step=="right"]))==0){
+					dt[dim(dt)[1]+1,c("grp","value","step")] = c(cp2,1,"right")
+			}
+   # Compute a Poisson model : model of counting observation, the effect correspond to the effect of the second cluster (alphabetically ordered previously)
    # If the variance of the observations on each conditions are 0 compute a poisson model if not compute a negative binomial model because negative binomial 
    # model can not be computed between conditions with variance=0
-   sdCondition = dt %>% group_by(step) %>% dplyr::summarise(sd = sd(value)) %>% filter(!is.na(sd))
-   if( is.null(sdCondition$sd) | sdCondition$sd==0 ){
-     p1 = summary(glm(as.numeric(value) ~ step,data = dt,family = "poisson"))
-     data.out$model[data.out$Protein==i] = "poisson"
-   }else{
-     #p1 = summary(glm(as.numeric(value) ~ step,data = dt,family = "poisson"))
-     p1 = summary(glm.nb(as.numeric(value) ~ step,data = dt))
-     data.out$model[data.out$Protein==i] = "negative.binomial"
-   }
+			# Update 28/03/20 (PP): Try negative binomial first. If fails fall back to poisson
+ 			
+			p1 = testGlmNb(dt)
+			if (class(p1)[1]=="character") { # glm.nb failed => switch to poisson
+				p1 = summary(glm(as.numeric(value) ~ step,data = dt,family = "poisson"))
+				data.out$model[data.out$Protein==i] = "poisson"
+			} else { # success
+				data.out$model[data.out$Protein==i] = "negative.binomial"
+			}
+
   # Compute the effect of the difference of groups 
    effect = p1$coefficients[2,"Estimate"] # Effect of grp2 
    pvalue = p1$coefficients[2,"Pr(>|z|)"] # Associated p-value (t-test !=0)
@@ -138,13 +212,14 @@ for(i in unique(Data$Protein)) # Loop on each protein for separate analysis
    data.out$couple[data.out$Protein==i] = paste(left,right,sep=" / ")
    data.out$effect[data.out$Protein==i] = effect
    data.out[data.out$Protein==i, paste(names(mean),"mean",sep=".")  ] = mean 
+  
   # Progression informations (plot information each %)
    j=j+1
    percent.old = percent
    percent = round(j/n,2)*100
    if(percent.old!=percent)
    {
-     cat(paste("######\n",percent," %\n\n\n",sep=""))
+     cat(paste("######\n",percent," %\n",sep=""))
    }
 }
 
@@ -155,9 +230,14 @@ data.out$pvalue_adjusted = as.numeric(data.out$pvalue_adjusted) # character -> n
 #####################################################
 # Write the results
 #####################################################
-repertory = "" # Depository repertory, end by a "/" please 
 file = paste(repertory,"results/outTable.txt",sep="")
-write.table((data.out %>% dplyr::select(-model)),file,sep="\t",row.names = FALSE) 
+#write.table((data.out %>% dplyr::select(-model)),file,sep="\t",row.names = FALSE) # w/o model
+write.table(data.out,file,sep="\t",row.names = FALSE,quote=FALSE) # w model
+if (dim(outliers)[1] > 0) {
+	outlierFile = paste(repertory,"results/outliers.txt",sep="")
+	write.table(outliers,outlierFile,sep="\t",row.names = FALSE,quote=FALSE) 
+}
+
 
 #####################################################
 # Visualisation (depend on the design of the study -> may change with the analysis)
@@ -220,6 +300,8 @@ if(plots == TRUE)
 #####################################################
 #####################################################
 ####>Revision history<####
+# 1.1.1 [FEATURE] Added bestDelta (in %) to output table (PP 02/07/20)
+# 1.1.0 [FEATURE] Added outlier filtering based on quantile distribution (PP 28/03/20)
 # 1.0.6 if the variance in each conditions is 0 compute a poisson model instead of a negative binomial (AS 01/12/17) 
 # 1.0.5 p.value corrected by fdr by default now (AS 31/08/17) 
 # 1.0.4 change the model from a lm:poisson to a lm:negative Binomial (AS 10/02/17)

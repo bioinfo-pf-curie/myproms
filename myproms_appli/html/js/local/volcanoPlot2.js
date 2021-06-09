@@ -1,6 +1,6 @@
 /*
 ################################################################################
-# volcanoPlot2.js      1.1.8                                                   #
+# volcanoPlot2.js      1.1.9                                                   #
 # Authors: P. Poullet                                                          #
 # Contact: patrick.poullet@curie.fr                                            #
 ################################################################################
@@ -81,7 +81,7 @@ vpDataPoint.prototype = {
 		else {
 			if (this.dataSet.params.chart.dataSets.length > 1) infoStrg+='\nSet='+this.dataSet.params.name;
 			if (this.subChart.name=='volcano') {
-				infoStrg+='\nFC='+this.foldChange+'\np-value';
+				infoStrg+='\nFC='+this.foldChange+'\n'+this.dataSet.params.chart.pValueType;
 				infoStrg+=(this.pvalue==1.e-300)? '<=1.e-300' : '='+this.pvalue;
 			}
 			else {
@@ -124,6 +124,7 @@ function volcanoPlot(volcano) {
 	this.allowHighlight=volcano.allowHighlight; // flag to allow or not highlighting
 	this.updateHighlight=volcano.updateHighlight; // object {callback:callback function in case delete/edit,editable:true/false (hl name edition flag)}
 	this.highlightedPoints={}; // List of different user-defined labeled set of points
+	this.pValueType=volcano.pValueType || 'p-value';
     var pointDefaultSize=(volcano.pointDefaultSize)? volcano.pointDefaultSize : 3;
 	this.pointOpacity=(volcano.pointOpacity)? volcano.pointOpacity : 0.7; // point opacity
 	//var colorList=['#000000','#4AA02C','#F660AB','#FBB917','#0000FF','#8AFB17','#9A9A9A','#7E2217','#95B9C7','#E18B6B'];
@@ -139,8 +140,8 @@ function volcanoPlot(volcano) {
 	pi.name='plusInf';
 
 	/* Axes */
-	vp.axisXtext='Log2(fold change B/A)'; //,minusInf:null,plusInf:null
-	vp.axisYtext='-Log10(p-value)';
+	vp.axisXtext='Log2(Fold change B/A)'; //,minusInf:null,plusInf:null
+	vp.axisYtext='-Log10('+this.pValueType+')';
 	mi.axisXtext=pi.axisXtext='';
 	mi.axisYtext=pi.axisYtext='#Peptides/100 aa';
 	vp.forceXto0=mi.forceXto0=pi.forceXto0=0;
@@ -186,9 +187,9 @@ function volcanoPlot(volcano) {
 		this.thresholdLines.push(new thresholdLine(vp,'X','max. fold change',maxThresFC,'#00A000','',1,1,true));
 	}
 	if (volcano.pValue) {
-		this.thresholdLines.push(new thresholdLine(vp,'Y','max. p-value',volcano.pValue,'#FF0000','',0,0,true));
+		this.thresholdLines.push(new thresholdLine(vp,'Y','max. '+this.pValueType,volcano.pValue,'#FF0000','',0,0,true));
 	}
-vp.thresholdLines=this.thresholdLines;
+	vp.thresholdLines=this.thresholdLines;
 
     /********************* Data import *********************/
     /***** Datasets *****/
@@ -332,6 +333,7 @@ vp.thresholdLines=this.thresholdLines;
 
 /*
 ####>Revision history<####
+# 1.1.9 [FEATURE] Handles p-value type (eg. adjusted) (PP 25/02/20)
 # 1.1.8 [FEATURE] Optional external pre-search function (PP 04/10/19)
 # 1.1.7 "+/-∞" replaced by "Only in A/B" (PP 31/05/19)
 # 1.1.6 Uses chart registering for dynamic html calls (PP 20/02/16)

@@ -238,10 +238,12 @@ sub exportLibrarySCRIPT {
     my $processFile=($k eq "peakview")? $libraryName."_peakview.tsv" : $libraryName."_openswath.tsv" ;
     while ($wait == 1) {
         sleep 30;
-        $now=strftime("%s",localtime); # in sec
-        $waitTime=strftime("%Hh %Mm %Ss",localtime($now-$startTime-3600));
-        $status="Updated $waitTime ago";
-        print "<SCRIPT LANGUAGE=\"JavaScript\">$divID.innerHTML=\"\";$divID.innerHTML='$status';</SCRIPT>";
+        if ($divID){
+            $now=strftime("%s",localtime); # in sec
+            $waitTime=strftime("%Hh %Mm %Ss",localtime($now-$startTime-3600));
+            $status="Updated $waitTime ago";
+            print "<SCRIPT LANGUAGE=\"JavaScript\">$divID.innerHTML=\"\";$divID.innerHTML='$status';</SCRIPT>";
+        }
         
         ## loading process
         $massNumber=`cut -f1 $workDir/$processFile | uniq | wc -l` if (-s "$workDir/$processFile");

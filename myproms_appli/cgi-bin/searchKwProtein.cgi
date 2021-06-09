@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# searchKwProtein.cgi      2.3.0                                               #
+# searchKwProtein.cgi      2.3.1                                               #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Searches DB for proteins using keywords                                      #
@@ -329,7 +329,7 @@ unless ($existMatches) {
 my ($geneIdentID)=$dbh->selectrow_array("SELECT ID_IDENTIFIER FROM IDENTIFIER WHERE CODE='GN'");
 my $sthPI=$dbh->prepare("SELECT ALIAS,ID_MASTER_PROTEIN,MW,PROT_DES,ORGANISM FROM PROTEIN WHERE ID_PROTEIN=?");
 my $sthAP=$dbh->prepare("SELECT CONF_LEVEL,VISIBILITY FROM ANALYSIS_PROTEIN WHERE ID_PROTEIN=? AND ID_ANALYSIS=?");
-my $sthGN=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER MI WHERE ID_MASTER_PROTEIN=? AND ID_IDENTIFIER=$geneIdentID ORDER BY RANK");
+my $sthGN=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER MI WHERE ID_MASTER_PROTEIN=? AND ID_IDENTIFIER=$geneIdentID ORDER BY IDENT_RANK");
 
 my (%proteinInfo,%master2genes);
 foreach my $protID (keys %matchedProjectProtIDs) {
@@ -786,6 +786,7 @@ function displayClassification() {
 }
 
 ####>Revision history<####
+# 2.3.1 [UPDATE] Changed RANK field to IDENT_RANK for compatibility with MySQL 8 (PP 04/03/20) 
 # 2.3.0 [FEATURE] Remove locked experiments from search database (VS 08/08/19)
 # 2.2.10 Added number of matches found (PP 14/06/18)
 # 2.2.9 Handles project status=-1 [no auto-end validation] (PP 07/06/18)

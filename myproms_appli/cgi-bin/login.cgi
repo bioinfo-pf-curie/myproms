@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# login.cgi      2.1.1                                                         #
+# login.cgi      2.1.2                                                         #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -39,6 +39,7 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 #-------------------------------------------------------------------------------
+
 $| = 1;
 
 ####################################################
@@ -61,7 +62,6 @@ my %promsPath=&promsConfig::getServerInfo('no_user');
 my $badConnection=0;
 my $oldUser='';
 $oldUser=&connect2Server if param('user');
-my $chkFullWin=(param('user') && !param('fullWin'))? '' : 'checked';
 
 #######################
 ####>Starting HTML<####
@@ -94,7 +94,7 @@ function checkForm(myForm) {
 <TABLE cellspacing=0 cellpadding=3>
 <TR><TH align=right class="title2">User:</TH><TD><INPUT type="text" name="user" value="$oldUser" size="15" /></TD></TR>
 <TR><TH align=right class="title2">Password:</TH><TD><INPUT type="password" name="password" size="15" /></TD></TR>
-<TR><TD class="title2" colspan=2><INPUT type="checkbox" name="fullWin" id="fullWinBox" value="1" $chkFullWin/> Run in dedicated window.</TD></TR>
+<TR><TD class="title2" colspan=2><LABEL><INPUT type="checkbox" name="fullWin" id="fullWinBox" value="1"/> Run in dedicated window.</LABEL></TD></TR>
 <TR><TH colspan=2><INPUT type="submit" name="login" value=" Login " class="title2" />&nbsp&nbsp&nbsp<INPUT type="button" value=" Cancel " onclick="window.close()" /></TH></TR>
 |;
 if ($badConnection) {
@@ -211,8 +211,9 @@ sub skipLogin {
 }
 
 ####>Revision history<####
+# 2.1.2 [UPDATE] Removed default full window check (PP 07/06/21)
 # 2.1.1 Handles closed account & prevents full window option to be always checked (PP 11/06/18)
-# 2.1.0 [Fix] bug due to mySQL considering 'user_x' equal to 'user_x   '!!! (PP 08/06/18)
+# 2.1.0 [Fix] bug due to mySQL considering 'user_x' equal to 'user_x&nbsp;&nbsp;'!!! (PP 08/06/18)
 # 2.0.9 Uses mkdir instead of make_path (PP 10/03/14)
 # 2.0.8 GPL license (PP 23/09/13)
 # 2.0.7 Records connection in file &lt;logs dir&gt;/connections_&lt;year&gt;.log (PP 21/02/13)

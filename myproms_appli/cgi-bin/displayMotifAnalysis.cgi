@@ -1,6 +1,6 @@
 #!/usr/local/bin/perl -w
 ################################################################################
-# displayMotifAnalysis.cgi       1.0.2                                         #
+# displayMotifAnalysis.cgi       1.0.3                                         #
 # Authors: P. Poullet, S.Liva (Institut Curie)                                 #
 # Contact: myproms@curie.fr                                                    #
 # display the results of Motif analysis                                        #
@@ -201,7 +201,7 @@ sub ajaxGetProteins {
 
   my $sthGetSequence=$dbh->prepare("SELECT ID_MASTER_PROTEIN, ALIAS, PROT_DES, MW, ORGANISM FROM PROTEIN WHERE ID_PROTEIN=? and ID_PROJECT=$projectID");
   my ($geneNameID)=$dbh->selectrow_array("SELECT ID_IDENTIFIER FROM IDENTIFIER WHERE CODE='GN'");
-  my $sthMP=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_MASTER_PROTEIN=? AND ID_IDENTIFIER=$geneNameID  ORDER BY RANK");
+  my $sthMP=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_MASTER_PROTEIN=? AND ID_IDENTIFIER=$geneNameID  ORDER BY IDENT_RANK");
 
   my (%protInfo, %orderProt, %anaProt, %gene, %tmpGene);
   %gene=();
@@ -326,6 +326,7 @@ sub ajaxGetProteins {
 }
 
 ####>Revision history<####
+# 1.0.3 [UPDATE] Changed RANK field to IDENT_RANK for compatibility with MySQL 8 (PP 04/03/20) 
 # 1.0.2 Minor display improvements (PP 04/04/19)
 # 1.0.1 available for list (SL 26/07/17)
 # 1.0.0 New script for displaying motif enrichment analysis (SL 27/06/17)

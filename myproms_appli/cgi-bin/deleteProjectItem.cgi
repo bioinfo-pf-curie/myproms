@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# deleteProjectItem.cgi                  2.6.6                                 #
+# deleteProjectItem.cgi                  2.6.9                                 #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -505,10 +505,14 @@ sub deleteExperiments {
 	my $sthDelEAA=$dbh->prepare("DELETE FROM EXPLORANA_ANA WHERE ID_EXPLORANALYSIS=?"); # for motif analysis
 	my$sthDelEA=$dbh->prepare("DELETE FROM EXPLORANALYSIS WHERE ID_EXPLORANALYSIS=?");
 	#<Pathway Analysis
-	my $sthPA=$dbh->prepare("SELECT ID_PATHWAY_ANALYSIS FROM PATHWAY_ANALYSIS WHERE ID_EXPERIMENT=?");
+	my $sthPA=$dbh->prepare("SELECT ID_PATHWAY_ANALYSIS FROM PATHWAY_ANALYSIS WHERE ID_EXPERIMENT=? AND ANALYSIS_TYPE='PATHWAY'");
 	my $sthDelPAQ=$dbh->prepare("DELETE FROM PATHWAYANA_QUANTIFICATION WHERE ID_PATHWAY_ANALYSIS=?");
 	my $sthDelPAA=$dbh->prepare("DELETE FROM PATHWAYANA_ANALYSIS WHERE ID_PATHWAY_ANALYSIS=?");
 	my $sthDelPA=$dbh->prepare("DELETE FROM PATHWAY_ANALYSIS WHERE ID_PATHWAY_ANALYSIS=?");
+	#<GSEA
+	my $sthGSEA=$dbh->prepare("SELECT ID_PATHWAY_ANALYSIS FROM PATHWAY_ANALYSIS WHERE ID_EXPERIMENT=? AND ANALYSIS_TYPE='GSEA'");
+	my $sthDelGSEAQ=$dbh->prepare("DELETE FROM PATHWAYANA_QUANTIFICATION WHERE ID_PATHWAY_ANALYSIS=?");
+	my $sthDelGSEA=$dbh->prepare("DELETE FROM PATHWAY_ANALYSIS WHERE ID_PATHWAY_ANALYSIS=?");
 	#<GO Analysis
 	my $sthGo=$dbh->prepare("SELECT ID_GOANALYSIS FROM GO_ANALYSIS WHERE ID_EXPERIMENT=?");
 	#<Design-based Quantification
@@ -518,6 +522,8 @@ sub deleteExperiments {
 	my $sthDelOC=$dbh->prepare("DELETE OEC FROM OBS_EXPCONDITION OEC INNER JOIN EXPCONDITION EC ON OEC.ID_EXPCONDITION=EC.ID_EXPCONDITION WHERE ID_DESIGN=?");
 	my $sthDelC=$dbh->prepare("DELETE FROM EXPCONDITION WHERE ID_DESIGN=?");
 	my $sthDelD=$dbh->prepare("DELETE FROM DESIGN WHERE ID_DESIGN=?");
+	# User lock experiment
+	my $sthDelULE=$dbh->prepare("DELETE FROM USER_EXPERIMENT_LOCK WHERE ID_EXPERIMENT=?");
 	#<Exp items,Experiment
 	my $sthES=$dbh->prepare("SELECT ID_SAMPLE FROM SAMPLE WHERE ID_EXPERIMENT=?");
 	my $sthEG=$dbh->prepare("SELECT ID_GEL2D FROM GEL2D WHERE ID_EXPERIMENT=?");
@@ -527,6 +533,10 @@ sub deleteExperiments {
 		##<Metadata
 		deleteMetadata($dbh, "EXPERIMENT", $expID);
 		
+		#<User lock
+		$sthDelULE->execute($expID);
+		
+		print '/';
 		##<Exploratory analyses & annotationsets
 		$sthEA->execute($expID);
 		while (my ($eaID)=$sthEA->fetchrow_array) {
@@ -549,6 +559,15 @@ sub deleteExperiments {
 			print '.';
 		}
 
+		##<GSEA analyses
+		$sthGSEA->execute($expID);
+		while (my ($gseaID) = $sthGSEA->fetchrow_array) {
+			$sthDelGSEAQ->execute($gseaID);
+			$sthDelGSEA->execute($gseaID);
+			rmtree("$promsPath{gsea}/project_$projectID/gsea_$gseaID");
+			print '.';
+		}
+
 		##<GO analyses
 		$sthGo->execute($expID);
 		while (my ($goID)=$sthGo->fetchrow_array) {
@@ -557,11 +576,12 @@ sub deleteExperiments {
 		}
 
 		##<Designs, obsCondition, conditions & design-based quantifications
+		print '/';
 		$sthED->execute($expID);
 		while (my ($desID)=$sthED->fetchrow_array) {
 			$sthQD->execute($desID);
 			while (my ($qID)=$sthQD->fetchrow_array) {
-				&promsQuantif::deleteQuantification($dbh,$projectID,$qID);
+				&promsQuantif::deleteQuantification($dbh,$projectID,$qID,{VERBOSE=>1});
 				print '.';
 			}
 			$sthDelOC->execute($desID);
@@ -572,6 +592,7 @@ sub deleteExperiments {
 		}
 
 		##<Sample & children
+		print '/';
 		my @expSamp;
 		$sthES->execute($expID);
 		while (my ($sampID)=$sthES->fetchrow_array) {push @expSamp,$sampID;}
@@ -581,7 +602,7 @@ sub deleteExperiments {
 		my @exp2dGels;
 		$sthEG->execute($expID);
 		while (my ($gelID)=$sthEG->fetchrow_array) {push @exp2dGels,$gelID;}
-		&delete2DGels($dbh,$projectID,\@exp2dGels);
+		&delete2DGels($dbh,$projectID,\@exp2dGels) if scalar @exp2dGels;
 
 		##>Experiment
 		$sthDelE->execute($expID);
@@ -597,6 +618,9 @@ sub deleteExperiments {
 	$sthDelPAQ->finish;
 	$sthDelPAA->finish;
 	$sthDelPA->finish;
+	$sthGSEA->finish;
+	$sthDelGSEAQ->finish;
+	$sthDelGSEA->finish;
 	$sthGo->finish;
 	$sthQD->finish;
 	$sthED->finish;
@@ -757,6 +781,9 @@ sub updateBrothersPosition {
 }
 
 ####>Revision history<####
+# 2.6.9 [FEATURE] Add deletion of GSEA with experiment (VL 18/11/20)
+# 2.6.8 [ENHANCEMENT] Added verbose=1 to quantification deletion in Experiment-wide deletion context to prevent server timeout (PP 22/07/20)
+# 2.6.7 [BUGFIX] Delete user_lock experiment on project item deletion (VS 09/04/20)
 # 2.6.6 [BUGFIX] Delete metadata on project item deletion (VS 16/12/19)
 # 2.6.5 [ENHANCEMENT] Simplify metadata deletion (VS 15/11/19)
 # 2.6.4 [FIX] Properly delete a file related to a metadata when it is deleted/its project item is deleted (VS 05/06/19)

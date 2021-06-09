@@ -1,5 +1,5 @@
 ################################################################################
-# PCA.R       1.0.8                                                            #
+# PCA.R       1.1.1                                                            #
 # Authors: Patrick Poullet, Stephane Liva, Guillaume Arras (Institut Curie)    #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -48,16 +48,18 @@ Matrix <- read.table("matrix.txt", header=TRUE, check.names=FALSE)
 MatrixTranspo <- t(Matrix)
 write.table(MatrixTranspo,file="MatrixTranspo.txt",quote=FALSE, sep="\t", col.names=NA)
 
-ProtPCASc <- PCA(as.data.frame(Matrix),scale.unit=TRUE, graph=FALSE, ncp=min(dim(Matrix)))
-QuantifPCASc <- PCA(as.data.frame(MatrixTranspo),scale.unit=TRUE, graph=FALSE, ncp=min(dim(Matrix)))
-ProtPCA <- PCA(as.data.frame(Matrix),scale.unit=FALSE, graph=FALSE, ncp=min(dim(Matrix)))
-QuantifPCA <- PCA(as.data.frame(MatrixTranspo),scale.unit=FALSE, graph=FALSE, ncp=min(dim(Matrix)))
+maxNumComp=10;
+numComp=min(maxNumComp,min(dim(Matrix)))
+#ProtPCASc <- PCA(as.data.frame(Matrix),scale.unit=TRUE, graph=FALSE, ncp=numComp)
+QuantifPCASc <- PCA(as.data.frame(MatrixTranspo),scale.unit=TRUE, graph=FALSE, ncp=numComp)
+#ProtPCA <- PCA(as.data.frame(Matrix),scale.unit=FALSE, graph=FALSE, ncp=numComp)
+QuantifPCA <- PCA(as.data.frame(MatrixTranspo),scale.unit=FALSE, graph=FALSE, ncp=numComp)
 
 # Scaled
-write.table(ProtPCASc$ind$coord,file="protCoordinates_sc.txt", quote=FALSE, sep="\t", col.names=NA)
+#write.table(ProtPCASc$ind$coord,file="protCoordinates_sc.txt", quote=FALSE, sep="\t", col.names=NA)
 
-ProtPCASc$eig<-as.data.frame(ProtPCASc$eig) #to be compatible with previous version of FactoMineR
-write.table(ProtPCASc$eig$"percentage of variance",file="protContrib_sc.txt", quote=FALSE, sep="\t", col.names=NA)
+#ProtPCASc$eig<-as.data.frame(ProtPCASc$eig) #to be compatible with previous version of FactoMineR
+#write.table(ProtPCASc$eig$"percentage of variance",file="protContrib_sc.txt", quote=FALSE, sep="\t", col.names=NA)
 
 # Scaled transpose
 write.table(QuantifPCASc$ind$coord,file="quantifCoordinates_sc.txt", quote=FALSE, sep="\t", col.names=NA)
@@ -66,10 +68,10 @@ QuantifPCASc$eig<-as.data.frame(QuantifPCASc$eig) #to be compatible with previou
 write.table(QuantifPCASc$eig$"percentage of variance",file="quantifContrib_sc.txt", quote=FALSE, sep="\t", col.names=NA)
 
 # Not scaled
-write.table(ProtPCA$ind$coord,file="protCoordinates.txt", quote=FALSE, sep="\t", col.names=NA)
+#write.table(ProtPCA$ind$coord,file="protCoordinates.txt", quote=FALSE, sep="\t", col.names=NA)
 
-ProtPCA$eig<-as.data.frame(ProtPCA$eig) #to be compatible with previous version of FactoMineR
-write.table(ProtPCA$eig$"percentage of variance",file="protContrib.txt", quote=FALSE, sep="\t", col.names=NA)
+#ProtPCA$eig<-as.data.frame(ProtPCA$eig) #to be compatible with previous version of FactoMineR
+#write.table(ProtPCA$eig$"percentage of variance",file="protContrib.txt", quote=FALSE, sep="\t", col.names=NA)
 
 # Not scaled transpose
 write.table(QuantifPCA$ind$coord,file="quantifCoordinates.txt", quote=FALSE, sep="\t", col.names=NA)
@@ -78,22 +80,24 @@ QuantifPCA$eig<-as.data.frame(QuantifPCA$eig) #to be compatible with previous ve
 write.table(QuantifPCA$eig$"percentage of variance",file="quantifContrib.txt", quote=FALSE, sep="\t", col.names=NA)
 
 # Dimension description
-nb.axes <- min(dim(Matrix))-1
+nb.axes <- min(numComp,min(dim(Matrix))-1)
 QuantifPCASc.dimdesc <- dimdesc(QuantifPCASc, axes=1:nb.axes, proba = 0.05) #proba: the significance threshold considered to characterized the dimension
-for(i in 1:nb.axes)
+for (i in 1:nb.axes)
 {
 #    write.table(QuantifPCASc.dimdesc[[paste("Dim",i,sep=".")]],file=paste(paste("quantifProtDim",i,"_sc",sep=""),"txt",sep="."), quote=FALSE, sep="\t", col.names=NA)
     write.table(na.omit(QuantifPCASc.dimdesc[[paste("Dim",i,sep=".")]][["quanti"]]),file=paste(paste("quantifProtDim",i,"_sc",sep=""),"txt",sep="."), quote=FALSE, sep="\t", col.names=NA)
 }
 
 QuantifPCA.dimdesc <- dimdesc(QuantifPCA, axes=1:nb.axes, proba = 0.05)
-for(i in 1:nb.axes)
+for (i in 1:nb.axes)
 {
 #    write.table(QuantifPCA.dimdesc[[paste("Dim",i,sep=".")]],file=paste(paste("quantifProtDim",i,sep=""),"txt",sep="."), quote=FALSE, sep="\t", col.names=NA)
     write.table(na.omit(QuantifPCA.dimdesc[[paste("Dim",i,sep=".")]][["quanti"]]),file=paste(paste("quantifProtDim",i,sep=""),"txt",sep="."), quote=FALSE, sep="\t", col.names=NA)
 }
 
 ####>Revision history<####
+# 1.1.1 [BUGFIX] in nb.axes estimation when matrix dim is larger than maxNumComp (PP 22/02/20)
+# 1.1.0 [CHANGE] No longer computes protein/site PCA & max dimensions set to 10 (PP 21/02/20)
 # 1.0.8 compatible with previous version of factoMineR (SL 18/10/17)
 # 1.0.7 +/-infinite imputations moved to prepareExplorAna.R (PP 18/02/16)
 # 1.0.6 Bug fix in mysd calculation (PP 03/02/16)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# manageQuantification.cgi               1.2.7                                 #
+# manageQuantification.cgi               1.2.8                                 #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -128,23 +128,25 @@ function checkForm(myForm) {
 </script>
 </HEAD>
 <BODY background="$promsPath{images}/bgProMS.gif" >
-<center><FONT class="title">$title</FONT>
+<CENTER><FONT class="title">$title</FONT>
 <BR><BR><BR>
 |;
 	
 	if ($action eq 'delete') {
+		print "</CENTER>\n";
 		my ($experimentID)=$dbh->selectrow_array("SELECT DISTINCT(ID_EXPERIMENT) FROM SAMPLE S, ANALYSIS A, ANA_QUANTIFICATION AQ WHERE S.ID_SAMPLE=A.ID_SAMPLE AND A.ID_ANALYSIS=AQ.ID_ANALYSIS AND AQ.ID_QUANTIFICATION=$quantifIdList[0]");
-		print('<FONT class="title2">');
 		my $designID;
-		my $sthQ = $dbh->prepare("SELECT ID_DESIGN,NAME FROM QUANTIFICATION WHERE ID_QUANTIFICATION=?");
+		my $sthQ = $dbh->prepare("SELECT ID_DESIGN,NAME,FOCUS FROM QUANTIFICATION WHERE ID_QUANTIFICATION=?");
 		
 		foreach my $qID (@quantifIdList) {
 			$sthQ->execute($qID);
-			($designID,my $qName)=$sthQ->fetchrow_array;
-			print "&nbsp;-Deleting '$qName'...";
-			&promsQuantif::deleteQuantification($dbh,$projectID,$qID);
+			($designID,my $qName,my $focus)=$sthQ->fetchrow_array;
+			print "<FONT class=\"title2\">-Deleting '$qName'</FONT>";
+			my ($verbose,$isTargeted)=($focus eq 'peptide' && $branchID eq "quantification:$qID")? (2,1) : (1,0); # single XIC deeletion or anything else
+			print "<BR>" if $verbose==2;
+			&promsQuantif::deleteQuantification($dbh,$projectID,$qID,{VERBOSE=>$verbose,IS_TARGETED=>$isTargeted}); # TARGETED only applies to XIC extraction
 			$dbh->commit;
-			print " Done.<BR>\n";
+			print "<FONT class=\"title2\">Done.<BR></FONT>\n";
 		}
 		$sthQ->finish;
 		$dbh->disconnect;
@@ -324,6 +326,7 @@ function cancelAction() {
 }
 
 ####>Revision history<####
+# 1.2.8 [ENHANCEMENT] Added extra parameter to &deleteQuantification to indicated a targetted deletion (PP 28/05/20)
 # 1.2.7 [BUGFIX] Restrict deletability to quantifications without children (PP 12/11/19)
 # 1.2.6 [ENHANCEMENT] Add form check for multiple quantifications deletion (PP 09/11/19)
 # 1.2.5 [ENHANCEMENT] Allow deletion of on-going quantifications (VS 21/10/19)

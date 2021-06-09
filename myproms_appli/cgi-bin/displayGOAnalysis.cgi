@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# displayGOAnalysis.cgi    1.2.7                                               #
+# displayGOAnalysis.cgi    1.3.0                                               #
 # Authors: P. Poullet, G. Arras & F. Yvon (Institut Curie)                     #
 # Contact: myproms@curie.fr                                                    #
 # Display GO term lists and graphs of an existing GO analysis                  #
@@ -47,6 +47,7 @@ use promsConfig;
 use promsMod;
 use Spreadsheet::WriteExcel;
 use strict;
+use LWP::UserAgent;
 
 #######################
 ####>Configuration<####
@@ -62,6 +63,39 @@ my $dbh=&promsConfig::dbConnect;
 ####################
 ####>Parameters<####
 ####################
+if(!param('XLS')) {
+	print header( -'content-encoding' => 'none');
+	warningsToBrowser(1);
+}
+
+if(param('AJAX') && param('AJAX') eq 'revigo') {
+	my $formData  = {
+		goList => param('goList'),
+		goSizes => param('goSizes'),
+		measure => param('measure'),
+		cutoff => param('cutoff'),
+		valueType => param('valueType')
+	};
+	
+	my $agent = LWP::UserAgent->new(agent=>'libwww-perl myproms@curie.fr', ssl_opts=>{ verify_hostname => 0 });
+	$agent->timeout(10);
+	$agent->env_proxy;
+
+	my $response = $agent->post("http://revigo.irb.hr/StartJob.aspx", $formData);
+
+	while (my $wait = $response->header('Retry-After')) {
+		sleep $wait;
+		$response = $agent->get($response->base);
+	}
+
+	if ($response->is_success) {
+		print($response->content);
+	} else {
+		print('{ error: "Could not start revigo" }');
+	}
+	exit;
+}
+
 my $goAnaID=param('ID');
 my $aspect=param('ASPECT');
 my $projectID=&promsMod::getProjectID($dbh,$goAnaID,'GO_ANALYSIS');
@@ -74,11 +108,6 @@ my $MAX_PROTS = (param('MAX_PROTS')) ? param('MAX_PROTS') : 1000;
 my $grouPprots = (param('GROUP_PROTS')) ? param('GROUP_PROTS') : 0;
 
 my ($light,$dark)=&promsConfig::getRowColors;
-
-if(!param('XLS')) {
-	print header( -'content-encoding' => 'none');
-	warningsToBrowser(1);
-}
 
 if(param('AJAX') && !param('HEATMAP')) {
 	my ($listInfosRef, $masterProtRef) = &getInfoList((param('GOID')) ? [param('GOID')] : undef, (param('PROTID')) ? [param('PROTID')] : undef, (param('SEARCH')) ? param('SEARCH') : undef);
@@ -501,6 +530,50 @@ function searchGOForm() {
 	}
 }
 
+function startRevigo() {
+	var searchField = document.getElementById('goRevigo');
+	var startButton = document.getElementById('startRevigoButton');
+
+	startButton.disabled = true;
+	startButton.innerHTML = 'Starting ...';
+
+	//If XHR object already exists, the request is canceled & the object is deleted
+	if(XHR && XHR.readyState != 0){
+		XHR.abort();
+		delete XHR;
+	}
+
+	//Creation of the XMLHTTPRequest object
+	XHR = getXMLHTTP();
+	if (!XHR) {
+		return false;
+	}
+
+	const goList = document.getElementById('goList').value;
+	const goSizes = document.getElementById('goSizes').value;
+	const measure = document.getElementById('measure').value;
+	const cutoff = document.getElementById('cutoff').value;
+	const valueType = document.getElementById('valueType').value;
+
+	var URL = "$promsPath{cgi}/displayGOAnalysis.cgi";
+	var params = 'AJAX=revigo&goList=' + goList + '&goSizes=' + goSizes + '&measure=' + measure + '&cutoff=' + cutoff + '&valueType=' + valueType;
+	XHR.open("POST", URL, true);
+	XHR.setRequestHeader('Content-type', 'application/x-www-form-urlencoded');
+	XHR.onreadystatechange=function() {
+		if (XHR.readyState==4 && XHR.responseText){
+			const res = JSON.parse(XHR.responseText);
+			if(res.error) {
+				console.log(error);
+			} else if(res.jobid) {
+				window.open('http://revigo.irb.hr/Results.aspx?jobid=' + res.jobid, '_blank');
+			}
+			startButton.disabled = false;
+			startButton.innerHTML = 'Find GO Clusters';
+		}
+	}
+	XHR.send(params);
+}
+
 function getXMLHTTP(){
 	var xhr=null;
 	if(window.XMLHttpRequest) {// Firefox & others
@@ -573,14 +646,13 @@ foreach my $vizType (@vizTypes) {
 print qq |
 	</select>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
 	
-	<form id='goRevigo' style='display:inline' target='_blank' action='http://revigo.irb.hr/revigo.jsp' method='POST'>
+	<form id='goRevigo' style='display:inline' action='javascript:void(0);' method='POST'>
 		<textarea style='display:none' name='goList' id='goList'>$goRevigoStr</textarea>
 		<input type='hidden' name='goSizes' id='goSizes' value='0' />
 		<input type='hidden' name='measure' id='measure' value='SIMREL' />
-		<input type='hidden' name='cutoff' id='cutoff' value='0.90' />
-		<input type='hidden' name='isPValue' id='isPValue' value='yes' />
-		<input type='hidden' name='whatIsBetter' id='whatIsBetter' value='higher' />
-		<input type='submit' class='title3' name='startRevigo' value='Find GO Clusters' />
+		<input type='hidden' name='cutoff' id='cutoff' value='0.7' />
+		<input type='hidden' name='valueType' id='valueType' value='PValue' />
+		<button id='startRevigoButton' onclick='startRevigo()' class='title3'>Find GO Clusters</button>
 	</form>
 	
 	&nbsp;<INPUT type="button" class="title3" value="Export" onclick="window.location='$promsPath{cgi}/displayGOAnalysis.cgi?XLS=go&ID=$goAnaID&ASPECT=$aspect';">
@@ -919,9 +991,9 @@ sub getInfoList {
 	my $goName;
 	my $sthProt = $dbh->prepare("SELECT ALIAS,ID_MASTER_PROTEIN,PROT_DES,ORGANISM FROM PROTEIN WHERE ID_PROTEIN=?");
 	my ($uniAcID)=$dbh->selectrow_array("SELECT ID_IDENTIFIER FROM IDENTIFIER WHERE CODE='AC'");
-	my $selUniprotAC=$dbh->prepare("SELECT VALUE from MASTERPROT_IDENTIFIER where ID_MASTER_PROTEIN=? and ID_IDENTIFIER=? ORDER BY RANK");
+	my $selUniprotAC=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER where ID_MASTER_PROTEIN=? AND ID_IDENTIFIER=? ORDER BY IDENT_RANK");
 	my ($geneNameID)=$dbh->selectrow_array("SELECT ID_IDENTIFIER FROM IDENTIFIER WHERE CODE='GN'");
-	my $sthMP=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_MASTER_PROTEIN=? AND ID_IDENTIFIER=$geneNameID ORDER BY RANK");
+	my $sthMP=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_MASTER_PROTEIN=? AND ID_IDENTIFIER=$geneNameID ORDER BY IDENT_RANK");
 	
 	# Preparing fetching analysis ID where each protein is detected by the maximum peptide number, to display sequenceView.
 	# Changed on the 16/07/2014 because the experiment context was not considered -> The project best analysis was chosen and not the best analysis of the experiment (misleading in pepnum)!!!
@@ -1731,6 +1803,8 @@ sub printHeatMap {
 }
 
 ####>Revision history<####
+# 1.3.0 [ENHANCEMENT] Updated Revigo API call with new query system (VS 02/04/21) 
+# 1.2.8 [UPDATE] Changed RANK field to IDENT_RANK for compatibility with MySQL 8 (PP 04/03/20) 
 # 1.2.7 [ENHANCEMENT] Improved heatmap view (VS 30/01/20)
 # 1.2.6 [FEATURE] Add heatmap view of GO terms distribution among proteins (VS 08/01/20)
 # 1.2.5 [FEATURE] Add link to REVIGO for GO clustering analysis (VS 13/12/19)

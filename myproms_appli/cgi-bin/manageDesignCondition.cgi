@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# manageDesignCondition.cgi    1.4.1                                           #
+# manageDesignCondition.cgi    1.5.5                                           #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Create, edit & store Design, Experimental States & associate observations    #
@@ -71,11 +71,19 @@ if (param('AJAX')) {
 	if ($ajaxAction eq 'matchBSA') {&ajaxMatchBioSamplesFromAttribute;}
 	exit;
 }
-if ($action eq 'copyExp') {
-	&createDesignFromExperiment;
+my $updateComment='';
+if ($action eq 'fromExp') {
+	$updateComment=&createDesignFromExperiment;
 	$action='summary';
 }
-
+elsif ($action eq 'fromBioSamp') {
+	$updateComment=&createDesignFromBioSamples;
+	$action='summary';
+}
+elsif ($action eq 'bioSampNames2States') {
+	$updateComment=&renameStatesFromBioSamples;
+	$action='summary';
+}
 my ($trueItem,$trueItemID)=($item,$rowID);
 my $designID;
 my $MAX_NUM_STATES=500; # Maximal number of states that can be drawn on a frame.
@@ -111,35 +119,118 @@ my $expStateStrg='';
 my $startNewStates=0;
 my $duplicateWarningStrg='';
 
-if ($action =~ /edit|summary/){
+if ($action =~ /edit|summary/) {
 
 	$itemID=$rowID;
-	
+	my ($experimentID)=($item eq 'EXPCONDITION')? $dbh->selectrow_array("SELECT ID_EXPERIMENT FROM DESIGN D INNER JOIN EXPCONDITION E ON E.ID_DESIGN=D.ID_DESIGN WHERE E.ID_EXPCONDITION=$itemID")
+												: $dbh->selectrow_array("SELECT ID_EXPERIMENT FROM DESIGN WHERE ID_DESIGN=$itemID");
 	##>Check for empty design
 	if ($action eq 'summary') {
-		my ($hasStates)=$dbh->selectrow_array("SELECT 1 FROM EXPCONDITION WHERE ID_DESIGN=$itemID LIMIT 1");
-		unless ($hasStates) {
-			#>Check for labeled Analyses (NOT compatible with labeling... for now)
-			my ($hasLabel)=$dbh->selectrow_array("SELECT 1 FROM DESIGN D,SAMPLE S,ANALYSIS A,ANALYSIS_MODIFICATION AM,MODIFICATION M
-										 WHERE D.ID_EXPERIMENT=S.ID_EXPERIMENT AND S.ID_SAMPLE=A.ID_SAMPLE AND A.ID_ANALYSIS=AM.ID_ANALYSIS AND AM.ID_MODIFICATION=M.ID_MODIFICATION
-										 AND M.IS_LABEL=1 AND D.ID_DESIGN=$itemID LIMIT 1");
-			unless ($hasLabel) {
-				$expStateStrg.=qq
-|<BR><BR><FORM name="copyExpForm" method="POST">
-<INPUT type="hidden" name="ACT" value="copyExp"/>
+		#>Check for labeled Analyses (NOT compatible with labeling... for now)
+		my ($hasLabel)=$dbh->selectrow_array("SELECT 1 FROM DESIGN D,SAMPLE S,ANALYSIS A,ANALYSIS_MODIFICATION AM,MODIFICATION M
+									 WHERE D.ID_EXPERIMENT=S.ID_EXPERIMENT AND S.ID_SAMPLE=A.ID_SAMPLE AND A.ID_ANALYSIS=AM.ID_ANALYSIS AND AM.ID_MODIFICATION=M.ID_MODIFICATION
+									 AND M.IS_LABEL=1 AND D.ID_DESIGN=$itemID LIMIT 1");
+		unless ($hasLabel) {
+			my $alertCommandStrg=($updateComment)? "alert('$updateComment');" : '';
+			$expStateStrg.=qq
+|<SCRIPT type="text/javascript">
+function activateAutoDesign(actionIdx,chkStatus) {
+	if (chkStatus && document.autoDesForm.ACT.length) { // deselect any pre-selected option
+		for (let i=0; i<document.autoDesForm.ACT.length; i++) {
+			if (i==actionIdx) continue;
+
+			document.autoDesForm.ACT[i].checked=false
+			document.getElementById('optionSPAN'+i).style.display='none';
+		}
+		updateExpHierarchyLevel(document.getElementById('hierarchyLevelSEL').value);
+	}
+	document.getElementById('optionSPAN'+actionIdx).style.display=(chkStatus)? '' : 'none';
+}
+function updateExpHierarchyLevel(item) {
+	[document.getElementById('hierarSampSPAN').style.display,document.getElementById('hierarAnaSPAN').style.display]=(item==='sample')? ['','none'] :['none',''];
+}
+function addToStateNamingRule() {
+	document.getElementById('stateNameRule').value+=document.getElementById('patternSEL').value;
+}
+function checkForm(myForm) {
+	if (myForm.ACT.length && myForm.ACT[0].checked && myForm.hierarchyLevel.value==='analysis' && !myForm.stateNameRule.value) {
+		alert('ERROR: Provide a State naming rule (eg. "%ANA%")');
+		return false;
+	}
+	return true;
+}
+$alertCommandStrg
+</SCRIPT>
+<BR><BR><FORM name="autoDesForm" method="POST" style="margin:0px" onsubmit="return(checkForm(this));">
 <INPUT type="hidden" name="ITEM" value="$item"/>
 <INPUT type="hidden" name="PARENT" value="$parentItem"/>
 <INPUT type="hidden" name="ID" value="$itemID"/>
 <INPUT type="hidden" name="PROJECT_ID" value="$projectID"/>
-<LABEL><INPUT type="checkbox" value=1 onclick="document.getElementById('expRuleSPAN').style.display=(this.checked)? '' : 'none';"><FONT class="title2">Create States from Experiment hierarchy</FONT></LABEL><BR>
-<SPAN id="expRuleSPAN" style="display:none">
-<FONT class="title3">Multiple Analyses in same Sample are </FONT><SELECT name="anaRule" class="title3"><OPTION value="biorep">biological replicates</OPTION><OPTION value="techrep">technical replicates</OPTION><OPTION value="fraction">fractions</OPTION></SELECT>
-<INPUT type="submit" class="title3" value=" Create "/>
-<BR><BR></SPAN>
-</FORM>
-<BR><FONT class="title2">OR</FONT><BR>
+<TABLE width="800">
 |;
+			my $optionIdx=0;
+			my ($hasStates)=$dbh->selectrow_array("SELECT 1 FROM EXPCONDITION WHERE ID_DESIGN=$itemID LIMIT 1");
+			unless ($hasStates) {
+				$expStateStrg.= qq
+|<TR><TD nowrap>
+<LABEL><INPUT type="checkbox" name="ACT" value="fromExp" onclick="activateAutoDesign($optionIdx,this.checked)"><FONT class="title2">Create States based on Experiment hierarchy</FONT></LABEL><BR>
+<SPAN id="optionSPAN$optionIdx" style="display:none">
+	<FONT class="title3" style="padding-left:50px">Match State to </FONT><SELECT name="hierarchyLevel" id="hierarchyLevelSEL" class="title3" onchange="updateExpHierarchyLevel(this.value)"/><OPTION value="sample">Sample</OPTION><OPTION value="analysis">Analysis</OPTION></SELECT><BR>
+	<SPAN id="hierarSampSPAN" style="padding-left:50px"><FONT class="title3">Multiple Analyses in same Sample are:</FONT><SELECT name="anaRule" class="title3"><OPTION value="biorep">biological replicates</OPTION><OPTION value="techrep">technical replicates</OPTION><OPTION value="fraction">fractions</OPTION></SELECT></SPAN>
+	<SPAN id="hierarAnaSPAN" style="padding-left:50px"><FONT class="title3">State naming rule:</FONT><INPUT type="text" name="stateNameRule" id="stateNameRule" style="width:300px" value="" placeholder="Type or select rules"/>
+		<INPUT type="button" value="<< Add" onclick="addToStateNamingRule()"/><SELECT id="patternSEL" style="font-weight:bold"><OPTION value='%SAMP%'>Sample name</OPTION><OPTION value='%SAMPRANK%'>Sample rank</OPTION><OPTION value='%ANA%' selected>Analysis name</OPTION><OPTION value='%ANARANK%'>Analysis rank</OPTION></SELECT>
+	</SPAN>
+	<INPUT type="submit" class="title3" value=" Create "/><BR>
+</SPAN></TD></TR>
+<TR><TH><FONT class="title2">OR</FONT></TH></TR>
+|;
+				$optionIdx++;
 			}
+			my ($numObsLinked)=$dbh->selectrow_array("SELECT COUNT(O.ID_OBSERVATION) FROM OBSERVATION O
+														INNER JOIN ANALYSIS A ON A.ID_ANALYSIS=O.ID_ANALYSIS
+														INNER JOIN SAMPLE S ON S.ID_SAMPLE=A.ID_SAMPLE
+														WHERE S.ID_EXPERIMENT=$experimentID AND O.ID_BIOSAMPLE IS NOT NULL");
+			my ($numObsNotLinked)=$dbh->selectrow_array("SELECT COUNT(O.ID_OBSERVATION) FROM OBSERVATION O
+														INNER JOIN ANALYSIS A ON A.ID_ANALYSIS=O.ID_ANALYSIS
+														INNER JOIN SAMPLE S ON S.ID_SAMPLE=A.ID_SAMPLE
+														WHERE S.ID_EXPERIMENT=$experimentID AND O.ID_BIOSAMPLE IS NULL");
+			my $numAllObs=$numObsLinked+$numObsNotLinked;
+			my ($extraStrg1,$extraStrg2)=($hasStates)? (' additional',' Observations already linked will be ignored.') : ('','');
+			$expStateStrg.= qq
+|<TR><TD nowrap>
+<LABEL><INPUT type="checkbox" name="ACT" value="fromBioSamp" onclick="activateAutoDesign($optionIdx,this.checked)"><FONT class="title2">Create$extraStrg1 States based on linked Biological samples</FONT></LABEL><FONT class="title3"> ($numObsLinked linked/$numAllObs Observations)</FONT><BR>
+<SPAN id="optionSPAN$optionIdx" style="display:none">
+<FONT class="title3" style="padding-left:50px">Restrict to Biological samples matching:</FONT><SELECT name="restrictBS" class="title3"><OPTION value="">-= All =-</OPTION>
+|;
+			#>Property filter option
+			my $sthBSP=$dbh->prepare("SELECT DISTINCT P.ID_PROPERTY,P.NAME,P.PROPERTY_TYPE,GROUP_CONCAT(DISTINCT BP.PROPERTY_VALUE SEPARATOR ':#:') FROM SAMPLE S
+										INNER JOIN ANALYSIS A ON A.ID_SAMPLE=S.ID_SAMPLE
+										INNER JOIN OBSERVATION O ON O.ID_ANALYSIS=A.ID_ANALYSIS
+										INNER JOIN BIOSAMPLE BS ON BS.ID_BIOSAMPLE=O.ID_BIOSAMPLE
+										INNER JOIN BIOSAMPLE_PROPERTY BP ON BP.ID_BIOSAMPLE=BS.ID_BIOSAMPLE
+										INNER JOIN PROPERTY P ON P.ID_PROPERTY=BP.ID_PROPERTY
+										WHERE S.ID_EXPERIMENT=$experimentID GROUP BY P.ID_PROPERTY ORDER BY P.NAME");
+			my %propType=('O'=>'Property','T'=>'Treatment');
+			$sthBSP->execute;
+			while (my ($propID,$propName,$type,$valueStrg)=$sthBSP->fetchrow_array) {
+				my $propOptionStrg="<OPTGROUP label=\"$propName [$propType{$type}]:\">";
+				foreach my $propVal (sort{&promsMod::sortSmart($a,$b)} split(':#:',$valueStrg)) {
+					$propOptionStrg.="<OPTION value=\"$propID:#:$propVal\">$propVal</OPTION>";
+				}
+				$propOptionStrg.="</OPTGROUP>\n";
+				$expStateStrg.= $propOptionStrg;
+			}
+			$sthBSP->finish;
+	$expStateStrg.= qq
+|</SELECT><BR>
+<FONT class="title3" style="padding-left:50px">Multiple Observations linked to same Biological sample are:</FONT><SELECT name="anaBioRule" class="title3"><OPTION value="biorep">biological replicates</OPTION><OPTION value="techrep" selected>technical replicates</OPTION><OPTION value="fraction">fractions</OPTION></SELECT>
+<INPUT type="submit" class="title3" value=" Create "/><BR>
+<FONT  style="padding-left:50px;font-weight:bold">Unlinked Biological samples will be ignored.$extraStrg2</FONT><BR>
+</SPAN></TD></TR>
+</TABLE>
+</FORM>
+<FONT class="title2">OR</FONT>
+|;
 		}
 	}
 
@@ -152,7 +243,8 @@ if ($action =~ /edit|summary/){
 
 	my ($designID)=($item eq 'DESIGN')? $itemID : ($item eq 'EXPCONDITION')? $dbh->selectrow_array("SELECT ID_DESIGN FROM EXPCONDITION WHERE ID_EXPCONDITION=$itemID") : -1 ;
 
-	($name,$description,my $experimentID)=$dbh->selectrow_array("SELECT NAME,DES,ID_EXPERIMENT FROM DESIGN WHERE ID_DESIGN=$designID");
+	#($name,$description,my $experimentID)=$dbh->selectrow_array("SELECT NAME,DES,ID_EXPERIMENT FROM DESIGN WHERE ID_DESIGN=$designID");
+	($name,$description)=$dbh->selectrow_array("SELECT NAME,DES FROM DESIGN WHERE ID_DESIGN=$designID");
 	$restrictBranch='experiment:'.$experimentID unless $restrictBranch;
 
 #	##>Fetching list Experiment children to restrict data set selection [Commented ---> Not finished]
@@ -200,7 +292,7 @@ if ($action =~ /edit|summary/){
 	$maxTechRepGroup=0 unless $maxTechRepGroup;
 
 	my $sthLA=$dbh->prepare("SELECT DISTINCT M.ID_MODIFICATION,PSI_MS_NAME,INTERIM_NAME,SYNONYMES FROM MODIFICATION M,ANALYSIS_MODIFICATION AM WHERE AM.ID_MODIFICATION=M.ID_MODIFICATION AND IS_LABEL=1 AND ID_ANALYSIS=? ORDER BY M.ID_MODIFICATION");
-	my $sthLQ=$dbh->prepare("SELECT QUANTIF_ANNOT FROM QUANTIFICATION Q,ANA_QUANTIFICATION AQ WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND FOCUS='peptide' AND ID_ANALYSIS=? LIMIT 0,1");
+	my $sthLQ=$dbh->prepare("SELECT QUANTIF_ANNOT FROM QUANTIFICATION Q,ANA_QUANTIFICATION AQ WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND FOCUS='peptide' AND STATUS >=1 AND ID_ANALYSIS=? LIMIT 1");
 	my $sthObsBS=$dbh->prepare("SELECT O.TARGET_POS,O.ID_BIOSAMPLE,GROUP_CONCAT(ID_MODIFICATION ORDER BY ID_MODIFICATION SEPARATOR ',')
 								FROM OBSERVATION O
 								LEFT JOIN OBS_MODIFICATION M ON O.ID_OBSERVATION=M.ID_OBSERVATION
@@ -212,7 +304,7 @@ if ($action =~ /edit|summary/){
 								LEFT JOIN OBS_MODIFICATION M ON O.ID_OBSERVATION=M.ID_OBSERVATION
 								JOIN OBS_EXPCONDITION OE ON O.ID_OBSERVATION=OE.ID_OBSERVATION
 								JOIN EXPCONDITION E ON OE.ID_EXPCONDITION=E.ID_EXPCONDITION
-								WHERE E.ID_DESIGN=$designID AND O.ID_ANALYSIS=? GROUP BY O.ID_OBSERVATION"
+								WHERE E.ID_DESIGN=$designID AND O.ID_ANALYSIS=? GROUP BY OE.ID_EXPCONDITION,O.ID_OBSERVATION"
 							);
 	###> Query to get the quantitations associated to the design to prevent to break an association between an analysis and an expstate linked by a quantification.
 	my $sthGetQ2=$dbh->prepare("SELECT COUNT(ID_QUANTIFICATION) FROM EXPCONDITION_QUANTIF WHERE ID_EXPCONDITION=? AND ID_QUANTIFICATION IN
@@ -429,7 +521,7 @@ if ($action =~ /edit|summary/){
 		}
 		$restrictStrg.="</SELECT>\n";
 		$sthExpChild->finish;
-		$expStateStrg.="<BR><BR><FONT class=\"title2\"><FONT color=#DD0000>States</FONT> associated with the design<BR></FONT><FONT class=\"title3\">$restrictStrg</FONT><BR><BR>";
+		$expStateStrg.="<BR><BR><FONT class=\"title2\"><FONT color=#DD0000>States</FONT> associated with this design<BR></FONT><FONT class=\"title3\">$restrictStrg</FONT><BR><BR>";
 	}
 	
 	###>Get Biological sample names
@@ -453,13 +545,18 @@ if ($action =~ /edit|summary/){
 	my $sthExpCond=$dbh->prepare("SELECT ID_EXPCONDITION,NAME,DES FROM EXPCONDITION WHERE ID_DESIGN=$designID");
 	my $sthgetQ1=$dbh->prepare("SELECT 1 FROM EXPCONDITION_QUANTIF WHERE ID_EXPCONDITION=? LIMIT 1");
 	my $stateCount=0;
+	my $unusedStates=0;
+my $stateIsBioSample=0;
 	$sthExpCond->execute;
 	while (my ($expStateID,$namec,$desc) = $sthExpCond->fetchrow_array) {
 		$stateCount++;
 		###> For each state, get the number of Quantitations to adapt javascript alert when deletion
 		$sthgetQ1->execute($expStateID);
-		my ($numQuanti)=$sthgetQ1->fetchrow_array;
-		$numQuanti=0 unless $numQuanti;
+		my ($hasQuanti)=$sthgetQ1->fetchrow_array;
+		unless ($hasQuanti) {
+			$hasQuanti=0;
+			$unusedStates++;
+		}
 		$desc=&promsMod::HTMLcompatible($desc);
 		$expStateStrg.="\n<DIV id=\"state$stateCount\">\n";
 		###> Start form
@@ -516,12 +613,21 @@ if ($action =~ /edit|summary/){
 		$summaryStrg.=($numObs)? "$numObs observation" : 'Empty';
 		$summaryStrg.='s' if $numObs > 1;
 
-
-		$expStateStrg.="<BR><TABLE border=0 width=1200 id=\"$expStateID\" cellpadding=2 cellspacing=2 bgcolor=$dark>\n";
-
+		$expStateStrg.="<BR>\n";
+		if ($action eq 'summary' && $projectAccess ne 'guest' && $stateCount==1) {
+			$expStateStrg.=qq
+|<DIV id="autoRename" style="display:none"><INPUT type="button" class="title3" value="Assign BioSamples names to States" onclick="assignBioSampNamesToStates()"/><BR><BR></DIV>
+<TABLE border=0 width=1200 id="multiSelTB"><TR><TD>
+	<LABEL><INPUT type="checkbox" class="title2" onclick="toggleSelectable(this.checked)"/><FONT class="title2">Selection mode<FONT><FONT class="title3">&nbsp;(unused States)<FONT></LABEL>
+	<SPAN id="multiDelSPAN" style="display:none">&nbsp;<LABEL><INPUT type="checkbox" id="multiDelCHK" value=1/><FONT class="title3">Auto-extend<FONT></LABEL>&nbsp;<INPUT type="button" class="title3" value="Delete selected States" onclick="prepareStateDeletion()"/></SPAN>
+</TD></TR></TABLE>
+|;
+		}
+		$expStateStrg.="<TABLE border=0 width=1200 id=\"$expStateID\" cellpadding=2 cellspacing=2 bgcolor=$dark>\n";
+		my ($usedClassStrg,$selectStrg)=($hasQuanti)? ('','') : (' unusedState',"<INPUT type=\"checkbox\" name=\"selStates\" value=\"$expStateID\" style=\"display:none\" onclick=\"autoExtendStateSelection($stateCount,this.checked)\">");
 		if ($action eq 'edit' && $trueItem eq 'EXPCONDITION' && $trueItemID == $expStateID) {
 			$expStateStrg.=qq
-|<TR><TH align=left valign=top class="title2" nowrap>&nbsp;State #$stateCount :</TH><TH align=left>$summaryStrg</TH></TR>
+|<TR><TH align=right valign=top class="title2$usedClassStrg" nowrap>&nbsp;${selectStrg}State #$stateCount :</TH><TH align=left>$summaryStrg</TH></TR>
 <TR><TH align=right valign=top width=130 nowrap>Name :</TH><TD valign=left bgcolor=$light><INPUT type="text" name="name" size="50" value="$namec"></TD></TR>
 <TR><TH align=right valign=top nowrap>Description :</TH><TD valign=left bgcolor=$light><TEXTAREA name="des" rows="2" cols="65">$desc</TEXTAREA></TD></TR>
 <TR><TD align=left></TD><TD><INPUT type="submit" value="Save">&nbsp;<INPUT type="button" value="Cancel" onclick="cancelAction()"></TD></TR>
@@ -529,7 +635,7 @@ if ($action =~ /edit|summary/){
 		}
 		else {
 			$expStateStrg.=qq
-|<TR><TH align=left valign=top class="title2" nowrap>&nbsp;State #$stateCount :</TH><TH align=left>$summaryStrg</TH></TR>
+|<TR><TH align=right valign=top class="title2$usedClassStrg" nowrap>&nbsp;${selectStrg}State #$stateCount :</TH><TH align=left>$summaryStrg</TH></TR>
 <TR><TH align=right valign=top width=130 nowrap>Name :</TH><TD valign=left bgcolor=$light>&nbsp;$namec</TD></TR>
 <TR><TH align=right valign=top nowrap>Description :</TH><TD valign=left bgcolor=$light>&nbsp;$desc</TD></TR>
 <TR><TH align=right valign=top nowrap>$observationStrg</TH><TD valign=left bgcolor=$light>
@@ -548,9 +654,11 @@ if ($action =~ /edit|summary/){
 			}
 			my $bgColor=$dark;
 			my %fracGr2bioSamp;
+			my %bioSampInState;
 			foreach my $obsCode (sort{$position{$a}<=>$position{$b}} keys %position) {
 				my ($anaID,$targetPos,@mods)=split(',',$obsCode);
 				if (($action eq 'editAE' && $trueItem eq 'EXPCONDITION' && $trueItemID == $expStateID && !$expState{$obsCode}) || ($expState{$obsCode} && $expState{$obsCode}==$expStateID)) {
+					$bioSampInState{ $obsAnnotSample{$obsCode} }=1 if ($obsAnnotSample{$obsCode} && $expState{$obsCode} && $expState{$obsCode}==$expStateID);
 					#my $anaCode=($validStatus{$anaID}==-1)? 'analysis:no_scan' : ($validStatus{$anaID}==0)? 'analysis:no_val' : ($validStatus{$anaID}==1)? 'analysis:part_val' : 'analysis:val';
 					my ($disabStrg,$visStrg);
 					if ($expState{$obsCode} && $expState{$obsCode} != $expStateID) { # Cannot associate a already associated analysis
@@ -664,6 +772,10 @@ if ($action =~ /edit|summary/){
 					@prevHierarchy=@{$hierarchy{$obsCode}};
 				}
 			}
+			if (scalar keys %bioSampInState == 1) {
+				my $bioSampID=(keys %bioSampInState)[0];
+				$stateIsBioSample=1 if $namec ne $annotSamples{$bioSampID}; # at least one State must match
+			}
 			my ($autExtStrg,$maxHeight)=('','300px'); # default
 			if ($action eq 'editAE' && $trueItem eq 'EXPCONDITION' && $trueItemID == $expStateID && $obsString) {
 				#$autExtStrg="<INPUT type=\"checkbox\" name=\"autoExtend\" value=\"1\" checked onchange=\"autoExtFlag=this.checked;\"> <B>Auto-extend selection</B>\n";
@@ -698,11 +810,11 @@ if ($action =~ /edit|summary/){
 			else {
 				#my $disabDelStrg=($userStatus =~/mass|bioinfo|manag/ && !$stateChildren{$expStateID})? '' : ' disabled';
 				#my $disabObsStrg=($userStatus =~/mass|bioinfo|manag/)? '' : ' disabled';
-				my $disabDelStrg=($projectAccess eq 'guest' || $stateChildren{$expStateID})? ' disabled' : '';
+				my $disabDelStrg=($hasQuanti || $projectAccess eq 'guest' || $stateChildren{$expStateID})? ' disabled' : '';
 				my $disabModifStrg=($projectAccess eq 'guest')? ' disabled' : '';
 				$expStateStrg.=qq
 |<TR><TD align=left width=110></TD><TD><INPUT type="button" value="Edit" onclick="editExpstate($expStateID)"$disabModifStrg>
-<INPUT type="button" value="Delete" onclick="deleteExpstate($expStateID,$numQuanti)"$disabDelStrg>
+<INPUT type="button" value="Delete" onclick="deleteState($expStateID,$stateCount)"$disabDelStrg>
 <INPUT type="button" value="Manage Observations" onclick="updateAnaExpstate($expStateID)"$disabModifStrg></TD></TR>
 |;
 			}
@@ -716,7 +828,12 @@ if ($action =~ /edit|summary/){
 	$sthExpCond->finish;
 	$sthgetQ1->finish;
 	#$sthGetQ2->finish;
-
+	if ($action eq 'summary' && $projectAccess ne 'guest') {
+		$expStateStrg.="<SCRIPT type=\"text/javascript\">\n";
+		$expStateStrg.="document.getElementById('multiSelTB').style.display='none';\n" if ($unusedStates <= 1 && $stateCount);
+$expStateStrg.="document.getElementById('autoRename').style.display='';\n" if $stateIsBioSample;
+		$expStateStrg.="</SCRIPT>\n";
+}
 	if ($action ne 'edit') {
 $expStateStrg.= qq
 |<FORM name="expCondForm" method="POST">
@@ -751,7 +868,7 @@ $expStateStrg.= qq
 	}
 	if ($action =~ /edit/ && $trueItem eq 'EXPCONDITION') {
 		$expStateStrg.=qq
-|<SCRIPT language="Javascript">
+|<SCRIPT type="text/javascript">
 document.getElementById('$rowID').scrollIntoView(true);
 </SCRIPT>
 |;
@@ -850,7 +967,7 @@ elsif ($action eq 'store') { # Store the new DESIGN or EXPCONDITION and show dir
 			my $sthUpObsExp=$dbh->prepare("UPDATE OBS_EXPCONDITION SET FRACTION_GROUP=?,TECH_REP_GROUP=? WHERE ID_OBSERVATION=? AND ID_EXPCONDITION=$itemID"); # only pool group can be updated
 			my $sthSiObs0=$dbh->prepare("SELECT O.ID_OBSERVATION FROM OBSERVATION O LEFT OUTER JOIN OBS_MODIFICATION M ON O.ID_OBSERVATION=M.ID_OBSERVATION WHERE O.ID_ANALYSIS=? AND M.ID_MODIFICATION IS NULL LIMIT 0,1");
 			my $sthSiObs1=$dbh->prepare("SELECT O.ID_OBSERVATION FROM OBSERVATION O,OBS_MODIFICATION M WHERE O.ID_OBSERVATION=M.ID_OBSERVATION AND ID_ANALYSIS=? AND M.ID_MODIFICATION=? LIMIT 0,1"); # SILAC Obs
-			my $sthOthObs=$dbh->prepare("SELECT ID_OBSERVATION FROM OBSERVATION WHERE ID_ANALYSIS=? AND TARGET_POS=? LIMIT 0,1"); # Other labels (Label-free, iTRAQ)
+			my $sthOthObs=$dbh->prepare("SELECT ID_OBSERVATION FROM OBSERVATION WHERE ID_ANALYSIS=? AND TARGET_POS=? LIMIT 1"); # Other labels (Label-free, iTRAQ)
 			my $sthInsObsExp=$dbh->prepare("INSERT INTO OBS_EXPCONDITION (ID_EXPCONDITION,ID_OBSERVATION,FRACTION_GROUP,TECH_REP_GROUP) VALUES ($itemID,?,?,?)");
 			my $sthInsOM=$dbh->prepare("INSERT INTO OBS_MODIFICATION (ID_OBSERVATION,ID_MODIFICATION) VALUES (?,?)");
 			foreach my $obsCode (keys %obsChecked) {
@@ -939,46 +1056,44 @@ elsif ($action eq 'delete'){#DELETE
 	elsif ($item eq 'EXPCONDITION') {
 		###>Get information before removing the item
 		($parentID)=$dbh->selectrow_array("SELECT ID_DESIGN FROM EXPCONDITION WHERE ID_EXPCONDITION=$itemID");
-		#($numExpCond)=$dbh->selectrow_array("SELECT COUNT(*) FROM EXPCONDITION WHERE ID_DESIGN=$parentID");
 		$parentItem='DESIGN';
 		#&deleteExpstate($dbh,$itemID);
-
-		###>Delete observation associations
-		#$dbh->do("DELETE OBS_MODIFICATION FROM OBS_MODIFICATION INNER JOIN OBSERVATION ON OBS_MODIFICATION.ID_OBSERVATION=OBSERVATION.ID_OBSERVATION WHERE OBSERVATION.ID_EXPCONDITION=$itemID");
-		#$dbh->do("DELETE FROM OBSERVATION WHERE ID_EXPCONDITION=$itemID") || die $dbh->errstr;
-		my @deletableObs;
-		my $sthObsExp=$dbh->prepare("SELECT O.ID_OBSERVATION FROM OBS_EXPCONDITION OE,OBSERVATION O WHERE OE.ID_OBSERVATION=O.ID_OBSERVATION AND O.ID_BIOSAMPLE IS NULL AND OE.ID_EXPCONDITION=$itemID");
-		my $sthOmultiE=$dbh->prepare("SELECT COUNT(*) FROM OBS_EXPCONDITION WHERE ID_OBSERVATION=? AND ID_EXPCONDITION != $itemID");
-		$sthObsExp->execute;
-		while (my ($obsID)=$sthObsExp->fetchrow_array) {
-			$sthOmultiE->execute($obsID);
-			my ($numExpC)=$sthOmultiE->fetchrow_array;
-			push @deletableObs,$obsID if $numExpC==0;
+		
+		my @stateList=(param('MULTI_STATE'))? split(':',param('MULTI_STATE')) : ($itemID); # multi vs single deletion
+		my $sthObsExp=$dbh->prepare("SELECT O.ID_OBSERVATION FROM OBS_EXPCONDITION OE,OBSERVATION O WHERE OE.ID_OBSERVATION=O.ID_OBSERVATION AND O.ID_BIOSAMPLE IS NULL AND OE.ID_EXPCONDITION=?");
+		my $sthOmultiE=$dbh->prepare("SELECT 1 FROM OBS_EXPCONDITION WHERE ID_OBSERVATION=? AND ID_EXPCONDITION != ? LIMIT 1");
+		my $sthDelOExp=$dbh->prepare("DELETE FROM OBS_EXPCONDITION WHERE ID_EXPCONDITION=?");
+		my $sthDelOMod=$dbh->prepare("DELETE FROM OBS_MODIFICATION WHERE ID_OBSERVATION=?");
+		my $sthDelObs=$dbh->prepare("DELETE FROM OBSERVATION WHERE ID_OBSERVATION=?");		
+		my $sthDelSt=$dbh->prepare("DELETE FROM EXPCONDITION WHERE ID_EXPCONDITION=?");
+		foreach my $stateID (@stateList) {
+	
+			##>Delete observation associations
+			my @deletableObs;
+			$sthObsExp->execute($stateID);
+			while (my ($obsID)=$sthObsExp->fetchrow_array) {
+				$sthOmultiE->execute($obsID,$stateID);
+				my ($isUsed)=$sthOmultiE->fetchrow_array;
+				push @deletableObs,$obsID unless $isUsed;
+			}
+			$sthDelOExp->execute($stateID);
+			
+			##>Delete unused Observations
+			foreach my $obsID (@deletableObs) {
+				$sthDelOMod->execute($obsID);
+				$sthDelObs->execute($obsID);
+			}
+			
+			##>Delete State
+			$sthDelSt->execute($stateID);
 		}
 		$sthObsExp->finish;
 		$sthOmultiE->finish;
-
-		$dbh->do("DELETE FROM OBS_EXPCONDITION WHERE ID_EXPCONDITION=$itemID") || die $dbh->errstr;
-		my $sthDelOMod=$dbh->prepare("DELETE FROM OBS_MODIFICATION WHERE ID_OBSERVATION=?");
-		my $sthDelObs=$dbh->prepare("DELETE FROM OBSERVATION WHERE ID_OBSERVATION=?");
-		foreach my $obsID (@deletableObs) {
-			$sthDelOMod->execute;
-			$sthDelObs->execute;
-		}
+		$sthDelOExp->finish;
 		$sthDelOMod->finish;
 		$sthDelObs->finish;
-
-		###>If Quantitation associated to EXPCONDITION, it is removed!
-		##my $sthGetCond=$dbh->prepare("SELECT ID_QUANTIFICATION FROM EXPCONDITION_QUANTIF WHERE ID_EXPCONDITION=$itemID");
-		##$sthGetCond->execute;
-		##while (my ($quantifID)=$sthGetCond->fetchrow_array) {
-		##	&deleteQuantification($dbh,$quantifID);
-		##}
-		##$sthGetCond->finish;
-		$dbh->do("DELETE FROM EXPCONDITION WHERE ID_EXPCONDITION=$itemID") || die $dbh->errstr;
 	}
 	$dbh->commit;
-
 }
 elsif ($action eq 'update'){###> Save the update from EDIT option
 	$itemID=param('ITEM_ID');
@@ -1189,6 +1304,9 @@ print qq
 |<HTML>
 <HEAD>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
+<STYLE type="text/css">
+.unusedState {color:#606060;}
+</STYLE>
 <SCRIPT type="text/javascript">
 |;
 $designID=0 unless $designID;
@@ -1301,17 +1419,53 @@ function addExpstate(){
 	document.expCondForm.EXPCONDVALUES.value=expCondValues;
 	document.expCondForm.submit();
 }
-function deleteExpstate(myExpCond,numQuanti) {
-	var confString;
-	if (numQuanti) {
-		confString='WARNING: This State has already been linked to a Quantification.\\nDeletion will remove all associated Quantifications.\\nProceed ? ';
+function assignBioSampNamesToStates() {
+	if (confirm('Only States with 1 Biological sample will be updated. Proceed?')) {
+		window.location="$promsPath{cgi}/manageDesignCondition.cgi?ACT=bioSampNames2States&ITEM=$trueItem&ID=$trueItemID&PROJECT_ID=$projectID&PARENT=DESIGN&RESTRICT_BRANCH=$restrictBranch";
 	}
-	else {
-		confString='Delete this state ?';
+}
+function toggleSelectable(isChecked) {
+	const visStatus=(isChecked)? '' : 'none';
+	const selBoxes=document.getElementsByName('selStates');
+	const selBoxLength=selBoxes.length;
+	for (let i=0; i<selBoxLength; i++) {
+		selBoxes[i].style.display=visStatus;
 	}
-
-	if (confirm(confString)) {
-		top.promsFrame.resultFrame.location="$promsPath{cgi}/manageDesignCondition.cgi?ACT=delete&ITEM=EXPCONDITION&ID="+myExpCond+"&PROJECT_ID=$projectID&PARENT=DESIGN&RESTRICT_BRANCH=$restrictBranch"; //&PARENT_ID=$itemID rowID
+	document.getElementById('multiDelSPAN').style.display=visStatus;
+}
+function autoExtendStateSelection(nextIdx,chkStatus) {
+	if (!document.getElementById('multiDelCHK').checked) return;
+	const statesChk=document.getElementsByName('selStates');
+	if (!statesChk.length) return; // only 1 State
+	for (let i=nextIdx; i<statesChk.length; i++) {
+		if (statesChk[i].checked===chkStatus) break; // propagate only until the next true/false switch
+		statesChk[i].checked=chkStatus;
+	}
+	let count=0;
+	for (let i=0; i<statesChk.length; i++) {
+		if (statesChk[i].checked) count++;
+	}
+	let stateStrg=(count > 1)? 'States' : 'State';
+	alert(`\${count} \${stateStrg} selected.`);
+}
+function prepareStateDeletion() {
+	const selStates=[];
+	const selBoxes=document.getElementsByName('selStates');
+	const selBoxLength=selBoxes.length;
+	for (let i=0; i<selBoxLength; i++) {
+		if (selBoxes[i].checked) selStates.push(selBoxes[i].value);
+	}
+	if (selStates.length) {
+		let firstState=selStates[0];
+		deleteState(firstState,selStates.length,selStates.join(':'));
+	}
+	else {alert('ERROR: No States selected!');}
+}
+function deleteState(myExpCond,statePos,multiStates) {
+	const confStrg=(multiStates)? 'Selected '+statePos+' State(s) will be deleted. Proceed?' : 'State #'+statePos+' will be deleted. Proceed?';
+	if (confirm(confStrg)) {
+		let multiStateParamStrg=(multiStates)? '&MULTI_STATE='+multiStates : '';
+		window.location="$promsPath{cgi}/manageDesignCondition.cgi?ACT=delete&ITEM=EXPCONDITION&ID="+myExpCond+"&PROJECT_ID=$projectID&PARENT=DESIGN&RESTRICT_BRANCH=$restrictBranch"+multiStateParamStrg; //&PARENT_ID=$itemID rowID
 	}
 }
 function editExpstate(myExpCond) {
@@ -1392,15 +1546,14 @@ function ajaxMatchBioSamplesFromAttribute() {
 		return false;
 	}
 	var [propID,propValue]=propData.split(':#:');
-	//Creation of the XMLHTTPRequest object
+	// Creation of the XMLHTTPRequest object
 	var XHR = getXMLHTTP();
 	if (!XHR) {
 		return false;
 	}
-	XHR.open("GET","$promsPath{cgi}/manageDesignCondition.cgi?AJAX=matchBSA&PROP_ID="+propID+"&PROP_VALUE="+propValue,true);
+	XHR.open("GET","$promsPath{cgi}/manageDesignCondition.cgi?AJAX=matchBSA&PROJECT_ID=$projectID&PROP_ID="+propID+"&PROP_VALUE="+propValue,true);
 	XHR.onreadystatechange=function() {
 		if (XHR.readyState==4 && XHR.responseText) {
-//console.log(XHR.responseText);
 			var matchedBS=XHR.responseText.split(',');
 			if (!matchedBS.length) {
 				alert('No matching BioSamples found!');
@@ -1581,45 +1734,85 @@ print "$expStateStrg</CENTER>\n<BR><BR></BODY>\n</HTML>\n";
 ####> Create all States & content from Experiment hierarchy <####
 sub createDesignFromExperiment {
 #print header(-charset=>'utf-8'); warningsToBrowser(1); # DEBUG
-	my $anaRule=param('anaRule');
 	my $designID=$rowID;
+	
+	my $hierarchyLevel=param('hierarchyLevel'); # sample or analysis
+	my $anaRule=param('anaRule'); # Sample to State
+	my $stateNameRule=param('stateNameRule') || '%ANA%'; # Analysis to State
 	
 	####<Connecting to DB>####
 	my $dbh=&promsConfig::dbConnect;
 	
 	my ($experimentID)=$dbh->selectrow_array("SELECT ID_EXPERIMENT FROM DESIGN WHERE ID_DESIGN=$designID");
 	my $sthSamp=$dbh->prepare("SELECT ID_SAMPLE,NAME,DES FROM SAMPLE WHERE ID_EXPERIMENT=$experimentID ORDER BY DISPLAY_POS");
-	my $sthNumAna=$dbh->prepare("SELECT COUNT(*) FROM ANALYSIS WHERE ID_SAMPLE=? AND VALID_STATUS >= 1");
-	my $sthAnaObs=$dbh->prepare("SELECT A.ID_ANALYSIS,O.ID_OBSERVATION FROM ANALYSIS A
+	
+	my $sthNumAna=$dbh->prepare("SELECT COUNT(*) FROM ANALYSIS WHERE ID_SAMPLE=? AND VALID_STATUS >= 1"); # Sample to State
+	
+	my $sthAnaObs=$dbh->prepare("SELECT A.ID_ANALYSIS,O.ID_OBSERVATION,A.NAME,A.DES FROM ANALYSIS A
 								LEFT JOIN OBSERVATION O ON A.ID_ANALYSIS=O.ID_ANALYSIS WHERE A.ID_SAMPLE=? AND A.VALID_STATUS >= 1 ORDER BY A.DISPLAY_POS");
 	
-	my ($newCondID)=$dbh->selectrow_array("SELECT MAX(ID_EXPCONDITION) FROM EXPCONDITION");
 	my $sthInsC=$dbh->prepare("INSERT INTO EXPCONDITION (ID_EXPCONDITION,ID_DESIGN,NAME,DES) VALUES (?,$designID,?,?)");
 	my $sthInsObs=$dbh->prepare("INSERT INTO OBSERVATION (ID_ANALYSIS,TARGET_POS) VALUES (?,0)");
 	my $sthInsObsExp=$dbh->prepare("INSERT INTO OBS_EXPCONDITION (ID_EXPCONDITION,ID_OBSERVATION,FRACTION_GROUP,TECH_REP_GROUP) VALUES (?,?,?,?)");
+	my ($newCondID)=$dbh->selectrow_array("SELECT MAX(ID_EXPCONDITION) FROM EXPCONDITION");
 			
 	my ($fracGroup,$techRepGroup)=($anaRule eq 'fraction')? (1,undef) : ($anaRule eq 'techrep')? (undef,1) : (undef,undef); # <- or biorep
 	$sthSamp->execute;
+	my $numCreated=0;
+	my $sampRank=0;
 	while (my ($sampID,$sampName,$sampDes)=$sthSamp->fetchrow_array) {
+		$sampRank++;
 	
-		##<Create State
-		$sthInsC->execute(++$newCondID,$sampName,$sampDes);		
+		if ($hierarchyLevel eq 'sample') { # Sample to State
 		
-		##<Populate State
-		$sthNumAna->execute($sampID);
-		my ($numAna)=$sthNumAna->fetchrow_array;
-		next unless $numAna;
-		($fracGroup,$techRepGroup)=(undef,undef) if $numAna==1;
-		$sthAnaObs->execute($sampID);
-		my $prevAnaID=0;
-		while (my ($anaID,$obsID)=$sthAnaObs->fetchrow_array) {
-			next if $anaID==$prevAnaID;# just to be safe (in case ana has multiple obs. Should not happen in Label-Free)
-			unless ($obsID) { # Obs not found => create new one
-				$sthInsObs->execute($anaID);
-				$obsID=$dbh->last_insert_id(undef,undef,'OBSERVATION','ID_OBSERVATION');
+			##<Create State
+			$sthInsC->execute(++$newCondID,$sampName,$sampDes);
+			$numCreated++;
+			
+			##<Populate State
+			$sthNumAna->execute($sampID);
+			my ($numAna)=$sthNumAna->fetchrow_array;
+			next unless $numAna;
+			my ($frGroup,$trGroup)=($numAna==1)? (undef,undef) : ($fracGroup,$techRepGroup);
+			$sthAnaObs->execute($sampID);
+			my $prevAnaID=0;
+			while (my ($anaID,$obsID)=$sthAnaObs->fetchrow_array) {
+				next if $anaID==$prevAnaID;# just to be safe (in case ana has multiple obs. Should not happen in Label-Free)
+				unless ($obsID) { # Obs not found => create new one
+					$sthInsObs->execute($anaID);
+					$obsID=$dbh->last_insert_id(undef,undef,'OBSERVATION','ID_OBSERVATION');
+				}
+				$sthInsObsExp->execute($newCondID,$obsID,$frGroup,$trGroup);
+				$prevAnaID=$anaID;
 			}
-			$sthInsObsExp->execute($newCondID,$obsID,$fracGroup,$techRepGroup);
-			$prevAnaID=$anaID;
+		}
+		else { # Analysis to State
+			
+			$sthAnaObs->execute($sampID);
+			my $anaRank=0;
+			my $prevAnaID=0;
+			while (my ($anaID,$obsID,$anaName,$anaDes)=$sthAnaObs->fetchrow_array) {
+				next if $anaID==$prevAnaID;# just to be safe (in case ana has multiple obs. Should not happen in Label-Free)
+				$anaRank++;
+				my $condName=$stateNameRule;
+				$condName=~s/%SAMP%/$sampName/g;
+				$condName=~s/%SAMPRANK%/$sampRank/g;
+				$condName=~s/%ANA%/$anaName/g;
+				$condName=~s/%ANARANK%/$anaRank/g;
+
+				##<Create State
+				$sthInsC->execute(++$newCondID,$condName,$anaDes);
+				$numCreated++;
+
+				##<Populate State
+				unless ($obsID) { # Obs not found => create new one
+					$sthInsObs->execute($anaID);
+					$obsID=$dbh->last_insert_id(undef,undef,'OBSERVATION','ID_OBSERVATION');
+				}
+				$sthInsObsExp->execute($newCondID,$obsID,undef,undef);
+				$prevAnaID=$anaID;
+			}
+
 		}
 	}
 	$sthSamp->finish;
@@ -1631,25 +1824,122 @@ sub createDesignFromExperiment {
 	
 	$dbh->commit;
 	$dbh->disconnect;
-
+	
+	return "$numCreated States created.";
 }
 
-
-####> Fetch list of biological samples matching property/treatment value <####
-sub ajaxMatchBioSamplesFromAttribute {
-	my $propID=param('PROP_ID');
-	my $propValue=param('PROP_VALUE');
-	print header(-type=>'text/plain',-charset=>'UTF-8'); warningsToBrowser(1);
+sub createDesignFromBioSamples { # GLOBALS: $projectID, $rowID
+	my $bioAnaRule=param('anaBioRule');
+	my ($restrictPropID,$restrictPropValue)=(param('restrictBS'))? split(':#:',param('restrictBS')) : (0,'');
+	my $designID=$rowID;
 	
+	####<Connecting to DB>####
 	my $dbh=&promsConfig::dbConnect;
-	my $sthMBSA=$dbh->prepare("SELECT GROUP_CONCAT(ID_BIOSAMPLE SEPARATOR ',') FROM BIOSAMPLE_PROPERTY WHERE ID_PROPERTY=? AND PROPERTY_VALUE=? GROUP BY ID_PROPERTY");
+	
+	####<Fetching BioSamp data linked to parent Experiment>####
+	#>List of existing State BS
+	my $sthStBS=$dbh->prepare("SELECT O.ID_BIOSAMPLE,O.ID_OBSERVATION,OE.FRACTION_GROUP,OE.TECH_REP_GROUP FROM EXPCONDITION EC
+								INNER JOIN OBS_EXPCONDITION OE ON OE.ID_EXPCONDITION=EC.ID_EXPCONDITION
+								INNER JOIN OBSERVATION O ON O.ID_OBSERVATION=OE.ID_OBSERVATION
+								WHERE EC.ID_DESIGN=$designID");
+	#>List of available BS
+	my $sthCond=$dbh->prepare("SELECT ID_EXPCONDITION,NAME FROM EXPCONDITION WHERE ID_DESIGN=$designID");
+	my ($experimentID)=$dbh->selectrow_array("SELECT ID_EXPERIMENT FROM DESIGN WHERE ID_DESIGN=$designID");
+	my $restrictQueryStrg='';
+	if ($restrictPropID) {
+		my @restrictList;
+		&findBioSamplesFromAttribute($dbh,$projectID,$restrictPropID,$restrictPropValue,\@restrictList);
+		$restrictQueryStrg="AND BS.ID_BIOSAMPLE IN (".(join(',',@restrictList)).")";
+	}
+	my $sthAnaBS=$dbh->prepare("SELECT BS.ID_BIOSAMPLE,BS.NAME,BS.DES,O.ID_OBSERVATION FROM SAMPLE S
+								INNER JOIN ANALYSIS A ON A.ID_SAMPLE=S.ID_SAMPLE
+								INNER JOIN OBSERVATION O ON O.ID_ANALYSIS=A.ID_ANALYSIS
+								INNER JOIN BIOSAMPLE BS ON BS.ID_BIOSAMPLE=O.ID_BIOSAMPLE
+								WHERE S.ID_EXPERIMENT=$experimentID $restrictQueryStrg");
+	my (%usedBioSamples,%condNames,%bioSampleObs,%bioSampleNames);
+	$sthStBS->execute;
+	while (my ($bioSampID,$obsID,$frGr,$trGr)=$sthStBS->fetchrow_array) {
+		@{$usedBioSamples{$bioSampID}{$obsID}}=($frGr,$trGr);
+	}
+	$sthStBS->finish;
+	$sthCond->execute;
+	while (my ($condID,$condName)=$sthCond->fetchrow_array) {
+		$condNames{$condName}=$condID;
+	}
+	$sthCond->finish;
+	$sthAnaBS->execute;
+	while (my ($bioSampID,$bioSampName,$bioSampDes,$obsID)=$sthAnaBS->fetchrow_array) {
+		next if ($usedBioSamples{$bioSampID} && $usedBioSamples{$bioSampID}{$obsID}); # linked to obs already used
+		@{$bioSampleNames{$bioSampID}}=($bioSampName,$bioSampDes);
+		push @{$bioSampleObs{$bioSampID}},$obsID;
+	}
+	$sthAnaBS->finish;
+	
+	####<Creating States>####
+	my $sthInsC=$dbh->prepare("INSERT INTO EXPCONDITION (ID_EXPCONDITION,ID_DESIGN,NAME,DES) VALUES (?,$designID,?,?)");
+	my $sthInsObsExp=$dbh->prepare("INSERT IGNORE INTO OBS_EXPCONDITION (ID_EXPCONDITION,ID_OBSERVATION,FRACTION_GROUP,TECH_REP_GROUP) VALUES (?,?,?,?)");
+	my ($newCondID)=$dbh->selectrow_array("SELECT MAX(ID_EXPCONDITION) FROM EXPCONDITION");
+			
+	my ($fracGroup,$techRepGroup)=($bioAnaRule eq 'fraction')? (1,undef) : ($bioAnaRule eq 'techrep')? (undef,1) : (undef,undef); # <- or biorep
+	my ($numCreated,$numUpdated)=(0,0);
+	foreach my $bioSampID (sort{$a<=>$b} keys %bioSampleObs) {
+		
+		##<Create/Reuse State
+		my $usedCondID;
+		if ($condNames{ $bioSampleNames{$bioSampID}[0] }) { # State with same name already exists => use it
+			$usedCondID=$condNames{ $bioSampleNames{$bioSampID}[0] };
+			$numUpdated++;
+		}
+		else {
+			$sthInsC->execute(++$newCondID,@{$bioSampleNames{$bioSampID}});
+			$usedCondID=$newCondID;
+			$numCreated++;
+		}
+		
+		##<Populate State
+		my ($frGroup,$trGroup)=(scalar @{$bioSampleObs{$bioSampID}} == 1)? (undef,undef) : ($fracGroup,$techRepGroup);
+		if ($usedBioSamples{$bioSampID}) { # apply same fraction/techRep groups
+			foreach my $obsID (keys %{$usedBioSamples{$bioSampID}}) {
+				($frGroup,$trGroup)=@{$usedBioSamples{$bioSampID}{$obsID}};
+				last;
+			}
+		}
+		
+		foreach my $obsID (@{$bioSampleObs{$bioSampID}}) {
+			$sthInsObsExp->execute($usedCondID,$obsID,$frGroup,$trGroup);
+		}
+	}
+	$sthInsC->finish;
+	$sthInsObsExp->finish;
+	
+	$dbh->commit;
+	$dbh->disconnect;
+	
+	my $summaryComment=($numCreated)? "$numCreated States created." : '';
+	if ($numUpdated) {
+		$summaryComment.=' ' if $summaryComment;
+		$summaryComment.="$numUpdated States updated.";
+	}
+	return $summaryComment;
+}
+
+sub findBioSamplesFromAttribute {
+	my ($dbh,$projectID,$propID,$propValue,$refBioSamples)=@_; # ref can be ARRAY or HASH
+	my $refIsHash=(ref $refBioSamples eq 'HASH')? 1 : 0;
+	my $sthMBSA=$dbh->prepare("SELECT BP.ID_BIOSAMPLE FROM BIOSAMPLE_PROPERTY BP INNER JOIN PROJECT_BIOSAMPLE P ON P.ID_BIOSAMPLE=BP.ID_BIOSAMPLE WHERE P.ID_PROJECT=$projectID AND BP.ID_PROPERTY=? AND BP.PROPERTY_VALUE=?");
+	my $hasBioSamp=0;
 	$sthMBSA->execute($propID,$propValue);
-	my ($matchBioSampStrg)=$sthMBSA->fetchrow_array;
+	while (my ($bioSampID)=$sthMBSA->fetchrow_array) {
+		$hasBioSamp=1;
+		if ($refIsHash) {$refBioSamples->{$bioSampID}=1;}
+		else {push @{$refBioSamples},$bioSampID;}
+	}
 	$sthMBSA->finish;
 	
 	##<Fetching potential child bioSamples>##
-	if ($matchBioSampStrg) {
-		my $sthCBS=$dbh->prepare("SELECT ID_BIOSAMPLE FROM BIOSAMPLE WHERE ID_REFBIOSAMPLE IN ($matchBioSampStrg)");
+	if ($hasBioSamp) {
+		my $matchBioSampStrg=($refIsHash)? join(',',keys %{$refBioSamples}) : join(',',@{$refBioSamples});
+		my $sthCBS=$dbh->prepare("SELECT BS.ID_BIOSAMPLE FROM BIOSAMPLE BS INNER JOIN PROJECT_BIOSAMPLE P ON P.ID_BIOSAMPLE=BS.ID_BIOSAMPLE WHERE P.ID_PROJECT=$projectID AND BS.ID_REFBIOSAMPLE IN ($matchBioSampStrg)");
 		$sthCBS->execute;
 		my @childSamples;
 		while (my ($bioSampID)=$sthCBS->fetchrow_array) {
@@ -1668,19 +1958,88 @@ sub ajaxMatchBioSamplesFromAttribute {
 			$sthOWP->finish;
 			foreach my $bioSampID (@childSamples) {
 				next if $overWritten{$bioSampID};
-				$matchBioSampStrg.=','.$bioSampID;
+				if ($refIsHash) {$refBioSamples->{$bioSampID}=1;}
+				else {push @{$refBioSamples},$bioSampID;}
 			}
 		}
 	}
-	else {$matchBioSampStrg='';}
+}
+
+####>Fetch list of biological samples matching property/treatment value<####
+sub ajaxMatchBioSamplesFromAttribute { # GLOBALS: $projectID
+	my $propID=param('PROP_ID');
+	my $propValue=param('PROP_VALUE');
+	print header(-type=>'text/plain',-charset=>'UTF-8'); warningsToBrowser(1);
 	
+	my $dbh=&promsConfig::dbConnect;
+	
+	my @bioSampleList;
+	&findBioSamplesFromAttribute($dbh,$projectID,$propID,$propValue,\@bioSampleList);
 	$dbh->disconnect;
 	
+	my $matchBioSampStrg=(scalar @bioSampleList)? join(',',@bioSampleList) : '';
+
 	print $matchBioSampStrg;
 }
 
+sub renameStatesFromBioSamples {
+	my $designID=$rowID;
+	
+	####<Connecting to DB>####
+	my $dbh=&promsConfig::dbConnect;
+	
+	####<Fetching BioSamp data linked to parent Experiment>####
+	#>List of existing State BS
+	my $sthStBS=$dbh->prepare("SELECT EC.ID_EXPCONDITION,EC.NAME,GROUP_CONCAT(DISTINCT O.ID_BIOSAMPLE) FROM EXPCONDITION EC
+								INNER JOIN OBS_EXPCONDITION OE ON OE.ID_EXPCONDITION=EC.ID_EXPCONDITION
+								INNER JOIN OBSERVATION O ON O.ID_OBSERVATION=OE.ID_OBSERVATION
+								WHERE EC.ID_DESIGN=$designID GROUP BY EC.ID_EXPCONDITION");
+	my %bioSampState;
+	$sthStBS->execute;
+	my $statePos=0;
+	while (my ($condID,$condName,$bioSampID)=$sthStBS->fetchrow_array) {
+		$statePos++;
+		next if $bioSampID=~/,/; # multi-BS state
+		push @{$bioSampState{$bioSampID}},[$condID,$condName,$statePos];
+	}
+	$sthStBS->finish;
+
+	my $numUpdated=0;
+	my $sthUpSt=$dbh->prepare("UPDATE EXPCONDITION SET NAME=? WHERE ID_EXPCONDITION=?");
+	my $sthBS=$dbh->prepare("SELECT ID_BIOSAMPLE,NAME FROM BIOSAMPLE WHERE ID_BIOSAMPLE IN (".join(',',keys %bioSampState).")");
+	$sthBS->execute;
+	while (my ($bioSampID,$bsName)=$sthBS->fetchrow_array) {
+		my $stateMatch=0;
+		foreach my $refState (@{$bioSampState{$bioSampID}}) {
+			my ($condID,$condName,$statePos)=@{$refState};
+			next if $condName eq $bsName; # already matched
+			$stateMatch++;
+			$condName=$bsName;
+			$condName.="#$stateMatch" if $stateMatch > 1;
+			$sthUpSt->execute($condName,$condID);
+			$numUpdated++;
+		}
+	}
+	$sthBS->finish;
+	$sthUpSt->finish;
+
+	$dbh->commit;
+	$dbh->disconnect;
+
+	my $summaryComment=($numUpdated==1)? "$numUpdated State updated." : ($numUpdated)? "$numUpdated States updated." : '';
+	return $summaryComment;
+}
 
 ####>Revision history<####
+# 1.5.5 [BUGFIX] Fix uninitialized value in %bioSampInState (PP 19/04/21)
+# 1.5.4 [Minor] Analysis name is preselected in Exp hierarchy-based design construction at analysis level (PP 12/02/21)
+# 1.5.3 [FEATURE] Experiment-based states auto-creation can also match Analyses to States (PP 03/02/21)
+# 1.5.2 [CHANGE] Only completed peptide (STATUS >= 1) quantifications are considered (PP 02/02/21)
+# 1.5.1 [UPDATE] SQL query updated for compatibility with MYSQL 8 (PP 21/12/20)
+# 1.5.0 [FEATURE] New option to assign Biological Samples names to States (PP 05/11/20) 
+# 1.4.4 [FEATURE] Auto-extend option for unused state selection (PP 22/07/20)
+# 1.4.3 [FEATURE] Added option to select and delete multiple unused States at once (PP 03/04/20)
+# 1.4.2 [FEATURE] Added option to auto-create states based on linked biological samples (PP 14/03/20)
 # 1.4.1 [FEATURE] Added option to auto-create states and observations based on Experiment content. ONLY for label-free (PP 10/01/20)
 # 1.4.0 [FEATURE] Added option to auto-select observations based on bioSample annotations (PP 02/01/20)
 # 1.3.7 [BUGFIX] BioSamples of state-free observations are now correctly retrieved in observation management mode (PP 20/12/19)

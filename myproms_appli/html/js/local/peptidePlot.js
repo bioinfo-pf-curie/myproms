@@ -1,6 +1,6 @@
 /*
 ################################################################################
-# peptidePlot.js             1.1.4                                             #
+# peptidePlot.js             1.1.5                                             #
 # Authors: P. Poullet                                                          #
 # Contact: patrick.poullet@curie.fr                                            #
 ################################################################################
@@ -74,7 +74,7 @@ function peptidePlot(plotData) {
 		}
 	}
 
-    var minValueY=null,maxValueY=null;
+	var [minValueY,maxValueY]=plotData.minYrange || [null,null];
 
 	/******* Protein data ******/
 	var protein={
@@ -87,8 +87,14 @@ function peptidePlot(plotData) {
 		popup: null
     };
 	if (protein.value != null) {
-		minValueY=protein.valueY;
-		maxValueY=protein.valueY;
+		if (minValueY===null) {
+			minValueY=protein.valueY;
+			maxValueY=protein.valueY;
+		}
+		else {
+			minValueY=Math.min(minValueY,protein.valueY);
+			maxValueY=Math.max(maxValueY,protein.valueY);
+		}
 		if (protein.relativeThresholds) {
 			protein.thresholdsY=[];
 			for (var i=0; i<protein.relativeThresholds.length; i++) {
@@ -159,8 +165,8 @@ function peptidePlot(plotData) {
 		else {
 			minValueY=Math.min(minValueY,lastPeptide.valueY);
 			maxValueY=Math.max(maxValueY,lastPeptide.valueY);
-			lastAAcovered=Math.max(lastAAcovered,lastPeptide.startPos[lastPeptide.startPos.length-1]+lastPeptide.length-1);
 		}
+		lastAAcovered=Math.max(lastAAcovered,lastPeptide.startPos[lastPeptide.startPos.length-1]+lastPeptide.length-1);
 		lastPeptide.color=colorList[0]; // default
 		if (peptideColor.map) {
 			var mapValue;
@@ -240,7 +246,7 @@ function peptidePlot(plotData) {
 			paper.rect(chartX0,chartY+chartH,chartW,5).attr({fill:'#999999',stroke:'#999999'});
 		}
 		else { // bad protein length
-			var protEndPos=Math.round(protein.length/pix2valScaleX);
+			var protEndPos=Math.round(protein.length || lastAAcovered /pix2valScaleX); // in case protein length is 0
 			paper.rect(chartX0,chartY+chartH,protEndPos,5).attr({fill:'#999999',stroke:'#999999'});
 			paper.rect(chartX0+protEndPos,chartY+chartH,chartW-protEndPos,5).attr({fill:'#E0E0E0',stroke:'#E0E0E0'});
 		}
@@ -340,6 +346,7 @@ function peptidePlot(plotData) {
 			}
 			/* Plotting color palette */
 			if (peptideColor.range) {
+				if (peptideColor.range[0]==peptideColor.range[1]) {peptideColor.range[0]=peptideColor.range[1]-peptideColor.range[1]*0.1;} // in case negative [1]
 				var txt=(peptideColor.map==valueLabel)? chartYLabel : peptideColor.map;
 				var t=paper.text(chartX0,12,txt+':').attr({'font-size':11,'text-anchor':'start','font-weight':'bold',fill:'#000'});
 				var tBox=t.getBBox();
@@ -595,6 +602,7 @@ function peptidePlot(plotData) {
 
 /*
 ####>Revision history<####
+# 1.1.5 [BUGFIX] Fix for continuous peptide color with range=0 and in drawing protein with no length & minYrange option (PP 04/12/20)
 # 1.1.4 Handles custom ordered list of discrete values in peptideColor.list=[array] (PP 29/03/17)
 # 1.1.3 Handles bad/missing protein length (PP 16/02/17)
 # 1.1.2 Now uses getChartScaleRange from chartLibrary2.js (PP 27/05/16)

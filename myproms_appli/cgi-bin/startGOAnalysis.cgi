@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# startGOAnalysis.cgi       1.1.5                                              #
+# startGOAnalysis.cgi       1.1.6                                              #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Fetch and provide proteins and parameters for GO enrichment analysis         #
@@ -63,6 +63,12 @@ $CGITempFile::TMPDIRECTORY=$promsPath{'tmp'};
 my $dbh=&promsConfig::dbConnect;
 my $expID = param('id_exp');
 my $projectID=&promsMod::getProjectID($dbh,$expID,'EXPERIMENT');
+
+####>Fetching user information<####
+my $userID = $ENV{'REMOTE_USER'};
+my @userInfo = &promsMod::getUserInfo($dbh, $userID, $projectID);
+my $projectAccess = ${$userInfo[2]}{$projectID};
+my $projectGuestAccess = ($projectAccess eq 'guest')? 1 : 0;
 
 if(param('start')){
     &processForm;
@@ -349,7 +355,16 @@ function actionOnCheck(){}
 </HEAD>
 <BODY background="$promsPath{images}/bgProMS.gif">
 <CENTER><FONT class="title">Gene Ontology Enrichment Analysis</FONT><BR><BR><BR>
+|;
 
+if ($projectGuestAccess) {  # Guests users cannot start GO analysis
+	print qq
+|<FONT class="title2">Your guest status does not allow you to start a GO Analysis.<BR>You may only check the results of existing analyses.</FONT>
+|;
+
+} else {
+	print qq
+|
 <TABLE border=0 cellpadding=0 cellspacing=0>
     <TR>
 	<TD nowrap valign='top'>
@@ -416,13 +431,15 @@ function actionOnCheck(){}
 	</DIV>
 	<SCRIPT type="text/javascript">setPopup();</SCRIPT>
 |;
-my $tableIndex=0;
+	my $tableIndex=0;
 
-&promsMod::printTree(\@experimentTree,\%treeOptions,\$tableIndex,1);
+	&promsMod::printTree(\@experimentTree,\%treeOptions,\$tableIndex,1);
 
-print qq|
-</TABLE>
-</CENTER>
+	print "</TABLE>\n";
+}
+
+print qq
+|</CENTER>
 </BODY>
 </HTML>
 |;
@@ -435,7 +452,6 @@ sub processForm{
     # Fetching parameters #
     #######################
     #my %param; # contains arguments for termFinder.pl
-    my $userID = $ENV{'REMOTE_USER'};
     #my $expID = param('expID');
     my $name = param('anaName');
     my $description = param('description');
@@ -796,6 +812,7 @@ sub processForm{
 }
 
 ####>Revision history<####
+# 1.1.6 [BUGFIX] Disable creation of analysis for guest users (VL 28/01/21)
 # 1.1.5 Now records user's login instead of user's name (PP 26/07/18)
 # 1.1.4 SQL query optimization for protein in Lists (PP 20/08/15)
 # 1.1.3 remove $user to tmp path (SL 17/12/14)

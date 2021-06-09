@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# promsDIARefonte.pm     1.1.7                                                 #
+# promsDIARefonte.pm     1.2.4                                                 #
 # Authors: M. Le Picard (Institut Curie)                                       #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -145,45 +145,34 @@ package DIAWorkflow {
     }
     
     sub exportLibrary {
-        my ($exportParamRef, $pepMod, $forceLocalRun, $protList, $processText, $loadingDivID, $loadingSPAN) = @_;
+        my ($exportParamRef, $excludedPepModRef, $forceLocalRun, $protList, $processText, $loadingDivID, $loadingSPAN) = @_;
+        my ($divID, $now, $waitTime, $status, $loading);
         my %exportParam = %{$exportParamRef};
         my $libDir = $library{"dir"};
         my $libraryName = $library{"name"};
         my $dbh = &promsConfig::dbConnect('no_user');
-        
         $processText = ($processText) ? $processText : '';
-        
-        ###################################
-        #### Processing submitted form ####
-        ###################################
-        my ($divID, $now, $waitTime, $status, $loading);
-        if ($processText) {
-            $divID = "document.getElementById('waitDIV')";
-            $now = strftime("%s", localtime); # in sec
-            $waitTime = strftime("%Hh %Mm %Ss", localtime($now - $startTime - 3600));
-            $status = "Updated $waitTime ago";
-            print "<BR/><SCRIPT LANGUAGE=\"JavaScript\">$divID.innerHTML=\"\";$divID.innerHTML='$status';</SCRIPT>";
-        }
+        $divID = "document.getElementById('waitDIV')" if($processText);
         
         #################################################
         ###  Compute excluded peptides modifications  ###
         #################################################
         my %massAAave=&promsConfig::getMassAAave; 
-        my @excludeMod;
-        my $sthModInfo=$dbh->prepare("SELECT SLM.SPECIFICITY, MONO_MASS FROM MODIFICATION M, SWATH_LIB_MODIFICATION SLM WHERE SLM.ID_MODIFICATION=M.ID_MODIFICATION AND M.ID_MODIFICATION=? AND ID_SWATH_LIB=$library{ID}");
-        if($pepMod) {
-            foreach my $selectMod ($pepMod) {
-                $sthModInfo->execute($selectMod);
-                my ($specificity, $monoMass) = $sthModInfo->fetchrow_array;
-                if($specificity) {
-                    foreach my $aa (split(//, $specificity)) {
-                        if ($aa eq '=') {
-                            my $massExcluded = $monoMass + 1.00794;
-                            push @excludeMod, sprintf("%0.f", $massExcluded);
-                        } else {
-                            my $massExcluded = $monoMass + $massAAave{$aa};
-                            push @excludeMod, sprintf("%0.f", $massExcluded);
-                        }
+        my (%unimodMass, @excludeMod);
+        my %excludedPepMods = map { $_ => 1 } @{$excludedPepModRef};
+        my $sthModInfo=$dbh->prepare("SELECT SLM.ID_MODIFICATION, M.UNIMOD_ACC, SLM.SPECIFICITY, MONO_MASS FROM MODIFICATION M INNER JOIN SWATH_LIB_MODIFICATION SLM ON SLM.ID_MODIFICATION=M.ID_MODIFICATION WHERE ID_SWATH_LIB=$library{ID}");
+        $sthModInfo->execute();
+        
+        while(my ($modID, $unimodID, $specificity, $monoMass) = $sthModInfo->fetchrow_array) {
+            $unimodMass{$unimodID} = $monoMass;
+            if($specificity) {
+                foreach my $aa (split(//, $specificity)) {
+                    if ($aa eq '=') {
+                        my $massExcluded = $monoMass + 1.00794;
+                        push @excludeMod, sprintf("%0.f", $massExcluded) if(exists($excludedPepMods{$modID}));
+                    } else {
+                        my $massExcluded = $monoMass + $massAAave{$aa};
+                        push @excludeMod, sprintf("%0.f", $massExcluded) if(exists($excludedPepMods{$modID}));
                     }
                 }
             }
@@ -207,15 +196,20 @@ package DIAWorkflow {
         
         ### Print progress
         if ($processText) {
-            $processText = "<B>Step 1/2 :</B> Export library for PeakView ... " if ($exportParam{"format"} eq 'peakview');
+            $processText = "<B>Step 1/2 :</B> Export library ... " if ($exportParam{"format"} =~ /peakview|spectronaut/);
             $loading = "<progress value=\"0\" max=\"100\" style=\"width:400px\"></progress>";
             print "<SCRIPT LANGAGE=\"JavaScript\">$loadingDivID.innerHTML=\"\";$loadingDivID.innerHTML='$processText<BR/><BR/> $loading';$loadingSPAN.innerHTML='0%';</SCRIPT>";
+            
+            $now = strftime("%s", localtime); # in sec
+            $waitTime = strftime("%Hh %Mm %Ss", localtime($now-$startTime-3600));
+            $status = "Updated $waitTime ago";
+            print "<BR/><SCRIPT LANGUAGE=\"JavaScript\">$divID.innerHTML=\"\";$divID.innerHTML='$status';</SCRIPT>";
         }
         
         #######################################
         ###  Delete all N-ter acetylations  ###
         #######################################
-        my (%mzHash, @validProt);
+        my (@validProt);
         open(LIBFILE, "<", "$libDir/$libraryName.sptxt") or die ("Could not open sptxt lib file at : $libDir/$libraryName.sptxt $!");
         open(OUTLIBFILE, ">", "$workDir/convert$exportParam{format}.sptxt") or die ("Could not write converted sptxt lib file: $workDir/convert$exportParam{format}.sptxt $!");
         my $saveLine;
@@ -246,9 +240,7 @@ package DIAWorkflow {
                 if ($match == 1) {
                     $saveLine .= $line;
                     print OUTLIBFILE $line unless @protList;        ## export all the library
-                    if ($line =~ /^PrecursorMZ: (.+)/) {
-                        $mzHash{"$1"} = 1;
-                    } elsif ($line =~ /^Comment: (.+)/ && @protList) {      ## export just the selected proteins
+                    if ($line =~ /^Comment: (.+)/ && @protList) {      ## export just the selected proteins
                         foreach my $protein (@protList) {
                             if ($1 =~ /$protein/) {
                                 push @validProt, $protein unless ("@validProt" =~ /$protein/);
@@ -273,7 +265,7 @@ package DIAWorkflow {
             }
         }
         
-
+        
         ########################################
         ### Generate library parameters file ###
         ########################################
@@ -287,23 +279,29 @@ package DIAWorkflow {
         ########################
         my $output = "$workDir/sortieExport.txt";
         my $processFile = "$libraryName\_$exportParam{format}.tsv";
-        my $finalFile = ($exportParam{format} eq "peakview") ? $libraryName."_peakview.txt" : $processFile;
         my $scriptFile = "$workDir/libExport.sh";
+        my $exportFormat = ($exportParam{"format"} eq 'spectronaut') ? 'openswath' : $exportParam{"format"};
         
         # Build task parameters
         my $exportOptions = "";
         $exportOptions .= " -a $workDir/$processFile";
         $exportOptions .= " -f $exportParam{f} " if($exportParam{"f"}); # Fasta file
-        $exportOptions .= " -g $exportParam{g} " if($exportParam{"g"}); # Allowed fragment modifications
+        $exportOptions .= " -g $exportParam{g} " if($exportParam{"g"}); # Allowed fragment modifications (default: -79.97,-97.98)
         $exportOptions .= " -i $exportParam{i} " if($exportParam{"i"}); # Labelling file
-        $exportOptions .= " -k ".$exportParam{"format"} if($exportParam{"format"});
+        
+        if($exportParam{"format"}) {
+            $exportOptions .= " -k $exportFormat"; # Format: openswath, peakview
+        }
+        
         $exportOptions .= " -l ".$exportParam{"lmin"}.",".$exportParam{"lmax"} if($exportParam{"lmin"} && $exportParam{"lmax"});
         $exportOptions .= " -m ".$exportParam{"m"} if($exportParam{"m"}); # Delta mass file
         $exportOptions .= " -n ".$exportParam{"n"} if($exportParam{"n"});
         $exportOptions .= " -o ".$exportParam{"o"} if($exportParam{"o"});
         $exportOptions .= " -p ".$exportParam{"p"} if($exportParam{"p"});
+        #$exportOptions .= " -q ".$NB_THREAD if(defined $NB_THREAD && $NB_THREAD > 1);
         $exportOptions .= " -s ".$exportParam{"s"} if($exportParam{"s"});
         $exportOptions .= " -t ".$exportParam{"t"} if($exportParam{"t"});
+        #$exportOptions .= " -u 21"; #.$exportParam{"u"} if($exportParam{"u"}); # Switch modifications: 21 for phosphorylation
         $exportOptions .= " -w ".$exportParam{"w"} if($exportParam{"w"});
         $exportOptions .= " -x ".$exportParam{"x"} if($exportParam{"x"});
         $exportOptions .= " -y ".$exportParam{"y"} if($exportParam{"y"});
@@ -311,7 +309,7 @@ package DIAWorkflow {
         
         my $command = $msproteomicstoolsPath."/spectrast2tsv.py $exportOptions $workDir/convert$exportParam{format}.sptxt > $output 2>&1";
         if ($exportParam{"format"} eq "peakview") {
-            $command .= "sed s/TRUE/FALSE/g $workDir/$processFile > $workDir/peakviewfile.txt;";
+            $command .= "\nsed -i s/TRUE/FALSE/g $workDir/$processFile";
         }
         
         open (BASH,"+>", $scriptFile);
@@ -319,26 +317,25 @@ package DIAWorkflow {
         print BASH "$command\n";
         close BASH;
         chmod 0775, $scriptFile;
-
+        
         my $size = (-e "$libDir/$libraryName.sptxt") ? `stat -c "%s" $libDir/$libraryName.sptxt`: 1073741824;
         my $maxMem = max(1, $size/1073741824);
         
         # Run task
         runTask($workDir, $scriptFile, $maxMem, "libExport_$timeStamp", $forceLocalRun);
-
+        
         #############################################
         ### Waiting for spectrast2tsv to finish   ###
         #############################################
-        my $massNumTot = scalar keys %mzHash;
-        $massNumTot *= $exportParam{"n"}; # ion number per peptide
-        my $wait = 1;
-        my $errorTxt = '';
+        my $massNumTot = `grep -E "PrecursorMZ:\\s([0-9.]+)" "$workDir/convert$exportParam{format}.sptxt" | cut -d ' ' -f 2 | sort -T $workDir | uniq | wc -l`;
         my $massNumber;
+        my $errorTxt = '';
         my $prevNbLine = 0;
         my $waitNb = 0;
+        my $wait = 1;
         
         while ($wait == 1) {
-            sleep 30;
+            sleep 15;
             $now = strftime("%s", localtime); # in sec
             $waitTime = strftime("%Hh %Mm %Ss", localtime($now-$startTime-3600));
             $status = "Updated $waitTime ago";
@@ -346,14 +343,16 @@ package DIAWorkflow {
             ## loading process
             $massNumber = `tail -n +2 $workDir/$processFile | cut -f1 | uniq | wc -l` if (-s "$workDir/$processFile"); # Count amount of uniq precursor mass in the processed file
             $massNumber = ($massNumber) ? $massNumber : 1;
-            chomp $massNumber;
             
-            my $percent = $massNumber/$massNumTot*100;
-            $percent = sprintf("%.0f", $percent);
-            $percent = '100' if ($percent > 100);
+            my $percent = ($massNumTot && $massNumTot>0) ? ($massNumber/$massNumTot)*100 : 'Unknown';
+            if($percent ne 'Unknown') {
+                $percent = sprintf("%.0f", $percent);
+                $percent = '100' if ($percent > 100);
+            }
+            
             if ($processText) {
                 print "<SCRIPT LANGUAGE=\"JavaScript\">$divID.innerHTML=\"\";$divID.innerHTML='$status';</SCRIPT>";
-                $processText = "<B>Step 1/2 :</B> Export library for PeakView ... " if ($exportParam{"format"} eq 'peakview');
+                $processText = "<B>Step 1/2 :</B> Exporting library ..." if ($exportParam{"format"} =~ /peakview|spectronaut/);
                 $loading = "<progress value=\"$percent\" max=\"100\" style=\"width:400px\"></progress>";
                 print "<SCRIPT LANGAGE=\"JavaScript\">$loadingDivID.innerHTML=\"\";$loadingDivID.innerHTML='$processText<BR/><BR/> $loading';$loadingSPAN.innerHTML='$percent%';</SCRIPT>";
             }
@@ -396,9 +395,6 @@ package DIAWorkflow {
             
             $waitNb++;
         }
-
-        # Remove unecessary files
-        system "rm -f $workDir/PBSerror.txt $workDir/PBS.txt $workDir/torqueID.txt $workDir/ssh_connect.sh $workDir/PBScommand.sh $workDir/sortieExport.txt $scriptFile $workDir/convert$exportParam{format}.sptxt";
         
         if ($errorTxt) {
             if ($processText) {
@@ -408,52 +404,121 @@ package DIAWorkflow {
             return ('error', 'error', $errorTxt);
         }
         
-        #############################
-        ###> Add +50 to each iRT <###
-        #############################
-        if ($exportParam{"format"} eq "peakview") {
-            my $numFileLine = `cat $workDir/peakviewfile.txt | wc -l`;
-            my $numLine = 1;
-            my $i = 1;
+        # Convert file with compatible header and data format for peakview or spectronaut
+        ## For PeakView, add +50 to each iRT 
+        if ($exportParam{"format"} =~ /peakview|spectronaut/) {
+            my (%colName2Index);
+            my $totNumLines = `cat $workDir/$processFile | wc -l`;
+            my $currNumLine = 0;
             
-            open(INFILE, "<", "$workDir/peakviewfile.txt");
-            open(OUTFILE, ">" , $finalFile);
+            open(INFILE, "<", "$workDir/$processFile");
+            open(OUTFILE, ">" , "$workDir/tmp_$processFile");
             while (my $line=<INFILE>) {
-                if ($line=~/^Q1/) {
-                    print OUTFILE $line;
-                } else {
-                    my @lineInfo = split(/\t/, $line);
-                    my $RT = $lineInfo[2] + 50;
-                    my $iRT = $lineInfo[12] + 50;
-                    $lineInfo[2] = $RT;
-                    $lineInfo[12] = $iRT;
-                    print OUTFILE join("\t", @lineInfo);
+                if($exportParam{"format"} eq 'peakview') {
+                    if ($line=~/^Q1/) {
+                        print OUTFILE $line;
+                    } else {
+                        my @lineInfo = split(/\t/, $line);
+                        my $RT = $lineInfo[2] + 50;
+                        my $iRT = $lineInfo[12] + 50;
+                        $lineInfo[2] = $RT;
+                        $lineInfo[12] = $iRT;
+                        print OUTFILE join("\t", @lineInfo)."\n";
+                    }
+                } elsif($exportParam{"format"} eq 'spectronaut') {
+                    my @headers = ("PrecursorMz","FragmentMz","iRT","RelativeFragmentIntensity","Decoy","StrippedSequence","ProteinName","ProteinId","ModifiedSequence","PrecursorCharge","FragmentType","FragmentCharge","FragmentNumber","FragmentLossType");
+                    if ($. == 1) {
+                        my @columns = split(/\t/, $line);
+                        foreach my $i (0 .. $#columns) {
+                            $colName2Index{$columns[$i]} = $i;
+                        }
+                        print OUTFILE join("\t", @headers)."\n";
+                    } else {
+                        my @infos = split(/\t/, $line);
+                        my %lineInfos = (
+                            "PrecursorMz" => $infos[$colName2Index{'PrecursorMz'}],
+                            "FragmentMz" => $infos[$colName2Index{'ProductMz'}],
+                            "iRT" => $infos[$colName2Index{'Tr_recalibrated'}],
+                            "RelativeFragmentIntensity" => $infos[$colName2Index{'LibraryIntensity'}],
+                            "Decoy" => ($infos[$colName2Index{'decoy'}] && $infos[$colName2Index{'decoy'}] eq '1') ? "True" : "False",
+                            "StrippedSequence" => $infos[$colName2Index{'PeptideSequence'}],
+                            "ProteinName" => $infos[$colName2Index{'ProteinName'}],
+                            "ProteinId" => "",
+                            "ModifiedSequence" => $infos[$colName2Index{'FullUniModPeptideName'}],
+                            "PrecursorCharge" => $infos[$colName2Index{'PrecursorCharge'}],
+                            #"PeptideGroupLabel" => $infos[$colName2Index{'PeptideGroupLabel'}],
+                            "FragmentLossType" => (length($infos[$colName2Index{'FragmentType'}]) > 1) ? substr($infos[$colName2Index{'FragmentType'}], 1) : 'noloss',
+                            "FragmentType" => substr($infos[$colName2Index{'FragmentType'}], 0, 1),
+                            "FragmentCharge" => $infos[$colName2Index{'FragmentCharge'}],
+                            "FragmentNumber" => $infos[$colName2Index{'FragmentSeriesNumber'}],
+                            #"IsotopicLabel" => $infos[$colName2Index{'LabelType'}],
+                        );
+                        
+                        # On the fly loss type transformation
+                        $lineInfos{"FragmentLossType"} = ($lineInfos{"FragmentLossType"} eq "-98") ? "H3PO4" : ($lineInfos{"FragmentLossType"} eq "-80") ? "HPO3" : $lineInfos{"FragmentLossType"};
+                        
+                        # Changing variable modification identifier: (UniMod:<UNIMOD_ID>) -> [+<MONO_MASS>] 
+                        #if ($lineInfos{"ModifiedSequence"} =~ /\(UniMod:\d+\)/) {
+                        #    my $peptideSeq = $lineInfos{"ModifiedSequence"};
+                        #    while ($peptideSeq =~ /\(UniMod:(\d+)\)/g) {
+                        #        my $unimodID = $1;
+                        #        my $massMod = sprintf("%.0f", $unimodMass{$unimodID});
+                        #        $lineInfos{"ModifiedSequence"} =~ s/\(UniMod:$unimodID\)/\[+$massMod\]/g;
+                        #        $lineInfos{"PeptideGroupLabel"} =~ s/\(UniMod:$unimodID\)/\[+$massMod\]/g;
+                        #        $peptideSeq =~ s/\(UniMod:$unimodID\)//g;
+                        #        $peptideSeq =~ s/(^\.|\.$)//; #For DIA Phospho, remove dot of N-term and C-term modifs
+                        #    }
+                        #    undef $peptideSeq;
+                        #}
+                        
+                        # Creates one line by protein name
+                        my @proteinNames = split(/\//, $lineInfos{"ProteinName"});
+                        foreach my $proteinName (@proteinNames[1..$#proteinNames]) {
+                            $lineInfos{"ProteinName"} = $proteinName;
+                            my @protInfos = split(/\|/, $proteinName);
+                            $lineInfos{"ProteinId"} = (scalar @protInfos > 2) ? $protInfos[1] : $proteinName;
+                            my $lineTxt = '';
+                            for my $field (@headers) {
+                                $lineTxt .= "\t" if($lineTxt);
+                                $lineTxt .= $lineInfos{$field};
+                            }
+                            print OUTFILE "$lineTxt\n";
+                        }
+                        
+                        undef %lineInfos;
+                        undef @infos;
+                    }
                 }
                 
-                if ($i == 300) {
-                    ## loading bar
-                    my $percent = $numLine/$numFileLine*100;
+                ## loading bar
+                if ($currNumLine % 10000 == 0) {
+                    my $percent = $currNumLine/$totNumLines*100;
                     $percent = sprintf("%.0f", $percent);
                     $percent ='100' if ($percent > 100);
                     
+                    $now = strftime("%s", localtime); # in sec
+                    $waitTime = strftime("%Hh %Mm %Ss", localtime($now-$startTime-3600));
+                    $status = "Updated $waitTime ago";
+
                     if($processText) {
+                        print "<SCRIPT LANGUAGE=\"JavaScript\">$divID.innerHTML=\"\";$divID.innerHTML='$status';</SCRIPT>";
                         my $loading = "<progress value=\"$percent\" max=\"100\" style=\"width:400px\"></progress>";
-                        print "<SCRIPT LANGAGE=\"JavaScript\">$loadingDivID.innerHTML=\"\";$loadingDivID.innerHTML='<B>Step 2/2 :</B> Conversion for PeakView ... <BR/><BR/> $loading';$loadingSPAN.innerHTML='$percent%';</SCRIPT>";
+                        print "<SCRIPT LANGAGE=\"JavaScript\">$loadingDivID.innerHTML=\"\";$loadingDivID.innerHTML='<B>Step 2/2 :</B> Data content conversion for ".$exportParam{"format"}." ... <BR/><BR/> $loading';$loadingSPAN.innerHTML='$percent%';</SCRIPT>";
                     }
-                    $i = 0;
                 }
                 
-                $i++;
-                $numLine++; 
+                $currNumLine++;
             }
             
             close OUTFILE;
             close INFILE;
+            
+            system("mv $workDir/tmp_$processFile $workDir/$processFile") if(-e "$workDir/tmp_$processFile");
         }
 
-        system "rm -f $output $workDir/PBSerror.txt $workDir/PBS.txt $workDir/torqueID.txt $workDir/*.sh"; # $scriptFile"; # TODO Uncomment $scriptFile
+        #system "rm -f $output $workDir/PBSerror.txt $workDir/PBS.txt $workDir/torqueID.txt $workDir/*.sh"; # $scriptFile"; # TODO Uncomment $scriptFile
         
-        return ($finalFile, $paramFile);
+        return ($processFile, $paramFile);
     }
     
     sub convertLibrary {
@@ -627,7 +692,6 @@ package DIAWorkflow {
             for (my $i=1; $i <= scalar @mzXmlFileList; $i++) {
                 my $mzXMLFile = $mzXmlFileList[$i-1];
                 (my $OSWout = $mzXMLFile) =~ s/.mzXML$/.osw/;
-                (my $mzXMLout = $mzXMLFile) =~ s/.mzXML$/.tsv/;
                 (my $chromOut = $mzXMLFile) =~ s/.mzXML$/.mzML/;
                 (my $anaName = $mzXMLFile) =~ s/.mzXML$//;
                 
@@ -649,10 +713,7 @@ package DIAWorkflow {
                         open(SCRIPT, "+>", $scriptFile);
                         print SCRIPT "#!/bin/bash\n";
                         print SCRIPT "OPENMS_DATA_PATH=/usr/share/OpenMS;\n";
-                        # ADD -out_chrom $workDir/compressed_$chromOut FOR EXPORTING CHROMATOGRAM
                         print SCRIPT "$openMSPath/OpenSwathWorkflow -in $workDir/$mzXMLFile -out_osw $workDir/$OSWout $openSwathOptions >> $outputFile 2>&1;\n";
-                        #print SCRIPT "$openMSPath/FileConverter -in $workDir/compressed_$chromOut -in_type 'mzML' -out $workDir/$chromOut >> $outputFile 2>&1;\n"; # TODO uncomment;
-                        #print SCRIPT "rm -f $workDir/compressed_$chromOut;\n"; # TODO uncomment;
                         print SCRIPT "echo 'OpenSwathWorkflow Done.' >> $outputFile 2>&1;\n";
                         close SCRIPT;
                         chmod 0775, $scriptFile;
@@ -749,7 +810,7 @@ package DIAWorkflow {
     
 
     sub pyprophet {
-        my ($pyprophetParamRef, $allowErrorUntilEnd, $forceLocalRun) = @_;
+        my ($pyprophetParamRef, $forceLocalRun) = @_;
             
          # PyProphet options
         my $pyProphetScoringOptions = ($pyprophetParamRef->{"IPF"}) ? " --ipf_max_peakgroup_rank 3" : "";
@@ -765,9 +826,9 @@ package DIAWorkflow {
         my $maxNbWhile = 48*60*2;
         my $nFilesToProcess = ($pyprophetParamRef->{"method"} eq "run-specific") ? scalar @mzXmlFileList : 1;
         my $nProcessRunning = 0;
-        my $hasError = 0;
+        my $nErrorFiles = 0;
         
-        while (scalar keys %processedFiles != $nFilesToProcess && !$error && !$PBSerror) {
+        while (scalar keys %processedFiles != $nFilesToProcess && !$error && !$PBSerror && $nErrorFiles == 0) {
             sleep 30 if($nbWhile);
             my $maxProcessPct = 0;
             $processTxt = '';
@@ -789,7 +850,6 @@ package DIAWorkflow {
                         }
                         
                         if($nProcessRunning < $MAX_PARALLEL_JOBS) {
-                        
                             (my $OSWout = $mzXMLFile) = "$anaName.osw";
                             my $scriptFile = "$runDir/pyprophet_$anaName.sh";
                             
@@ -838,6 +898,7 @@ package DIAWorkflow {
                     } else { # Monitor job status
                         if (-s "$runDir/PBSerror.txt") { # Check for process errors
                             $PBSerror = $clusterInfo{'checkError'}->("$runDir/PBSerror.txt");
+                            $nProcessRunning--;
                             last if($PBSerror);
                         }
                         
@@ -848,9 +909,9 @@ package DIAWorkflow {
                                 printToFile($logFile, "An error was thrown for $anaName : $error", 1) if($logFile);        
                                 if($error !~ /IOError|does not have a corresponding chromatogram/) { # IOError => Could not write pdf file
                                     system "rm -rf $runDir $workDir/$anaName.osw $workDir/*.pdf";
-                                    last if(!$allowErrorUntilEnd);
+                                    $nErrorFiles++;
                                 } else {
-                                    $error = '';
+                                    $error = '' if(!$error);
                                 }
                             }
                         }
@@ -947,6 +1008,7 @@ package DIAWorkflow {
                         
                         if($error !~ /IOError|does not have a corresponding chromatogram/) {
                             system "rm -rf $workDir/*.osw $workDir/*.sh $workDir/*.sh $workDir/PBS*.txt $workDir/torqueID.txt $workDir/*.pdf $workDir/*.mzXML.tsv";
+                            $nErrorFiles++;
                         } else {# IOError => Could not write pdf file || KeyError => Error happenning during protein error estimation (Problem ?)
                             $error = '';
                         }
@@ -972,7 +1034,7 @@ package DIAWorkflow {
             $nbWhile++;
         }
 
-        return ($error) ? $error : ($PBSerror) ? $PBSerror : "Done";
+        return ($nErrorFiles) ? 'Need to reprocess files' : ($error) ? $error : ($PBSerror) ? $PBSerror : "Done";
     }
     
     sub tric {
@@ -1011,7 +1073,7 @@ package DIAWorkflow {
         chmod 0775, $scriptFile;
         
         # Compute memory size to ask for TRIC, based on all feature_alignment.py infiles
-        my $maxMem = max(30, scalar @pyprophetFilesOut / 2);
+        my $maxMem = max(30, scalar @pyprophetFilesOut / 4);
         $maxMem = 200 if($maxMem > 200);
         
         # Run task
@@ -1065,8 +1127,9 @@ package DIAWorkflow {
         my ($jobID);
         ($jobID = $workDir) =~ s/.+\///g;
         my $dbh = &promsConfig::dbConnect('no_user');
+        my $jobClusterID = '';
         
-        if ($clusterInfo{'on'} && !$forceLocalRun) { # Run on Cluster
+        if ($clusterInfo{'on'} && (!defined $forceLocalRun || !$forceLocalRun)) { # Run on Cluster
             my %jobParams = (
                 maxMem     => sprintf("%.0f", $maxMem).'Gb',
                 numCPUs    => ($nCores) ? $nCores : 1,
@@ -1077,10 +1140,11 @@ package DIAWorkflow {
                 jobEndFlag => "End_$jobName",
                 noWatch    => '1',
             );
-            my ($pbsError, $pbsErrorFile, $jobClusterID) = $clusterInfo{'runJob'}->($runDir, $scriptFile, \%jobParams);
+            (my $pbsError, my $pbsErrorFile, $jobClusterID) = $clusterInfo{'runJob'}->($runDir, $scriptFile, \%jobParams);
             
             $dbh->do("UPDATE JOB_HISTORY SET ID_JOB_CLUSTER = CONCAT(ID_JOB_CLUSTER, ';C".$jobClusterID."') WHERE ID_JOB='$jobID'");
             $dbh->commit;
+            
             
         } else { # Run locally
             my $childConvert = fork;
@@ -1088,7 +1152,6 @@ package DIAWorkflow {
                 open STDOUT, ">$runDir/std.out" or die "Can't open $runDir/std.out: $!";
                 open STDIN, '</dev/null' or die "Can't open /dev/null: $!";
                 open STDERR, ">$runDir/std.err" or die "Can't open $runDir/std.err: $!";
-                
                 $dbh->do("UPDATE JOB_HISTORY SET ID_JOB_CLUSTER = CONCAT(ID_JOB_CLUSTER, ';L".$$."') WHERE ID_JOB='$jobID'");
                 $dbh->commit;
                 
@@ -1097,6 +1160,8 @@ package DIAWorkflow {
             }
         }
         $dbh->disconnect;
+        
+        return $jobClusterID;
     }
     
     sub printToFile {
@@ -1108,6 +1173,164 @@ package DIAWorkflow {
     }
 }
 1;
+
+####################################################################
+################### PARSING AND UTILS FUNCTIONS      ###############
+####################################################################
+package DIAUtils {
+    sub parseLibraryOpenSwath {
+        my ($libPath, $logPath, ) = @_;
+        my (%colName2Index, %modifMass, %fragInfos);
+        my $nFrag = `wc -l $libPath | cut -d' ' -f1`;
+        $nFrag = ($nFrag) ? $nFrag-1 : 0;
+        my $fragCount = 0;
+        
+        open(LOGFILE, ">$logPath") || die "Error while opening $logPath\n" if($logPath);
+        open (LIBEXPORT, "<$libPath");
+        while (<LIBEXPORT>) {
+            if ($. == 1) {
+                $_ =~ s/\s*\Z//;
+                my @columns = split(/[,;\t]/, $_);
+                foreach my $i (0 .. $#columns) {
+                    $colName2Index{$columns[$i]} = $i;
+                }
+            } else {
+                if($logPath && $fragCount % 100000 == 0) {
+                    print LOGFILE "Scanning library : Recovering fragments informations in the library ($fragCount/$nFrag)\n";
+                }
+                $fragCount++;
+                
+                $_ =~ s/\s*\Z//;
+                next if($_ =~ /DECOY/);
+                my @infos = split(/[\t]/, $_);
+
+                my $fragIndex = $fragCount-1;
+                $fragInfos{$fragIndex} = {
+                    "MZ"         => $infos[$colName2Index{'ProductMz'}],
+                    "ionType"    => $infos[$colName2Index{'FragmentType'}],
+                    "ionResidue" => $infos[$colName2Index{'FragmentSeriesNumber'}],
+                    "charge"     => $infos[$colName2Index{'ProductCharge'}],
+                    "peptide"    => $infos[$colName2Index{'ModifiedPeptideSequence'}]
+                };
+                
+                my $fragAnnot  = $infos[$colName2Index{'Annotation'}];
+                if($fragAnnot =~ /[bymap]\d{0,3}([-+])?([0-9A-Za-z]+)?/) {
+                    if($2) {
+                        #if(!$modifMass{$2}) {
+                        #    $modifMass{$2} = getModifMass($2);
+                        #}
+                        #$fragInfos{$fragIndex}{"modif"} = sprintf("%.0f", $1.$modifMass{$2}) if($1 && $modifMass{$2}); # Prints mono mass of loss type formula
+                        $fragInfos{$fragIndex}{"modif"} = $2;
+                    }
+                }
+            }
+        }
+        
+        close LOGFILE if($logPath);
+        close LIBEXPORT;
+        return (\%fragInfos);
+    }
+    
+    
+    sub parseLibrarySpectronaut {
+        my ($libPath, $logPath) = @_;
+        my (%colName2Index, %modifMass, %fragInfos);
+        my $nFrag = `wc -l $libPath | cut -d' ' -f1`;
+        $nFrag = ($nFrag) ? $nFrag-1 : 0;
+        my $fragCount = 0;
+        
+        open(LOGFILE, ">$logPath") || die "Error while opening $logPath\n" if($logPath);
+        open (LIBEXPORT, "<$libPath");
+        while (<LIBEXPORT>) {
+            if ($. == 1) {
+                $_ =~ s/\s*\Z//;
+                my @columns = split(/[,;\t]/, $_);
+                foreach my $i (0 .. $#columns) {
+                    $colName2Index{$columns[$i]} = $i;
+                }
+            } else {
+                if($logPath && $fragCount % 100000 == 0) {
+                    print LOGFILE "Scanning library : Recovering fragments informations in the library ($fragCount/$nFrag)\n";
+                }
+                $fragCount++;
+                
+                $_ =~ s/\s*\Z//;
+                next if($_ =~ /DECOY/);
+                my @infos = split(/[\t]/, $_);
+
+                my $fragIndex = $fragCount-1;
+                $fragInfos{$fragIndex} = {
+                    "MZ"         => $infos[$colName2Index{'FragmentMz'}],
+                    "ionType"    => $infos[$colName2Index{'FragmentType'}],
+                    "ionResidue" => $infos[$colName2Index{'FragmentNumber'}],
+                    "charge"     => $infos[$colName2Index{'FragmentCharge'}],
+                    "peptide"    => $infos[$colName2Index{'IntLabeledPeptide'}],
+                    "modif"      => ($infos[$colName2Index{'FragmentLossType'}] && $infos[$colName2Index{'FragmentLossType'}] ne 'noloss') ? $infos[$colName2Index{'FragmentLossType'}] : '',
+                };
+            }
+        }
+        
+        close LOGFILE if($logPath);
+        close LIBEXPORT;
+        return (\%fragInfos);
+    }
+    
+    
+    sub getModifMass {
+        my ($modifFormula, $unimodFile) = @_;
+        my %promsPath=&promsConfig::getServerInfo('no_user');
+        $unimodFile = "$promsPath{tmp}/Swath/unimod_ref.xml" if(!$unimodFile); # TODO Update file with all unimod modifications
+        my $xml  = new XML::Simple;
+        my $data = $xml->XMLin($unimodFile);
+        
+        for my $modif (@{$data->{"umod:modifications"}{"umod:mod"}}) {
+            next unless($modif->{"umod:specificity"});
+            my @specificities;
+            if(ref($modif->{"umod:specificity"}) eq 'ARRAY') {
+                @specificities = @{$modif->{"umod:specificity"}};
+            } else {
+                push @specificities, $modif->{"umod:specificity"};
+            }
+    
+            for my $specificity (@specificities) {
+                next unless($specificity->{"umod:NeutralLoss"});
+                my @neutralLoss;
+                if(ref($specificity->{"umod:NeutralLoss"}) eq 'ARRAY') {
+                    @neutralLoss = @{$specificity->{"umod:NeutralLoss"}};
+                } else {
+                    push @neutralLoss, $specificity->{"umod:NeutralLoss"};
+                }
+    
+                for my $neutralLoss (@neutralLoss) {
+                    next unless($neutralLoss->{"umod:element"});
+                    my @neutralLossElements;
+                    my $neutralLossFormula = "";
+                    my $remainingFormula = $modifFormula;
+                    if(ref($neutralLoss->{"umod:element"}) eq 'ARRAY') {
+                        @neutralLossElements = @{$neutralLoss->{"umod:element"}};
+                    } else {
+                        push @neutralLossElements, $neutralLoss->{"umod:element"};
+                    }
+                    
+                    for my $neutralLossElement (@neutralLossElements) {
+                        my $element = $neutralLossElement->{"symbol"}.$neutralLossElement->{"number"};
+                        $neutralLossFormula .= $element;
+                        $remainingFormula =~ s/$element//;
+                    }
+                    
+                    if($remainingFormula eq "") {
+                        return $neutralLoss->{"mono_mass"};
+                    }
+                }
+            }
+            
+        }
+        return -1;
+    }
+    
+}
+1;
+
 
 ##########################################################
 ################### TANDEM XML PARSING ###################
@@ -1867,6 +2090,13 @@ package XTandemPEPXMLHandler; { ## only for .tandem.pep.xml
 1;
 
 ####>Revision history<####
+# 1.2.4 [CHANGE] Do not tranform modifications identifier from (UniMod:X) to [+MonoMass] (VS 29/01/21)
+# 1.2.3 [BUGFIX] Fix spec lib file path in DIAUtils::perseLibraryOpenSwath (VS 24/08/20)
+# 1.2.2 [CHANGE] Changed required memory computation for TRIC (VS 19/06/20)
+# 1.2.1 [ENHANCEMENT] Added DIAUtils functions for library parsing (VS 16/06/20)
+# 1.2.0 [ENHANCEMENT] Handles spectronaut spectral library export format (VS 06/04/20)
+# 1.1.9 [BUGFIX] Fix cluster/local job run (VS 06/03/20)
+# 1.1.8 [ENCHANCEMENT] Improves logs generation (VS 06/03/20)
 # 1.1.7 [BUGFIX] Fix protein export issue (VS 18/11/19)
 # 1.1.6 [FEATURES] Handles new monitoring system (VS 29/10/19)
 # 1.1.5 Inner package : promsDIA, all steps of DIA Workflow (VS 11/06/19)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 #################################################################################
-# selectOptionPathway.cgi    1.0.4                                              #
+# selectOptionPathway.cgi    1.0.5                                              #
 # Authors: P. Poullet, G. Arras & S. Liva (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                     #
 # Generates list of options available to user, in case of GO analysis item      #
@@ -72,7 +72,7 @@ my ($expName,$projectID) = ($itemType eq 'pathwayanalysis')? $dbh->selectrow_arr
 ####>Fetching user information<####
 my @userInfo=&promsMod::getUserInfo($dbh,$userID,$projectID);
 my $projectAccess=${$userInfo[2]}{$projectID};
-my $projectFullAccess=($projectAccess eq 'bioinfo' ||$projectAccess eq 'mass' || $projectAccess =~ /super/)? 1 : 0;
+my $projectGuestAccess = ($projectAccess eq 'guest')? 1 : 0;
 $dbh->disconnect;
 
 ####>HTML<####
@@ -138,11 +138,15 @@ var currentButton; // currently selected button
 |;
 if ($itemType eq 'pathwayanalysis') {
 	print "<TD nowrap>",&summaryOption;
-	print "<BR>",&editOption,"</TD>\n";
-	print "<TD nowrap>",&deleteOption,"</TD><TD nowrap>",&displayPathwayAnalysisButton,"</TD>";
+	unless ($projectGuestAccess) {
+		print "<BR>",&editOption,"</TD>\n";
+		print "<TD nowrap>",&deleteOption;
+	}
+	print "</TD>\n";
+	print "<TD nowrap>",&displayPathwayAnalysisButton,"</TD>\n";
 }
 else {
-	print "<TD nowrap>",&pathwayAnalysisButton,"</TD>";
+	print "<TD nowrap>",&pathwayAnalysisButton,"</TD>\n";
 }
 print qq
 |</TR></TABLE>
@@ -172,6 +176,7 @@ sub pathwayAnalysisButton {
 }
 
 ####>Revision history<####
+# 1.0.5 [BUGFIX] Disable edition and deletion by guest users (VL 28/01/21)
 # 1.0.4 CSS style for active button (PP 15/03/16)
 # 1.0.3 Left border color code to help navigation (PP 19/10/15)
 # 1.0.2 change runAndDisplayPathwayAnalysis to displayPathwayAnalysis.cgi, add disabled displayPathwayAnalysis (SL 03/09/15)

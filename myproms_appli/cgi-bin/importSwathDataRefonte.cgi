@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# importSwathDataRefonte.cgi         1.4.4                                     #
+# importSwathDataRefonte.cgi         1.5.3                                     #
 # Authors: M. Le Picard, P. Poullet & G. Arras (Institut Curie)                #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -12,7 +12,7 @@
 #
 # This software is a computer program whose purpose is to process
 # Mass Spectrometry-based proteomic data.
-#
+# 
 # This software is governed by the CeCILL license under French law and
 # abiding by the rules of distribution of free software. You can use,
 # modify and/or redistribute the software under the terms of the CeCILL
@@ -57,6 +57,7 @@ use File::Copy;
 use File::Basename;
 use String::Util qw(trim);
 use List::Util qw(min max);
+use Data::Dumper;
 
 no warnings qw( once );
 $CGI::LIST_CONTEXT_WARN = 0; # Disable warning of param values used as array
@@ -82,8 +83,9 @@ my ($item, $experimentID) = split(':', $branchID);
 $experimentID = (param('expID')) ? param('expID') : $experimentID;
 my $dbh = &promsConfig::dbConnect($userID);
 
-my $exportedLibFile = (param('exportedlibrary')) ? param('exportedlibrary') : '';
-my $paramFile = (param('exportparam')) ? param('exportparam') : '';
+my $specLibFile = (param('specLibFile')) ? param('specLibFile') : '';
+my $specLibParamFile = (param('specLibParamFile')) ? param('specLibParamFile') : '';
+my $expParamFile = (param('expParamFile')) ? param('expParamFile') : '';
 my $decoyLibFile = (param('decoyLibrary')) ? param('decoyLibrary') : '';
 my $alignmentFile = (param('uploadfile')) ? param('uploadfile') : ''; # TRIC alignment results as TSV file
 my $alignmentFileName;
@@ -91,7 +93,7 @@ my $alignmentFileName;
 my $tricMethod = (param('TRICMethod')) ? param('TRICMethod') : 'best_overall';
 my $enabledIPF = (param('enableIPF')) ? param('enableIPF') : 0;
 my $softwareVersion = (param('softversion')) ? param('softversion') : '';
-my $format = (param('FORMAT')) ? param('FORMAT') : 'openswath'; # peakview, openswath, spectronaut
+my $format = (param('FORMAT')) ? param('FORMAT') : 'openswath'; # peakview, openswath
 
 my $isOnCluster = (param('CLUSTER')) ? param('CLUSTER') : 0;
 my $shouldRunOnCluster = (param('RUNCLUSTER')) ? param('RUNCLUSTER') : 0;
@@ -127,11 +129,11 @@ if ($submit eq "") {
     my %massATave = &promsConfig::getMassATave; # Average mass, needed for protein mass calculation
     my %massAAave = &promsConfig::getMassAAave; # Average mass, needed for protein mass calculation
 
-    my $software = ($format eq 'peakview') ? "Peakview" : ($format eq 'openswath') ? "OpenSwath" : "Spectronaut" ;
+    my $software = ($format eq 'peakview') ? "Peakview" : "OpenSwath";
     my (@mzXmlFileList, @pyprophetFiles, $irtFile, $swathWindows, $unimod, $w, $m, $fasta, $labelling); # Useful variables -> files: mzXML, iRT, Windows, Unimod file, -W, -M, -f, -i
-    my $unimodRef = "/bioinfo/projects_prod/myproms/tmp/Swath/unimod_ref.xml"; # TODO Update file with all unimod modifications
     my ($lMax, $lMin, $s, $x, $o, $n); # Useful variables for both library export and conversion
     my $errorTRICMethod = 0;
+    my $warning = "";
     
     ### Create new directory
     my $time = strftime("%Y%m%d%H%M%S", localtime); # "20190808181244";
@@ -154,7 +156,8 @@ if ($submit eq "") {
         <HTML>
             <HEAD>
                 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
-                <BODY background="$promsPath{images}/bgProMS.gif">
+            </HEAD>
+            <BODY background="$promsPath{images}/bgProMS.gif">
                 <CENTER><BR/><BR/>
                     <IMG src='$promsPath{images}/engrenage.gif'><BR/><BR/>
                     <FONT color=\"red\"><DIV id=\"waitDIV\"></DIV></FONT><BR/>
@@ -239,8 +242,8 @@ if ($submit eq "") {
         }
         
         ### Upload export library file
-        if ($exportedLibFile) {
-            uploadFile($workDir, $exportedLibFile);
+        if ($specLibFile) {
+            uploadFile($workDir, $specLibFile);
         }
         
         ### Upload decoy library
@@ -296,13 +299,13 @@ if ($submit eq "") {
         }
         
         ### Upload export library file
-        if ($exportedLibFile) {
-            uploadFile($workDir, $exportedLibFile);
+        if ($specLibFile) {
+            uploadFile($workDir, $specLibFile);
         }
         
         ### Upload export library param file
-        if ($paramFile) {
-            uploadFile($workDir, $paramFile);
+        if ($specLibParamFile) {
+            uploadFile($workDir, $specLibParamFile);
         }
         
         ### Upload unimod file
@@ -393,14 +396,14 @@ if ($submit eq "") {
         my ($pbsError, $pbsErrorFile, $jobClusterID) = $clusterInfo{'runJob'}->($workDir, $scriptFile, \%jobParams);
         
         # Create new job to monitor
-        $dbh->do("INSERT INTO JOB_HISTORY (ID_JOB, ID_USER, ID_PROJECT, ID_JOB_CLUSTER, TYPE, STATUS, FEATURES, SRC_PATH, LOG_PATH, ERROR_PATH, STARTED) VALUES('$time', '$userID', $projectID, 'C$jobClusterID', 'Import [$software]', 'Queued', 'SOFTWARE=$software;ID_LIBRARY=$libID', '$workDir', '$fileStat', '$fileError', NOW())");
+        $dbh->do("INSERT INTO JOB_HISTORY (ID_JOB, ID_USER, ID_PROJECT, ID_JOB_CLUSTER, TYPE, JOB_STATUS, FEATURES, SRC_PATH, LOG_PATH, ERROR_PATH, STARTED) VALUES('$time', '$userID', $projectID, 'C$jobClusterID', 'Import [$software]', 'Queued', 'SOFTWARE=$software;ID_LIBRARY=$libID;RESULT_FILE=$alignmentFile', '$workDir', '$fileStat', '$fileError', NOW())");
         $dbh->commit;
         $dbh->disconnect;
         
         # Redirect to results
         print qq |
                         <SCRIPT LANGUAGE="JavaScript">
-                            var monitorJobsWin=window.open("$promsPath{cgi}/monitorJobs.cgi?filterType=Import [$software]&filterDateNumber=3&filterDateType=DAY&filterStatus=Queued&filterStatus=Running",'monitorJobsWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
+                            var monitorJobsWin=window.open("$promsPath{cgi}/monitorJobs.cgi?filterType=Import [$software]&filterDateNumber=3&filterDateType=DAY&filterStatus=Queued&filterStatus=Running&filterProject=$projectID",'monitorJobsWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
                             monitorJobsWin.focus();
                             top.promsFrame.selectedAction='summary';
                             parent.navFrame.location="$promsPath{cgi}/openProject.cgi?ID=$projectID&branchID=experiment:$experimentID&ACT=nav";
@@ -411,7 +414,7 @@ if ($submit eq "") {
         |;
         exit;
     } elsif(!param('workdir')) { # If script was not started by the cluster job, create it in DB
-        $dbh->do("INSERT INTO JOB_HISTORY (ID_JOB, ID_USER, ID_PROJECT, ID_JOB_CLUSTER, TYPE, STATUS, FEATURES, SRC_PATH, LOG_PATH, ERROR_PATH, STARTED) VALUES('$time', '$userID', $projectID, 'L$$', 'Import [$software]', 'Queued', 'SOFTWARE=$software;ID_LIBRARY=$libID', '$workDir', '$fileStat', '$fileError', NOW())");
+        $dbh->do("INSERT INTO JOB_HISTORY (ID_JOB, ID_USER, ID_PROJECT, ID_JOB_CLUSTER, TYPE, JOB_STATUS, FEATURES, SRC_PATH, LOG_PATH, ERROR_PATH, STARTED) VALUES('$time', '$userID', $projectID, 'L$$', 'Import [$software]', 'Queued', 'SOFTWARE=$software;ID_LIBRARY=$libID;RESULT_FILE=$alignmentFile', '$workDir', '$fileStat', '$fileError', NOW())");
         $dbh->commit;
     }
     
@@ -437,12 +440,12 @@ if ($submit eq "") {
         ########################
         ###  Library Export  ###
         ########################
-        if (!$exportedLibFile) { # Export selected library
+        if (!$specLibFile) { # Export selected library
             printToFile($fileStat, "Library conversion for OpenSwath", 1);
             
             ### Recover all exportation params
             # Excluded library modifications
-            my $excludedPepMod = (param('pepMod')) ? param('pepMod') : '';
+            my @excludedPepMod = (param('pepMod')) ? (param('pepMod')) : ();
             
             # Mass range (lmin/lmax), Ion series (s) and charge (x), Number of ions per peptide (min: o / max: n)
             ($lMax, $lMin, $s, $x, $o, $n) = &promsMod::cleanParameters(param('-lmax'), param('-lmin'), param('-s'), param('-x'), param('-o'), param('-n'));
@@ -472,27 +475,27 @@ if ($submit eq "") {
             
             # TODO Uncomment
             if($enabledIPF) { # Only export param files for further database insertion, since the existing library mrm file will be used as input for the library conversion step
-                $exportedLibFile = "$libName.mrm";
-                $paramFile = $libName."_param";
-                DIAWorkflow::exportParams(\%exportParams, "$workDir/$paramFile", "libExport");
+                $specLibFile = "$libName.mrm";
+                $specLibParamFile = $libName."_param";
+                DIAWorkflow::exportParams(\%exportParams, "$workDir/$specLibParamFile", "libExport");
                 
-                if (-e "$libDir/$exportedLibFile") {
-                    copy("$libDir/$exportedLibFile", "$workDir/$exportedLibFile");
+                if (-e "$libDir/$specLibFile") {
+                    copy("$libDir/$specLibFile", "$workDir/$specLibFile");
                 } else {
                     printToFile($fileError, "ERROR: Required MRM library file does not exist. Run swath lib generation in Unsplit mode to create it.", 1);
                     exit;
                 }
             } else { # Export library based on given params
-                ($exportedLibFile, $paramFile, my $error) = DIAWorkflow::exportLibrary(\%exportParams, $excludedPepMod, $isOnCluster);
+                ($specLibFile, $specLibParamFile, my $error) = DIAWorkflow::exportLibrary(\%exportParams, \@excludedPepMod, $isOnCluster);
                 if ($error) {
                     printToFile($fileError, "ERROR: Library conversion failed : $error", 1);
                     exit;
                 }
-                #$exportedLibFile = "$libName\_openswath.tsv"; # TODO Remove
-                #$paramFile = "$libName\_param"; # TODO Remove
+                #$specLibFile = "$libName\_openswath.tsv"; # TODO Remove
+                #$specLibParamFile = "$libName\_param"; # TODO Remove
             }
             
-            print("Exported library : $exportedLibFile<br/>"); # TODO Uncomment
+            print("Exported library : $specLibFile\n"); # TODO Uncomment
         } 
     
         if(!$decoyLibFile) {
@@ -503,7 +506,7 @@ if ($submit eq "") {
             my %convertParams = (
                 "lmin" => $lMin, "lmax" => $lMax, "s" => $s, "x" => $x, "o" => $o, "n" => $n,
                 "productMZThresh" => $productMZThresh, "precursorMZThresh" => $precursorMZThresh, "precursorLowerMZ" => $precursorLowerMZ, "precursorUpperMZ" => $precursorUpperMZ,
-                "w" => $swathWindows, "IPF" => $enabledIPF, "libFile" => $exportedLibFile, 
+                "w" => $swathWindows, "IPF" => $enabledIPF, "libFile" => $specLibFile, 
             );
             
             if($enabledIPF) {
@@ -528,9 +531,9 @@ if ($submit eq "") {
         }
         
         if($enabledIPF) { # Phospho : Switch to a parsable tsv file for exported library, instead of a mrm one
-            $exportedLibFile =~ s/\.mrm/\.tsv/;
-        } else {
-            $exportedLibFile = "$libName.tsv";
+            $specLibFile =~ s/\.mrm/\.tsv/;
+        } elsif(!param('specLibFile')) {
+            $specLibFile = "$libName.tsv";
         }
         
 
@@ -552,10 +555,10 @@ if ($submit eq "") {
         
         # TODO Uncomment
         my $openSwathStatus = DIAWorkflow::openswath(\%openSwathParams);
-        if($openSwathStatus ne 'Done') {
-            printToFile($fileError, $openSwathStatus, 1);
-            exit;
-        }
+        #if($openSwathStatus ne 'Done') {
+        #    printToFile($fileError, $openSwathStatus, 1);
+        #    exit;
+        #}
         
 
         ###################################
@@ -565,25 +568,24 @@ if ($submit eq "") {
         printToFile($fileStat, "Running error estimation on OpenSwath results", 1);
         
         # PyProphet options
-        my $pyProphetMethod = (param('pyprophetMethod')) ? &promsMod::cleanParameters(param('pyprophetMethod')) : "experiment-wide";
+        my $pyProphetMethod = (param('pyprophetMethod')) ? &promsMod::cleanParameters(param('pyprophetMethod')) : "run-specific";
         my %pyprophetParams = (
             "IPF" => $enabledIPF, "method" => $pyProphetMethod,
         );
         
         # TODO Uncomment
-        my $pyprophetStatus = DIAWorkflow::pyprophet(\%pyprophetParams, 1); # TODO Uncomment
+        my $pyprophetStatus = DIAWorkflow::pyprophet(\%pyprophetParams); # TODO Uncomment
         my $nTries = 1;
         my $maxTries = 5;
-        print("PyProphet status : $pyprophetStatus<br/>");
         while($pyprophetStatus ne 'Done' && $nTries < $maxTries) {
             $openSwathStatus = DIAWorkflow::openswath(\%openSwathParams);
-            if($openSwathStatus ne 'Done') {
-                printToFile($fileError, $openSwathStatus, 1);
-                exit;
-            }
-            
-            DIAWorkflow::pyprophet(\%pyprophetParams, 1);
+            $pyprophetStatus = DIAWorkflow::pyprophet(\%pyprophetParams);
             $nTries++;
+        }
+        
+        if($pyprophetStatus ne 'Done') {
+            printToFile($fileError, "Could not run entirely openswath and pyprophet (5 tries)", 1);
+            exit;
         }
         
         # Compute pyprophet outfiles' name
@@ -606,17 +608,17 @@ if ($submit eq "") {
         
         $alignmentFile = "feature_alignment_fileout.tsv";
         unless(-s "$workDir/$alignmentFile") {
-            my $tricStatus = DIAWorkflow::tric(\%tricParams, $isOnCluster);
-            print("TRIC status : $tricStatus<br/>");
+            my $tricStatus = DIAWorkflow::tric(\%tricParams);
+            print("TRIC status : $tricStatus\n");
             
             if($tricStatus ne 'Done') {
                 $tricParams{"method"} = ($tricMethod ne 'LocalMST') ? 'LocalMST' : 'best_overall';
                 
                 printToFile($fileStat, "WARNING : TRIC method ($tricMethod) did not work on data", 1);
                 printToFile($fileStat, "Running another method : $tricParams{method}", 1);
-                $tricStatus = DIAWorkflow::tric(\%tricParams, $isOnCluster);
+                $tricStatus = DIAWorkflow::tric(\%tricParams);
                 
-                print("TRIC status rerun : $tricStatus<br/>");
+                print("TRIC status rerun : $tricStatus\n");
                 if($tricStatus ne 'Done') {
                     printToFile($fileError, $tricStatus, 1);
                     exit;
@@ -635,7 +637,7 @@ if ($submit eq "") {
     
     ### Transform PTMs text to unimod format : (Phospho) -> (UniMod:21) / (Acetyl) -> (UniMod:1)
     if ($enabledIPF) {
-        castToUniMod("$workDir/$alignmentFile", ($unimod) ? "$workDir/$unimod" : $unimodRef);
+        castToUniMod("$workDir/$alignmentFile", ($unimod) ? "$workDir/$unimod" : undef);
     }
 
     #########################################################
@@ -648,6 +650,7 @@ if ($submit eq "") {
     
     ### Fetching SWATH LIB modifications
     (my $libName,$instrument,$taxonomy,$versionName,my $split,my $stat) = $dbh->selectrow_array("SELECT NAME,INSTRUMENT,ORGANISM,VERSION_NAME,SPLIT,STATISTICS FROM SWATH_LIB WHERE ID_SWATH_LIB='$libID' ") or die "Couldn't prepare statement: " . $dbh->errstr;
+    $versionName = '' if(!$versionName);
     my $sthModifIDs=$dbh->prepare("SELECT M.ID_MODIFICATION, SLM.SPECIFICITY, MONO_MASS, UNIMOD_ACC, PEAKVIEW_CODE FROM MODIFICATION M, SWATH_LIB_MODIFICATION SLM WHERE M.ID_MODIFICATION=SLM.ID_MODIFICATION AND SLM.ID_SWATH_LIB=$libID");
     $sthModifIDs->execute();
     while (my ($modID,$specif,$massMod,$unimodID,$peakviewCode)=$sthModifIDs->fetchrow_array){
@@ -669,7 +672,7 @@ if ($submit eq "") {
     my $pepNum=$xmlStat->{'NUM_ENTRY'}->{'NUM_PEP'};
     my $protNum=$xmlStat->{'NUM_ENTRY'}->{'NUM_PROT'};
     my $protSpeNum=$xmlStat->{'NUM_ENTRY'}->{'NUM_PROT_SPECIFIC'};
-    if($format eq 'peakview'){
+    if($format eq 'peakview') {
         my $XICunit=(param('XICunit'))? param('XICunit') : "N/A";
         ($fdr,my $nbPeptide,my $nbTransition,my $modifiedPeptide,my $XICwindow,my $XICwidth)=&promsMod::cleanParameters(param('fdr'),param('nbpeptide'),param('nbtransition'),param('modpep'),param('XICmin'),param('XIC'));
         $nbPeptide=$nbPeptide? $nbPeptide : 'N/A';
@@ -679,27 +682,28 @@ if ($submit eq "") {
         my $exclusePep=($modifiedPeptide) ? 1 : 0;
         $quantifAnnot="LABEL=FREE::SOFTWARE=PKV;".$softwareVersion."::NB_PEPTIDES_PER_PROTEIN=".$nbPeptide."::NB_TRANSITION_PER_PEPTIDE=".$nbTransition."::EXCLUDE_MODIFIED_PEPTIDES=".$exclusePep."::XIC_EXTRACTION_WINDOW=".$XICwindow."::XIC_WIDTH=$XICwidth\_$XICunit";
         $quantifAnnot.="::LIBRARY_NAME=".$libName."::LIBRARY_PEPTIDES=".$pepNum."::LIBRARY_PROTEINS=".$protNum."::LIBRARY_SPECIFICS_PROTEINS=".$protSpeNum;
-    }
-    elsif ($format eq 'openswath'){
-        $quantifAnnot="LABEL=FREE::SOFTWARE=OS;".$softwareVersion."::LIBRARY_NAME=".$libName."::LIBRARY_PEPTIDES=".$pepNum."::LIBRARY_PROTEINS=".$protNum."::LIBRARY_SPECIFICS_PROTEINS=".$protSpeNum;
+    } elsif ($format eq 'openswath') {
+        $quantifAnnot="LABEL=FREE::SOFTWARE=OS;".$softwareVersion."::LIBRARY_NAME=".$libName."::LIBRARY_PEPTIDES=".$pepNum."::LIBRARY_VERSION=".$versionName."::LIBRARY_PROTEINS=".$protNum."::LIBRARY_SPECIFICS_PROTEINS=".$protSpeNum;
         #  -> OS => OPENSWATH
-    }
-    else{
-        $quantifAnnot="LABEL=FREE::SOFTWARE=SPC;".$softwareVersion."::LIBRARY_NAME=".$libName."::LIBRARY_PEPTIDES=".$pepNum."::LIBRARY_PROTEINS=".$protNum."::LIBRARY_SPECIFICS_PROTEINS=".$protSpeNum;
+    } else {
+        $quantifAnnot="LABEL=FREE::SOFTWARE=SPC;".$softwareVersion."::LIBRARY_NAME=".$libName."::LIBRARY_PEPTIDES=".$pepNum."::LIBRARY_VERSION".$versionName."::LIBRARY_PROTEINS=".$protNum."::LIBRARY_SPECIFICS_PROTEINS=".$protSpeNum;
         #  -> SPC => SPECTRONAUT
     }
     
-    #######################################
-    ### Manage export library parameter ###
-    #######################################
-    open(PARAM, "<$workDir/$paramFile");
-    while (<PARAM>) {
-        next if($_ =~ /(Desired proteins not found into the library|Export for)/);
-        my ($paramName, $param) = split(/:/ ,$_);
-        #$param =~ s/\s//g;
-        $quantifAnnot .= "::$paramName=$param";
+    ###########################################
+    ### Manage library/experiment parameter ###
+    ##########################################
+    if($specLibParamFile) {
+        open(PARAM, "<$workDir/$specLibParamFile");
+        while (<PARAM>) {
+            next if($_ =~ /(Desired proteins not found into the library|Export for)/);
+            my ($paramName, $paramValue) = split(/:/ ,$_);
+            $paramName =~ s/(?!^[\s\r\n\t]*)|(?![\s\r\n\t]*$)//g;
+            $paramValue =~ s/(?!^[\s\r\n\t]*)|(?![\s\r\n\t]*$)//g;
+            $quantifAnnot .= "::$paramName=$paramValue";
+        }
+        close PARAM;
     }
-    close PARAM;
     
     ##########################################################
     ###  Recovering peptide miss cleavage and specificity  ###
@@ -735,7 +739,7 @@ if ($submit eq "") {
                     $nameLine=~s/\//_/;
                 }
                 #elsif($nameLine=~/\[\d*\]/ && $format eq 'openswath' && $nameLine!~/^\[43\]/){    ### n-ter modifications are not take into account in peakview, or openswath
-                elsif($nameLine=~/\[\d*\]/ && ($format eq 'openswath' || $format eq 'spectronaut')){    ### n-ter modifications are not take into account in peakview, or openswath
+                elsif($nameLine=~/\[\d*\]/ && $format eq 'openswath'){    ### n-ter modifications are not take into account in peakview, or openswath
                     while ($nameLine=~/(\w)*\[(\d*)\]/g) {
                         my $modMass=$2;
                         my $modifID;
@@ -803,64 +807,21 @@ if ($submit eq "") {
     $dbh->disconnect;
     
     ## Parse export library for fragments information
-    if ($format eq 'openswath' && $exportedLibFile) {
+    if ($format =~ /openswath/ && $specLibFile) {
         printToFile($fileStat, "Scanning library : Recovering fragments information in the library", 1);
-        if (-s "$workDir/$exportedLibFile") {
-            my (%colName2Index, %modifMass);
-            my $nFrag = `wc -l $workDir/$exportedLibFile | cut -d' ' -f1`;
-            $nFrag = ($nFrag) ? $nFrag-1 : 0;
-            my $fragCount = 0;
-            
-            open (LIBEXPORT, "<$workDir/$exportedLibFile");
-            while (<LIBEXPORT>) {
-                if ($. == 1) {
-                    $_ =~ s/\s*\Z//;
-                    my @columns = split(/[,;\t]/, $_);
-                    foreach my $i (0 .. $#columns) {
-                        $colName2Index{$columns[$i]} = $i;
-                    }
-                } else {
-                    if($fragCount % 100000 == 0) {
-                        printToFile($fileStat, "Scanning library : Recovering fragments informations in the library ($fragCount/$nFrag)", 1);
-                    }
-                    $fragCount++;
-                    
-                    $_ =~ s/\s*\Z//;
-                    next if($_ =~ /DECOY/);
-                    my @infos = split(/[\t]/, $_);
-
-                    my $fragIndex = $fragCount-1;
-                    $fragInfos{$fragIndex} = {
-                        "MZ"         => $infos[$colName2Index{'ProductMz'}],
-                        "ionType"    => $infos[$colName2Index{'FragmentType'}],
-                        "ionResidue" => $infos[$colName2Index{'FragmentSeriesNumber'}],
-                        "charge"     => $infos[$colName2Index{'ProductCharge'}],
-                        "peptide"    => $infos[$colName2Index{'ModifiedPeptideSequence'}]
-                    };
-                    
-                    my $fragAnnot  = $infos[$colName2Index{'Annotation'}];
-                    if($fragAnnot =~ /[bymap]\d{0,3}([-+])?([0-9A-Za-z]+)?/) {
-                        if($2) {
-                            if(!$modifMass{$2}) {
-                                $modifMass{$2} = getModifMass($2, ($unimod) ? "$workDir/$unimod" : $unimodRef);
-                            }
-                            $fragInfos{$fragIndex}{"modif"} = sprintf("%.0f", $1.$modifMass{$2}) if($1 && $modifMass{2});
-                        }
-                    }
-                }
-            }
-            
-            close LIBEXPORT;
+        if (-s "$workDir/$specLibFile") {
+            %fragInfos = %{DIAUtils::parseLibraryOpenSwath("$workDir/$specLibFile", $fileStat)};
         } else {
             printToFile($fileError, "No library export file found.", 1);
             exit;
         }
     }
     
-    ################################
-    ###  Parsing alignment file  ###
-    ################################
-    my (%peptideProt, %peptidePosition, %fragmentsInfos, %decoyNb, %targetNb, %sheetNames, %scoreList, %analysisFileNames, %sampleFileNames, %peptideList, %dbRankProt, %assosProtPeptide);
+    ###########################
+    ###  Parsing data file  ###
+    ###########################
+    my (%designExperiment, %peptideProt, %peptidePosition, %fragmentsInfos, %decoyNb, %targetNb, %sheetNames, %scoreList, %analysisFileNames, %sampleFileNames, %peptideList, %dbRankProt, %assosProtPeptide, %pepExperimentDesign);
+    my $protNotQuantified = 0;
     if($format eq 'peakview') {
         ### Split the upload file by sheet
         printToFile($fileStat, "Alignment file : Split by analysis", 1);
@@ -1032,8 +993,8 @@ if ($submit eq "") {
         my %prot;
         
         open (IN, "<$workDir/$alignmentFile");
-        while (<IN>){
-            if ($.==1){
+        while (<IN>) {
+            if ($.==1) {
                 $_=~s/\s*\Z//;
                 my @columns=split(/[,;\t]/,$_);
                 my @refColNames=('ProteinName','filename','mz','Charge','aggr_Fragment_Annotation','RT','aggr_Peak_Area','FullPeptideName');
@@ -1127,120 +1088,7 @@ if ($submit eq "") {
         }
         close IN;
     }
-    elsif ($format eq 'spectronaut'){
-        printToFile($fileStat, "Alignment file : Spectronaut format scanning", 1);
-
-        my %colName2Index;
-        open (IN, "<$workDir/$alignmentFile");
-        my $lastPeptide='';
-        my $lastAna;
-
-        while (<IN>){
-            if ($.==1){
-                $_=~s/\s*\Z//;
-                my @columns=split(/[,;\t\s]/,$_);
-                my @refColNames=('R.Label','PG.UniProtIds','EG.ModifiedPeptide','EG.RTPredicted','FG.Charge','FG.PrecMz','F.Charge','F.FrgIon','F.FrgMz','F.PeakArea');
-                foreach my $i (0 .. $#columns){
-                    $colName2Index{$columns[$i]}=$i;
-                }
-
-                ##check columns names
-                foreach my $colName (@refColNames){
-                    unless (defined $colName2Index{$colName}){
-                        printToFile($fileError, "Wrong columns names in file ! <BR/>The columns names have to be like : <BR/>R.Label<BR/>PG.UniProtIds<BR/>EG.ModifiedPeptide<BR/>EG.RTPredicted<BR/>FG.Charge<BR/>FG.PrecMz<BR/>F.Charge<BR/>F.FrgIon<BR/>F.FrgMz<BR/>F.PeakArea", 1);
-                        exit;
-                    }
-                }
-            } else {
-                $_=~s/\s*\Z//;
-                my @infos=split(/[\t]/,$_);
-                next if $infos[$colName2Index{'PG.UniProtIds'}]=~/iRT/;
-                next if $infos[$colName2Index{'PG.UniProtIds'}]=~/^1\/reverse_sp/;
-                #if ($infos[$colName2Index{'EG.ModifiedPeptide'}]!~/^_/){
-                #    print $infos[$colName2Index{'EG.ModifiedPeptide'}],"<BR/>";
-                #}
-                next if $infos[$colName2Index{'EG.ModifiedPeptide'}]!~/^_/;
-                my $proteinsList=$infos[$colName2Index{'PG.UniProtIds'}];
-                my $anaFile=$infos[$colName2Index{'R.Label'}];
-                my $pepMZ=$infos[$colName2Index{'FG.PrecMz'}];
-                $pepMZ=~s/,/\./;
-                my $pepCharge=$infos[$colName2Index{'FG.Charge'}];
-                my $RT=$infos[$colName2Index{'EG.RTPredicted'}];
-                $RT=~s/,/\./;
-                $RT=sprintf("%0.2f",$RT);
-                my $area=$infos[$colName2Index{'F.PeakArea'}];
-                if ($area!~/\d+\,?\d*/){
-                    $area='NA';
-                }
-                else{
-                    $area=~s/,/\./;
-                }
-
-                my $fragmentType=$infos[$colName2Index{'F.FrgIon'}];
-                my $fragmentCharge=$infos[$colName2Index{'F.Charge'}];
-                my $fragment=$fragmentType.'_'.$fragmentCharge;
-                my $fragmentMZ=$infos[$colName2Index{'F.FrgMz'}];
-                $fragmentMZ=~s/,/\./;
-                my $modifSeq=$infos[$colName2Index{'EG.ModifiedPeptide'}];
-
-
-                (my $anaName=$anaFile)=~s/\.raw//;
-                $analysisFileNames{$anaName}=$anaFile;
-                $sampleFileNames{$anaName}=$anaName;
-
-
-                $modifSeq=~s/_//g;
-                my $peptide=$modifSeq.'_'.$pepCharge;
-
-                ###>recovering peptide infos
-                @{$peptideList{$anaName}{$peptide}{"$RT"}}=($pepMZ,'');
-
-                ###> recovering fragments infos
-                @{$fragmentsInfos{$anaName}{$peptide}{"$RT"}{$fragment}}=('',$area,$fragmentMZ,'');
-
-
-                ##>recovering peptide/protein associations
-                if($peptide eq $lastPeptide){
-                    $peptideProt{$anaName}{$peptide}=\%{$peptideProt{$lastAna}{$peptide}};
-                }
-                else{
-                    my @proteins=split(/\//,$proteinsList);
-                    for my $i (1 .. $#proteins){
-                        next if $proteins[$i]=~/reverse/;
-                        @{$assosProtPeptide{$anaName}{$proteins[$i]}{$peptide}}=($RT);
-                        $peptideProt{$anaName}{$peptide}{$proteins[$i]}=1;
-                    }
-                }
-
-
-                ###>recovering peptide modifications
-                if ($modifSeq=~/\[\+(\d+)\]/){
-                    my $peptideSeq=$modifSeq;
-                    while ($peptideSeq=~/\[\+(\d+)\]/g){
-                        my $modificationID;
-                        foreach my $massID (keys %massMods){
-                            if (sprintf("%0.f",$massMods{$massID}) == $1){
-                                $modificationID=$massID;
-                                last;
-                            }
-                        }
-                        unless ($modificationID){
-                            printToFile($fileError, "The associated modification for the peptide $modifSeq is not found.", 1);
-                            exit;
-                        }
-                        my $pos=$-[0];
-                        $peptideModif{$anaName}{$peptide}{$modificationID}{$pos}=$massMods{$modificationID};
-                        $peptideSeq=~s/\[\+($1)\]//;
-                    }
-                }
-
-                $lastPeptide=$peptide;
-                $lastAna=$anaName;
-
-            }
-        }
-        close IN;
-    }
+    
 
     ##########################################################
     ###  Fetching protein sequence and mass from dataBank  ###
@@ -1291,13 +1139,12 @@ if ($submit eq "") {
                     if ($identifier) {      # search prot
                         $sequence=~s/\s//;
                         $dbRankProt{$identifier}=$dbRank unless defined $dbRankProt{$identifier};
+                        
                         $sequenceProtList{$identifier}=$sequence; # {identifier}=sequence
                         $protLength{$identifier}=length($sequence);
                         $protDes{$identifier}=($des)? $des : $info;
                         $protOrg{$identifier}=($org)? $org : '';
                         
-                        #print("sequenceProtList : $identifier\n"); # TODO Remove
-
                         my %countAA;
                         foreach my $aa (split(//,uc($sequence))) {
                             $countAA{$aa}++;
@@ -1320,13 +1167,14 @@ if ($submit eq "") {
                     foreach my $entry (@line){
                         ($identifier)=($entry=~/$idRule/);
                         chomp $identifier;
+                        
                         if ($identType eq 'UNIPROT_ID') { # check for isoforms in 1st keyword before | & add to UNIPROT_ID
                             $entry=~s/^sp\|//;
                             if ($entry=~/^[^|]+-(\d+)\|/) {
                                 $identifier.="-$1";
                             }
                         }
-                        #print $identifier,"<BR/>";
+
                         ($des)=($entry=~/$desRule/) if $desRule; # optional
                         ($org)=($entry=~/$orgRule/) if $orgRule; # optional
                         if (not $des && not $org) {
@@ -1372,7 +1220,7 @@ if ($submit eq "") {
     ####>Recovering peptide positions on protein and coverage calcul<####
     #####################################################################
     printToFile($fileStat, "Databank : Recovering peptide's positions on protein", 1);
-
+    my @protNotFound = ();
     foreach my $analysisNumber (keys %assosProtPeptide){        # for each analysis
         foreach my $protein (keys %{$assosProtPeptide{$analysisNumber}}){
             my %positionPeptide;
@@ -1380,10 +1228,14 @@ if ($submit eq "") {
             my $numMatch=0;
             my (@begPep,@endPep);
             
+            if(!$sequence || $sequence eq '') {
+                push(@protNotFound, $protein);
+            }
+            
             foreach my $peptide (keys %{$assosProtPeptide{$analysisNumber}{$protein}}){
                 my @pepSeq=split(/_/,$peptide);
                 my $pepSequence=$pepSeq[0];
-                $pepSequence=~s/\[\+?\w+\]//g if ($format eq 'peakview' || $format eq 'spectronaut');
+                $pepSequence=~s/\[\+?\w+\]//g if ($format eq 'peakview');
                 $pepSequence=~s/\(UniMod:\d+\)//g if ($format eq 'openswath');
                 $pepSequence=~s/\.//g if ($format eq 'openswath');
                 
@@ -1409,12 +1261,12 @@ if ($submit eq "") {
                         $numMatch++;
                     }
                 }
-                else{   #for Leucine and Isoleucine inversion in peptide sequence
+                else{ # for Leucine and Isoleucine inversion in peptide sequence and for peptides of protein not found in DB fasta file
                     delete $assosProtPeptide{$analysisNumber}{$protein}{$peptide};
                 }
             }
             $numMatchProt{$analysisNumber}{$protein}=$numMatch; #number of peptide match
-            delete $assosProtPeptide{$analysisNumber}{$protein} if scalar keys %{$assosProtPeptide{$analysisNumber}{$protein}} == 0;
+            delete $assosProtPeptide{$analysisNumber}{$protein} if(scalar keys %{$assosProtPeptide{$analysisNumber}{$protein}} == 0);
 
             if ($assosProtPeptide{$analysisNumber}{$protein}) {
                 ###> Coverage calcul
@@ -1436,27 +1288,35 @@ if ($submit eq "") {
         }
     }
     
+    my $nbProtNotFound = scalar @protNotFound;
+    if($nbProtNotFound > 0) {
+        $warning = "$nbProtNotFound proteins in result files were not found in spectral library databank: ".join(', ', @protNotFound);
+    }
     
+    my $newAlignmentFile = "$time\_$alignmentFile"; # Change Alignment file name to unique string for storing
+    $newAlignmentFile =~ s/\s/_/;
+
     ###############################
     ### Import data in database ###
     ###############################
-    my $quantiName=($format eq 'peakview')? 'PeakView_Quantification' : ($format eq 'openswath')? 'OpenSwath_Quantification' : 'Spectronaut_Quantification';
-    my $importManager = promsImportDataManager->new($userID, $projectID, $experimentID, $format, $quantiName, $quantifAnnot, $taxonomy, $instrument, $alignmentFile, $fileStat, \@dbID);
+    my $quantiName = ($format eq 'peakview') ? 'PeakView Quantification (MS2)' : 'OpenSwath Quantification (MS2)';
+    my $importManager = promsImportDataManager->new($userID, $projectID, $experimentID, $format, $quantiName, $quantifAnnot, $taxonomy, $instrument, $newAlignmentFile, $fileStat, \@dbID);
     $importManager->setFilesInfos(\%analysisFileNames, \%sampleFileNames);
     $importManager->setDIAInfos($libID, \%decoyNb, \%targetNb, $fdr);
+    $importManager->setProtCoverage(\%protCoverage);
     
     printToFile($fileStat, "Storing : Insert results in Database", 1);
     $importManager->importData(\%peptideInfo, \%peptideProt, \%peptideModif, \%peptidePosition, \%peptideList, \%fragmentsInfos, \%modifIDs, \%assosProtPeptide, \%dbRankProt);
-
+    
     my %analysisID = %{$importManager->getAnalysisID};
     my %peptidesID = %{$importManager->getPeptidesID};
     my $quantiID = $importManager->getQuantiID;
+    print("Quanti peptidique: $quantiID\n");
     
 
     ############################
     ### Separating data file ###
     ############################
-    my $warning = "";
     my $mzXmlFileIndex = 0;
     my $nbAnalysisFiles = scalar keys %analysisFileNames;
     printToFile($fileStat, "Storing : Split data files by analysis", 1);
@@ -1464,19 +1324,22 @@ if ($submit eq "") {
     foreach my $analysis(keys %analysisFileNames) {
         my $analysisID = $analysisID{$analysis};
         my $anaDir = "$promsPath{peptide}/proj_$projectID/ana_$analysisID";
+        my $expDir = "$promsPath{peptide}/proj_$projectID/exp_$experimentID";
         my $quantiPath = $promsPath{"quantification"}."/project_$projectID/quanti_$quantiID";
         my $swathFile = "$quantiPath/swath_ana_$analysisID.txt";
+        print("Path to quanti: $quantiPath\n");
 
         mkdir $promsPath{'peptide'} unless -e $promsPath{'peptide'};
         mkdir "$promsPath{peptide}/proj_$projectID" unless -e "$promsPath{peptide}/proj_$projectID";
         mkdir $anaDir unless -e $anaDir;
+        mkdir $expDir unless -e $expDir;
         system "mkdir -p $quantiPath";
-
         # Move the mzXML file to the corresponding analysis folder
         my $mzXMLFile = "$analysis.mzXML";
         if(-s "$workDir/$mzXMLFile") {
             printToFile($fileStat, "Storing : Analysis file for $analysis ($mzXmlFileIndex/$nbAnalysisFiles processed)", 1);
-            if(`stat -c "%s" $workDir/$mzXMLFile` > 10000000) { ### compress mzXML file if its size > 1Go
+            my $mzXMLFileSize = `stat -c "%s" $workDir/$mzXMLFile`;
+            if($mzXMLFileSize > 10000000) { ### compress mzXML file if its size > 1Go
                 system "cd $workDir; tar -zcf $mzXMLFile.tar.gz $mzXMLFile";
                 move("$workDir/$mzXMLFile.tar.gz", "$anaDir/$mzXMLFile.tar.gz");
             } else {
@@ -1488,7 +1351,8 @@ if ($submit eq "") {
         my $pyprophetOutFile = "$mzXMLFile.tsv";
         if(-s "$workDir/$pyprophetOutFile") {
             printToFile($fileStat, "Storing : PyProphet file for $analysis ($mzXmlFileIndex/$nbAnalysisFiles processed)", 1);
-            if(`stat -c "%s" $workDir/$pyprophetOutFile` > 10000000) { ### compress mzXML file if its size > 1Go
+            my $pyprophetOutFileSize = `stat -c "%s" $workDir/$pyprophetOutFile`;
+            if($pyprophetOutFileSize > 10000000) { ### compress mzXML file if its size > 1Go
                 system "cd $workDir; tar -zcf $pyprophetOutFile.tar.gz $pyprophetOutFile";
                 move("$workDir/$pyprophetOutFile.tar.gz", "$anaDir/$pyprophetOutFile.tar.gz");
             } else {
@@ -1496,7 +1360,17 @@ if ($submit eq "") {
             }
         }
         
-        printToFile($fileStat, "Storing : XIC results file for $analysis ($mzXmlFileIndex/$nbAnalysisFiles processed)", 1);
+        # Store alignment file for all analysis
+        if(-s "$workDir/$alignmentFile" || -e "$expDir/$newAlignmentFile") {
+            printToFile($fileStat, "Storing : MS2 quantification file for $analysis ($mzXmlFileIndex/$nbAnalysisFiles processed)", 1);
+            if(!-e "$expDir/$newAlignmentFile") {
+                move("$workDir/$alignmentFile", "$expDir/$newAlignmentFile");
+            }
+            
+            symlink("$expDir/$newAlignmentFile", "$anaDir/DIA_ana_$analysisID.tsv") if(-e "$expDir/$newAlignmentFile");
+        }
+        
+        printToFile($fileStat, "Storing : XIC results file(s) for $analysis ($mzXmlFileIndex/$nbAnalysisFiles processed)", 1);
         open(OUTFILE, ">", $swathFile) or die ("open: $!");
         
         if($format eq 'peakview') {
@@ -1604,11 +1478,11 @@ dev.off()
             print OUTFILE "ID_PEPTIDE!Fragment MZ!Fragment Charge!Ion Type!Residue!Area!RT\n";
             
             foreach my $peptide (keys %{$peptideList{$analysis}}) {
-                #my $ghostPep = 0;
+                my $ghostPep = 0;
                 foreach my $rt (sort {$peptideList{$analysis}{$peptide}{$a} <=> $peptideList{$analysis}{$peptide}{$b}} keys %{$peptideList{$analysis}{$peptide}}) {
                     my ($pepMZ, $score, $fragmentsList, $areasList) = @{$peptideList{$analysis}{$peptide}{$rt}};
-                    #my $peptideID = ($ghostPep) ? $peptidesID{$analysis}{$peptide}{$RT}[1] : $peptidesID{$analysis}{$peptide}{$RT}[0];
-                    my $peptideID = $peptidesID{$analysis}{$peptide}{$rt}[0];
+                    my $peptideID = ($ghostPep) ? $peptidesID{$analysis}{$peptide}{$rt}[1] : $peptidesID{$analysis}{$peptide}{$rt}[0];
+                    #my $peptideID = $peptidesID{$analysis}{$peptide}{$rt}[0];
                     my @areas = split(/;/, $areasList);
                     my @fragments = split(/;/, $fragmentsList);
                     my ($fragmentIonResidue, $fragmentIonType, $fragmentCharge, $fragmentMZ, $fragmentID, $fragmentArea, $fragmentPeptide);
@@ -1616,7 +1490,7 @@ dev.off()
                     foreach my $i (0 .. $#fragments) {
                         my @lineFragInfo = split(/_/, $fragments[$i]);
                         if(!@lineFragInfo) {
-                            print("Can't find value for $peptide ($fragments[$i])\n<br/>");
+                            print("Can't find value for $peptide ($fragments[$i])\n");
                         }
                         
                         $fragmentID = ($lineFragInfo[0]) ? $lineFragInfo[0] : "";
@@ -1629,65 +1503,40 @@ dev.off()
                             next;
                         }
                         
+                        $fragmentArea = $areas[$i];
+                        next unless($fragmentArea); # Do not store fragments with no intensity
+                        $fragmentArea =~ s/,/\./ if ($fragmentArea =~ /,/);
+                        
                         my $lineFragIonResidue = $lineFragInfo[1];
                         my $lineFragIonCharge = $lineFragInfo[2];
                         
                         $fragmentIonType = $fragInfos{$fragmentID}{"ionType"};
                         $fragmentIonResidue = $fragInfos{$fragmentID}{"ionResidue"};
-                        $fragmentIonResidue .= $fragInfos{$fragmentID}{"modif"} if($fragInfos{$fragmentID}{"modif"});
+                        $fragmentIonResidue .= "-".$fragInfos{$fragmentID}{"modif"} if($fragInfos{$fragmentID}{"modif"});
                         $fragmentCharge = $fragInfos{$fragmentID}{"charge"};
                         $fragmentPeptide = $fragInfos{$fragmentID}{"peptide"};
                         $fragmentMZ = $fragInfos{$fragmentID}{"MZ"};
                         
-                        next if($fragmentIonResidue eq '-1');
-                        
-                        $fragmentArea = $areas[$i];
-                        $fragmentArea =~ s/,/\./ if ($fragmentArea =~ /,/);
                         print OUTFILE "$peptideID!$fragmentMZ!$fragmentCharge!$fragmentIonType!$fragmentIonResidue!$fragmentArea!$rt\n";
                         
-                        
-                        if($fragTot % 10000 == 0) {
+                        if($fragTot % 100000 == 0) {
                             printToFile($fileStat, "Storing : XIC results file for $analysis ($mzXmlFileIndex/$nbAnalysisFiles file processed - $fragTot fragments stored)", 1);
                         }
                         $fragTot++;
                     }
-                    #$ghostPep = 1;
+                    $ghostPep = 1;
                 }
             }
             
             if($fragNoMZ) {
-                $warning = "$analysis : $fragNoMZ/$fragTot fragments have no M/Z information.<br/>"; 
+                $warning = "$analysis : $fragNoMZ/$fragTot fragments have no M/Z information.\n"; 
             }
             
             close OUTFILE;
             close MISSMZ; # TODO Remove
-        } else {
-            print OUTFILE "ID_PEPTIDE!Fragment MZ!Fragment Charge!Ion Type!Residue!Area!RT\n";
-            foreach my $peptide (keys %{$fragmentsInfos{$analysis}}){
-                my $ghostpep=0;
-                foreach my $rt (sort {$fragmentsInfos{$analysis}{$peptide}{$a} <=> $fragmentsInfos{$analysis}{$peptide}{$b}} keys %{$fragmentsInfos{$analysis}{$peptide}}){
-                    foreach my $fragment (keys %{$fragmentsInfos{$analysis}{$peptide}{$rt}}){
-                        my ($fragmentType,$fragmentCharge)=split(/_/,$fragment);
-                        my ($ionType,$residue);
-                        $fragmentType=~s/\s//;
-                        if ($fragmentType=~/([a-z]{1})(.*)/){
-                            $ionType=$1;
-                            $residue=$2;
-                        }
-                        my $fragmentRT=($fragmentsInfos{$analysis}{$peptide}{$rt}{$fragment}[0]) ? $fragmentsInfos{$analysis}{$peptide}{$rt}{$fragment}[0] : '';
-                        my $fragmentMZ=($fragmentsInfos{$analysis}{$peptide}{$rt}{$fragment}[2]) ? $fragmentsInfos{$analysis}{$peptide}{$rt}{$fragment}[2] : '';
-                        my $fragmentNeutralMass=$fragmentsInfos{$analysis}{$peptide}{$rt}{$fragment}[3];
-                        my $area=$fragmentsInfos{$analysis}{$peptide}{$rt}{$fragment}[1];
-                        my $peptideID=($ghostpep) ? $peptidesID{$analysis}{$peptide}{$rt}[1] :  $peptidesID{$analysis}{$peptide}{$rt}[0] ;
-                        print OUTFILE "$peptideID!$fragmentMZ!$fragmentCharge!$ionType!$residue!$area!$fragmentRT\n";
-                    }
-                    $ghostpep=1;
-                }
-            }
-            close OUTFILE;
         }
         
-        symlink($swathFile, "$anaDir/$alignmentFile");
+        symlink($swathFile, "$anaDir/swath_ana_$analysisID.txt");
         $mzXmlFileIndex++;
     }
     
@@ -1696,6 +1545,20 @@ dev.off()
         printToFile($fileStat, "WARNING : $warning", 1) if($warning);
     }
     $dbh->disconnect;
+    
+    # If still displatying this page, redirect to results
+    if(!param('workdir')) {
+        print qq |
+                        <SCRIPT LANGUAGE="JavaScript">
+                            top.promsFrame.selectedAction='summary';
+                            parent.navFrame.location="$promsPath{cgi}/openProject.cgi?ID=$projectID&branchID=experiment:$experimentID&ACT=nav";
+                        </SCRIPT>
+                    </CENTER>
+                </BODY>
+            </HTML>
+        |;
+        exit;
+    }
 }
 
 
@@ -1718,58 +1581,10 @@ sub excludeLibraryModifications {
     }
 }
 
-sub getModifMass {
-    my ($modifFormula, $unimodFile) = @_;
-    my $xml  = new XML::Simple;
-    my $data = $xml->XMLin($unimodFile);
-
-    for my $modif (@{$data->{"umod:modifications"}{"umod:mod"}}) {
-        next unless($modif->{"umod:specificity"});
-        my @specificities;
-        if(ref($modif->{"umod:specificity"}) eq 'ARRAY') {
-            @specificities = @{$modif->{"umod:specificity"}};
-        } else {
-            push @specificities, $modif->{"umod:specificity"};
-        }
-
-        for my $specificity (@specificities) {
-            next unless($specificity->{"umod:NeutralLoss"});
-            my @neutralLoss;
-            if(ref($specificity->{"umod:NeutralLoss"}) eq 'ARRAY') {
-                @neutralLoss = @{$specificity->{"umod:NeutralLoss"}};
-            } else {
-                push @neutralLoss, $specificity->{"umod:NeutralLoss"};
-            }
-
-            for my $neutralLoss (@neutralLoss) {
-                next unless($neutralLoss->{"umod:element"});
-                my @neutralLossElements;
-                my $neutralLossFormula = "";
-                my $remainingFormula = $modifFormula;
-                if(ref($neutralLoss->{"umod:element"}) eq 'ARRAY') {
-                    @neutralLossElements = @{$neutralLoss->{"umod:element"}};
-                } else {
-                    push @neutralLossElements, $neutralLoss->{"umod:element"};
-                }
-                
-                for my $neutralLossElement (@neutralLossElements) {
-                    my $element = $neutralLossElement->{"symbol"}.$neutralLossElement->{"number"};
-                    $neutralLossFormula .= $element;
-                    $remainingFormula =~ s/$element//;
-                }
-                
-                if($remainingFormula eq "") {
-                    return $neutralLoss->{"mono_mass"};
-                }
-            }
-        }
-        
-    }
-    return -1;
-}
-
 sub castToUniMod {
     my ($alignmentFile, $unimodFile) = @_;
+    my %promsPath=&promsConfig::getServerInfo('no_user');
+    $unimodFile = "$promsPath{tmp}/Swath/unimod_ref.xml" if(!$unimodFile) ; # TODO Update file with all unimod modifications
     my $xml  = new XML::Simple;
     my $data = $xml->XMLin($unimodFile);
 
@@ -1981,12 +1796,12 @@ sub printJS {
             
             function checkform(form) {
                 var enabledIPF = (document.getElementById('enableIPF') && document.getElementById('enableIPF').checked) ? 1 : 0;
-                if(document.getElementById('exportparamfile').style.display=='' && form.exportparam.files.length==0){
+                if(document.getElementById('exportparamfile').style.display=='' && form.specLibParamFile.files.length==0){
                     alert('ERROR: Select the export parameters file.');
                     return false;
                 }
                 
-                if(document.getElementById('importlibTSV').style.display=='' && form.exportedlibrary.files.length==0){
+                if(document.getElementById('importlibTSV').style.display=='' && form.specLibFile.files.length==0){
                     alert('ERROR: Select the library TSV file.');
                     return false;
                 }
@@ -2138,8 +1953,8 @@ sub printJS {
 }
 
 sub printImportForm {
-    my $formTitle = ($format eq 'peakview') ? "Peakview" : ($format eq 'openswath') ? "OpenSwath" : "Spectronaut" ;
-    my $fileFormat = ($format eq 'peakview') ? ".xlsx" : ($format eq 'openswath') ? ".tsv" : ".tsv" ;
+    my $formTitle = ($format eq 'peakview') ? "Peakview" : "OpenSwath";
+    my $fileFormat = ($format eq 'peakview') ? ".xlsx" : ($format eq 'openswath') ? ".tsv" : ".tsv,.xls,.xlsx" ;
     my $clusterValue = ($format eq 'openswath') ? 1 : 0;
     
     print qq |
@@ -2189,7 +2004,7 @@ sub printImportForm {
                 </TR>
                 <TR>
                     <TH align=right valign=top>Library export parameter file : </TH>
-                    <TD bgcolor="$lightColor"><INPUT type="file" name="exportparam" required></TD>
+                    <TD bgcolor="$lightColor"><INPUT type="file" name="specLibParamFile" required></TD>
                 </TR>
     |;
     
@@ -2219,7 +2034,7 @@ sub printImportForm {
         print qq |
                 <TR>
                     <TH align=right valign=top>Library export file : </TH>
-                    <TD bgcolor=\"$lightColor\"><INPUT type=\"file\" name=\"exportedlibrary\" accept=\".tsv,.mrm\" required ></TD>
+                    <TD bgcolor=\"$lightColor\"><INPUT type=\"file\" name=\"specLibFile\" accept=\".tsv,.mrm\" required ></TD>
                 </TR>
         |;
     }
@@ -2337,12 +2152,12 @@ sub printQuantiForm {
                 <!-- EXPORT OPTIONS (CUSTOM LIB) -->
                 <TR id="exportparamfile" style="display:none">
                     <TH align=right valign=top>Library export parameter file : </TH>
-                    <TD bgcolor="$lightColor"><INPUT type="file" name="exportparam" ></TD>
+                    <TD bgcolor="$lightColor"><INPUT type="file" name="specLibParamFile" ></TD>
                 </TR>
                 
                 <TR id="importlibTSV" style="display:none">
                     <TH align=right valign=top>Library export file (TSV): </TH>
-                    <TD bgcolor="$lightColor"><INPUT type="file" name="exportedlibrary" accept=".tsv"></TD>
+                    <TD bgcolor="$lightColor"><INPUT type="file" name="specLibFile" accept=".tsv,.xls,.xlsx"></TD>
                 </TR>
                 
                 <TR id="importlibPQP" style="display:none">
@@ -2545,6 +2360,15 @@ sub printQuantiForm {
 }
 
 ####>Revision history<####
+# 1.5.3 [MINOR] Minor code refactoring (VS 01/04/21)
+# 1.5.2 [MINOR] Minor code refactoring (VS 29/01/21)
+# 1.5.1 [ENHANCEMENT] Store library version in search parameters (VS 22/10/20)
+# 1.5.0 [CHANGE] Do not store fragments with no intensity (VS 09/09/20)
+# 1.4.9 [UPDATE] Changed JOB_HISTORY.STATUS to JOB_HISTORY.JOB_STATUS (PP 28/08/20)
+# 1.4.8 [MINOR] Added project selection when opening monitor jobs windows (VS 02/09/20)
+# 1.4.7 [CHANGE] Remove Spectronaut import code as it is now handled by importSpectronaut.cgi (VS 24/08/20)
+# 1.4.6 [ENHANCEMENT] Store alignment results for each analysis (VS 06/03/20)
+# 1.4.5 [ENHANCEMENT] Try OpenSwath & pyProphet multiple times if it fails, avoiding random errors (VS 19/11/19)
 # 1.4.4 [BUGFIX] Fix import of mzXML files from previous experiments (VS 19/11/19)
 # 1.4.3 [CHANGES] Use new job monitoring window opening parameters (VS 18/11/19)
 # 1.4.2 [CHANGES] Apply changes according to promsDIA package modifications (VS 18/11/19)

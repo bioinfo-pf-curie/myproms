@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# selAna4Quantification.cgi      3.1.2                                         #
+# selAna4Quantification.cgi      3.1.13                                        #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -57,32 +57,43 @@ my %promsPath=&promsConfig::getServerInfo;
 my %msTypeName=&promsConfig::getMsType;
 my $userID=$ENV{'REMOTE_USER'};
 $msTypeName{'MIS'}="MS/MS"; #redef, to keep space
-my %quantifProcesses=('XICMCQ'=>'XIC extraction','EMPAI'=>'emPAI quantification','SIN'=>'SI<SUB>N</SUB> quantification','XICCORR'=>'Isobaric correction'); #,'SILAC'=>'SILAC','ITRAQ'=>'iTRAQ','TMT'=>'TMT','DESIGN'=>'Protein-Ratio'); #,'MCQ'=>'Ext. ion chrom.''TnPQ or Peptide ratio'
+my %quantifProcesses = (
+	'XICMCQ'  => 'XIC extraction',
+	'EMPAI'	  => 'emPAI quantification',
+	'SIN'	  => 'SI<SUB>N</SUB> quantification',
+	'XICCORR' => 'Isobaric correction',
+	'HYDRO'	  => 'Hydrophobicity computation'
+);  #,'SILAC'=>'SILAC','ITRAQ'=>'iTRAQ','TMT'=>'TMT','DESIGN'=>'Protein-Ratio'); #,'MCQ'=>'Ext. ion chrom.''TnPQ or Peptide ratio'
 #my $updateFrameString="";
 my $maxLabPerChannel=10; # max num for isotope extraction...
 
 ###############################
 ####>Recovering parameters<####
 ###############################
-my $quantifType=uc(param('quantifType')); # can be XICMCQ,EMPAI,SIN,XICCORR
+my $quantifType=uc(param('quantifType')); # can be XICMCQ,EMPAI,SIN,XICCORR,HYDRO
 my $branchID=param('ID');
 my ($item,$itemID)=split(':',$branchID);
 $item=lc($item);
 my $ITEM=uc($item);
-
-############################
-####>form was submitted<####
-############################
-if (param('launch')) {
-	&launchQuantifications;
-	exit;
-}
 
 ##########################
 ####>Connecting to DB<####
 ##########################
 my $dbh=&promsConfig::dbConnect;
 my $projectID=&promsMod::getProjectID($dbh,$itemID,$item);
+
+############################
+####>form was submitted<####
+############################
+if (param('launch')) {
+	$dbh->disconnect;
+	&launchQuantifications;
+	exit;
+}
+
+################################
+####>Initializing variables<####
+################################
 my ($itemName)=$dbh->selectrow_array("SELECT NAME FROM $ITEM WHERE ID_$ITEM=$itemID");
 my $selItems=($quantifType=~/XIC/)? 'Peptides Quantifications' : 'Analyses';
 my $titleString="Select $selItems in ".&promsMod::getItemType($ITEM)." <FONT color=#DD0000>$itemName</FONT><BR>for $quantifProcesses{$quantifType}";
@@ -90,7 +101,7 @@ my $titleString="Select $selItems in ".&promsMod::getItemType($ITEM)." <FONT col
 ########################################################
 ####>Recovering list of experiment, sample analysis<####
 ########################################################
-my (%listDataBank,@itemAnalyses,%anaProteins,%anaLabelMods,%anaLabeling,%anaPeptideQuantifs); #%modifications,
+my (%listDataBank,@itemAnalyses,%anaProteins,%anaLabelMods,%anaLabeling,%anaPeptideQuantifs,%ongoingPeptideQuantifs); #%modifications,
 
 ####>Recovering DBs name<####
 my $sthAD = $dbh->prepare("SELECT D.ID_DATABANK,NAME FROM ANALYSIS_DATABANK AD,DATABANK D WHERE AD.ID_DATABANK=D.ID_DATABANK AND AD.ID_ANALYSIS=?");
@@ -121,12 +132,16 @@ elsif ($ITEM eq 'EXPERIMENT') {
 	$sthItem[0]=$dbh->prepare("SELECT $baseFieldString,'GEL2D',GEL2D.NAME,'SPOT',SPOT.NAME,ANALYSIS.NAME FROM ANALYSIS,SAMPLE,SPOT,GEL2D WHERE ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE AND SAMPLE.ID_SPOT=SPOT.ID_SPOT AND SPOT.ID_GEL2D=GEL2D.ID_GEL2D AND GEL2D.ID_EXPERIMENT=$itemID ORDER BY GEL2D.DISPLAY_POS ASC, SPOT.NAME ASC, ANALYSIS.DISPLAY_POS ASC");
 	$sthItem[1]=$dbh->prepare("SELECT $baseFieldString,'SAMPLE',SAMPLE.NAME,ANALYSIS.NAME FROM ANALYSIS,SAMPLE WHERE ANALYSIS.ID_SAMPLE=SAMPLE.ID_SAMPLE AND SAMPLE.ID_SPOT IS NULL AND ID_EXPERIMENT=$itemID ORDER BY SAMPLE.DISPLAY_POS ASC, ANALYSIS.DISPLAY_POS ASC");
 }
-my $sthVVP=$dbh->prepare("SELECT COUNT(*) FROM ANALYSIS_PROTEIN WHERE VISIBILITY>0 AND ID_ANALYSIS=?");
-my $sthAVP=$dbh->prepare("SELECT COUNT(*) FROM ANALYSIS_PROTEIN WHERE ID_ANALYSIS=?");
-my $sthSTP=$dbh->prepare("SELECT COUNT(*) FROM PROTEIN_VALIDATION WHERE SEL_STATUS>=1 AND ID_ANALYSIS=?");
-my $sthATP=$dbh->prepare("SELECT COUNT(*) FROM PROTEIN_VALIDATION WHERE ID_ANALYSIS=?");
+# my $sthVVP=$dbh->prepare("SELECT COUNT(*) FROM ANALYSIS_PROTEIN WHERE VISIBILITY>0 AND ID_ANALYSIS=?");
+# my $sthAVP=$dbh->prepare("SELECT COUNT(*) FROM ANALYSIS_PROTEIN WHERE ID_ANALYSIS=?");
+my $sthVisP=$dbh->prepare("SELECT VISIBILITY,COUNT(*) FROM ANALYSIS_PROTEIN WHERE ID_ANALYSIS=? GROUP BY VISIBILITY");
+# my $sthSTP=$dbh->prepare("SELECT COUNT(*) FROM PROTEIN_VALIDATION WHERE SEL_STATUS>=1 AND ID_ANALYSIS=?");
+# my $sthATP=$dbh->prepare("SELECT COUNT(*) FROM PROTEIN_VALIDATION WHERE ID_ANALYSIS=?");
+my $sthValP=$dbh->prepare("SELECT SEL_STATUS,COUNT(*) FROM PROTEIN_VALIDATION WHERE ID_ANALYSIS=? GROUP BY SEL_STATUS");
 my $sthAM=$dbh->prepare("SELECT AM.ID_MODIFICATION,AM.SPECIFICITY,IS_LABEL,M.VALID_STATUS,M.MONO_MASS,M.PSI_MS_NAME,M.INTERIM_NAME,M.DES,M.SYNONYMES FROM ANALYSIS_MODIFICATION AM,MODIFICATION M WHERE AM.ID_MODIFICATION=M.ID_MODIFICATION AND ID_ANALYSIS=?"); # isobaric modif are FIXED!
-my $sthPLQ=$dbh->prepare("SELECT Q.ID_QUANTIFICATION,Q.NAME,Q.QUANTIF_ANNOT FROM QUANTIFICATION Q,ANA_QUANTIFICATION A WHERE Q.ID_QUANTIFICATION=A.ID_QUANTIFICATION AND A.ID_ANALYSIS=? AND Q.FOCUS='peptide' AND Q.STATUS>=1 AND Q.ID_PRODUCT IS NULL");
+my ($hydroQuantMethID) = $dbh->selectrow_array("SELECT ID_QUANTIFICATION_METHOD FROM QUANTIFICATION_METHOD WHERE CODE = 'HYDRO'");
+my $sthPLQ=$dbh->prepare("SELECT Q.ID_QUANTIFICATION,Q.NAME,Q.QUANTIF_ANNOT FROM QUANTIFICATION Q,ANA_QUANTIFICATION A WHERE Q.ID_QUANTIFICATION=A.ID_QUANTIFICATION AND A.ID_ANALYSIS=? AND Q.ID_QUANTIFICATION_METHOD != $hydroQuantMethID AND Q.FOCUS='peptide' AND Q.STATUS>=1 AND Q.ID_PRODUCT IS NULL");
+my $sthPQON=$dbh->prepare("SELECT 1 FROM ANA_QUANTIFICATION AQ,QUANTIFICATION Q WHERE AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND Q.STATUS < 1 AND Q.ID_QUANTIFICATION_METHOD != $hydroQuantMethID AND FOCUS='peptide' AND AQ.ID_ANALYSIS=? LIMIT 1");
 
 foreach my $sth (@sthItem) {
 	$sth->execute;
@@ -143,16 +158,30 @@ foreach my $sth (@sthItem) {
 		$anaData[10]=\@dbUsed;
 		push @itemAnalyses,\@anaData;
 		if ($anaData[1]>=1) { # valid proteins
-			$sthVVP->execute($anaID);
-			push @{$anaProteins{$anaID}},$sthVVP->fetchrow_array;
-			$sthAVP->execute($anaID);
-			push @{$anaProteins{$anaID}},$sthAVP->fetchrow_array;
+			# $sthVVP->execute($anaID);
+			# push @{$anaProteins{$anaID}},$sthVVP->fetchrow_array;
+			# $sthAVP->execute($anaID);
+			# push @{$anaProteins{$anaID}},$sthAVP->fetchrow_array;
+			$sthVisP->execute($anaID);
+			my ($numVis,$numTot)=(0,0);
+			while (my ($vis,$numP)=$sthVisP->fetchrow_array) {
+				$numVis+=$numP if $vis >= 1;
+				$numTot+=$numP;
+			}
+			push @{$anaProteins{$anaID}},($numVis,$numTot);
 		}
 		else {# non-validated proteins
-			$sthSTP->execute($anaID);
-			push @{$anaProteins{$anaID}},$sthSTP->fetchrow_array;
-			$sthATP->execute($anaID);
-			push @{$anaProteins{$anaID}},$sthATP->fetchrow_array;
+			# $sthSTP->execute($anaID);
+			# push @{$anaProteins{$anaID}},$sthSTP->fetchrow_array;
+			# $sthATP->execute($anaID);
+			# push @{$anaProteins{$anaID}},$sthATP->fetchrow_array;
+			$sthValP->execute($anaID);
+			my ($numVal,$numTot)=(0,0);
+			while (my ($val,$numP)=$sthValP->fetchrow_array) {
+				$numVal+=$numP if $val >= 1;
+				$numTot+=$numP;
+			}
+			push @{$anaProteins{$anaID}},($numVal,$numTot);
 		}
 		$sthAM->execute($anaID);
 		$anaLabeling{$anaID}='FREE'; # default
@@ -175,11 +204,21 @@ foreach my $sth (@sthItem) {
 		}
 		
 		##>Peptide quantifications
-		if ($quantifType eq 'XICCORR') { # && $anaData[11]=~/ITRAQ|TMT/i
+		if ($quantifType eq 'XICMCQ') {
+			$sthPQON->execute($anaID);
+			my ($onGoing)=$sthPQON->fetchrow_array;
+			$ongoingPeptideQuantifs{$anaID}=1 if $onGoing;
+		}
+		elsif ($quantifType eq 'XICCORR') { # && $anaData[11]=~/ITRAQ|TMT/i
 			$sthPLQ->execute($anaID);
 			while (my ($quantifID,$quantifName,$quantifAnnot)=$sthPLQ->fetchrow_array) {				
 				next if (!$quantifAnnot || $quantifAnnot !~ /^LABEL=(ITRAQ|TMT)/i || $quantifAnnot=~/::CORRECTION=/); # A corrected quantif already exists
 				push @{$anaPeptideQuantifs{$anaID}},[$quantifID,$quantifName];
+			}
+		} elsif ($quantifType eq 'HYDRO') {  # Get potential previous alignments 
+			$sthPLQ->execute($anaID);
+			while (my ($quantifID, $quantifName, $quantifAnnot) = $sthPLQ->fetchrow_array) {				
+				push @{$anaPeptideQuantifs{$anaID}}, [$quantifID, $quantifName];
 			}
 		}
 	}
@@ -187,12 +226,15 @@ foreach my $sth (@sthItem) {
 }
 $sthAD->finish;
 foreach my $sth (@sthItem) {$sth->finish;}
-$sthVVP->finish;
-$sthAVP->finish;
-$sthSTP->finish;
-$sthATP->finish;
+# $sthVVP->finish;
+# $sthAVP->finish;
+$sthVisP->finish;
+# $sthSTP->finish;
+# $sthATP->finish;
+$sthValP->finish;
 $sthAM->finish;
 $sthPLQ->finish;
+$sthPQON->finish;
 
 my %isotopicDistributions;
 if ($quantifType eq 'XICCORR') {
@@ -222,11 +264,17 @@ print qq
 TD.center {text-align:center}
 </STYLE>
 <SCRIPT type="text/javascript">
+// Dictionnary of help popup texts (avoid using '"')
+const helpText = {
+    rtOffset: 'The time (in minutes) at the beginning of the chromatographic run when the peptides elution is not linear with the acetonitrile gradient. It corresponds to the dead volume + the injection peak.',
+    hydroXicExtraction: 'If XIC extractions have been launched on the analyses, which one to use (if any) ?'
+};
 |;
+&promsMod::popupInfo();
 if ($quantifType eq 'XICMCQ') {
-	###> For label purporse MCQXIC extraction
+	###> For label purpose MCQXIC extraction
 	print qq
-|//For label purporse MCQXIC extraction
+|// For label purpose MCQXIC extraction
 var refValue=-1;
 var analabels=[];
 analabels[0]=[-1,'Light',0.0000,''];
@@ -296,26 +344,29 @@ function addQuantificationLabel(channelNum,labelNum,action) {
 function updateRefAna(reference){
    var anaBox=document.selAnaForm.anaList;
    // Uncheck last reference analysis
-   if (refValue > 0 && anaBox.length) {
-		for (var i=0; i < anaBox.length; i++){
+   if (refValue > 0 && anaBox.length && confirm('You have changed the Reference. Do you want to remove the previous one from the list of selected Analyses?')) {
+		for (let i=0; i < anaBox.length; i++){
 		    if(anaBox[i].value==refValue){
 			    anaBox[i].checked=false;
 		    }
 		}
    }
    // Check reference analysis
-   if(anaBox.length) {// more than 1 checkboxes
-		for (var i=0; i < anaBox.length; i++){
-		    if(anaBox[i].value==reference.value){
+   if (!reference) {
+	   refValue=-1;
+   }
+   else if (anaBox.length) {// more than 1 checkboxes
+		for (let i=0; i < anaBox.length; i++){
+		    if(anaBox[i].value==reference){
 			    anaBox[i].checked=true;
 			    refValue=anaBox[i].value;
 		    }
         }
    }
-   else{
+   else {
 		anaBox.checked=true;
+		refValue=anaBox.value;
    }
-
 }
 function updateSettings(act) {
 	if (act=='more') {
@@ -352,18 +403,24 @@ function updateLabeling(labeling) {
 	if (labeling=='SILAC'){
 		document.getElementById('paramLabel').style.display='';
 		document.getElementById('paramAlign').style.display='none';
+		document.getElementById('filterTR').style.display='none';
+		document.getElementById('rt_sd_filter').value='no_filter';
+		updateFilter('no_filter');
 	}
 	else if (labeling=='FREE'){
 		document.getElementById('paramLabel').style.display='none';
 		document.getElementById('paramAlign').style.display='';
+		document.getElementById('filterTR').style.display='';
+		document.getElementById('rt_sd_filter').value='max_2FWHM';
+		updateFilter('max_2FWHM');
 	}
-	//Filtering Reference Analysis
+	// Filtering Reference Analysis
 	var refAnaSelect=document.getElementById('refAna_alignment');
-	for (let i=1; i < refAnaSelect.options.length; i++) { //[0]= '-= Select =-'
+	for (let i=1; i < refAnaSelect.options.length; i++) { // [0]= '-= Select =-'
 		refAnaSelect.options[i].disabled=(refAnaSelect.options[i].getAttribute('data-labeling')==labeling)? false : true;
 	}
 	if (refAnaSelect.options[refAnaSelect.selectedIndex].disabled) {refAnaSelect.selectedIndex=0;} //deselect if disabled
-	//Filtering Checkable analyses
+	// Filtering Checkable analyses
 	var anaBox=document.selAnaForm.anaList;
 	if (anaBox.length) {
 		for (let i=0; i < anaBox.length; i++) {
@@ -378,6 +435,7 @@ function updateLabeling(labeling) {
 		document.getElementById('file_'+anaBox.value).disabled=disStatus;
 	}
 }
+/*
 function getRadioVal() {
   var rads = document.getElementsByName('extractL');
 
@@ -387,6 +445,31 @@ function getRadioVal() {
   }
 
   return null;
+}
+*/
+function updateFilter(rtFilter) {
+	document.getElementById("rt_sd_min_label").style.display = 'none';
+	document.getElementById("rt_sd_min").style.display = 'none';
+	document.getElementById("rt_sd_min").disabled = true;
+	document.getElementById("rt_sd_max_label").style.display = 'none';
+	document.getElementById("rt_sd_max").style.display = 'none';
+	document.getElementById("rt_sd_max").disabled = true;
+	document.getElementById("rt_sd_fixed_thresh_label").style.display = 'none';
+	document.getElementById("rt_sd_fixed_thresh").style.display = 'none';
+	document.getElementById("rt_sd_fixed_thresh").disabled = true;
+	
+	if (rtFilter == "fixed") {
+		document.getElementById("rt_sd_fixed_thresh_label").style.display = '';
+		document.getElementById("rt_sd_fixed_thresh").style.display = '';
+		document.getElementById("rt_sd_fixed_thresh").disabled = false;
+	} else if (rtFilter != "no_filter") {
+		document.getElementById("rt_sd_min_label").style.display = '';
+		document.getElementById("rt_sd_min").style.display = '';
+		document.getElementById("rt_sd_min").disabled = false;
+		document.getElementById("rt_sd_max_label").style.display = '';
+		document.getElementById("rt_sd_max").style.display = '';
+		document.getElementById("rt_sd_max").disabled = false;
+	}
 }
 |;
 }
@@ -415,18 +498,14 @@ print qq
 	if (!anaBox) return 0; // no selectable analyses
 	var selected=0;
 	if (anaBox.length) { // more than 1 checkboxes
-		for (i=0; i < anaBox.length; i++){
+		for (let i=0; i < anaBox.length; i++){
 			if (!anaBox[i].disabled && anaBox[i].checked==true) {
-				if (!testQuantifSelection(anaBox[i].value)) {
-					selected=-1;
-					break;
-				}
-				selected=1;
+				selected++;
 			}
 		}
 	}
 	else if (!anaBox.disabled && anaBox.checked==true){
-		selected=(!testQuantifSelection(anaBox.value))? -1 : 1;
+		selected=1;
 	}
 	return selected;
 }
@@ -435,50 +514,61 @@ function checkall(checkStatus){
 	if (!anaBox) return; // no selectable analyses
 	if (anaBox.length) { // more than 1 checkbox
 		for (let i=0; i < anaBox.length; i++) {
-			anaBox[i].checked=checkStatus;
-			//updateQuantifSelection(anaBox[i]);
+			anaBox[i].checked=(anaBox[i].disabled)? false : checkStatus;
+			// updateQuantifSelection(anaBox[i]);
 		}
 	}
 	else { // Only 1 checkbox
 		anaBox.checked=checkStatus;
-		//updateQuantifSelection(anaBox);
+		// updateQuantifSelection(anaBox);
 	}
 }
-function testQuantifSelection(anaID) {return true;}
-//function updateQuantifSelection(chkbox) {}
+// function updateQuantifSelection(chkbox) {}
 function cancelAction() {
-	//top.promsFrame.selectedAction='summary'; // set default action to 'summary'
+	// top.promsFrame.selectedAction='summary'; // set default action to 'summary'
 	top.promsFrame.optionFrame.selectOption();
 }
 function checkForm(myForm) {
 	if (testCheckbox()==0) {alert('ERROR: No Analyses selected!'); return false;}
-	else if (testCheckbox()==-1) {alert('ERROR: Peptide quantification not selected for at least 1 Analysis!'); return false;} // only for SILAC,ITRAQ
 |;
 if ($quantifType eq 'XICMCQ') {
 	print qq
-|	var anaBox=myForm.anaList;
-	var missingFile=false;
+|	if (!myForm.refAna_alignment.value) { // && getRadioVal()=='NO'
+		alert('ERROR: No reference selected for alignment.');
+		return false;
+	}
+	var anaBox=myForm.anaList;
+	var [refChecked,missingFile]=[false,false];
+	var numChecked = 0;
 	if (anaBox.length) { // more than 1 checkbox
-		for (let i=0; i < anaBox.length; i++){
-			if (!anaBox[i].disabled && anaBox[i].checked==true && !document.getElementById('file_'+anaBox[i].value).value.match('mzX*ML')) {
-				missingFile=true;
-				break;
+		for (let i=0; i < anaBox.length; i++) {
+			if (!anaBox[i].disabled && anaBox[i].checked===true) {
+				numChecked++;
+				if (myForm.refAna_alignment.value==anaBox[i].value) {refChecked=true;}
+				if (!document.getElementById('file_'+anaBox[i].value).value.match('mzX*ML')) {
+					missingFile=true;
+					break;
+				}
 			}
 		}
 	}
-	else if (!anaBox.disabled && anaBox.checked==true && !document.getElementById('file_'+anaBox.value).value.match('mzX*ML')) {
-		missingFile=true;
+	else if (!anaBox.disabled && anaBox.checked==true) {
+		if (document.getElementById('file_'+anaBox.value).value.match('mzX*ML')) {
+			refChecked=true;
+			numChecked++;
+		}
+		else {missingFile=true;}
 	}
 	if (missingFile) {
 		alert('ERROR: Missing or not-mzXML/mzML file detected.');
 		return false;
 	}
-	if (!myForm.refAna_alignment.value && getRadioVal()=='NO'){
-		alert('ERROR: No reference selected for alignment.');
+	if (!refChecked) {
+		alert('ERROR: No mzXML/mzML file selected for reference.');
 		return false;
 	}
-	if (!myForm.refAna_alignment.value){
-		alert('ERROR: No reference selected.');
+	if (numChecked === 1 && myForm.rt_sd_filter.value != "no_filter") {
+		alert('ERROR: The filter on peptides retention time dispersion after MassChroQ alignment cannot be used if there is only one analysis. Make sure to select at least two analyses or just set the filtering method to "No filter"');
 		return false;
 	}
 |;
@@ -490,6 +580,13 @@ elsif ($quantifType eq 'XICCORR') {
 		return false;
 	}
 	if (!myForm.keep_old.checked && !confirm('WARNING: Original Peptide Quantifications will be deleted. Proceed?')) {
+		return false;
+	}
+|;
+} elsif ($quantifType eq 'HYDRO') {
+	print qq
+|	if (!myForm.rtOffset.value){
+		alert('ERROR: No dead time offset.');
 		return false;
 	}
 |;
@@ -515,7 +612,7 @@ print qq
 if ($quantifType eq 'XICMCQ') {
 	print qq
 |<TABLE bgcolor=$darkColor>
-<TR><TH class="title2" align=right>Name :</TH><TD bgcolor=$lightColor><INPUT type="text" name="quantifName" value="$quantifProcesses{$quantifType} extraction" class="title3" style="width:400px"/></TD></TR>
+<TR><TH class="title2" align=right>Name :</TH><TD bgcolor=$lightColor><INPUT type="text" name="quantifName" value="$quantifProcesses{$quantifType}" class="title3" style="width:400px"/></TD></TR>
 <TR>
 <TH align=right nowrap valign=top>Raw-data settings :</TH>
 <TD bgcolor=$lightColor nowrap>&nbsp;<B>Extraction type:</B>
@@ -528,7 +625,7 @@ if ($quantifType eq 'XICMCQ') {
 </TR>
 <TR>
 <TH align=right nowrap valign=top>Isotope labeling :</TH>
-<TD bgcolor=$lightColor nowrap>&nbsp;<B><SELECT name="extractL" value="YES" onchange="updateLabeling(this.value)"><OPTION value=\"FREE\">NONE</OPTION><OPTION value=\"SILAC\">SILAC</OPTION></SELECT></B>
+<TD bgcolor=$lightColor nowrap>&nbsp;<SELECT name="extractL" value="YES" onchange="updateLabeling(this.value)"><OPTION value="FREE">None</OPTION><OPTION value="SILAC">SILAC</OPTION></SELECT>
 |;
 	###> Label informations
 	my $optMods="<OPTION value=\"\">-= Select =-</OPTION>\n";
@@ -581,13 +678,13 @@ if ($quantifType eq 'XICMCQ') {
 	<OPTION value="OBI">OBI-Warp</OPTION>
 	</SELECT>
 	&nbsp;&nbsp;&nbsp;<B>Reference:</B>
-	<SELECT name="refAna_alignment" id="refAna_alignment" required">
+	<SELECT name="refAna_alignment" id="refAna_alignment" onchange="updateRefAna(this.value)" required>
 	<OPTION value="">-= Select =-</OPTION>
 |;
 	foreach my $refAnaData (@itemAnalyses) {##> Option of reference for alignment
 		my ($anaID,$valStat,$msType,$dataFile,$fileFormat,$wiffFile,$taxonomy,$maxRank,$minScore,$instrument,$refDbUsed,$labelStrg,@projHierarchy)=@{$refAnaData};
-		my $disabStrg=($anaLabeling{$anaID} eq 'FREE')? '' : ' disabled';
-		print "	<OPTION value=\"$anaID\" data-labeling=\"$anaLabeling{$anaID}\" onclick=\"updateRefAna(this);\"$disabStrg>$projHierarchy[-1]</OPTION>\n" unless $valStat<1;
+		my $disabStrg=($anaLabeling{$anaID} eq 'FREE' && !$ongoingPeptideQuantifs{$anaID})? '' : ' disabled';
+		print "	<OPTION value=\"$anaID\" data-labeling=\"$anaLabeling{$anaID}\" $disabStrg>$projHierarchy[-1]</OPTION>\n" unless $valStat<1;
 	}
 	print qq
 |	</SELECT>
@@ -629,12 +726,15 @@ if ($quantifType eq 'XICMCQ') {
 	</DIV>
 </TD>
 </TR>
-<TR>
-<TH align=right nowrap valign=top>Extract XIC traces :</TH>
-<TD bgcolor=$lightColor nowrap>&nbsp;<B>No<INPUT type="radio" name="traces" id="traces" value="0" checked>Yes<INPUT type="radio" name="traces" id="traces" value="1"></B>
-</TD>
-</TR>
-<TR>
+|;
+# XIC trace extraction disabled: useless & results parsing not compatible with new output format [PP 29/01/21] 
+# <TR>
+# <TH align=right nowrap valign=top>Extract XIC traces :</TH>
+# <TD bgcolor=$lightColor nowrap>&nbsp;<B>No<INPUT type="radio" name="traces" id="traces" value="0" checked>Yes<INPUT type="radio" name="traces" id="traces" value="1"></B>
+# </TD>
+# </TR>
+print qq
+|<TR>
 <TH align=right nowrap valign=top>&nbsp;Quantification settings :</TH><TD bgcolor=$lightColor nowrap valign=top>
 	&nbsp;<B>Type of XIC:</B><SELECT name="XIC_type" onchange="updateChargeState(this.value)"><OPTION value="sum">TIC XIC</OPTION><OPTION value="max">BasePeak XIC</OPTION></SELECT>
 	<BR><INPUT type="button" id="moreSettings" class="font11" value="More settings" onclick="updateSettings('more')"/><INPUT type="button" id="lessSettings" class="font11" value="Less settings" style="display:none" onclick="updateSettings('less')"/>
@@ -653,6 +753,12 @@ if ($quantifType eq 'XICMCQ') {
 	</TD>
 	</TR>
 	<TR>
+		<TD nowrap>
+			&nbsp;<B>Natural isotopes minimum abundance (%)</B>&nbsp;
+			<INPUT type="number" name="ni_min_abund" id="ni_min_abund" min=0 max=100 step=0.01 value=80>
+		</TD>
+	</TR>
+	<TR>
 	<TD nowrap>&nbsp;<B>Detection threshold between <INPUT type="text" name="dt_start" value="30000" size="4"> to <INPUT type="text" name="dt_stop" value="50000" size="4"></B></TD>
 	</TR>
 	<TR>
@@ -665,17 +771,60 @@ if ($quantifType eq 'XICMCQ') {
 	</DIV>
 	</TD>
 </TR>
+<TR id="filterTR">
+	<TH align=right nowrap valign=top>RT dispersion filter :</TH>
+	<TD bgcolor=$lightColor nowrap>&nbsp;
+		<B>Filtering method:</B>
+		<SELECT name="rt_sd_filter" id="rt_sd_filter" onchange="updateFilter(this.value)" required>
+			<OPTION value="no_filter">No filter</OPTION>
+			<OPTION value="fixed">Fixed threshold</OPTION>
+			<OPTION value="max_2FWHM" selected>Peak max + 2 FWHM*</OPTION>
+			<OPTION value="max_3FWHM">Peak max + 3 FWHM</OPTION>
+			<OPTION value="max_4FWHM">Peak max + 4 FWHM</OPTION>
+		</SELECT>
+		&nbsp;&nbsp;<SMALL><SUP>*</SUP>Recommanded option</SMALL>
+		<BR>
+		&nbsp;
+		<LABEL for="rt_sd_fixed_thresh" id="rt_sd_fixed_thresh_label" style='display:none'><B>RT standard deviation threshold (sec):</B></LABEL>
+		<INPUT type="number" name="rt_sd_fixed_thresh" id="rt_sd_fixed_thresh" value=40 style='display:none;width:60px;' disabled>
+		<LABEL for="rt_sd_min" id="rt_sd_min_label"><B>RT standard deviation (sec):&nbsp;&nbsp;&nbsp;&nbsp;Min&nbsp;&nbsp;</B></LABEL>
+		<INPUT type="number" name="rt_sd_min" id="rt_sd_min" value=10 style="width:60px">
+		&nbsp;&nbsp;&nbsp;&nbsp
+		<LABEL for="rt_sd_max" id="rt_sd_max_label"><B>Max&nbsp;&nbsp;</B></LABEL>
+		<INPUT type="number" name="rt_sd_max" id="rt_sd_max" value=40 style="width:60px">
+	</TD>
+</TR>
 </TABLE>
 <BR>
 |;
+} elsif ($quantifType eq 'HYDRO') {
+	print qq
+|<TABLE bgcolor=$darkColor>
+	<TR>
+		<TH class="title2" align=right>Name :</TH>
+		<TD bgcolor=$lightColor>
+			<INPUT type="text" name="quantifName" value="$quantifProcesses{$quantifType}" class="title3" style="width:400px">
+		</TD>
+	</TR>
+	<TR>
+		<TH align=right nowrap valign=top>
+			Retention time Offset<SUP onmouseover="popup(helpText.rtOffset)" onmouseout="popout()">?</SUP> :
+		</TH>
+		<TD bgcolor=$lightColor nowrap>
+			<INPUT type="number" name="rtOffset" value="20" min="0" required>
+		</TD>
+	</TR>
+</TABLE>
+|;
 }
 
+my $col2Title = ($quantifType eq 'HYDRO')? "Peptide quantification<SUP onmouseover=\"popup(helpText.hydroXicExtraction)\" onmouseout=\"popout()\">?</SUP>" : "Labeling";
 print qq
 |<BR><TABLE border=0 cellspacing=0 cellpadding=0>
 <TR bgcolor="$darkColor">
 	<TH class="rbBorder"><INPUT type="checkbox" onclick="checkall(this.checked)"></TH>
 	<TH class="rbBorder" nowrap colspan=2>&nbsp;Analysis&nbsp;</TH>
-	<TH class="rbBorder">&nbsp;Peptide quantification&nbsp;</TH>
+	<TH class="rbBorder">&nbsp;$col2Title&nbsp;</TH>
 	<TH class="rbBorder">&nbsp;MS type&nbsp;<BR>& File</TH>
 	<TH class="rbBorder">&nbsp;Instrument&nbsp;</TH>
 	<TH class="rbBorder">&nbsp;Search file<BR>&nbsp;& Engine&nbsp;</TH>
@@ -691,24 +840,28 @@ my $bgColor=($ITEM eq 'SAMPLE' || $ITEM eq 'SPOT')? $lightColor : $darkColor;
 my %prevItemName;
 my $disabSubmit=' disabled';
 
-my %filesList;
+my @filesList;
 my $mzXMLPath="$promsPath{tmp}/upload/project_$projectID";
 if ($quantifType eq 'XICMCQ' && -e $mzXMLPath) {
 	opendir (DIR, $mzXMLPath) || print "ERROR: Unable to read '$mzXMLPath' !<BR>\n";
 	while (defined (my $currentmzXMLFile = readdir (DIR))) {
 		next unless ( $currentmzXMLFile =~ /.+\.mzXML\Z/ || $currentmzXMLFile =~ /.+\.mzML\Z/ );
-		$filesList{$currentmzXMLFile}=0;
+		push @filesList,$currentmzXMLFile;
 	}
 	closedir DIR;
 }
 
+my @orderedFilesList=sort{&promsMod::sortSmart($a,$b)} @filesList;
+my %selectedFiles;
 foreach my $refAnaData (@itemAnalyses) {
 	my ($anaID,$valStat,$msType,$dataFile,$fileFormat,$wiffFile,$taxonomy,$maxRank,$minScore,$instrument,$refDbUsed,$labelStrg,@projHierarchy)=@{$refAnaData};
 	$taxonomy='Unknown' unless $taxonomy;
 	$taxonomy=~s/\(.*\)//;
 	#my $okQuantifAna=($valStat>=1 && $msType ne 'PMF' && (($quantifType eq 'EMPAI' && ($fileFormat eq 'MASCOT.DAT' || $fileFormat eq 'MASCOT.PDM')) || ($quantifType eq 'SIN' && $fileFormat ne 'PHENYX.XML') || $quantifType eq 'XIC'))? 1 : 0;
 	my $okQuantifAna=0;
-	if ($valStat>=1 && $msType ne 'PMF') {
+	if ($quantifType eq 'HYDRO') {  # Can compute hydrophobicity even if analysis is not validated
+		$okQuantifAna=1;
+	} elsif ($valStat>=1 && $msType ne 'PMF') {
 		if (($quantifType eq 'EMPAI' && ($fileFormat eq 'MASCOT.DAT' || $fileFormat eq 'MASCOT.PDM'))) {$okQuantifAna=1;}
 		elsif ($quantifType eq 'SIN' && $fileFormat eq 'MASCOT.DAT') {$okQuantifAna=1;}
 		#elsif ($quantifType eq 'XIC') {$okQuantifAna=1;}
@@ -731,7 +884,7 @@ foreach my $refAnaData (@itemAnalyses) {
 	print "<TR valign=middle bgcolor=$bgColor>\n";
 	##>Checkbox
 	if ($okQuantifAna) {
-		my $disabStrg=(($quantifType eq 'XICMCQ' && $anaLabeling{$anaID} ne 'FREE') || ($quantifType eq 'XICCORR' && !$anaPeptideQuantifs{$anaID}))? ' disabled' : '';
+		my $disabStrg=(($quantifType eq 'XICMCQ' && ($anaLabeling{$anaID} ne 'FREE' || $ongoingPeptideQuantifs{$anaID})) || ($quantifType eq 'XICCORR' && !$anaPeptideQuantifs{$anaID}))? ' disabled' : '';
 		print "\t<TH valign=middle><INPUT type=\"checkbox\" name=\"anaList\" value=\"$anaID\" data-labeling=\"$anaLabeling{$anaID}\"$disabStrg/></TH>\n";
 	}
 	else {print "\t<TH valign=middle>-</TH>\n";}
@@ -754,9 +907,24 @@ foreach my $refAnaData (@itemAnalyses) {
 |	<TH nowrap align=left valign=middle>$parentStrg</TH>
 	<TH nowrap align=left valign=middle><IMG src="$promsPath{images}/$itemIcones{$anaCode}">&nbsp;$projHierarchy[-1]&nbsp;</TH>
 |;
-	##>Labeling method
+	##>Labeling method (or peptide quantification choice for hydrophobicity)
 	print "<TD>";
-	if (!$labelStrg) {print '&nbsp;None&nbsp;';}
+	if ($quantifType eq 'HYDRO') {
+		if ($anaPeptideQuantifs{$anaID}) {
+			print "<SELECT id=\"quantif_$anaID\" name=\"quantif_$anaID\" style=\"width:250px\">\n";
+			print "<OPTION value=\"no_alignment\">Before Re-Alignment</OPTION>\n";
+			my $pepQuantifCount = 0;
+			foreach my $refQuantif (sort {$a->[0] <=> $b->[0]} @{$anaPeptideQuantifs{$anaID}}) {
+				$pepQuantifCount ++;
+				my $selectedStrg = ($pepQuantifCount == scalar @{$anaPeptideQuantifs{$anaID}})? ' selected' : '';
+				my ($quantifID, $quantifName) = @{$refQuantif};
+				print "<OPTION value=\"$quantifID\"$selectedStrg>$quantifName</OPTION>\n";
+			}
+			print "</SELECT>\n";
+		} else {
+			print '&nbsp;None&nbsp;';
+		}
+	} elsif (!$labelStrg) {print '&nbsp;None&nbsp;';}
 	elsif ($quantifType eq 'XICCORR' && $anaPeptideQuantifs{$anaID}) { # No peptide quantification for non-validated analysis
 		print "<SELECT id=\"quantif_$anaID\" name=\"quantif_$anaID\" style=\"width:250px\">\n";
 		print "<OPTION value=\"\">-= Select =-</OPTION>\n" if scalar @{$anaPeptideQuantifs{$anaID}} > 1;
@@ -792,9 +960,13 @@ foreach my $refAnaData (@itemAnalyses) {
 		my $msName='';
 		($msName=$wiffFile)=~s/\.[^\.]+//;
 		$msName=~ s/\s+\Z//;
-		foreach my $dataFile (sort {lc($a) cmp lc($b)} keys %filesList) {
+		foreach my $dataFile (@orderedFilesList) {
 			#$bgColor=($bgColor eq $darkColor)? $lightColor : $darkColor;
-			$selected=($dataFile=~/$msName/)? ' selected': '';
+			$selected='';
+			if (!$selectedFiles{$dataFile} && $dataFile=~/$msName/) { # prevents same file to be selected twice
+				$selected=' selected';
+				$selectedFiles{$dataFile}=1;
+			}
 			$listmzXMLFiles.="<OPTION value=\"$dataFile\"$selected>$dataFile</OPTION>\n";
 		}
 		$listmzXMLFiles.="</SELECT>";
@@ -838,6 +1010,12 @@ print qq
 </TABLE>
 </FORM>
 </CENTER>
+<DIV id="divDescription" class="clDescriptionCont">
+<!--Empty div-->
+</DIV>
+<SCRIPT type="text/javascript">
+    setPopup();
+</SCRIPT>
 </BODY>
 <HTML>
 |;
@@ -927,6 +1105,7 @@ sub launchQuantifications {
 			my $mzTolMin=param('mztol_min');
 			my $mzTolMax=param('mztol_max');
 			my $xicValType=param('XIC_rt'); # real_or_mean, mean or post_matching
+			my $niMinAbund=(param('ni_min_abund')) ? (param('ni_min_abund') < 1) ? param('ni_min_abund') : param('ni_min_abund') / 100 : "";  # Natural isotopes minimum abundance to be quantified
 			my $detectionThresholdMin=param('dt_start');
 			my $detectionThresholdMax=param('dt_stop');
 			my $antiSpike=param('anti_spike'); # anti-spike value
@@ -934,7 +1113,10 @@ sub launchQuantifications {
 			my $medMax=param('med_max'); # half-median max
 			my $smoothVal=param('smooth_val'); # smoothing value
 			my $allChargeStates=param('allChargeStates')?param('allChargeStates') : 0;
-			my $extractTraces=param('traces')?param('traces'):0;
+			my $extractTraces=param('traces')? param('traces') : 0;
+			my $pepRtSdFilter=param('rt_sd_filter');  # Filter on peptides RT dispersion
+			my $minPepRtSd=($pepRtSdFilter eq "no_filter" || $pepRtSdFilter eq "fixed")? "" : param('rt_sd_min');  # min threshold on pep RT dispersion (optional)
+			my $maxPepRtSd=($pepRtSdFilter eq "no_filter")? "" : ($pepRtSdFilter eq "fixed")? param('rt_sd_fixed_thresh') : param('rt_sd_max');  # max threshold on pep RT dispersion (optional)
 
 			print INFO "PARAMETERS:\n";
 			print INFO "QUANTIF_NAME\t\t",param('quantifName'),"\n";
@@ -960,6 +1142,7 @@ sub launchQuantifications {
 			print INFO "MZTOL_MIN\t\t$mzTolMin\n";
 			print INFO "MZTOL_MAX\t\t$mzTolMax\n";
 			print INFO "XIC_VAL\t\t$xicValType\n";
+			print INFO "NI_MIN_ABUND\t\t$niMinAbund\n";  # Natural isotopes minimum abundance to be quantified
 			print INFO "DT_START\t\t$detectionThresholdMin\n";
 			print INFO "DT_STOP\t\t$detectionThresholdMax\n";
 			### Only one filter applies... Modified on 05/09/2014
@@ -979,6 +1162,10 @@ sub launchQuantifications {
 				print INFO "MZ_RANGE_MAX\t\t$mzRangeMax\n";
 			}
 			print INFO "TRACES\t\t$extractTraces\n";
+			# Filter on peptides retention time dispersion
+			print INFO "RT_SD_FILTER\t\t$pepRtSdFilter\n";
+			print INFO "RT_SD_MIN\t\t$minPepRtSd\n";
+			print INFO "RT_SD_MAX\t\t$maxPepRtSd\n";
 
 			if (param('extractL') eq 'SILAC') {
 				###> Get the labeled modification so as to write QUANTIF_ANNOT according to SILAC
@@ -1018,6 +1205,21 @@ sub launchQuantifications {
 				print INFO "MZXML\t\t$anaID:".param("file_$anaID")."\n";
 			}
 			###print INFO "ANALYSES:\n";
+		}
+		elsif ($quantifType eq 'HYDRO') {
+			my $quantifName = param('quantifName');
+			my $rtOffset = param('rtOffset');  # retention time offset for computation of linear models
+			print INFO "PARAMETERS:\n";
+			print INFO "QUANTIF_NAME\t\t$quantifName\n";
+			print INFO "RT_OFFSET\t\t$rtOffset\n";
+			print INFO "ANALYSES:\n";
+			foreach my $anaID (@quantItemList){
+				if (param("quantif_$anaID")) {
+					print INFO "ANA_PEPQUANTIF\t\t$anaID:" . param("quantif_$anaID") . "\n";
+				} else {
+					print INFO "ANA_PEPQUANTIF\t\t$anaID:no_alignment\n";
+				}
+			}
 		}
 		else {
 			if ($quantifType eq 'XICCORR') {
@@ -1081,14 +1283,14 @@ sub launchQuantifications {
 	sleep 3;
 	print qq
 |<SCRIPT type="text/javascript">
-var monitorJobsWin=window.open("$promsPath{cgi}/monitorJobs.cgi?filterType=Quantification [$quantifType]&filterDateNumber=1&filterDateType=DAY&filterStatus=Queued&filterStatus=Running",'monitorJobsWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
+var monitorJobsWin=window.open("$promsPath{cgi}/monitorJobs.cgi?filterType=Quantification [$quantifType]&filterDateNumber=1&filterDateType=DAY&filterStatus=Queued&filterStatus=Running&filterProject=$projectID",'monitorJobsWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
 monitorJobsWin.focus();
 </SCRIPT>
 |;
 #exit; # DEBUG!!!!!
 	sleep 5;
 	print qq
-|<SCRIPT LANGUAGE="JavaScript">
+|<SCRIPT type="text/javascript">
 //top.promsFrame.selectedAction='summary';
 parent.optionFrame.selectOption(parent.optionFrame.document.getElementById('summary')); // refresh optionFrame with summary option
 </SCRIPT>
@@ -1100,6 +1302,18 @@ parent.optionFrame.selectOption(parent.optionFrame.document.getElementById('summ
 
 
 ####> Revision history
+# 3.1.13 [FEATURE] Add computation of hydrophobicity through quantification workflow (VL 08/02/21)
+# 3.1.12 [ENHANCEMENT] Add minimum threshold for MCQ peptide RT dispersion filter (VL 15/04/21)
+# 3.1.11 [BUGFIX] Fix mixed up in sthValP/sthVisP query handles (PP 17/03/21)
+# 3.1.10 [UPDATE] XICMCQ: Analyses with on-going peptide quantification are no longer selectable (PP 12/02/21)
+# 3.1.9 [BUGFIX] Re-enable MassChroQ on SILAC data but remove RT filter option (VL 01/02/21)
+# 3.1.8 [UPDATE] SILAC extraction and XIC trace options disabled & improved mzXML file listing (PP 29/01/21) 
+# 3.1.7 [BUGFIX] Handle case when only one analysis selected for MassChroQ reextraction with RT filter (VL 28/09/20)
+# 3.1.6 [MINOR] Added project selection when opening monitor jobs windows (VS 02/09/20)
+# 3.1.5 [MINOR] Change MassChroQ filter choices to force a reference to the peak maximum (VL 27/08/20)
+# 3.1.4 [ENHANCEMENT] Add natural isotopes minimum abundance to MassChroQ parameters (VL 22/07/20)
+# 3.1.3 [ENHANCEMENT] Add parameters to filter MassChroQ output on peptides RT dispersion (VL 22/07/20)
+# 3.1.2.1 [ENHANCEMENT] Improved JS checks of XICMCQ reference selection (PP 13/08/20)
 # 3.1.2 [CHANGES] Use new job monitoring window opening parameters (VS 18/11/19)
 # 3.1.1 [CHANGES] Switch from watchQuantification to monitorJobs script (VS 21/10/19)
 # 3.1.0 Handles peptide quantifications selection for isobaric correction (PP 02/05/19)

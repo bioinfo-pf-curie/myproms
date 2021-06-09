@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# selectOptionExplorAna.cgi    1.0.6                                          #
+# selectOptionExplorAna.cgi    1.0.7                                          #
 # Authors: P. Poullet, S.Liva (Institut Curie)                                 #
 # Contact: myproms@curie.fr                                                    #
 # Generates list of options available to user                                  #
@@ -105,7 +105,7 @@ print qq
 function selectOption(selectedButton) {
 	if (!selectedButton) { // 1st time this page is loaded
 		selectedButton=document.getElementById(top.promsFrame.selectedAction); // default value is stored in promsFrame;
-		if (!selectedButton) { // button is not defined for current project item => switch to 'summary'
+		if (!selectedButton \|\| selectedButton.disabled) { // button is not defined for current project item => switch to 'summary'
 			selectedButton=document.getElementById('summary');
 		}
 	}
@@ -243,6 +243,7 @@ sub displayClusterButton {
 
 
 ####>Revision history<####
+# 1.0.7 [BUGFIX] Minor JS fix to prevent auto-selecttion of disabled option (PP 21/02/20)
 # 1.0.6 Compatible with Petide exploratory analyses (SL ../11/17)
 # 1.0.5 CSS style for active button (PP 15/03/16)
 # 1.0.4 Left border color code to help navigation (PP 19/10/15)

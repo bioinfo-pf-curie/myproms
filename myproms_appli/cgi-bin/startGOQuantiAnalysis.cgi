@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 #############################################################################
-# startGOQuantiAnalysis.cgi    1.3.1                                        #
+# startGOQuantiAnalysis.cgi    1.3.2                                        #
 # Authors: P. Poullet, G. Arras, F. Yvon & S. Liva (Institut Curie)         #
 # Contact: myproms@curie.fr                                                 #
 # Setting heatmap GO enrichment test parameters and performing it           #
@@ -86,12 +86,16 @@ my $minPep=param('minPep') || 1;
 my $maxPvalue=param('ratioPvalue') || 1;
 my $numPepCode='NUM_PEP_USED'; # could be 'DIST_PEP_USED'
 
-my $sthQuanti = $dbh->prepare("SELECT NAME,ID_MODIFICATION,QUANTIF_ANNOT FROM QUANTIFICATION WHERE ID_QUANTIFICATION=?");
+##my $sthQuanti = $dbh->prepare("SELECT NAME,ID_MODIFICATION,Q.ID_QUANTIFICATION FROM QUANTIFICATION WHERE ID_QUANTIFICATION=?");
+my $sthQuanti = $dbh->prepare("SELECT Q.NAME,Q.ID_MODIFICATION,GROUP_CONCAT(MQ.ID_MODIFICATION ORDER BY MQ.MODIF_RANK SEPARATOR ','),Q.ID_QUANTIFICATION FROM QUANTIFICATION Q
+								LEFT JOIN MULTIMODIF_QUANTIFICATION MQ ON Q.ID_QUANTIFICATION=MQ.ID_QUANTIFICATION
+								WHERE Q.ID_QUANTIFICATION=?
+								GROUP BY Q.ID_QUANTIFICATION");
 $sthQuanti->execute($quantiID);
-my ($quantiName,$modifQuantifID,$annot) = $sthQuanti->fetchrow_array;
+my ($quantiName,$modifQuantifID,$multiModifStrg) = $sthQuanti->fetchrow_array;
+my $isModifQuantif=($modifQuantifID || $multiModifStrg)? 1 : 0; 
 $sthQuanti->finish;
-$modifQuantifID=0 unless $modifQuantifID;
-my $proteinStrg=($modifQuantifID)? 'site' : 'protein';
+my $proteinStrg=($isModifQuantif)? 'site' : 'protein';
 my $upProteinStrg=ucfirst($proteinStrg);
 
 my $tmpDir;
@@ -287,14 +291,14 @@ function updateBins(j) { // j optional
 			}
 		}
 		binSize[matchedBinIdx]++;
-		if ($modifQuantifID) {
+		if ($isModifQuantif) {
 			trueProtBins[matchedBinIdx][quantificationData[logRatios[i]][3]]=1; // array of hash of proteinIDs
 		}
     }
     for (let i=0;i<=4;i++) {
         binSpans[i].innerHTML = 1*(((binSize[i] / countRatios) * 100).toFixed(1));
     }
-	if ($modifQuantifID) {
+	if ($isModifQuantif) {
 		for (let i=0;i<=4;i++) {
 			var binSizeProt=Object.keys(trueProtBins[i]).length;
 			document.getElementById('binTrueProt'+i).innerHTML = 1*(((binSizeProt / totTrueProteins) * 100).toFixed(1)); // sum of bins > 100% due to same prot in multiple bins
@@ -323,19 +327,19 @@ function buildLogRatios() {
         for (var i=0; i<quantificationData.length; i++) {
             if (quantificationData[i][1] !== undefined && quantificationData[i][1] < pValue && quantificationData[i][2] >= minPepProt) {
                 logRatios.push(i);
-				if ($modifQuantifID) {trueProteins[quantificationData[i][3]]=1;} // records list of proteinIDs
+				if ($isModifQuantif) {trueProteins[quantificationData[i][3]]=1;} // records list of proteinIDs
             }
         }
     }
 	else {
 		for (var i=0;i<quantificationData.length;i++) {
 			logRatios.push(i);
-			if ($modifQuantifID) {trueProteins[quantificationData[i][3]]=1;} // records list of proteinIDs
+			if ($isModifQuantif) {trueProteins[quantificationData[i][3]]=1;} // records list of proteinIDs
 		}
     }
     countRatios = logRatios.length;
 	document.getElementById('numProtSPAN').innerHTML=countRatios;
-	if ($modifQuantifID) {
+	if ($isModifQuantif) {
 		totTrueProteins=Object.keys(trueProteins).length;
 		document.getElementById('numTrueProtSPAN').innerHTML=totTrueProteins;
 	}
@@ -360,29 +364,6 @@ function updateRatio(ratioPos){
 
 }
 
-##my ($numPepCode,%numPepUsed)=('NUM_PEP_USED',()); # could be 'DIST_PEP_USED'
-##
-##my $sthNumPepUsed = $dbh->prepare("SELECT ID_PROTEIN,QUANTIF_VALUE FROM PROTEIN_QUANTIFICATION PQ, QUANTIFICATION_PARAMETER QP WHERE PQ.ID_QUANTIF_PARAMETER=QP.ID_QUANTIF_PARAMETER AND QP.CODE=?");
-##$sthNumPepUsed->execute($numPepCode);
-##while (my ($protID, $numPep) = $sthNumPepUsed->fetchrow_array) {
-##    $numPepUsed{$protID}=$numPep;
-##}
-##$sthNumPepUsed->finish;
-##
-##my $sthProt = $dbh->prepare("SELECT P.ID_PROTEIN, P.ALIAS, QP.CODE, QUANTIF_VALUE
-##                            FROM QUANTIFICATION Q, PROTEIN_QUANTIFICATION PQ, PROTEIN P, QUANTIFICATION_PARAMETER QP, QUANTIFICATION_METHOD QM
-##                            WHERE PQ.ID_QUANTIFICATION=?
-##                            AND TARGET_POS=?
-##                            AND PQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION
-##                            AND P.ID_PROTEIN=PQ.ID_PROTEIN
-##                            AND PQ.ID_QUANTIF_PARAMETER=QP.ID_QUANTIF_PARAMETER
-##                            AND QP.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD
-##							AND QP.CODE=?");
-###                            AND (QP.CODE=? OR QP.CODE=?)"); #ORDER BY P.ID_PROTEIN
-##
-##my (%protRatio,%protPval,%protAlias);
-##
-##my $PVALCODE = 'PVAL_ADJ';
 
 ################################>>PP 19/08/15
 # 1.2.0 Attempt for multi-quantif GO analysis (PP ../08/15)
@@ -396,22 +377,6 @@ foreach my $protID0 (keys %{$quantifValues{$quantif}}) { # in case modif-quantif
 	$quantifValues{$quantif}{$protID0}{RATIO}=log($quantifValues{$quantif}{$protID0}{RATIO})/$log2;
 }
 
-################################<<<<<<<<<<<<<<
-##foreach my $quantiAndRatio (@quantiAndRatios) {
-##    $sthProt->execute($quantiAndRatio->[0], $quantiAndRatio->[1],'RATIO',$PVALCODE);
-##    while(my ($protID, $alias, $code, $quantifValue) = $sthProt->fetchrow_array){
-##	next if $numPepUsed{$protID}<$minPep;
-##        if ($code eq $PVALCODE) {
-##            $protPval{$protID} = $quantifValue;
-##        } elsif ($code eq 'RATIO'){
-##            $protRatio{$protID} = log($quantifValue)/$log2;
-##            $protAlias{$protID} = $alias;
-##        }
-##    }
-##}
-##$sthProt->finish;
-##my $countProt=scalar keys %protRatio;
-
 if ($formView) {
 	print qq
 |<SCRIPT type="text/javascript">
@@ -422,7 +387,7 @@ var quantificationData = [
 	foreach my $protID0 (keys %{$quantifValues{$quantif}}) { # sort {$quantifValues{$quantif}{$a} <=> $quantifValues{$quantif}{$b}}
 		my $pvalue = (defined $quantifValues{$quantif}{$protID0}{P_VALUE})? $quantifValues{$quantif}{$protID0}{P_VALUE} : ''; #'undefined';
 		print "[$quantifValues{$quantif}{$protID0}{RATIO},$pvalue,$quantifValues{$quantif}{$protID0}{$numPepCode}";
-		if ($modifQuantifID) {
+		if ($isModifQuantif) {
 			(my $protID=$protID0)=~s/-.+//;
 			print ",$protID";
 		}
@@ -437,14 +402,6 @@ var quantificationData = [
 |;
 }
 # Excluding ratios with a p-value greater than threshold
-##if (param('ratioPvalue')) {
-##    foreach my $protID (keys %{$quantifValues{$quantif}}){
-##        unless($protPval{$protID} and $protPval{$protID} < param('ratioPvalue')){
-##            delete $protRatio{$protID};
-##        }
-##    }
-##}
-##my @ratios = values %protRatio;
 my @ratios;
 foreach my $protID0 (keys %{$quantifValues{$quantif}}) {
 	if ($quantifValues{$quantif}{$protID0}{$numPepCode} < $minPep || ($maxPvalue < 1 && (!defined $quantifValues{$quantif}{$protID0}{P_VALUE} || $quantifValues{$quantif}{$protID0}{P_VALUE} > $maxPvalue))) {
@@ -471,41 +428,24 @@ if (param('anaName')) {
 #-------------------------------#
 # Fetching Quantification Infos #
 #-------------------------------#
-my $sthCondition = $dbh->prepare("SELECT NAME FROM EXPCONDITION WHERE ID_EXPCONDITION=?");
-my ($allRatioString) = ($annot =~ /::RATIOS=([^:]+)/);
-my ($states) = ($annot =~ /STATES=([^:]+)/);
-my @states = split /;/, $states;
 my $rank = 0;
 my $ratioString = "<SELECT name=\"ratio\" id=\"ratio\" onchange=\"updateRatio(this.value);\">\n";
-while ($allRatioString =~ /(#?\d+)(%?\d*)\/(#?\d+)(%?\d*)/g){
-        $rank++;
-        my $selected = '';
-        if ($rank == $ratioPos) {
-            $selected = 'selected';
-        }
-        my ($ratioNum, $superNum, $ratioDenom , $superDenom) = ($1, $2, $3, $4);
-        my @ratioNames;
-
-        foreach my $ratioId ($ratioNum, $ratioDenom){
-            my ($name);
-            if ($ratioId =~ /^#(.+)$/) {
-                $sthCondition->execute($1) or die $!;
-                ($name) = $sthCondition->fetchrow_array;
-            } else {
-                ($name) = ($states[$ratioId-1] =~ /\d+,([^,]+),\d+/);
-            }
-            push @ratioNames, $name;
-        }
-	my $normTagNum=($superNum)? "°" :'';
-	my $normTagDenom=($superDenom)? "°" :'';
-
-        my $quantiRatioName = "$ratioNames[0]$normTagNum/$ratioNames[1]$normTagDenom";
-
-        $ratioString .= "<OPTION value=$rank $selected>$quantiRatioName</OPTION>\n";
+foreach my $ratio (@{$quantifInfo{$quantiID}[1]{RATIOS}}) {
+	$rank++;
+	my $selected = ($rank == $ratioPos)? 'selected' : '';
+	my ($testCond,$refCond)=split(/\//,$ratio);
+	my $supRatioTag='';
+	if ($testCond=~/%/) {
+		$testCond=~s/%.+//;
+		$refCond=~s/%.+//;
+		$supRatioTag='°';
+	}
+	#my $supRatioTag=($quantifInfo{$quantiID}[1]{RATIO_TYPE}[0] eq 'SuperRatio' && $rank >= scalar keys %{$quantifInfo{$quantiID}[2]})? '°' : '';
+    $ratioString .= "<OPTION value=\"$rank\" $selected>$quantifInfo{$quantiID}[2]{$testCond}{NAME}$supRatioTag/$quantifInfo{$quantiID}[2]{$refCond}{NAME}$supRatioTag</OPTION>\n";
 }
+
 $ratioString .= "</SELECT>\n";
-$sthQuanti->finish;
-$sthCondition->finish;
+##$sthCondition->finish;
 
 #-------------------------#
 # Fetching ontology files #
@@ -613,7 +553,7 @@ print qq
 |<TH nowrap align=left>:<SPAN id="numProtSPAN">...</SPAN>&nbsp;tot.&nbsp;</TH>
 </TR>
 |;
-if ($modifQuantifID) {
+if ($isModifQuantif) {
 	print qq
 |<TR><TH align="right" nowrap>&nbsp;Proteins (%):</TH>|;
 	foreach my $num (0..4) {
@@ -625,7 +565,7 @@ if ($modifQuantifID) {
 |;
 
 }
-
+my $pValueType=(!$quantifInfo{$quantiID}[1]{FDR_CONTROL} || $quantifInfo{$quantiID}[1]{FDR_CONTROL}[0]=~/FALSE|NONE/i)? 'p-value' : 'adj. p-value';
 print qq
 |</TABLE>
 <BR>
@@ -645,7 +585,7 @@ print qq
 		<TR>
 			<TH valign='top' align='right'>&nbsp;&nbsp;Protein filtering : </TH><TD bgcolor=$lightColor>
 					&bull;At least <INPUT type='text' name="minPep" value="$minPep" size=2 onchange="updateThreshold();"> quantified peptide(s)/$proteinStrg<BR>
-					&bull;Ratio p-value &le;<INPUT type="text" name="ratioPvalue" id="ratioPvalue" size=3 value="$maxPvalue" onchange="updateThreshold();">&nbsp;<I>(use <B>1</B> for no threshold)</I><br/>
+					&bull;Ratio $pValueType &le;<INPUT type="text" name="ratioPvalue" id="ratioPvalue" size=3 value="$maxPvalue" onchange="updateThreshold();">&nbsp;<I>(use <B>1</B> for no threshold)</I><br/>
                     &bull;Restrict to List: <SELECT name="restrictList">$categoryStrg</SELECT>
 			</TD>
         </TR>
@@ -692,7 +632,7 @@ print qq
                             <OPTION value='BH' selected>Benjamini & Hochberg</OPTION>
                             <OPTION value='FDRsimulation'>Simulation</OPTION>
                 </SELECT> method<BR>
-                &nbsp;&nbsp;&nbsp;<INPUT type="radio" name="criteria" value="pval" onClick="selectStatistics();"> Use a p-value threshold: <INPUT type="text" name="pval" size=3 value="0.01" disabled>
+                &nbsp;&nbsp;&nbsp;<INPUT type="radio" name="criteria" value="pval" onclick="selectStatistics();"> Use a p-value threshold: <INPUT type="text" name="pval" size=3 value="0.01" disabled>
                 with <INPUT type="checkbox" name="bonferroni" value="1" checked disabled> Bonferroni correction<BR>
         </TD></TR>
         <TR>
@@ -947,7 +887,7 @@ sub processForm {
     #-----------------------------------#
     my $masterParamStrg = "criteria=$criteria;threshold=$threshold;method=$method;aspect=$aspect;depth=$depth;$bckgPop;minPep=$minPep;logRatios=" . join(',', @thrLogRatios) . ';';
     $masterParamStrg .= "ratioPvalue=$maxPvalue;numProtSel=$protCount;";
-	$masterParamStrg .= "numSiteSel=".(scalar keys %{$quantifValues{$quantif}}).';' if $modifQuantifID;
+	$masterParamStrg .= "numSiteSel=".(scalar keys %{$quantifValues{$quantif}}).';' if $isModifQuantif;
     
     my $userID = $ENV{'REMOTE_USER'};
     my $sthInsGOAna = $dbh->prepare("INSERT INTO GO_ANALYSIS (ID_EXPERIMENT,ID_ONTOLOGY,ID_GOANNOTATION,ID_PARENT_GOANA,NAME,DES,GOA_TYPE,ASPECT,PARAM_STRG,UPDATE_DATE,UPDATE_USER) VALUES (?,?,?,?,?,?,?,?,?,NOW(),?)");
@@ -1239,6 +1179,7 @@ exit;
 #}
 
 ####>Revision history
+# 1.3.2 [ENHANCEMENT] Uses data from &promsConfig::fetchQuantificationData to display ratio info (PP 25/02/20)
 # 1.3.1 Add foreground filtering option (VS 08/01/20)
 # 1.3.0 Compatible with PTM quantification (PP 27/07/18)
 # 1.2.0 Move tempDir for density plot inside $promsPath{tmp}/GO & added old tempDir clean up with promsMod::cleanDirectory (PP 06/02/18)

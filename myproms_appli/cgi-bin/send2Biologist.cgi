@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# send2Biologist.cgi       3.3.4                                               #
+# send2Biologist.cgi       3.4.1                                               #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Reports and/or terminates a validation (Analysis)                            #
@@ -46,6 +46,7 @@ use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI ':standard';
 use promsConfig;
 use promsMod;
+use promsQuantif;
 use POSIX qw(strftime); # to get the time
 use strict;
 use XML::Simple; # used by promsMod::extractData & quantif from MSF
@@ -295,7 +296,8 @@ foreach my $analysisID (@analysisList) {
 
 	###>Set Analysis as partially validated (better if error after partial data transfer)
 	$dbh->do("UPDATE ANALYSIS SET VALID_STATUS=1,VERIFIED_MG=0,VALID_USER='$userID',VALID_DATE=NOW(),UPDATE_USER='$userID',UPDATE_DATE=NOW() WHERE ID_ANALYSIS=$analysisID");
-
+	$dbh->commit;
+	
 	##################################################
 	####>Processing Quantification settings (MSF)<#### Done here because match between search varMod & SILAC labeling varMod is necessary early on
 	##################################################
@@ -680,40 +682,45 @@ foreach my $analysisID (@analysisList) {
 		}
 
 		####>Deleting potential low-level quantification (2ndary quantification should prevent validation modification!!!)
-		my $sthQ=$dbh->prepare("SELECT Q.ID_QUANTIFICATION,FOCUS,QUANTIF_ANNOT FROM ANA_QUANTIFICATION AQ,QUANTIFICATION Q WHERE Q.ID_QUANTIFICATION=AQ.ID_QUANTIFICATION AND ID_ANALYSIS=$analysisID ORDER BY Q.ID_QUANTIFICATION DESC");
-		my $sthDelRT=$dbh->prepare("DELETE FROM QUANTIF_REFRT WHERE ID_QUANTIFICATION=?");
-		#my $sthDelPep=$dbh->prepare("DELETE FROM PEPTIDE_QUANTIFICATION WHERE ID_QUANTIFICATION=?");
-		my $sthDelProt=$dbh->prepare("DELETE FROM PROTEIN_QUANTIFICATION WHERE ID_QUANTIFICATION=?");
-		my $sthDelAQ=$dbh->prepare("DELETE FROM ANA_QUANTIFICATION WHERE ID_QUANTIFICATION=?");
-		my $sthDelQ=$dbh->prepare("DELETE FROM QUANTIFICATION WHERE ID_QUANTIFICATION=?");
+		#my $sthQ=$dbh->prepare("SELECT Q.ID_QUANTIFICATION,FOCUS,QUANTIF_ANNOT FROM ANA_QUANTIFICATION AQ,QUANTIFICATION Q WHERE Q.ID_QUANTIFICATION=AQ.ID_QUANTIFICATION AND ID_ANALYSIS=$analysisID ORDER BY Q.ID_QUANTIFICATION DESC");
+		#my $sthDelRT=$dbh->prepare("DELETE FROM QUANTIF_REFRT WHERE ID_QUANTIFICATION=?");
+		#my $sthDelProt=$dbh->prepare("DELETE FROM PROTEIN_QUANTIFICATION WHERE ID_QUANTIFICATION=?");
+		#my $sthDelAQ=$dbh->prepare("DELETE FROM ANA_QUANTIFICATION WHERE ID_QUANTIFICATION=?");
+		#my $sthDelQ=$dbh->prepare("DELETE FROM QUANTIFICATION WHERE ID_QUANTIFICATION=?");
+		#$sthQ->execute;
+		#while (my ($quanID,$focus,$qAnnot)=$sthQ->fetchrow_array) {
+		#	if ($focus eq 'protein') { # should not happen: Checked before allowing report
+		#		$sthDelProt->execute($quanID);
+		#		$sthDelAQ->execute($quanID);
+		#		$sthDelQ->execute($quanID);
+		#	}
+		#	else { # peptide
+		#		$sthDelRT->execute($quanID);
+		#		#$sthDelPep->execute($quanID);
+		#		rmtree("$promsPath{quantification}/project_$projectID/quanti_$quanID") if -e "$promsPath{quantification}/project_$projectID/quanti_$quanID";
+		#		#if ($qAnnot=~/EXTRACTION_ALGO/) { # MassChoQ
+		#		#	$sthDelAQ->execute($quanID);
+		#		#	$sthDelQ->execute($quanID);
+		#		#}
+		#		#else {
+		#		#	$prevQuantifID=$quanID; # keep quantif entry
+		#		#}
+		#		$sthDelAQ->execute($quanID);
+		#		$sthDelQ->execute($quanID);
+		#	}
+		#}
+		#$sthQ->finish;
+		#$sthDelRT->finish;
+		##$sthDelPep->finish;
+		#$sthDelProt->finish;
+		#$sthDelAQ->finish;
+		#$sthDelQ->finish;
+		my $sthQ=$dbh->prepare("SELECT Q.ID_QUANTIFICATION FROM ANA_QUANTIFICATION AQ,QUANTIFICATION Q WHERE Q.ID_QUANTIFICATION=AQ.ID_QUANTIFICATION AND ID_ANALYSIS=$analysisID ORDER BY Q.ID_QUANTIFICATION DESC");
 		$sthQ->execute;
-		while (my ($quanID,$focus,$qAnnot)=$sthQ->fetchrow_array) {
-			if ($focus eq 'protein') { # should not happen: Checked before allowing report
-				$sthDelProt->execute($quanID);
-				$sthDelAQ->execute($quanID);
-				$sthDelQ->execute($quanID);
-			}
-			else { # peptide
-				$sthDelRT->execute($quanID);
-				#$sthDelPep->execute($quanID);
-				rmtree("$promsPath{quantification}/proj_$projectID/quanti_$quanID") if -e "$promsPath{quantification}/project_$projectID/quanti_$quanID";
-				#if ($qAnnot=~/EXTRACTION_ALGO/) { # MassChoQ
-				#	$sthDelAQ->execute($quanID);
-				#	$sthDelQ->execute($quanID);
-				#}
-				#else {
-				#	$prevQuantifID=$quanID; # keep quantif entry
-				#}
-				$sthDelAQ->execute($quanID);
-				$sthDelQ->execute($quanID);
-			}
+		while (my ($quantifID)=$sthQ->fetchrow_array) {
+			&promsQuantif::deleteQuantification($dbh,$projectID,$quantifID);
 		}
 		$sthQ->finish;
-		$sthDelRT->finish;
-		#$sthDelPep->finish;
-		$sthDelProt->finish;
-		$sthDelAQ->finish;
-		$sthDelQ->finish;
 
 		####>Fetching list already validated proteins from current analysis (if any)<####
 		my $sthPV=$dbh->prepare("SELECT P.ID_PROTEIN,IDENTIFIER,ID_MASTER_PROTEIN FROM PROTEIN P,ANALYSIS_PROTEIN AP WHERE P.ID_PROTEIN=AP.ID_PROTEIN AND ID_ANALYSIS=$analysisID"); #,ID_CLUSTER
@@ -739,6 +746,7 @@ foreach my $analysisID (@analysisList) {
 		#}
 		#unlink $pepFile if $fileFormat=~/\.PDM/; # reaxtraction will be necessary
 
+		$dbh->commit;
 		print " Done.<BR>\n";
 	}
 
@@ -746,7 +754,7 @@ foreach my $analysisID (@analysisList) {
 	####>Fetching all validated data<#### from tables PROTEIN_VALIDATION, RANK_PROTEIN_MATCH and QUERY_VALIDATION
 	##################################### Starting with proteins because 100% of sel_status=1 will be kept (!= queries:orphans are possible)
 	print "&nbsp;&nbsp;&nbsp;- Fetching new validated data...";
-
+	
 	my %spectrum2fileID;
 	if ($msfFile && $numMergedFiles > 1) {
 		my $queryGetDataSrc=($pdVersion >=2.2)?"SELECT SpectrumID,SpectrumFileID FROM MSnSpectrumInfo" : "SELECT SpectrumID,FileID FROM SpectrumHeaders SH,MassPeaks MP WHERE SH.MassPeakID=MP.MassPeakID";
@@ -877,6 +885,7 @@ foreach my $analysisID (@analysisList) {
 		#	push @{$queryList{$queryNum}{$rank}},"$proteinList{$identifier}:$matchInfo";
 		#}
 	}
+	$dbh->commit;
 	print " Done.<BR>\n";
 
 	#################################################################
@@ -888,11 +897,22 @@ foreach my $analysisID (@analysisList) {
 	my %proteinScore;
 	my %newValidatedProt;
 	my %proteinAnnotQual;
+	my %isContaminant;
 
 	###########################################################
 	####>Fetching protein sequences from sequence dataBank<####
 	###########################################################
 	print "&nbsp;&nbsp;&nbsp;- Extracting protein sequences from sequence databank...";
+	
+	####>Checking for contaminant databank(s)
+	my @contaminantDBs;
+	my $sthDBC=$dbh->prepare("SELECT D.ID_DATABANK,DB_RANK FROM ANALYSIS_DATABANK AD,DATABANK D WHERE D.ID_DATABANK=AD.ID_DATABANK AND AD.ID_ANALYSIS=$analysisID AND IS_CRAP=1");
+	$sthDBC->execute;
+	while (my ($dbID,$dbRank)=$sthDBC->fetchrow_array) {
+		push @contaminantDBs,$dbRank;
+	}
+	$sthDBC->finish;
+
 	####>Fetching protein Databank info...
 	if (scalar keys %proteinList) {
 		if (-e "$promsPath{valid}/ana_$analysisID/analysis.fasta") {
@@ -941,7 +961,7 @@ foreach my $analysisID (@analysisList) {
 	my $sthUpdDesc=$dbh->prepare("UPDATE PROTEIN SET PROT_DES=?,ORGANISM=? WHERE ID_PROTEIN=?");
 	my $newProteins=0;
 	foreach my $refProt (@{$refValidData}) {
-		my ($identifier,$des,$organism,$mw,$score,$confLevel,$protLength,$dbRank)=@{$refProt};
+		my ($identifier,$des,$organism,$mw,$score,$confLevel,$protLength,$protDbRank)=@{$refProt};
 		$newValidatedProt{$identifier}=1;
 		$confLevel=2 unless $confLevel;
 		if (!$protLength) { # missing annotation but protein is in project
@@ -952,20 +972,23 @@ foreach my $analysisID (@analysisList) {
 		my $alias=($projectIdentMapID==$giIdentID && $identifier=~/(gi\|\d+)/)? $1 : $identifier; # "GI" restriction on alias
 		unless ($projectProt{$identifier}) { # protein is new to project => insert
 			$sthProt->execute($identifier,$alias,$des,$organism,$mw,$sequenceList{$identifier},$protLength) || die $sthProt->errstr;
-			my ($proteinID)=$dbh->last_insert_id(undef, undef, 'PROTEIN', 'ID_PROTEIN');
-			$proteinList{$identifier}=$proteinID;
-			$protIdList{$proteinID}=$identifier;
+			my ($newProtID)=$dbh->last_insert_id(undef, undef, 'PROTEIN', 'ID_PROTEIN');
+			$proteinList{$identifier}=$newProtID;
+			$protIdList{$newProtID}=$identifier;
 			$newProteins=1; # new protein(s) added to project -> identifier mapping
 		}
+		
+		my $protID=$proteinList{$identifier};
+
 		foreach my $refData (@{$matchData{$identifier}}) {
 			my ($queryNum,$rank,$matchInfo)=@{$refData};
-			push @{$queryList{$queryNum}{$rank}},"$proteinList{$identifier}:$matchInfo";
+			push @{$queryList{$queryNum}{$rank}},"$protID:$matchInfo";
 		}
-		#my $alias=($identifierTypes{$dbRank})? &promsMod::modifyIdentifier($identifier,$identModString{$identifierTypes{$dbRank}}) : $identifier;
-		$proteinScore{$proteinList{$identifier}}=$score;
-		$proteinLength{$proteinList{$identifier}}=$protLength;
-		$protSpeciesClass{$proteinList{$identifier}}=($preferredSpecies && $organism eq $preferredSpecies)? 1 : 0;
-		#$proteinAnnotQual{$proteinList{$identifier}}=($des=~/no\sdescription/i)? 3 : ($des=~/unnamed/i || $des=~/unknown/i)? 2 : ($des=~/hypothetical/i)? 1 : 0;  #fp
+		#my $alias=($identifierTypes{$protDbRank})? &promsMod::modifyIdentifier($identifier,$identModString{$identifierTypes{$protDbRank}}) : $identifier;
+		$proteinScore{$protID}=$score;
+		$proteinLength{$protID}=$protLength;
+		$protSpeciesClass{$protID}=($preferredSpecies && $organism eq $preferredSpecies)? 1 : 0;
+		#$proteinAnnotQual{$protID}=($des=~/no\sdescription/i)? 3 : ($des=~/unnamed/i || $des=~/unknown/i)? 2 : ($des=~/hypothetical/i)? 1 : 0;  #fp
 		# Annotation quality: the smaller the better:
 		# 1: Swiss-Prot (EZRI_HUMAN) (<up to 5digits>_<species>)
 		# 2: TrEMBL (Q12345_HUMAN) (<6 digits>_<species>)
@@ -973,7 +996,7 @@ foreach my $analysisID (@analysisList) {
 		# 4: any other identifier with 'hypothetical' in desc
 		# 5: any other identifier with 'unknown'/'unnamed' in desc
 		# 6: any other identifier with no desc
-		$proteinAnnotQual{$proteinList{$identifier}}=($identifier=~/\b\w{1,5}_/)? 1 : ($identifier=~/\b\w{6}_/)? 2 : ($des=~/no\sdescription/i)? 6 : ($des=~/unnamed/i || $des=~/unknown/i)? 5 : ($des=~/hypothetical/i)? 4 : 3;  #PP
+		$proteinAnnotQual{$protID}=($identifier=~/\b\w{1,5}_/)? 1 : ($identifier=~/\b\w{6}_/)? 2 : ($des=~/no\sdescription/i)? 6 : ($des=~/unnamed/i || $des=~/unknown/i)? 5 : ($des=~/hypothetical/i)? 4 : 3;  #PP
 
 		if ($incompleteProtein{$identifier}) {# protein is in project, but incomplete, file MW, Sequence and length
 			$sthUpdProt->execute($mw,$sequenceList{$identifier},$protLength,$incompleteProtein{$identifier});
@@ -983,13 +1006,23 @@ foreach my $analysisID (@analysisList) {
 			}
 			delete $incompleteProtein{$identifier} if $protLength; # remove from list
 		}
-		$sthAna->execute($proteinList{$identifier},$score,$confLevel,$dbRank) || die $sthAna->errstr;
+		$sthAna->execute($protID,$score,$confLevel,$protDbRank) || die $sthAna->errstr;
+
+		#>Checking if contaminant protein
+		foreach my $dbRank (@contaminantDBs) {
+			if ($protDbRank=~/$dbRank/) {
+				$isContaminant{$protID}=1;
+				last;
+			}
+		}
+		$isContaminant{$protID}=0 unless $isContaminant{$protID};
 	}
 	$sthProt->finish;
 	$sthAna->finish;
 	$sthUpdDesc->finish;
 	$sthUpdProt->finish;
 	push @newAnaMapping,$analysisID if $newProteins;
+	$dbh->commit;
 	print " Done.<BR>\n";
 
 	#######################################################################
@@ -1107,6 +1140,9 @@ foreach my $analysisID (@analysisList) {
 			my @pepVmods=();
 			while (my ($modificationID,$posStr,$refPosStr) = $sthGetQueryMod->fetchrow_array) {
 				push @pepVmods,[$modificationID,$posStr,$refPosStr];
+				if($refPosStr && $refPosStr =~ /[\d\.]+:[\d\.]+:[\d\.]+/) {
+					$refPosStr =~ s/([\d\.]+)+?:([\d\.]+)+?:([\d\.]+)(,|$)/$1:$3$4/g;
+				}
 				$sthInsPepMod->execute($modificationID,$peptideID,'V',$posStr,$refPosStr) || die $sthInsPepMod->errstr;
 				#$usedModifs{$modificationID}=1; # just to be safe: already generated from ANALYSIS_MODIFICATION table
 			}
@@ -1204,7 +1240,7 @@ if ($rank==1) {
 
 	#$sthGetData->finish;
 	#$sthUpData->finish;
-
+	$dbh->commit;
 	print " Done.<BR>\n";
 
 	###################################
@@ -1240,9 +1276,9 @@ if ($rank==1) {
 	print "&nbsp;&nbsp;&nbsp;- Building match groups...";
 	# Rules of ordering: numPep > num@top > score > delta length > annotQuality > length > identifier
 	#my @sortedProtIDs=sort{scalar (keys %{$matchList{$b}})<=>scalar (keys %{$matchList{$a}}) || $numProtTop{$b}<=>$numProtTop{$a} || $proteinScore{$b}<=>$proteinScore{$a} || $proteinAnnotQual{$a} <=> $proteinAnnotQual{$b} || $proteinLength{$a}<=>$proteinLength{$b} || $a<=>$b} keys %matchList;
-	my @sortedProtIDs = sort{$numProtPeptides{$b}<=>$numProtPeptides{$a} || $protSpeciesClass{$b}<=>$protSpeciesClass{$a} || $numProtTop{$b}<=>$numProtTop{$a} || $proteinScore{$b}<=>$proteinScore{$a} || &deltaLength($proteinLength{$a},$proteinLength{$b},$proteinPepDens{$a},$proteinPepDens{$b}) || $proteinAnnotQual{$a}<=>$proteinAnnotQual{$b} || $proteinLength{$a}<=>$proteinLength{$b} || $a<=>$b} keys %matchList;
+	my @sortedProtIDs = sort{$numProtPeptides{$b}<=>$numProtPeptides{$a} || $isContaminant{$b}<=>$isContaminant{$a} || $protSpeciesClass{$b}<=>$protSpeciesClass{$a} || $numProtTop{$b}<=>$numProtTop{$a} || $proteinScore{$b}<=>$proteinScore{$a} || &deltaLength($proteinLength{$a},$proteinLength{$b},$proteinPepDens{$a},$proteinPepDens{$b}) || $proteinAnnotQual{$a}<=>$proteinAnnotQual{$b} || $proteinLength{$a}<=>$proteinLength{$b} || $a<=>$b} keys %matchList;
 	my (%matchGroup, %visibility);
-	&promsMod::createMatchGroups(\%matchList, \%matchGroup, \@sortedProtIDs, \%visibility, \%bestProtVis, $protVisibility, 1);
+	&promsMod::createMatchGroups(\%matchList, \%matchGroup, \@sortedProtIDs, \%visibility, \%bestProtVis, $protVisibility, -1);
 
 	
 	####>Computing PEP_SPECIFICITY
@@ -1283,6 +1319,7 @@ if ($rank==1) {
 		$sthUpAP->execute($visibility{$protID},$matchGroup{$protID},scalar keys %{$matchList{$protID}},$numMatch{$protID},$pepSpecificity{$protID},$pepCoverage{$protID},$protID);
 	}
 	$sthUpAP->finish;
+	$dbh->commit;
 	print " Done.<BR>\n";
 
 
@@ -1314,7 +1351,7 @@ if ($rank==1) {
 
 	#>Deleting unused master proteins (& species)
 	&promsMod::deleteUnusedMasterProteins($dbh,\%modifMasterProteins);
-
+	$dbh->commit;
 	print " Done.<BR>\n";
 
 
@@ -2135,25 +2172,25 @@ top.promsFrame.location="$promsPath{cgi}/openProject.cgi?ID=$projectID$navUrlStr
 #####################################
 ####<Launches identifier mapping>####
 #####################################
-sub mapIdentifiers {
-	my $anaStrg=param('ANA_ID');
-
-	print header(-'content-encoding'=>'no',-charset=>'utf-8'); # start_html,"\n"; # start_html required to force update
-	warningsToBrowser(1);
-	print qq
-|<HTML>
-<HEAD>
-<TITLE>Identifier Mapping</TITLE>
-</HEAD>
-<BODY>
-|;
-	system "./mapProteinIdentifiers.pl $userID $anaStrg";
-	print qq
-|</BODY>
-</HTML>
-|;
-	exit;
-}
+#sub mapIdentifiers {
+#	my $anaStrg=param('ANA_ID');
+#
+#	print header(-'content-encoding'=>'no',-charset=>'utf-8'); # start_html,"\n"; # start_html required to force update
+#	warningsToBrowser(1);
+#	print qq
+#|<HTML>
+#<HEAD>
+#<TITLE>Identifier Mapping</TITLE>
+#</HEAD>
+#<BODY>
+#|;
+#	system "./mapProteinIdentifiers.pl $userID $anaStrg";
+#	print qq
+#|</BODY>
+#</HTML>
+#|;
+#	exit;
+#}
 
 ############################
 ####<Check delta length>#### Compares delta lengthes between 2 proteins with Peptide density of the smaller one
@@ -2266,7 +2303,16 @@ sub endValidation {
 			unless ($copyOK) {
 				if (-e "$promsPath{valid}/multi_ana/proj_$projectID/$msfFile") {
 					$msfReportedList{$msfFile}="$pepDataDir/$msfFile";
-					copy("$promsPath{valid}/multi_ana/proj_$projectID/$msfFile",$msfReportedList{$msfFile}); # move msf to peptide dir!
+					system("cp '$promsPath{valid}/multi_ana/proj_$projectID/$msfFile' '$msfReportedList{$msfFile}'&");
+					print("&nbsp;&nbsp;&nbsp;- Storing $msfFile ...");
+					my $sourceFileSize = `stat -c %s '$promsPath{valid}/multi_ana/proj_$projectID/$msfFile'`;
+					my $targetFileSize = 0;
+					while(!-e "$msfReportedList{$msfFile}" || $targetFileSize != $sourceFileSize) {
+						sleep 10;
+						$targetFileSize = (-e "$msfReportedList{$msfFile}") ? `stat -c %s '$msfReportedList{$msfFile}'`: 0;
+						print(".");
+					}
+					print("Done.</b><br/>");
 				}
 				else {
 					if ($call eq 'cmd') {print '!';}
@@ -2410,6 +2456,13 @@ write.table(exportData, file="$exportFile",sep=c('\\t'),quote=F,row.names=F,col.
 
 
 ####>Revision history<####
+# 3.4.1 [MINOR] Commented obsolete mapIdentifiers subroutine (PP 19/04/21)
+# 3.4.0 [MINOR] Avoid tables lock by commiting regularly (VS 23/03/21)
+# 3.3.9 [MINOR] Lower verbose mode for &createMatchGroups (PP 11/02/21)
+# 3.3.8 [CHANGE] Added contaminant status in identifier sort priority for match group creation (PP 05/10/20)
+# 3.3.7 [ENHANCEMENT] Handles PtmRS site localization grouping probabilities (VS 21/08/20)
+# 3.3.6 [ENHANCEMENT] Calls &promsQuantif::deleteQuantification instead of local deletion (PP 07/07/20)
+# 3.3.5 [MODIF] Display waiting information while copying search file to validation folder (VS 08/04/20)
 # 3.3.4 [MODIF] Restore lost CeCILL license text (PP 28/08/19)
 # 3.3.3 [MODIF] Changed createMatchGroup to fit with promsMod.pm prototype (VS 03/07/19)
 # 3.3.2 Removed all usages of PEPTIDE_QUANTIFICATION table (PP 27/06/18)

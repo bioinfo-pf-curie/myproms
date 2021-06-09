@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# openProject.cgi        1.7.5                                                 #
+# openProject.cgi        1.7.10                                                 #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Generates the project's main navigation frames                               #
@@ -142,8 +142,7 @@ elsif ($action eq 'nav') {
 #print header(-charset=>'UTF-8'); warningsToBrowser(1); # DEBUG
 
 	####>Fetching user info<####
-	#my ($userName,$userStatus,$refProfile,$userEmail,$userInfo)=&promsMod::getUserInfo($dbh,$userID,$projectID);
-	#my $projectAccess=$$refProfile{$projectID};
+	my ($userStatus) = $dbh->selectrow_array("SELECT USER_STATUS FROM USER_LIST WHERE ID_USER='$userID'");
 	my $expandMode=0;
 
 	###############################
@@ -163,20 +162,20 @@ elsif ($action eq 'nav') {
 	####>Project<####
 	my @projectTree=(0,'project',$projectID,'','',1,$projectName,''); #(depth,type,ID,labelClass,imageClass,selectable,name,popup,refChild1,...2,...3)
 	my %hiddenExperimentIDs = ();
-	my $sthExpHide=$dbh->prepare("SELECT E.ID_EXPERIMENT, LOCK_MSG FROM EXPERIMENT E LEFT JOIN USER_EXPERIMENT_LOCK UEL ON UEL.ID_EXPERIMENT=E.ID_EXPERIMENT WHERE E.ID_PROJECT=$projectID AND ID_USER='$userID' ORDER BY DISPLAY_POS ASC");
+	my $sthExpHide=$dbh->prepare("SELECT E.ID_EXPERIMENT, LOCK_MSG, ID_USER FROM USER_EXPERIMENT_LOCK UEL INNER JOIN EXPERIMENT E ON UEL.ID_EXPERIMENT=E.ID_EXPERIMENT WHERE E.ID_PROJECT=$projectID ORDER BY DISPLAY_POS ASC");
 	$sthExpHide->execute;
-	while (my ($expID, $lockMessage)=$sthExpHide->fetchrow_array) {
-		$hiddenExperimentIDs{$expID} = $lockMessage;
+	while (my ($expID, $lockMessage, $lockedUserID)=$sthExpHide->fetchrow_array) {
+		$hiddenExperimentIDs{$expID}{$lockedUserID} = ($lockMessage) ? $lockMessage : '';
 	}
 	$sthExpHide->finish;
 	
 	###>Experiments<###
 	$sthExp->execute;
 	while (my ($expID,$expName)=$sthExp->fetchrow_array) {
-		my $itemClass = ($hiddenExperimentIDs{$expID}) ? 'lockedItem' : '';
-		my $itemTooltip = ($hiddenExperimentIDs{$expID}) ? $hiddenExperimentIDs{$expID} : $expName;
-		my $itemIcon = ($hiddenExperimentIDs{$expID}) ? 'locked' : '';
-		my $itemSelectable = ($hiddenExperimentIDs{$expID}) ? 0 : 1;
+		my $itemClass = (defined $hiddenExperimentIDs{$expID}{$userID}) ? 'lockedItem' : '';
+		my $itemTooltip = (defined $hiddenExperimentIDs{$expID}{$userID}) ? $hiddenExperimentIDs{$expID}{$userID} : (scalar keys %{$hiddenExperimentIDs{$expID}} > 0 && $userStatus ne 'bio') ? "Experiment locked for ".join(', ', keys %{$hiddenExperimentIDs{$expID}}) : $expName;
+		my $itemIcon = ((scalar keys %{$hiddenExperimentIDs{$expID}} > 0 && $userStatus ne 'bio') || $hiddenExperimentIDs{$expID}{$userID}) ? 'locked' : '';
+		my $itemSelectable = (defined $hiddenExperimentIDs{$expID}{$userID}) ? 0 : 1;
 		
 		my @experimentTree=(1,'experiment',$expID,$itemClass,$itemIcon,$itemSelectable,$expName,$itemTooltip);
 
@@ -221,7 +220,7 @@ elsif ($action eq 'nav') {
 <HEAD>
 <TITLE>Navigate Project Tree</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
-<SCRIPT LANGUAGE="JavaScript">
+<SCRIPT type="text/javascript">
 |;
 	&promsMod::popupInfo();
 	&promsMod::writeJsTreeFunctions(\@projectTree,\%treeOptions);
@@ -373,7 +372,7 @@ print qq
 <HEAD>
 <TITLE>Navigate Project Tree</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
-<SCRIPT LANGUAGE="JavaScript">
+<SCRIPT type="text/javascript">
 |;
 	&promsMod::popupInfo();
 	&promsMod::writeJsTreeFunctions(\@gelTree,\%treeOptions);
@@ -425,7 +424,7 @@ elsif ($action eq 'experiment') {# If experiment -> 2 possibilities: GO ANALYSIS
 #<HEAD>
 #<TITLE>Navigate Project Tree</TITLE>
 #<LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
-#<SCRIPT LANGUAGE="JavaScript">
+#<SCRIPT type="text/javascript">
 #function updateView(newView) {
 #	parent.navFrame.view=newView;
 #/*
@@ -520,17 +519,21 @@ elsif ($action eq 'experiment') {# If experiment -> 2 possibilities: GO ANALYSIS
 		my $sthQM=$dbh->prepare("SELECT ID_QUANTIFICATION_METHOD,CODE FROM QUANTIFICATION_METHOD");
 		my $sthD=$dbh->prepare("SELECT ID_DESIGN,NAME FROM DESIGN WHERE ID_EXPERIMENT=$expID ORDER BY NAME ASC");
 		#my $sthQuanti=$dbh->prepare("SELECT ID_QUANTIFICATION,NAME FROM QUANTIFICATION WHERE ID_DESIGN=? AND ID_QUANTIFICATION NOT IN (SELECT DISTINCT(ID_PARENT_QUANTIFICATION) FROM PARENT_QUANTIFICATION) ORDER BY NAME ASC");
-		my $sthDQ=$dbh->prepare("SELECT ID_QUANTIFICATION,NAME,FOCUS,QUANTIF_ANNOT FROM QUANTIFICATION WHERE ID_DESIGN=? $maxStatusStrg"); # quanti with design
+		my $sthDQ=$dbh->prepare("SELECT ID_QUANTIFICATION,NAME,FOCUS,QUANTIF_ANNOT,STATUS FROM QUANTIFICATION WHERE ID_DESIGN=? $maxStatusStrg"); # quanti with design
 		my $sthQP=$dbh->prepare('SELECT P.ID_PARENT_QUANTIFICATION,NAME,FOCUS,QUANTIF_ANNOT,ID_QUANTIFICATION_METHOD,UPDATE_DATE FROM PARENT_QUANTIFICATION P,QUANTIFICATION Q WHERE P.ID_PARENT_QUANTIFICATION=Q.ID_QUANTIFICATION AND P.ID_QUANTIFICATION=?'); # quanti parents
 		my $sthSA=$dbh->prepare("SELECT S.ID_SAMPLE,S.NAME,S.DISPLAY_POS,A.ID_ANALYSIS,A.NAME,A.DISPLAY_POS FROM ANA_QUANTIFICATION AQ,ANALYSIS A,SAMPLE S WHERE AQ.ID_ANALYSIS=A.ID_ANALYSIS AND A.ID_SAMPLE=S.ID_SAMPLE AND AQ.ID_QUANTIFICATION=?");
 		my $sthNDPQ=$dbh->prepare("SELECT DISTINCT Q.ID_QUANTIFICATION,Q.NAME,FOCUS,QUANTIF_ANNOT,ID_QUANTIFICATION_METHOD,Q.UPDATE_DATE FROM QUANTIFICATION Q,ANA_QUANTIFICATION AQ,SAMPLE S,ANALYSIS A WHERE S.ID_SAMPLE=A.ID_SAMPLE AND A.ID_ANALYSIS=AQ.ID_ANALYSIS AND Q.ID_QUANTIFICATION=AQ.ID_QUANTIFICATION AND S.ID_EXPERIMENT=$expID AND FOCUS='protein' AND ID_DESIGN IS NULL $maxStatusStrg");
-		my $sthPQ=$dbh->prepare("SELECT DISTINCT Q.ID_QUANTIFICATION,Q.NAME,FOCUS,QUANTIF_ANNOT,ID_QUANTIFICATION_METHOD,Q.UPDATE_DATE FROM QUANTIFICATION Q,ANA_QUANTIFICATION AQ,SAMPLE S,ANALYSIS A WHERE S.ID_SAMPLE=A.ID_SAMPLE AND A.ID_ANALYSIS=AQ.ID_ANALYSIS AND Q.ID_QUANTIFICATION=AQ.ID_QUANTIFICATION AND S.ID_EXPERIMENT=$expID AND FOCUS='peptide'"); # peptide quantif AND QUANTIF_ANNOT LIKE 'ALGO_TYPE=%'"); # MassChroq only 'LABEL=FREE%'
+		my $sthPQ=$dbh->prepare("SELECT DISTINCT Q.ID_QUANTIFICATION,Q.NAME,FOCUS,QUANTIF_ANNOT,ID_QUANTIFICATION_METHOD,Q.UPDATE_DATE FROM QUANTIFICATION Q,ANA_QUANTIFICATION AQ,SAMPLE S,ANALYSIS A WHERE S.ID_SAMPLE=A.ID_SAMPLE AND A.ID_ANALYSIS=AQ.ID_ANALYSIS AND Q.ID_QUANTIFICATION=AQ.ID_QUANTIFICATION AND S.ID_EXPERIMENT=$expID AND FOCUS='peptide' AND ID_QUANTIFICATION_METHOD != ?"); # peptide quantif AND QUANTIF_ANNOT LIKE 'ALGO_TYPE=%'"); # MassChroq only 'LABEL=FREE%'
 		#my $sthQuantiParentID=$dbh->prepare("SELECT ID_PARENT_QUANTIFICATION FROM PARENT_QUANTIFICATION WHERE ID_QUANTIFICATION=?");
 		#my $sthQuantiParentName=$dbh->prepare("SELECT NAME FROM QUANTIFICATION WHERE ID_QUANTIFICATION=?");
 
 		my (%quantifMethods,%fetchedQuantifications);
+		my $hydroQuantMethID = 0;  # Hydrophobicity quantif method ID, special quantif, not displayed in this section
 		$sthQM->execute;
-		while (my ($qMethID,$code)=$sthQM->fetchrow_array) {$quantifMethods{$qMethID}=$code;}
+		while (my ($qMethID,$code)=$sthQM->fetchrow_array) {
+			$quantifMethods{$qMethID}=$code;
+			$hydroQuantMethID = $qMethID if $code eq 'HYDRO';
+		}
 		$sthQM->finish;
 
 		####>Design<####
@@ -541,14 +544,12 @@ elsif ($action eq 'experiment') {# If experiment -> 2 possibilities: GO ANALYSIS
 			###>Quantifications with design<###
 			$sthDQ->execute($designID);
 			my %quantifs;
-			while (my ($quantiID,$quantiName,$focus,$annot)=$sthDQ->fetchrow_array) {
-				@{$quantifs{$quantiID}}=($quantiName,$focus,$annot); # pre-storing because sortSmart required
+			while (my ($quantiID,$quantiName,$focus,$annot,$status)=$sthDQ->fetchrow_array) {
+				@{$quantifs{$quantiID}}=($quantiName,$focus,$annot,$status); # pre-storing because sortSmart required
 			}
 			foreach my $quantiID (sort{&promsMod::sortSmart(lc($quantifs{$a}[0]),lc($quantifs{$b}[0]))} keys %quantifs) {
-				my ($label)=($quantifs{$quantiID}[2] && $quantifs{$quantiID}[2]=~/^LABEL=([^:]+)/)? $1 : 'FREE';
-				my $isLabeled=($label eq 'FREE')? '_no_label' : '_label';
 				##>Quantification<##
-				my @quantiTree=(2,'quantification',$quantiID,'',"$quantifs{$quantiID}[1]$isLabeled",1,$quantifs{$quantiID}[0],'');
+				my @quantiTree=(2,'quantification',$quantiID,'',"$quantifs{$quantiID}[1]_$quantifs{$quantiID}[3]",1,$quantifs{$quantiID}[0],'');
 				$sthQP->execute($quantiID);
 				my $refQuantiDesign=$sthQP->fetchall_arrayref; # reference to an array
 				&createPeptideQuantificationBranches($refQuantiDesign,$sthSA,$quantiID,\@quantiTree,'design',\%fetchedQuantifications,\%quantifMethods);
@@ -567,7 +568,7 @@ elsif ($action eq 'experiment') {# If experiment -> 2 possibilities: GO ANALYSIS
 
 		####> Add Quantifications multiple 30/09/2014
 		my @xicTree=(1,'none',0,'','',0,'Unused peptide quantifications',''); #(depth,type,ID,labelClass,imageClass,selectable,name,popup,refChild1,...2,...3)
-		$sthPQ->execute;
+		$sthPQ->execute($hydroQuantMethID);  # Peptide quantifications that are not hydrophobicity computations
 		my $refPepQuantif=$sthPQ->fetchall_arrayref;
 		&createPeptideQuantificationBranches($refPepQuantif,$sthSA,undef,\@xicTree,'peptide',\%fetchedQuantifications,\%quantifMethods);
 		push @experimentTree,\@xicTree if $xicTree[8];
@@ -595,7 +596,7 @@ elsif ($action eq 'experiment') {# If experiment -> 2 possibilities: GO ANALYSIS
 <HEAD>
 <TITLE>Navigate Project Tree</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
-<SCRIPT LANGUAGE="JavaScript">
+<SCRIPT type="text/javascript">
 |;
 		&promsMod::popupInfo();
 		&promsMod::writeJsTreeFunctions(\@experimentTree,\%treeOptions);
@@ -662,12 +663,16 @@ function actionOnSelect(tabIndex) {
 			elsif ($item eq 'motifanalysis') {
 				($expID) = $dbh->selectrow_array("SELECT ID_EXPERIMENT FROM EXPLORANALYSIS WHERE ID_EXPLORANALYSIS=$itemID");
 			}
+			elsif ($item eq 'gseanalysis') {  # Not an error, GSEA in table PATHWAY_ANALYSIS
+				($expID) = $dbh->selectrow_array("SELECT ID_EXPERIMENT FROM PATHWAY_ANALYSIS WHERE ID_PATHWAY_ANALYSIS=$itemID");
+			}
 		}
 		my ($expName) = $dbh->selectrow_array("SELECT NAME FROM EXPERIMENT WHERE ID_EXPERIMENT=$expID");
 		my $sthGOAna=$dbh->prepare("SELECT ID_GOANALYSIS, NAME FROM GO_ANALYSIS WHERE ID_EXPERIMENT=$expID AND ID_PARENT_GOANA IS NULL ORDER BY NAME ASC");
-		my $sthPathwayAna=$dbh->prepare("SELECT ID_PATHWAY_ANALYSIS, NAME FROM PATHWAY_ANALYSIS WHERE ID_EXPERIMENT=$expID ORDER BY NAME ASC");
+		my $sthPathwayAna=$dbh->prepare("SELECT ID_PATHWAY_ANALYSIS, NAME FROM PATHWAY_ANALYSIS WHERE ID_EXPERIMENT=$expID AND ANALYSIS_TYPE='PATHWAY' ORDER BY NAME ASC");
 		my $sthMotifAna=$dbh->prepare("SELECT ID_EXPLORANALYSIS, NAME, ANA_TYPE FROM EXPLORANALYSIS WHERE ID_EXPERIMENT=$expID AND ANA_TYPE like '%MOTIF' ORDER BY NAME ASC");
 		#my $sthHMmotifAna=$dbh->prepare("SELECT ID_EXPLORANALYSIS, NAME FROM EXPLORANALYSIS WHERE ID_EXPERIMENT=$expID AND ANA_TYPE='HM_MOTIF' ORDER BY NAME ASC");
+		my $sthGseaAna = $dbh->prepare("SELECT ID_PATHWAY_ANALYSIS, NAME FROM PATHWAY_ANALYSIS WHERE ID_EXPERIMENT = $expID AND ANALYSIS_TYPE = 'GSEA' ORDER BY NAME ASC");  # Not an error, GSEA in table PATHWAY_ANALYSIS
 
 		################################
 		####>Building func ana tree<####
@@ -708,9 +713,18 @@ function actionOnSelect(tabIndex) {
 
 		push @expTree, \@motifTree;
 
+		my @gseaTree = (1, 'gsea', $expID, '', '', 1, 'GSEA', '');
+		$sthGseaAna->execute;
+		while (my ($gseaID, $gseaName)=$sthGseaAna->fetchrow_array) {
+			my @gseaAnaTree=(2,'gseanalysis',$gseaID,'','',1,$gseaName,'');
+			push @gseaTree,\@gseaAnaTree;
+		}
+		push @expTree,\@gseaTree;
+
 		$sthGOAna->finish;
 		$sthPathwayAna->finish;
 		$sthMotifAna->finish;
+		$sthGseaAna->finish;
 		$dbh->disconnect;
 		@{$treeOptions{'SELECTION'}}=($selBranchID)? split(':',$selBranchID) : undef;
 
@@ -724,7 +738,7 @@ function actionOnSelect(tabIndex) {
 <HEAD>
 <TITLE>Navigate GO Analysis Tree</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
-<SCRIPT LANGUAGE="JavaScript">
+<SCRIPT type="text/javascript">
 |;
 		&promsMod::popupInfo();
 		&promsMod::writeJsTreeFunctions(\@expTree,\%treeOptions);
@@ -740,6 +754,9 @@ function actionOnSelect(tabIndex) {
 	}
 	else if (selBranchID.match(/pathway/)){
 		parent.optionFrame.location="$promsPath{cgi}/selectOptionPathway.cgi?ID="+selBranchID;
+	}
+	else if (selBranchID.match(/gsea/)){
+		parent.optionFrame.location="$promsPath{cgi}/selectOptionGSEA.cgi?ID="+selBranchID;
 	}
 	else {
 		parent.optionFrame.location="$promsPath{cgi}/selectOptionMotif.cgi?ID="+selBranchID;
@@ -785,28 +802,31 @@ setPopup();
 		$treeOptions{'AUTOSAVE'}='top.itemTreeStatus'; # name of JS variable storing tree status
 
 		my @expTree=(0,'experiment',$expID,'','',1,$expName,'');
-		#my $existDesign=0;
-		#my $sthD=$dbh->prepare("SELECT ID_DESIGN,NAME FROM DESIGN WHERE ID_EXPERIMENT=$expID ORDER BY NAME ASC");
-		#$sthD->execute;
-		#while (my ($designID,$designName) = $sthD->fetchrow_array) {
-		#	$existDesign=1;
-		#	my @designTree=(1,'design',$designID,'','',1,$designName,'');
-		#	push @expTree,\@designTree;
-		#}
-		#
-		#push @expTree,[1,'none',0,'','',0,'None',''] unless $existDesign;
-		#$sthD->finish;
-
-		my $existExplorAna = 0;
-		my $sthEA = $dbh -> prepare("SELECT ID_EXPLORANALYSIS, NAME, ANA_TYPE from EXPLORANALYSIS where ID_EXPERIMENT = $expID and ANA_TYPE != 'MOTIF' AND ANA_TYPE != 'HM_MOTIF' ORDER BY ANA_TYPE ASC,NAME ASC");
-		$sthEA -> execute;
+		my @explorAnaTypes=(['cluster','Clustering'], # [code in DB, displayed name]
+							['PCA','PCA']
+							);
+		my %anaTypeUsed;
+		my $sthEA = $dbh->prepare("SELECT ID_EXPLORANALYSIS, NAME, ANA_TYPE from EXPLORANALYSIS WHERE ID_EXPERIMENT = $expID AND ANA_TYPE != 'MOTIF' AND ANA_TYPE != 'HM_MOTIF'");
+		$sthEA->execute;
 		while (my($explorAnaID, $explorAnaName, $anaType) = $sthEA -> fetchrow_array) {
-			$existExplorAna = 1;
-			my @explorAnaTree = (1,'exploranalysis',$explorAnaID,'',lc($anaType),1,$explorAnaName);
-			push @expTree,\@explorAnaTree;
+			#push @expTree,[1,'exploranalysis',$explorAnaID,'',lc($anaType),1,$explorAnaName];
+			$anaTypeUsed{$anaType}{$explorAnaID}=$explorAnaName;
 		}
-		$sthEA -> finish;
+		$sthEA->finish;
 		$dbh->disconnect;
+
+		my $typeRank=0;
+		foreach my $refAnaType (@explorAnaTypes) {
+			my ($anaType,$anaTypeLabel)=@{$refAnaType};
+			$typeRank++;
+			if ($anaTypeUsed{$anaType}) {
+				my @typeTree=(1,$anaType,$typeRank,'','',0,$anaTypeLabel,'');
+				foreach my $explorAnaID (sort{&promsMod::sortSmart(lc($anaTypeUsed{$anaType}{$a}),lc($anaTypeUsed{$anaType}{$b}))} keys %{$anaTypeUsed{$anaType}}) {
+					push @typeTree,[2,'exploranalysis',$explorAnaID,'',lc($anaType),1,$anaTypeUsed{$anaType}{$explorAnaID}];
+				}
+				push @expTree,\@typeTree;
+			}
+		}
 
 		@{$treeOptions{'SELECTION'}}=($selBranchID)? split(':',$selBranchID) : undef;
 
@@ -820,7 +840,7 @@ setPopup();
 <HEAD>
 <TITLE>Navigate Project Tree</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
-<SCRIPT LANGUAGE="JavaScript">
+<SCRIPT type="text/javascript">
 |;
 		&promsMod::popupInfo();
 		&promsMod::writeJsTreeFunctions(\@expTree,\%treeOptions);
@@ -842,7 +862,7 @@ function actionOnSelect(tabIndex) {
 }
 </SCRIPT>
 </HEAD>
-<BODY style="margin:0px;" onload="if (top.itemTreeStatus) {applyTreeStatus(top.itemTreeStatus)} else {click2OpenClose(0,'open',1)};document.getElementById(getSelectedBranchID()).scrollIntoView(0);">
+<BODY style="margin:0px;" onload="if (top.itemTreeStatus) {applyTreeStatus(top.itemTreeStatus)} else {expandCollapseBranch('item','block')};document.getElementById(getSelectedBranchID()).scrollIntoView(0);">
 <DIV class="navigation navBorder2">
 |;
 		####>View selection menu<####
@@ -1021,7 +1041,7 @@ elsif ($action eq 'project') {
 <HEAD>
 <TITLE>Navigate Biosample Tree</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
-<SCRIPT LANGUAGE="JavaScript">
+<SCRIPT type="text/javascript">
 |;
 	&promsMod::popupInfo();
 	&promsMod::writeJsTreeFunctions(\@bioSampTree,\%treeOptions);
@@ -1072,7 +1092,7 @@ print qq
 sub printExperimentViewSelection {
 	my ($expView)=@_;
 	print qq
-|<SCRIPT LANGUAGE="JavaScript">
+|<SCRIPT type="text/javascript">
 function updateView(newView) {
 	top.itemTreeStatus=''; // reset item tree
 	top.experimentView=newView;
@@ -1098,7 +1118,7 @@ function updateView(newView) {
 sub printSampleViewSelection {
 	my ($dbh,$sampleView) = @_;
 	print qq
-|<SCRIPT LANGUAGE="JavaScript">
+|<SCRIPT type="text/javascript">
 function updateBioSampleView(newView) {
 	top.itemTreeStatus='';
 	parent.bioSampleView=newView;
@@ -1220,6 +1240,12 @@ sub createPeptideQuantificationBranches {
 }
 
 ####>Revision history<####
+# 1.7.10 [ENHANCEMENT] Displays full Exploratory analyses tree by default (PP 07/06/21)
+# 1.7.9 [FEATURE] Do not display hydrophobicity quantifications in quantif tree (VL 15/02/21)
+# 1.7.8.1 [FEATURE] Groups Exploratory analyses by type in navigation tree (PP 27/04/21)
+# 1.7.8 [FEATURE] Add GSEA branch in functional analysis tree (VL 05/11/20)
+# 1.7.7 [CHANGE] Display information on locked experiments for massists/bioinfo (VS 15/07/20)
+# 1.7.6 [CHANGE] Changed quantification hierarchy icon paths (VS 21/02/20)
 # 1.7.5 [FEATURE] Number of biological samples is dislayed for each parent branch (PP 19/12/19)
 # 1.7.4 [FEATURE] Handles quantification visibility (PP 27/09/19)
 # 1.7.3 [FEATURE] Different display for multi-ana peptide quantifications in navigation tree (PP 28/08/19)

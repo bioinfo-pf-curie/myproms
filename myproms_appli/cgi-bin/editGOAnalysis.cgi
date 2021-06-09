@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# editGOAnalysis.cgi    1.1.5                                                  #
+# editGOAnalysis.cgi    1.1.7                                                  #
 # Authors: P. Poullet, G. Arras & F. Yvon (Institut Curie)                     #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -183,7 +183,7 @@ if($action eq 'summary'){
         $paramValStrg .= "&bull;log2-ratios thresholds: " . join(', ',split(',',$parameters{logRatios})) . "<BR>\n";
     }
     if (defined $parameters{ratioPvalue}) {
-        $paramValStrg .= "&bull;Only keep ratios with a p-value &le; $parameters{ratioPvalue}<BR>\n";
+        $paramValStrg .= "&bull;Only keep ratios with a (adj.) p-value &le; $parameters{ratioPvalue}<BR>\n";
     }
     $paramValStrg =~ s/<BR>\n*\Z//;
     push @entries, ['Parameters', $paramValStrg];
@@ -195,13 +195,18 @@ if($action eq 'summary'){
     push @entries, ['Annotation File', "$goaName (v. $goaVersionDate)"];
     # Protein set #
     if ($type eq 'heatmap') {
-        my ($quantifID,$ratioPos,$quantifModID) = $dbh->selectrow_array("SELECT Q.ID_QUANTIFICATION,RATIO,ID_MODIFICATION FROM GOANA_QUANTIFICATION G,QUANTIFICATION Q WHERE G.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND ID_GOANALYSIS=$goAnaID");
+        my ($quantifID,$ratioPos,$quantifModID,$multiModifStrg) = $dbh->selectrow_array("SELECT Q.ID_QUANTIFICATION,RATIO,Q.ID_MODIFICATION,GROUP_CONCAT(MQ.ID_MODIFICATION ORDER BY MQ.MODIF_RANK SEPARATOR ',')
+                                                                        FROM QUANTIFICATION Q
+                                                                        LEFT JOIN MULTIMODIF_QUANTIFICATION MQ ON Q.ID_QUANTIFICATION=MQ.ID_QUANTIFICATION
+                                                                        INNER JOIN GOANA_QUANTIFICATION G ON G.ID_QUANTIFICATION=Q.ID_QUANTIFICATION
+                                                                        WHERE ID_GOANALYSIS=$goAnaID GROUP BY Q.ID_QUANTIFICATION");
         my %quantifAllNames=&promsQuantif::getDistinctQuantifNames($dbh,$quantifID.'_'.$ratioPos);
         my $modifStrg='';
         if ($quantifModID) {
             my ($modifName)=$dbh->selectrow_array("SELECT PSI_MS_NAME FROM MODIFICATION WHERE ID_MODIFICATION=$quantifModID");
-            $modifStrg=' ['.$modifName.'-forms]';
+            $modifStrg=' ['.$modifName.'-sites]';
         }
+        elsif ($multiModifStrg) {$modifStrg=' [Multi-sites]';}
         push @entries, ['Analyzed set', 'Quantification '.$quantifAllNames{'FULL'}{$quantifID.'_'.$ratioPos}.$modifStrg];
     }
     else {
@@ -250,8 +255,8 @@ if($action eq 'summary'){
         my $warningString = "&nbsp;<INPUT id='showWarnsButton' type='button' class=\"font11\" value=\"Show\" onclick=\"getWarnings(this);\"><DIV id='warnings' style='max-height:400px;overflow:auto;display:none'></DIV>";
         push @entries, ['Warnings', $warningString];
     }
-    my ($userName)=$dbh->selectrow_array("SELECT USER_NAME FROM USER_LIST WHERE ID_USER='$userID'") || $updateUser;
-    push @entries, ['Last changed',"By $userName on ".&promsMod::formatDate($updateDate)];
+    my ($userName)=$dbh->selectrow_array("SELECT USER_NAME FROM USER_LIST WHERE ID_USER='$updateUser'") || $updateUser;
+    push @entries, ['Last changed',"On ".&promsMod::formatDate($updateDate)." by $userName"];
 
     $dbh->disconnect;
 
@@ -427,6 +432,8 @@ sub getWarnings{
 }
 
 ####>Revision history<####
+# 1.1.7 [BUGFIX] Uses proper update user name in 'Last changed' field (PP 25/03/20)
+# 1.1.6 [ENHANCEMENT] Made display compatible with multi-PTM GO quantifications (PP 26/02/20)
 # 1.1.5 Explicit display of PTM if a PTM-quantif was used for a quanti-GO (PP 31/08/18)
 # 1.1.4 Minor bug fixes and changes to handle parameters from PTM quantifications (PP 26/07/18)
 # 1.1.3 Added number proteins used in Quanti-GO (PP 09/02/18)

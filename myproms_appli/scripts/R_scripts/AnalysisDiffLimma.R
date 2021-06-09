@@ -1,5 +1,5 @@
 ################################################################################
-# AnalysisDiffLimma.R         4.5.2                                            #
+# AnalysisDiffLimma.R         4.5.5                                            #
 # Authors: Matthieu Lhotellier & Alexandre Sta & Isabel Brito (Institut Curie) #
 # Contact: myproms@curie.fr                                                    #
 # Statiscal Methods for protein quantification by mass spectrometry            #
@@ -48,7 +48,7 @@
   sink(file.path("results","sessionInfo.txt"))
   print(sessionInfo())
   sink()
-
+  
 
 #### 2.   LOAD DATA                   ############
 ##################################################
@@ -60,7 +60,7 @@
   # data2 = data %>% filter(Protein_ID%in% unique(data$Protein_ID)[sample(1:n,nprot)] ) # DEBUG
   # data=data2 # DEBUG
   # data = data2 %>% full_join( (data %>% filter(Protein_ID=="mySelected protein")))
-
+  
   data = .reshapeData(datal) #%>% .recoverReplicate()
   historyData = list(rawData = data)
 
@@ -84,7 +84,7 @@
     dataRef = NULL
   }  
 
-   
+  
 #### 3.   PREPROCESS DATA             ############
 ##################################################
   
@@ -113,7 +113,7 @@
     rm("tmp")
     historyData$dataNorm = data
 
-        
+    
     #### 5.A   NORMALIZATION BY PROT       ###########
     ##################################################
     
@@ -162,26 +162,26 @@
   	rm("tmp")
   	historyData$dataWithoutOutlier = data
 
-  
+  	
   	#### 7.A   QUANTIFICATION              ############
   	##################################################
-    
+  
   	if (nrow(   datal)!=sum(   datal$Protein_Validity)) {
-  	  tmp1 = datal %>% rename(proteinId =Protein_ID, 
-  	                          peptide   =Peptide, 
-  	                          experiment=Experiment,
-  	                          replicate =Replicate,
-  	                          repTech   =Technical_Replicate,
-  	                          sample    =Sample,
-  	                          quantifSet=Quantif_Set, 
-  	                          peptideId =Peptide_IDs,
-  	                          intensity =Value )
+  	  tmp1 = datal %>% dplyr::mutate(proteinId =Protein_ID, 
+  	                                 peptide   =Peptide, 
+  	                                 experiment=Experiment,
+  	                                 replicate =Replicate,
+  	                                 repTech   =Technical_Replicate,
+  	                                 sample    =Sample,
+  	                                 quantifSet=Quantif_Set, 
+  	                                 peptideId =as.character(Peptide_IDs),
+  	                                 intensity =Value )
   	  tmp2 =  tmp1 %>% select(peptideId,validity=Protein_Validity)
   	  tmp  =  inner_join(historyData$dataWithoutOutlier, tmp2, by = "peptideId")  %>% 
   	     mutate(validity=factor(validity), intensity=M) %>% 
   	     filter(validity==1)
   	  
-  	  if (nrows(tmp)!=0) {
+  	  if (nrow(tmp)!=0) {
   	  data <- .analysisDiff(tmp,parameters)
   	  historyData$dataQuanti = data 
   	  } else {print("All Protein Validity are zeros")}
@@ -200,7 +200,7 @@
   	#### Normalisation  ####
   	tmp = .normalizeData(data,parameters,normProtein)
   	data <-tmp$data
- 	bias = tmp$bias
+ 	  bias = tmp$bias
   	rm("tmp")
   	historyData$dataNorm = data
   
@@ -211,10 +211,10 @@
  	#  unique %>% mutate(out="nonOut") %>% spread(sample,out) %>% filter(is.na(State1)|is.na(State2))# DEBUG
  	# break()
   	tmp = .myFilterOutlier(data,parameters)
- 	data <-tmp$data
- 	outlier = tmp$outlier
- 	rm("tmp")
- 	historyData$dataWithoutOutlier = data
+ 	  data <-tmp$data
+ 	  outlier = tmp$outlier
+ 	  rm("tmp")
+ 	  historyData$dataWithoutOutlier = data
   
 	}
 	#-------------------------------------------------
@@ -309,7 +309,7 @@
     write.table(resultsDAProt,paste("results/ResultsDAProt.txt"),row.names = FALSE,col.names = TRUE,sep="\t",quote=FALSE)
   }
 
-
+  
 #### 8.4. #### Correlation matrix ####
 ###############  
   # Differents cases of designs
@@ -370,13 +370,93 @@
   #   tmpNorm = historyData$dataWithoutOutlier %>% .MAToIntensity
   # }else{ }
 
+  #################################################################################
+  divisors <- function(x){
+    #  Vector of numberes to test against
+    y <- seq_len(x)
+    #  Modulo division. If remainder is 0 that number is a divisor of x so return it
+    y[ x%%y == 0 ]
+  }  
+  
+  boxplots = function(a,params,graphname){
+    locate <- function(x, targets) {
+    results <- lapply(targets, function(target) which(x == target))
+    results
+    }
+    nbbxfixe=30
+    if( !( is.null(parameters$nb.boxplots)  ) ){ 
+      nbbx=as.numeric(parameters$nb.boxplots)
+    }else{ nbbx= nbbxfixe }
+    print(nbbx)
+    pnbgp=divisors(dim(table(a$sample))*dim(table(a$experiment)))
+    bnbgp=dim(table(a$run))/pnbgp
+    mnbgp=pnbgp[which(abs(bnbgp-(nbbx+1)) ==min(abs(bnbgp-(nbbx+1))))]
+    
+    aux1 =  unlist(   strsplit(names(table(a$run)),".r"))           
+    aux2 =  aux1 [seq(1, length( aux1    )  ,2    )]                
+    aux3 =  unique(aux2)                                             
+    aux4 =  split(aux3, rep(c(1:mnbgp),each=length(aux3)/mnbgp) )   
+    aux5 =  paste(a$experiment,a$sample,sep=".")                     
+    aux6 =  lapply(aux4, function(x){  unlist(locate(aux5,x)) } )
+    
+    for (i in 1:mnbgp) { print(i)  
+      ax = a[aux6[[i]],]
+      ax %>% 
+        ggplot(aes(run,intensity,color=sample)) + 
+        geom_boxplot() + 
+        labs(x = "Sample" , y = "Log2 intensity") + 
+        scale_y_continuous(limits=range(a$intensity)) +
+        theme(axis.text.x=element_text(angle = 90, vjust = 0.5))
+      if (mnbgp==1) {
+        ggsave(paste0(graphname,".jpeg"),width=10,height=10)
+      }else{
+      ggsave(paste0(graphname,i,".jpeg"),width=10,height=10)
+      }  
+    }  # for (i in 
+  } 
+  
+  boxplots_validity = function(a,params,graphname){
+    locate <- function(x, targets) {
+    results <- lapply(targets, function(target) which(x == target))
+    results
+    }
+    nbbxfixe=30
+    if( !( is.null(parameters$nb.boxplots)  ) ){ 
+      nbbx=as.numeric(parameters$nb.boxplots)
+    }else{ nbbx= nbbxfixe }
+    print(nbbx)
+    pnbgp=divisors(dim(table(a$sample))*dim(table(a$experiment)))
+    bnbgp=dim(table(a$run))/pnbgp
+    mnbgp=pnbgp[which(abs(bnbgp-(nbbx+1)) ==min(abs(bnbgp-(nbbx+1))))]
+    
+    aux1 =  unlist(   strsplit(names(table(a$run)),".r"))  
+    aux2 =  aux1 [seq(1, length( aux1    )  ,2    )]
+    aux3 =  unique(aux2)
+    aux4 =  split(aux3, rep(c(1:mnbgp),each=length(aux3)/mnbgp) )  
+    aux5 =  paste(a$experiment,a$sample,sep=".")
+    aux6 =  lapply(aux4, function(x){  unlist(locate(aux5,x)) } )
+    
+    for (i in 1:mnbgp) { print(i)  
+      ax = a[aux6[[i]],]
+      ax %>% 
+        ggplot(aes(run,intensity,color=sample, fill = validity)) + 
+        geom_boxplot() + 
+        scale_fill_brewer(palette="Dark2") +
+        labs(x = "Sample" , y = "Log2 intensity") + 
+        scale_y_continuous(limits=range(a$intensity)) +
+        theme(axis.text.x=element_text(angle = 90, vjust = 0.5))
+      ggsave(paste0(graphname,i,".jpeg"),width=10,height=10)
+    }  # for (i in 
+  } 
+  #################################################################################  
+  
     tmpNonNorm    = historyData$dataRatio          %>% dplyr::rename(intensity=M)
     tmpNorm       = historyData$dataWithoutOutlier %>% dplyr::rename(intensity=M)
  
     tmpDATNonNorm = historyData$dataRatio          %>% dplyr::rename(intensity=M) 
     tmpDATNorm    = historyData$dataNorm           %>% dplyr::rename(intensity=M) 
     tmpDATfin     = historyData$dataWithoutOutlier %>% dplyr::rename(intensity=M)
-
+   
   # Before normalization
    tmp = tmpNonNorm %>% select(proteinId,peptide,experiment,replicate,repTech,sample,intensity)
    tmp %>% unite(run,experiment,sample,replicate,sep=".",remove=FALSE) %>% 
@@ -388,13 +468,17 @@
    tmp = tmpDATNonNorm %>% select(proteinId,peptide,experiment,replicate,repTech,sample,intensity)
    a = tmp %>% unite(run,experiment,sample,replicate,sep=".",remove=FALSE)
    a$run = factor( a$run , levels= unique(a$run)[.numOrder(unique(a$run))] ) 
-   a %>% 
-   ggplot(aes(run,intensity,color=sample)) + 
-          geom_boxplot() + 
-          labs(x = "Sample" , y = "Log2 intensity") + 
-          theme(axis.text.x=element_text(angle = 90, vjust = 0.5))
-   ggsave("results/graph/Beforeallpeptide.jpeg",width=10,height=10)
-
+   
+   graphname = "results/graph/Beforeallpeptide"
+   boxplots(a,params,graphname)
+   #-------------------------------------------
+   #a %>% 
+   #ggplot(aes(run,intensity,color=sample)) + 
+   #       geom_boxplot() + 
+   #       labs(x = "Sample" , y = "Log2 intensity") + 
+   #       theme(axis.text.x=element_text(angle = 90, vjust = 0.5))
+   #ggsave("results/graph/Beforeallpeptide.jpeg",width=10,height=10)
+   
   # After normalization
   tmp = tmpNorm %>% select(proteinId,peptide,experiment,replicate,repTech,sample,intensity)
   tmp %>% unite(run,experiment,sample,replicate,sep=".",remove=FALSE) %>% 
@@ -406,23 +490,32 @@
   tmp = tmpDATNorm %>% select(proteinId,peptide,experiment,replicate,repTech,sample,intensity)
   a = tmp %>% unite(run,experiment,sample,replicate,sep=".",remove=FALSE)
   a$run = factor( a$run , levels= unique(a$run)[.numOrder(unique(a$run))] ) 
-  a %>% 
-  ggplot(aes(run,intensity,color=sample)) + 
-         geom_boxplot() + 
-         labs(x = "Sample" , y = "Log2 intensity") + 
-         theme(axis.text.x=element_text(angle = 90, vjust = 0.5))
-  ggsave("results/graph/Afternormallpeptide.jpeg",width=10,height=10)
+  
+  graphname = "results/graph/Afternormallpeptide"
+  boxplots(a,params,graphname)
+  #-------------------------------------------
+  #a %>% 
+  #ggplot(aes(run,intensity,color=sample)) + 
+  #       geom_boxplot() + 
+  #       labs(x = "Sample" , y = "Log2 intensity") + 
+  #       theme(axis.text.x=element_text(angle = 90, vjust = 0.5))
+  #ggsave("results/graph/Afternormallpeptide.jpeg",width=10,height=10)
 
   tmp = tmpDATfin %>% select(proteinId,peptide,experiment,replicate,repTech,sample,intensity)
   a = tmp %>% unite(run,experiment,sample,replicate,sep=".",remove=FALSE)
   a$run = factor( a$run , levels= unique(a$run)[.numOrder(unique(a$run))] ) 
-  a %>% 
-  ggplot(aes(run,intensity,color=sample)) + 
-         geom_boxplot() + 
-         labs(x = "Sample" , y = "Log2 intensity") + 
-         theme(axis.text.x=element_text(angle = 90, vjust = 0.5))
-  ggsave("results/graph/Afterallpeptide.jpeg",width=10,height=10)
+  
+  graphname = "results/graph/Afterallpeptide"
+  boxplots(a,params,graphname)
+  #-------------------------------------------
+  #a %>% 
+  #ggplot(aes(run,intensity,color=sample)) + 
+  #       geom_boxplot() + 
+  #       labs(x = "Sample" , y = "Log2 intensity") + 
+  #       theme(axis.text.x=element_text(angle = 90, vjust = 0.5))
+  #ggsave("results/graph/Afterallpeptide.jpeg",width=10,height=10)
 
+  
   if (is.null(parameters$normalization.only)){ 
   #------------------------------------------------- 
     if (!is.null(dataRef)) {
@@ -432,78 +525,91 @@
      tmp = tmpREFNonNorm %>% select(proteinId,peptide,experiment,replicate,repTech,sample,intensity)
      a = tmp %>% unite(run,experiment,sample,replicate,sep=".",remove=FALSE)
      a$run = factor( a$run , levels= unique(a$run)[.numOrder(unique(a$run))] ) 
-     a %>% 
-     ggplot(aes(run,intensity,color=sample)) + 
-            geom_boxplot() + 
-            labs(x = "Sample" , y = "Log2 intensity") + 
-            theme(axis.text.x=element_text(angle = 90, vjust = 0.5))
-     ggsave("results/graph/BeforeREFallpeptide.jpeg",width=10,height=10)
+     
+     graphname = "results/graph/BeforeREFallpeptide"
+     boxplots(a,params,graphname)
+     #-------------------------------------------
+     #a %>% 
+     #ggplot(aes(run,intensity,color=sample)) + 
+     #        geom_boxplot() + 
+     #        labs(x = "Sample" , y = "Log2 intensity") + 
+     #       theme(axis.text.x=element_text(angle = 90, vjust = 0.5))
+     #ggsave("results/graph/BeforeREFallpeptide.jpeg",width=10,height=10)
     
      tmp = tmpREFNorm %>% select(proteinId,peptide,experiment,replicate,repTech,sample,intensity)
      a = tmp %>% unite(run,experiment,sample,replicate,sep=".",remove=FALSE)
      a$run = factor( a$run , levels= unique(a$run)[.numOrder(unique(a$run))] ) 
-     a %>% 
-     ggplot(aes(run,intensity,color=sample)) + 
-            geom_boxplot() + 
-            labs(x = "Sample" , y = "Log2 intensity") + 
-            theme(axis.text.x=element_text(angle = 90, vjust = 0.5))
-     ggsave("results/graph/AfternormREFallpeptide.jpeg",width=10,height=10)
+     
+     graphname = "results/graph/AfternormREFallpeptide"
+     boxplots(a,params,graphname)
+     #-------------------------------------------
+     #a %>% 
+     #ggplot(aes(run,intensity,color=sample)) + 
+     #        geom_boxplot() + 
+     #        labs(x = "Sample" , y = "Log2 intensity") + 
+     #        theme(axis.text.x=element_text(angle = 90, vjust = 0.5))
+     #ggsave("results/graph/AfternormREFallpeptide.jpeg",width=10,height=10)
     }
   } 
-
-
+  
   if (nrow(   datal)!=sum(   datal$Protein_Validity)) {
   #------------------------------------------------- 
-  
-    tmp1 = datal %>% rename(proteinId =Protein_ID, 
-                            peptide   =Peptide, 
-                            experiment=Experiment,
-                            replicate =Replicate,
-                            repTech   =Technical_Replicate,
-                            sample    =Sample,
-                            quantifSet=Quantif_Set, 
-                            peptideId =Peptide_IDs,
-                            intensity =Value )
+    tmp1 = datal %>% dplyr::mutate(proteinId =Protein_ID, 
+                                   peptide   =Peptide, 
+                                   experiment=Experiment,
+                                   replicate =Replicate,
+                                   repTech   =Technical_Replicate,
+                                   sample    =Sample,
+                                   quantifSet=Quantif_Set, 
+                                   peptideId =as.character(Peptide_IDs),
+                                   intensity =Value )
     tmp2 =  tmp1 %>% select(peptideId,validity=Protein_Validity)
-    
-    
     tmp  =  inner_join(historyData$dataRatio, tmp2, by = "peptideId")  %>% mutate(validity=factor(validity), intensity=M)
     a    = tmp %>% unite(run,experiment,sample,replicate,sep=".",remove=FALSE)
     a$run = factor( a$run , levels= unique(a$run)[.numOrder(unique(a$run))] )  
     
-    a %>% 
-      ggplot(aes(run,intensity,color=sample, fill = validity )) + 
-      geom_boxplot() + 
-      scale_fill_brewer(palette="Dark2") +
-      labs(x = "Sample" , y = "Log2 intensity") + 
-      theme(axis.text.x=element_text(angle = 90, vjust = 0.5)) 
-    ggsave("results/graph/Beforeallpeptide_validity.jpeg",width=10,height=10)
+    graphname = "results/graph/Beforeallpeptide_validity"
+    boxplots_validity(a,params,graphname)
+    #-------------------------------------------
+    #a %>% 
+    #  ggplot(aes(run,intensity,color=sample, fill = validity )) + 
+    #  geom_boxplot() + 
+    #  scale_fill_brewer(palette="Dark2") +
+    #  labs(x = "Sample" , y = "Log2 intensity") + 
+    #  theme(axis.text.x=element_text(angle = 90, vjust = 0.5)) 
+    #ggsave("results/graph/Beforeallpeptide_validity.jpeg",width=10,height=10)
     
     
     tmp  =  inner_join(historyData$dataWithoutOutlier, tmp2, by = "peptideId")  %>% mutate(validity=factor(validity), intensity=M)
     a    = tmp %>% unite(run,experiment,sample,replicate,sep=".",remove=FALSE)
     a$run = factor( a$run , levels= unique(a$run)[.numOrder(unique(a$run))] )  
     
-    a %>% 
-      ggplot(aes(run,intensity,color=sample, fill = validity )) + 
-      geom_boxplot() + 
-      scale_fill_brewer(palette="Dark2") +
-      labs(x = "Sample" , y = "Log2 intensity") + 
-      theme(axis.text.x=element_text(angle = 90, vjust = 0.5)) 
-    ggsave("results/graph/Afterallpeptide_validity.jpeg",width=10,height=10)
+    graphname = "results/graph/Afterallpeptide_validity"
+    boxplots_validity(a,params,graphname)
+    #-------------------------------------------
+    #a %>% 
+    #  ggplot(aes(run,intensity,color=sample, fill = validity )) + 
+    #  geom_boxplot() + 
+    # scale_fill_brewer(palette="Dark2") +
+    #  labs(x = "Sample" , y = "Log2 intensity") + 
+    #  theme(axis.text.x=element_text(angle = 90, vjust = 0.5)) 
+    #ggsave("results/graph/Afterallpeptide_validity.jpeg",width=10,height=10)
     
     
     tmp  =  inner_join(historyData$dataNorm, tmp2, by = "peptideId")  %>% mutate(validity=factor(validity), intensity=M)
     a    = tmp %>% unite(run,experiment,sample,replicate,sep=".",remove=FALSE)
     a$run = factor( a$run , levels= unique(a$run)[.numOrder(unique(a$run))] )  
     
-    a %>% 
-      ggplot(aes(run,intensity,color=sample, fill = validity )) + 
-      geom_boxplot() + 
-      scale_fill_brewer(palette="Dark2") +
-      labs(x = "Sample" , y = "Log2 intensity") + 
-      theme(axis.text.x=element_text(angle = 90, vjust = 0.5)) 
-    ggsave("results/graph/Afternormallpeptide_validity.jpeg",width=10,height=10)
+    graphname = "results/graph/Afternormallpeptide_validity"
+    boxplots_validity(a,params,graphname)
+    #-------------------------------------------
+    #a %>% 
+    #  ggplot(aes(run,intensity,color=sample, fill = validity )) + 
+    #  geom_boxplot() + 
+    #  scale_fill_brewer(palette="Dark2") +
+    #  labs(x = "Sample" , y = "Log2 intensity") + 
+    # theme(axis.text.x=element_text(angle = 90, vjust = 0.5)) 
+    #ggsave("results/graph/Afternormallpeptide_validity.jpeg",width=10,height=10)
   }
   
 
@@ -567,7 +673,10 @@
 print("End of the analysis")
 
 ####>Revision history<####
-# 4.5.2 Distribution the the fold change is not available, lorsque normalization.only=yes and normalization.method becomes "median.none" in new_params.txt file istead of "none.none"  (IB 30/01/2020) 
+# 4.5.5 the nb of graphics is corrected, when the nb of states is high and several graphics are displayed,  (IB 14/09/2020)  
+# 4.5.4 bugs on boxplots of peptides when several are displayed and error incompatibility of peptides columns type are corrected (IB 25/08/2020)   
+# 4.5.3 If the nb of states is high, several boxplots are displayed (IB 01/05/2020)  
+# 4.5.2 Distribution the the fold change is not available, when normalization.only=yes and normalization.method becomes "median.none" in new_params.txt file istead of "none.none"  (IB 30/01/2020) 
 # 4.5.1 If Protein_Validity equal to zero, then new graphs Beforeallpeptide_validity.jpg, Afternormallpeptide_validity.jpg, Afterallpeptide_validity.jpg and removed for quantification; distriblog2FC_....jpg allowed when normalization.only is yes (IB 06/01/2020)   
 # 4.5.0 this script is able to read a new parameter in the file "param_char.txt" called normalization.only; if it existes (normalization.only	yes), then only the technical normalization is performed (IB 31/12/2019) 
 # 4.4.2 if the (technical) normalisation of dataref fails, parameters are changent to none.none and a file named "new_parameters.txt" is created (IB 17/10/2019)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# listRanks.cgi             2.3.6                                              #
+# listRanks.cgi             2.3.11                                             #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Lists the peptides from a protein or query being validated                   #
@@ -58,6 +58,7 @@ my $userID=$ENV{'REMOTE_USER'};
 my $allRank=10;
 my $DELTA_MASS=0.25; # delta mass allowed when matching a peptide in multiple analyses (Mexp => for charge = +1)
 my $DELTA_RANGE=2*$DELTA_MASS;
+my %convertPos2Text=('-'=>'Protein N-term','='=>'Any N-term','+'=>'Protein C-term','*'=>'Any C-term');
 
 ##########################
 ####>Connecting to DB<####
@@ -250,24 +251,39 @@ print qq
 ################################################
 ####>Fetching data for query+peptide(s) set<####
 ################################################
-my (%queryNum,%queryStatus,%queryCharge,%pepInfo,%massExp,%massObs,%elutionTime);
+my (%queryNum,%queryStatus,%queryCharge,%queryPtmProb,%pepInfo,%massExp,%massObs,%elutionTime,%varModNames);
 my %rankPos; # idem as %pepList but keys are always queryIDs
 
 ##>Activating peptide?<##
 my ($actQID,$actQNum,$actRank)=($activatedPeptide)? split(/_/,$activatedPeptide) : (0,0,0);
 
-my $dbQuery='SELECT ID_QUERY,QUERY_NUM,VALID_STATUS,MASS_DATA,CHARGE,ELUTION_TIME';
+my $dbQuery='SELECT QV.ID_QUERY,QUERY_NUM,VALID_STATUS,MASS_DATA,CHARGE,ELUTION_TIME,GROUP_CONCAT(CONCAT(QM.ID_MODIFICATION, "=", SUBSTRING_INDEX(QM.REF_POS_STRING, "##", -1)) SEPARATOR "&&")';
 foreach my $rank (1..$maxRankDisplay) {$dbQuery.=",INFO_PEP$rank";} # rank starts at 1 not 0 anymore!
-$dbQuery.=' FROM QUERY_VALIDATION WHERE ';
-if ($item eq 'query') {$dbQuery.='ID_QUERY=?';}
+$dbQuery.=' FROM QUERY_VALIDATION QV LEFT JOIN QUERY_MODIFICATION QM ON QM.ID_QUERY=QV.ID_QUERY WHERE ';
+if ($item eq 'query') {$dbQuery.='QV.ID_QUERY=?';}
 else {$dbQuery.="QUERY_NUM=? AND ID_ANALYSIS=$analysisID";}
+$dbQuery.=" GROUP BY QV.ID_QUERY";
 my $sthSelQ=$dbh->prepare("$dbQuery");
 foreach my $query (keys %pepList) { # qID or qNUM
 	$sthSelQ->execute($query);
-	my ($queryID,$qNum,$valid,$massData,$charge,$elutTime,@pepInfoList)=$sthSelQ->fetchrow_array;
+	my ($queryID,$qNum,$valid,$massData,$charge,$elutTime,$ptmProb,@pepInfoList)=$sthSelQ->fetchrow_array;
 	$queryNum{$queryID}=$qNum;
 	$queryStatus{$queryID}=$valid;
 	$queryCharge{$queryID}=$charge;
+	
+	if ($ptmProb && $ptmProb =~ /PRB_/) { # non-PRS position probability
+		$ptmProb =~ s/PRB_[^=]+=//;
+		foreach my $modifInfos (split(/\&\&/, $ptmProb)) {
+			my ($modifID, $ptms) = split(/=/, $modifInfos);
+			next unless($modifID && $ptms);
+			if(!defined($varModNames{$modifID})) { # For PTM not retrieved from promsMod::getVariableModifications (i.e. not valid dispcode and dispcolor)
+				my ($psiMsName,$interimName,$altNames)=$dbh->selectrow_array("SELECT PSI_MS_NAME,INTERIM_NAME,SYNONYMES FROM MODIFICATION WHERE ID_MODIFICATION=$modifID");
+				my $name=($psiMsName)?$psiMsName:($interimName)?$interimName:($altNames)?$altNames:'';
+				$varModNames{$modifID}=$name;
+			}
+			$queryPtmProb{$queryID}{$modifID} = $ptms;
+		}
+	}
 	($massExp{$queryID})=($massData=~/EXP=(\d+\.*\d*)/);
 	($massObs{$queryID})=($massData=~/OBS=(\d+\.*\d*)/);
 	if ($elutTime) {
@@ -591,7 +607,7 @@ my @displayOrder;
 my $usedMsType=($msType eq 'PMF')? 'PMF' : 'MIS';
 foreach my $topPep (sort{&sortPeptides("$usedMsType:$rankSort")} keys %scoreHierarchy) { # user-selected order
 	push @displayOrder,$topPep;
-	foreach my $lowPep (sort{&sortPeptides("$usedMsType:default")} @{$scoreHierarchy{$topPep}}) { # score order
+	foreach my $lowPep (sort{&sortPeptides("$usedMsType:$rankSort")} @{$scoreHierarchy{$topPep}}) { # score order
 		push @displayOrder,$lowPep;
 	}
 }
@@ -918,7 +934,7 @@ print qq
 	<TH width=30><IMG class="button" src="$promsPath{images}/bad.gif" onclick="checkAllPeptides(document.rankForm,'reject')" onmouseover="popup('Click to <B>reject</B> all peptides.')" onmouseout="popout()"></TH>
 |;
 my %sortColor;
-foreach my $sortMode ('query','score','delta','ppm','sequence') {
+foreach my $sortMode ('query','score','delta','ppm','charge','sequence') {
 	$sortColor{$sortMode}=($sortMode eq $rankSort)? '#0000BB' : 'black';
 }
 if ($item ne 'query') {
@@ -954,17 +970,19 @@ my $checkMultiAna=($multiAna)? 'checked' : '';
 if ($item eq 'query') {
 	print "\t<TH width=50>Prot.</TH>\n";
 	print "\t<TH width=80><INPUT type=\"checkbox\" name=\"multiAna\" value=\"1\" onclick=\"multiAnaScan(this.checked)\" $checkMultiAna/>&nbsp;<ACRONYM onmouseover=\"popup('Click on numbers to list other analyses containing the <B>same peptide</B>.')\" onmouseout=\"popout()\"><I>Ana.</I></ACRONYM></TH>\n";
+	print "\t<TH width=70><A href=\"javascript:selectSort('charge')\" style=\"font-style:italic;color:$sortColor{charge}\" onmouseover=\"popup('Click to sort peptides by <B>charge</B>.')\" onmouseout=\"popout()\">Charge</A></TH>\n";
 	print "\t<TH align=left>&nbsp&nbsp;"; # width=470
-	print "<A href=\"javascript:selectSort('sequence')\" style=\"font-style:italic;color:$sortColor{sequence}\" onmouseover=\"popup('Click to sort peptides by <B>sequence</B>.')\" onmouseout=\"popout()\">Peptide</A></TH>\n";
+	print "<A href=\"javascript:selectSort('sequence')\" style=\"font-style:italic;color:$sortColor{sequence}\" onmouseover=\"popup('Click to sort peptides by <B>sequence</B>.')\" onmouseout=\"popout()\">Peptide sequence</A></TH>\n";
 	print "</TR></TABLE>\n";
 }
 else { # protein, myList
 	print "\t<TH width=50><A id=\"match_list\" href=\"javascript:matchPattern('match_list')\" onmouseover=\"popup('Click to view proteins with similar match patterns than <B>$identifier</B>.')\" onmouseout=\"popout()\"><I>Prot.</I></A></TH>\n";
 	print "\t<TH width=80><INPUT type=\"checkbox\" name=\"multiAna\" value=\"1\" onclick=\"multiAnaScan(this.checked)\" $checkMultiAna/>&nbsp;<ACRONYM onmouseover=\"popup('Click on numbers to list other analyses containing the <B>same peptide</B>.')\" onmouseout=\"popout()\"><I>Ana.</I></ACRONYM></TH>\n";
+	print "\t<TH width=70><A href=\"javascript:selectSort('charge')\" style=\"font-style:italic;color:$sortColor{charge}\" onmouseover=\"popup('Click to sort peptides by <B>charge</B>.')\" onmouseout=\"popout()\">Charge</A></TH>\n";
 	print "\t<TH align=left valign=bottom>&nbsp;"; # width=470
 	print "<IMG name=\"plusMinus\" src=\"$promsPath{images}/plus.gif\" onclick=\"javascript:setRowVisibility()\" onmouseover=\"popup('Click to show/hide <B>lower scoring</B> interpretations.')\" onmouseout=\"popout()\" width=16 height=22 align=top>" if $noSelect;
 
-	print "<A href=\"javascript:selectSort('sequence')\" style=\"font-style:italic;color:$sortColor{sequence}\" onmouseover=\"popup('Click to sort peptides by <B>sequence</B>.')\" onmouseout=\"popout()\">Peptide</A> with PTMs:<SELECT name=\"ptmFilter\" class=\"title3\" onchange=\"selectVarModView(this.value)\">\n";
+	print "<A href=\"javascript:selectSort('sequence')\" style=\"font-style:italic;color:$sortColor{sequence}\" onmouseover=\"popup('Click to sort peptides by <B>sequence</B>.')\" onmouseout=\"popout()\">Peptide sequence</A> with PTMs:<SELECT name=\"ptmFilter\" class=\"title3\" onchange=\"selectVarModView(this.value)\">\n";
 	foreach my $varMod (@modifications) {
 		my $selMod=($varMod eq $oldPtmFilter)? 'selected' : '';
 		print "<OPTION value=\"$varMod\" $selMod>$varMod</OPTION>";
@@ -990,6 +1008,7 @@ foreach my $pep (@displayOrder) {
 	my ($queryID,$p)=split(/:/,$pep);
 	my $rank=$rankPos{$queryID}[$p];
 	my $info=$pepInfo{$queryID}[$p];
+	my $charge=$queryCharge{$queryID};
 	if (!$info) { # only if query view
 		print "<TABLE><TR><TH align=left>&nbsp&nbsp;<I>No more interpretations</I></TH></TR></TABLE>\n";
 		last;
@@ -1112,7 +1131,7 @@ foreach my $pep (@displayOrder) {
 	my $scoreString;
 	if ($scoreList{$pep}==0) {$scoreString='-';} # PMF or PMF in mixed search
 	else { # MS/MS
-		$scoreString=($scoreHierarchy{$pep} && $select != -1)? sprintf "%.1f",$scoreList{$pep} : sprintf "(%.1f)",$scoreList{$pep};
+		$scoreString=($scoreHierarchy{$pep} || $select > -1)? sprintf "%.1f",$scoreList{$pep} : sprintf "(%.1f)",$scoreList{$pep};
 	}
 	if ($qValityStrg) {
 		print "\t<TD width=57><A href=\"javascript:void(null)\" onmouseover=\"popup('$qValityStrg')\" onmouseout=\"popout()\">$scoreString</A></TD>\n";
@@ -1202,9 +1221,12 @@ foreach my $pep (@displayOrder) {
 	}
 	print "&nbsp;</TD>\n";
 
+	##>Charge
+	print "\t<TD width=70 align='center'>$charge+</TD>\n";
+	
 	##>Sequence
 	my $ref=($item ne 'query')? "$queryNum{$queryID}:$rank" : "$queryID:$rank"; #$pep;
-	print "\t<TD class=\"left\">$boundaryAA{$ref}[0]"; # width=470
+	print "\t<TD class=\"left\">&nbsp;&nbsp;$boundaryAA{$ref}[0]"; # width=470
 	if ($item eq 'query') {$sequencePosStrg{$sequence}='No further information';}
 	elsif ($item ne 'query' && !$sequencePosStrg{$sequence}) {#Print the position information
 		$sequencePosStrg{$sequence}='';
@@ -1227,7 +1249,27 @@ foreach my $pep (@displayOrder) {
 	if ($varMod) {
 		#print "<FONT style=\"font-size:10px\">$varMod</FONT>";
 		$varMod=~s/([:.])-1/$1?/g;
-		print "<A id=\"vmod_$rankID\" style=\"font-size:10px\" href=\"javascript:editVarModification('vmod_$rankID',",length($sequence),")\" onmouseover=\"popup('Click to edit modifications <B>position</B>.')\" onmouseout=\"popout()\">$varMod</A>";
+		
+		# MaxQuant/Spectronaut probabilities #
+		my $ptmProbStrg='';
+		if($queryPtmProb{$queryID}) {
+			my $fileFormat = $dbh->selectrow_array("SELECT NAME,VALID_STATUS,DATA_FILE,FILE_FORMAT FROM ANALYSIS WHERE ID_ANALYSIS=$analysisID");
+			my $softwarePTM = ($fileFormat eq 'MAXQUANT.DIR') ? 'MaxQuant' : ($fileFormat =~ /SPECTRONAUT\.XLS/) ? 'Spectronaut' : 'PtmRS';
+			$ptmProbStrg="<B>$softwarePTM probabilities:</B>";
+			
+			foreach my $modID (sort{lc($varModNames{$a}) cmp lc($varModNames{$b})} keys %{$queryPtmProb{$queryID}}) {
+				$ptmProbStrg.="<BR>&bull;$varModNames{$modID}:";
+				foreach my $ptmInfo (split(/,/, $queryPtmProb{$queryID}{$modID})) {
+					my ($ptmPos, $ptmProb, $ptmBestProb) = split(/:/, $ptmInfo);
+					my $posStrg=$convertPos2Text{$ptmPos} || $ptmPos;
+					my $ptmBestProbStr = ($ptmBestProb) ? '; Query Grp: '.($ptmBestProb*100).'%&nbsp;' : '';
+					$ptmProbStrg.="<BR>&nbsp;&nbsp;-$ptmPos:".&promsMod::PTMProbIcon(($ptmBestProb) ? $ptmBestProb : $ptmProb,{text=>'&nbsp;'.($ptmProb*100).'%&nbsp;'.$ptmBestProbStr,inPopup=>1});
+				}
+			}
+			$ptmProbStrg.="<br/><br/>";
+		}
+		
+		print "<A id=\"vmod_$rankID\" style=\"font-size:10px\" href=\"javascript:editVarModification('vmod_$rankID',",length($sequence),")\" onmouseover=\"popup('${ptmProbStrg}Click to edit modifications <B>position</B>.')\" onmouseout=\"popout()\">$varMod</A>";
 		my ($PRS) = ($info =~ /PRS=([^,]+)/);
 		if ($PRS){
 			&phosphoRS::printIcon($PRS);
@@ -1327,30 +1369,36 @@ setPopup()
 ####<<<Routines for sorting interpretations list>>>####
 #######################################################
 sub sortPeptides {
+	my ($queryIDA,$pA)=split(/:/,$a);
+	my ($queryIDB,$pB)=split(/:/,$b);
+	
 	#<PMF
 	if ($_[0] eq 'PMF:default') {$absDeltaList{$a}<=>$absDeltaList{$b} || $a cmp $b}
 	elsif ($_[0] eq 'PMF:delta') {$absDeltaList{$a}<=>$absDeltaList{$b} || $a cmp $b}
 	#elsif ($_[0] eq 'PMF:ppm') {$absPpmList{$a}<=>$absPpmList{$b} || $a cmp $b}
 	elsif ($_[0] eq 'PMF:query') {
-		my ($queryIDA,$pA)=split(/:/,$a); my ($queryIDB,$pB)=split(/:/,$b);
 		$queryNum{$queryIDA}<=>$queryNum{$queryIDB} || $absDeltaList{$a}<=>$absDeltaList{$b} || $a cmp $b
 	}
+	elsif ($_[0] eq 'PMF:charge') {
+		$queryCharge{$queryIDB}<=>$queryCharge{$queryIDA} || $scoreList{$b}<=>$scoreList{$a} || $a cmp $b
+	}
 	elsif ($_[0] eq 'PMF:sequence') {
-		my ($queryIDA,$pA)=split(/:/,$a); my ($queryIDB,$pB)=split(/:/,$b);
 		my ($sequenceA)=($pepInfo{$queryIDA}[$pA]=~/SEQ=(\w+)/); my ($sequenceB)=($pepInfo{$queryIDB}[$pB]=~/SEQ=(\w+)/);
 		$sequenceA cmp $sequenceB || $absDeltaList{$a}<=>$absDeltaList{$b} || $a cmp $b
 	}
+	
 	#<MIS
 	elsif ($_[0] eq 'MIS:default') {$scoreList{$b}<=>$scoreList{$a} || $a cmp $b}
 	elsif ($_[0] eq 'MIS:score') {$scoreList{$b}<=>$scoreList{$a} || $a cmp $b}
 	#elsif ($_[0] eq 'MIS:delta') {$absDeltaList{$a}<=>$absDeltaList{$b} || $a cmp $b}
 	#elsif ($_[0] eq 'MIS:ppm') {$absPpmList{$a}<=>$absPpmList{$b} || $a cmp $b}
 	elsif ($_[0] eq 'MIS:query'){
-		my ($queryIDA,$pA)=split(/:/,$a); my ($queryIDB,$pB)=split(/:/,$b);
 		$queryNum{$queryIDA}<=>$queryNum{$queryIDB} || $scoreList{$b}<=>$scoreList{$a} || $a cmp $b
 	}
+	elsif ($_[0] eq 'MIS:charge') {
+		$queryCharge{$queryIDB}<=>$queryCharge{$queryIDA} || $scoreList{$b}<=>$scoreList{$a} || $a cmp $b
+	}
 	elsif ($_[0] eq 'MIS:sequence') {
-		my ($queryIDA,$pA)=split(/:/,$a); my ($queryIDB,$pB)=split(/:/,$b);
 		my ($sequenceA)=($pepInfo{$queryIDA}[$pA]=~/SEQ=(\w+)/); my ($sequenceB)=($pepInfo{$queryIDB}[$pB]=~/SEQ=(\w+)/);
 		$sequenceA cmp $sequenceB || $scoreList{$b}<=>$scoreList{$a} || $a cmp $b
 	}
@@ -2031,6 +2079,11 @@ sub printPRSIcon{
 }
 
 ####>Revision history<####
+# 2.3.11 [BUGFIX] Fixed non-PRS PTM probability detection (PP 22/04/21)
+# 2.3.10 [BUGFIX] Fixed forgotten test for undefined $ptmProb (PP 01/10/20)
+# 2.3.9 [BUGFIX] Fixed displaying of all peptides instead of modified ones (VS 09/09/20)
+# 2.3.8 [ENHANCEMENT] Added display of PtmRS site localization probabilities (VS 21/08/20)
+# 2.3.7 [ENHANCEMENT] Added display of ion/query charge (VS 30/03/20)
 # 2.3.6 Update PTM filter so as to keep fix modifications (GA 17/08/17)
 # 2.3.5 Minor modif to disable spectrum visualization for TDM.PEP.XML -> like PMF (MLP 16/12/16)
 # 2.3.4 Minor change to put ppm by default for $DeltaType (GA 13/04/16)

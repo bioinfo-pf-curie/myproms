@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# runProtRulerQuantification.pl      1.0.2                                     #
+# runProtRulerQuantification.pl      1.0.6                                     #
 # Authors: V. Laigle (Institut Curie)                                          #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -48,7 +48,8 @@ use strict;
 use MIME::Base64;
 use POSIX qw(strftime);
 use File::Copy::Recursive qw(dirmove dircopy);
-
+### myProMS code version for Proteomic Ruler quantification: $MYPROMS_RULER_VERSION (reflects changes in Perl/R/Python scripts)
+# 1: First stable version
 
 ################################> TO DO <#######################################
 
@@ -59,6 +60,7 @@ use File::Copy::Recursive qw(dirmove dircopy);
 #######################
 ####>Configuration<####
 #######################
+my $MYPROMS_RULER_VERSION='1.0';
 my %promsPath=&promsConfig::getServerInfo('no_user');
 my %cluster=&promsConfig::getClusterInfo;  # ('debian'); # default is 'centos'
 
@@ -75,7 +77,7 @@ my ($quantifID,$quantifDate)=@ARGV;
 my $quantifDir="$promsPath{tmp}/quantification/$quantifDate";
 my $projectID=&promsMod::getProjectID($dbh,$quantifID,'QUANTIFICATION');
 
-$dbh->do("UPDATE QUANTIFICATION SET STATUS=0 WHERE ID_QUANTIFICATION=$quantifID");
+$dbh->do("UPDATE QUANTIFICATION SET STATUS=0,QUANTIF_ANNOT=REPLACE(QUANTIF_ANNOT,'SOFTWARE=myProMS','SOFTWARE=myProMS;$MYPROMS_RULER_VERSION') WHERE ID_QUANTIFICATION=$quantifID");
 $dbh->commit;
 
 my $fileStat="$quantifDir/status_$quantifID.out";
@@ -141,7 +143,7 @@ foreach my $paramID (@quantifParamIDs){
 }
 my $output=join(';', @outputCodes);  # [0;3;5]
 my @outputField=($output,);
-
+$quantifAnnot{'OUTPUT_MEAS'} = join(";", (map($quantifParams{$_}, @quantifParamIDs)));
 
 # Resume mapping column indexes to corresponding features
 my $columnIdx;
@@ -188,7 +190,7 @@ if ($quantifParameters{'R'}{'averaging_mode'}[0]==3){  # If 3, one quantificatio
 		$targetPos{$quantifIdParam}=0;
 		$columnIdx++;
 	}
-	foreach my $parent (@selectedStates){
+	foreach my $parent (@selectedStates){  # parent = [parentQuantifID, parentStateID, parentTargetPos]
 		if ($quantifAnnot{'PARENT_Q'}){
 			$quantifAnnot{'PARENT_Q'}.=";#$parent->[0],#$parent->[1],$parent->[2]:1";
 		} else {
@@ -197,7 +199,7 @@ if ($quantifParameters{'R'}{'averaging_mode'}[0]==3){  # If 3, one quantificatio
 	}
 } else {
 	my $posCount=0;
-	foreach my $parent (@selectedStates){
+	foreach my $parent (@selectedStates){  # parent = [parentQuantifID, parentStateID, parentTargetPos]
 		$posCount++;
 		if ($quantifAnnot{'PARENT_Q'}){
 			$quantifAnnot{'PARENT_Q'}.=";#$parent->[0],#$parent->[1],$parent->[2]:$posCount";
@@ -205,7 +207,7 @@ if ($quantifParameters{'R'}{'averaging_mode'}[0]==3){  # If 3, one quantificatio
 			$quantifAnnot{'PARENT_Q'}="#$parent->[0],#$parent->[1],$parent->[2]:$posCount";
 		}
 		foreach my $qParam (@quantifParamIDs){
-			my $quantifIdPosParam="$parent->[0]\_$parent->[2]\_$qParam";  # parent->[0] = quantifID of the parent quantif
+			my $quantifIdPosParam="$parent->[0]\_$parent->[2]\_$qParam";
 			$finalColumnIndexes{$quantifIdPosParam}=$columnIdx;
 			$targetPos{$quantifIdPosParam}=$posCount;
 			$columnIdx++;
@@ -227,9 +229,9 @@ if ($quantifParameters{'R'}{'groups'}[0] eq 'None') {
 		my $groupNb=$groups[$i];
 		$groupNb=~s/\D//g;
 		if ($quantifAnnot{'GROUPING'}){
-			$quantifAnnot{'GROUPING'}.=";#$selectedStates[$i]->[0],#$selectedStates[$i]->[1],$selectedStates[$i]->[2]:$groupNb";
+			$quantifAnnot{'GROUPING'}.=";#$selectedStates[$i]->[0],#$selectedStates[$i]->[1],$selectedStates[$i]->[2]:$groupNb";  # selectedStates[$i] = [parentQuantifID, parentStateID, parentTargetPos]
 		} else {
-			$quantifAnnot{'GROUPING'}="#$selectedStates[$i]->[0],#$selectedStates[$i]->[1],$selectedStates[$i]->[2]:$groupNb";
+			$quantifAnnot{'GROUPING'}="#$selectedStates[$i]->[0],#$selectedStates[$i]->[1],$selectedStates[$i]->[2]:$groupNb";  # selectedStates[$i] = [parentQuantifID, parentStateID, parentTargetPos]
 		}
 	}
 	close GROUPS_FILE;
@@ -271,7 +273,8 @@ my $quantifAnnotStrg=join("::", ("RULER_TYPE=$quantifAnnot{'RULER_TYPE'}",
 								 "PARENT_Q=$quantifAnnot{'PARENT_Q'}",
 								 "METRIC=$quantifAnnot{'METRIC'}",
 								 "CORRECTION=$quantifAnnot{'CORRECTION'}",
-								 "NUM_PARAMS=$quantifAnnot{'NUM_PARAMS'}")
+								 "NUM_PARAMS=$quantifAnnot{'NUM_PARAMS'}",
+								 "OUTPUT_MEAS=$quantifAnnot{'OUTPUT_MEAS'}")
 						 );
 
 $dbh->do("UPDATE QUANTIFICATION SET QUANTIF_ANNOT=CONCAT(QUANTIF_ANNOT, '::$quantifAnnotStrg') WHERE ID_QUANTIFICATION=$quantifID");
@@ -335,7 +338,7 @@ my %parameters=(QUANTIF_FAMILY=>$selQuantifFamily,
 &promsQuantif::fetchQuantificationData($dbh,\%parameters,\%quantifInfo,\%quantifValues,undef,\%proteinInfo,$refSelectedProteins,$refExcludedProteins);
 
 #####> Replace proteins ALIAS with Uniprot ACC in fetched data <#####
-my $sthGetUniprotAcc=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER MI JOIN PROTEIN P ON MI.ID_MASTER_PROTEIN=P.ID_MASTER_PROTEIN WHERE P.ID_PROTEIN=? AND MI.ID_IDENTIFIER=1 AND MI.RANK=1");
+my $sthGetUniprotAcc=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER MI JOIN PROTEIN P ON MI.ID_MASTER_PROTEIN=P.ID_MASTER_PROTEIN WHERE P.ID_PROTEIN=? AND MI.ID_IDENTIFIER=1 AND MI.IDENT_RANK=1");
 foreach my $protID (keys %proteinInfo){
 	$sthGetUniprotAcc->execute($protID);
 	my ($protIdentifier)=$sthGetUniprotAcc->fetchrow_array;
@@ -383,7 +386,7 @@ $dbh->disconnect;
 open(FILESTAT,">>$fileStat");
 print FILESTAT "2/3 Running quantification\n";
 close(FILESTAT);
-my $pathPython=($cluster{'on'})? $cluster{'path'}{'python'} : $promsPath{'python'};
+my $pathPython=($cluster{'on'})? $cluster{'path'}{'python3'} : $promsPath{'python3'};
 open(PYTHON_SCRIPT,">$runDir/proteomic_ruler.txt");
 print PYTHON_SCRIPT qq
 |
@@ -416,7 +419,9 @@ $dbh=&promsConfig::dbConnect('no_user'); # reconnect
 
 
 # INSERT STATEMENTS
-my $sthInsProtQ=$dbh->prepare("INSERT INTO PROTEIN_QUANTIFICATION (ID_QUANTIFICATION,ID_PROTEIN,ID_QUANTIF_PARAMETER,QUANTIF_VALUE,TARGET_POS) VALUES ($quantifID,?,?,?,?)") or die "Couldn't prepare statement: " . $dbh->errstr;
+my $dbhLite=&promsQuantif::dbCreateProteinQuantification($quantifID,$runDir); # SQLite
+my $sthInsProtQ=$dbhLite->prepare("INSERT INTO PROTEIN_QUANTIFICATION (ID_PROTEIN,ID_QUANTIF_PARAMETER,QUANTIF_VALUE,TARGET_POS) VALUES (?,?,?,?)") or die "Couldn't prepare statement: " . $dbhLite->errstr;
+#my $sthInsProtQ=$dbh->prepare("INSERT INTO PROTEIN_QUANTIFICATION (ID_QUANTIFICATION,ID_PROTEIN,ID_QUANTIF_PARAMETER,QUANTIF_VALUE,TARGET_POS) VALUES ($quantifID,?,?,?,?)") or die "Couldn't prepare statement: " . $dbh->errstr;
 my $sthInsParentQ=$dbh->prepare("INSERT INTO PARENT_QUANTIFICATION (ID_PARENT_QUANTIFICATION,ID_QUANTIFICATION,PAR_FUNCTION) VALUES (?,$quantifID,NULL)") or die "Couldn't prepare statement: " . $dbh->errstr;
 my $sthInsAnaQ=$dbh->prepare("INSERT INTO ANA_QUANTIFICATION (ID_QUANTIFICATION,ID_ANALYSIS) VALUES ($quantifID,?)") or die "Couldn't prepare statement: " . $dbh->errstr;
 
@@ -470,11 +475,13 @@ if (-e "$pythonOutFile") {
 	$dbh->do("UPDATE QUANTIFICATION SET STATUS=-2 WHERE ID_QUANTIFICATION=$quantifID");
 	$dbh->commit;
 	$dbh->disconnect;
-	die "Missing results file !\n";
+	die "Missing results file: $!";
 }
 
 # Clean handles
 $sthInsProtQ->finish;
+$dbhLite->commit;
+$dbhLite->disconnect;
 $sthInsParentQ->finish;
 $sthInsAnaQ->finish;
 $dbh->commit;
@@ -496,6 +503,10 @@ unlink $fileStat;
 
 
 #####>Revision history<#####
+# 1.0.6 [CHANGE] Added management of dedicated myProMS Proteomic Ruler version (PP 18/03/21)
+# 1.0.5 [ENHANCEMENT] Add output quantif paramater codes to quantifAnnot for easier parsing or referencement (VL 03/12/20)
+# 1.0.4 [UPDATE] Uses SQLite database to store quantification data & compatibility with site sequence context (PP 12/08/20)
+# 1.0.3 [UPDATE] Changed RANK field to IDENT_RANK for compatibility with MySQL 8 (PP 04/03/20) 
 # 1.0.2 [ENHANCEMENT] Adapt code to accept new intensity metrics (VL 24/09/19)
 # 1.0.1 [CODE] Adjusted parameter list to match change in &promsQuantif::fetchQuantificationData (PP 30/08/19)
 # 1.0.0 Created (VL 26/07/2019)

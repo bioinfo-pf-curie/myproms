@@ -1,8 +1,8 @@
 /*========================================================================*/
-/*                  myProMS database v3.5.24                              */
-/* MySQL script for myproms v3.8 database                                 */
+/*                  myProMS database v3.5.30                              */
+/* MySQL script for myproms v3.9.3 database                               */
 /* Requires MySQL 5+                                                      */
-/* Patrick Poullet    28/01/2020                                          */
+/* Patrick Poullet    31/05/2021                                          */
 /* Command:                                                               */
 /* >mysql -u <DB_USER> -p -D <DB_NAME> -h <DB_HOST> < myproms_db.sql      */
 /*========================================================================*/
@@ -76,14 +76,15 @@ create table ANALYSIS_PROTEIN
    ID_ANALYSIS          int not null,
    ID_PROTEIN           int not null,
    DB_RANK              smallint,
-   CONF_LEVEL           int,
+   CONF_LEVEL           smallint,
    SCORE                float,
    NUM_PEP              int,
-   NUM_MATCH            int,
+   NUM_MATCH            smallint,
    PEP_COVERAGE         float,
    MATCH_GROUP          int,
    PEP_SPECIFICITY      float,
    VISIBILITY           smallint,
+   QVAL                 float,
    primary key (ID_ANALYSIS, ID_PROTEIN)
 )
 engine = InnoDB;
@@ -147,7 +148,7 @@ create table ANNOTATIONSET
    ID_ANNOTATIONSET     int not null,
    ID_EXPLORANALYSIS    int not null,
    NAME                 varchar(50),
-   RANK                 smallint,
+   ANNOT_RANK           smallint,
    ANNOT_TYPE           varchar(50),
    ANNOT_LIST           text,
    primary key (ID_ANNOTATIONSET)
@@ -194,7 +195,7 @@ create table BIOSAMPLE_PROPERTY
 (
    ID_BIOSAMPLE         int not null,
    ID_PROPERTY          int not null,
-   RANK                 smallint,
+   PROPERTY_RANK        smallint,
    PROPERTY_VALUE       text,
    primary key (ID_BIOSAMPLE, ID_PROPERTY)
 )
@@ -226,6 +227,8 @@ create table CATEGORY_PROTEIN
    ID_CATEGORY_PROTEIN  int not null auto_increment,
    ID_CATEGORY          int not null,
    ID_PROTEIN           int not null,
+   SEQ_BEG              smallint,
+   SEQ_LENGTH           tinyint,
    primary key (ID_CATEGORY_PROTEIN)
 )
 engine = InnoDB;
@@ -459,6 +462,29 @@ create table GEL2D
 engine = InnoDB;
 
 /*==============================================================*/
+/* Table : GENESETS                                             */
+/*==============================================================*/
+create table GENESETS
+(
+    ID_GENESETS int not null auto_increment,
+    ID_SPECIES int,
+    ID_IDENTIFIER int,
+    ID_PROJECT int,
+    NAME varchar(50) not null,
+    DES varchar(100),
+    GENESETS_FILE varchar(100) not null,
+    GENESETS_TYPE varchar(20) not null,
+    NUM_SETS int not null,
+    GENESETS_STATUS smallint,
+    VERSION_DATE date,
+    OTHER_VERSIONS varchar(100) not null,
+    UPDATE_DATE datetime,
+    UPDATE_USER varchar(20),
+    primary key (ID_GENESETS)
+)
+engine = InnoDB;
+
+/*==============================================================*/
 /* Table : GOANA_ANALYSIS                                       */
 /*==============================================================*/
 create table GOANA_ANALYSIS
@@ -589,7 +615,7 @@ create table JOB_HISTORY
    ID_USER              varchar(15),
    ID_JOB_CLUSTER       text,
    TYPE                 varchar(45) not null,
-   STATUS               varchar(45) not null,
+   JOB_STATUS           varchar(45) not null,
    FEATURES             text,
    SRC_PATH             text not null,
    LOG_PATH             text not null,
@@ -607,9 +633,9 @@ create table MASTERPROT_IDENTIFIER
 (
    ID_IDENTIFIER        int not null,
    ID_MASTER_PROTEIN    int not null,
-   RANK                 smallint not null,
+   IDENT_RANK           smallint not null,
    VALUE                text,
-   primary key (ID_IDENTIFIER, ID_MASTER_PROTEIN, RANK)
+   primary key (ID_IDENTIFIER, ID_MASTER_PROTEIN, IDENT_RANK)
 )
 engine = InnoDB;
 
@@ -671,20 +697,6 @@ create table MODIFICATION
    PEAKVIEW_CODE        varchar(10),
    VALID_STATUS         smallint,
    primary key (ID_MODIFICATION)
-)
-engine = InnoDB;
-
-/*==============================================================*/
-/* Table : MODIFIED_RESIDUE                                     */
-/*==============================================================*/
-create table MODIFIED_RESIDUE
-(
-   ID_MODIF_RES         int not null auto_increment,
-   ID_QUANTIFICATION    int not null,
-   RESIDUE              char(1),
-   POSITION             int,
-   MODIF_RANK           smallint,
-   primary key (ID_MODIF_RES)
 )
 engine = InnoDB;
 
@@ -837,6 +849,7 @@ create table PATHWAY_ANALYSIS
    ID_PARENT_PATHWAYANA int,
    ID_EXPERIMENT        int not null,
    ID_CATEGORY          int,
+   ANALYSIS_TYPE        varchar(20) not null default "PATHWAY",
    NAME                 varchar(50),
    DES                  varchar(100),
    PARAM_STRG           text,
@@ -1016,21 +1029,6 @@ create table PROTEIN
 engine = InnoDB;
 
 /*==============================================================*/
-/* Table : PROTEIN_QUANTIFICATION                               */
-/*==============================================================*/
-create table PROTEIN_QUANTIFICATION
-(
-   ID_PROT_QUANTIF      int not null auto_increment,
-   ID_PROTEIN           int not null,
-   ID_QUANTIFICATION    int not null,
-   ID_QUANTIF_PARAMETER int not null,
-   QUANTIF_VALUE        double,
-   TARGET_POS           smallint,
-   primary key (ID_PROT_QUANTIF)
-)
-engine = InnoDB;
-
-/*==============================================================*/
 /* Table : PROTEIN_VALIDATION                                   */
 /*==============================================================*/
 create table PROTEIN_VALIDATION
@@ -1047,21 +1045,10 @@ create table PROTEIN_VALIDATION
    SCORE                float,
    MAX_SCORE            float,
    ORGANISM             varchar(100),
-   CONF_LEVEL           int,
+   CONF_LEVEL           smallint,
    PROT_LENGTH          int,
-   MATCH_GROUP          int,
+   MATCH_GROUP          smallint,
    primary key (ID_PROT_VALID)
-)
-engine = InnoDB;
-
-/*==============================================================*/
-/* Table : PROTQUANTIF_MODRES                                   */
-/*==============================================================*/
-create table PROTQUANTIF_MODRES
-(
-   ID_MODIF_RES         int not null,
-   ID_PROT_QUANTIF      int not null,
-   primary key (ID_MODIF_RES, ID_PROT_QUANTIF)
 )
 engine = InnoDB;
 
@@ -1568,6 +1555,18 @@ alter table EXPLORANA_QUANTIF add constraint FK_EXPLORANA_QUANTIF2 foreign key (
 alter table GEL2D add constraint FK_EXPERIMENT_GEL2D foreign key (ID_EXPERIMENT)
       references EXPERIMENT (ID_EXPERIMENT);
 
+alter table GENESETS add constraint FK_GENESET_SPECIES foreign key (ID_SPECIES)
+      references SPECIES (ID_SPECIES);
+	  
+alter table GENESETS add constraint FK_GENESET_IDENTIFIER foreign key (ID_IDENTIFIER)
+      references IDENTIFIER (ID_IDENTIFIER);
+	  
+alter table GENESETS add constraint FK_GENESET_PROJECT foreign key (ID_PROJECT)
+      references PROJECT (ID_PROJECT);
+	  
+alter table GENESETS add constraint FK_GENESET_USER foreign key (UPDATE_USER)
+      references USER_LIST (ID_USER);
+
 alter table GOANA_ANALYSIS add constraint FK_GOANA_ANALYSIS foreign key (ID_GOANALYSIS)
       references GO_ANALYSIS (ID_GOANALYSIS);
 
@@ -1630,9 +1629,6 @@ alter table META_ANNOTATION add constraint FK_PROJECT_ANNOT foreign key (ID_PROJ
 
 alter table META_ANNOTATION add constraint FK_SAMPLE_ANNOT foreign key (ID_SAMPLE)
       references SAMPLE (ID_SAMPLE);
-
-alter table MODIFIED_RESIDUE add constraint FK_QUANTIF_MODRES foreign key (ID_QUANTIFICATION)
-      references QUANTIFICATION (ID_QUANTIFICATION);
 
 alter table MODIFICATION_SITE add constraint FK_CATPROTEIN_SITE foreign key (ID_CATEGORY_PROTEIN)
       references CATEGORY_PROTEIN (ID_CATEGORY_PROTEIN);
@@ -1760,23 +1756,8 @@ alter table PROTEIN add constraint FK_PROJECT_PROTEIN foreign key (ID_PROJECT)
 alter table PROTEIN add constraint FK_PROT_MASTERPROT foreign key (ID_MASTER_PROTEIN)
       references MASTER_PROTEIN (ID_MASTER_PROTEIN);
 
-alter table PROTEIN_QUANTIFICATION add constraint FK_PROTPROTQUANTIF foreign key (ID_PROTEIN)
-      references PROTEIN (ID_PROTEIN);
-
-alter table PROTEIN_QUANTIFICATION add constraint FK_PROTQUANTIFPARAM foreign key (ID_QUANTIF_PARAMETER)
-      references QUANTIFICATION_PARAMETER (ID_QUANTIF_PARAMETER);
-
-alter table PROTEIN_QUANTIFICATION add constraint FK_PROTQUANTIFQUANTIF foreign key (ID_QUANTIFICATION)
-      references QUANTIFICATION (ID_QUANTIFICATION);
-
 alter table PROTEIN_VALIDATION add constraint FK_ANALYSIS_PROTVAL foreign key (ID_ANALYSIS)
       references ANALYSIS (ID_ANALYSIS);
-
-alter table PROTQUANTIF_MODRES add constraint FK_PROTQUANTIF_MODRES foreign key (ID_MODIF_RES)
-      references MODIFIED_RESIDUE (ID_MODIF_RES);
-
-alter table PROTQUANTIF_MODRES add constraint FK_PROTQUANTIF_MODRES2 foreign key (ID_PROT_QUANTIF)
-      references PROTEIN_QUANTIFICATION (ID_PROT_QUANTIF);
 
 alter table QUANTIFICATION add constraint FK_ANAQUANTIFMETH foreign key (ID_QUANTIFICATION_METHOD)
       references QUANTIFICATION_METHOD (ID_QUANTIFICATION_METHOD);

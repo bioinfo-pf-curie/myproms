@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# compareAnalyses.cgi               2.3.5                                      #
+# compareAnalyses.cgi               2.4.0                                      #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Compares the protein & peptide contents of multiple (groups of) analyses     #
@@ -50,6 +50,7 @@ use POSIX qw(strftime); # to get the time
 use Spreadsheet::WriteExcel;
 use promsConfig;
 use promsMod;
+use promsQuantif;
 use phosphoRS;
 use strict;
 
@@ -98,7 +99,7 @@ my $catFilterRule=param('catFilterRule') || 'restrict'; # (not used by 1v1_pep)
 my $autochkStrg=param('autocheck') || ''; # (used only by full_prot)
 # Visibility of unchecked proteins
 my $hideShowStatus=(param('hideShowStatus'))? param('hideShowStatus') : ''; # (used only by full_prot)
-my $hideShowStrg=($hideShowStatus eq '')? 'Hide Unchecked' : 'Show Unchecked'; # (used only by full_prot)
+my $hideShowStrg=($hideShowStatus eq '')? 'Hide unchecked' : 'Show unchecked'; # (used only by full_prot)
 #>Peptide-comparison parameters (defined even if protein comparison)--->
 my $noMissCut=param('noMissCut') || 0;
 my $delocPhospho=param('delocPhospho') || 0;
@@ -197,8 +198,8 @@ if ($compType eq '1v1_pep') {
 ####<Selected proteins/sites>####
 my %selectedProteins; # proteins checked (Export selected or change in list display)
 if (param('chkProt')) {
-	foreach my $protInfo (param('chkProt')) {
-		my $protID=(split(':',$protInfo))[-1];
+	foreach my $protID (param('chkProt')) { # $protInfo
+		# my $protID=(split(':',$protInfo))[-1];
 		$protID=~s/-.+// unless $compType =~ /^modif_sites/; # in case coming for modif site
 		$selectedProteins{$protID}=1;
 #print "$protInfo '$protID'<BR>\n";
@@ -271,21 +272,21 @@ ACRONYM {cursor:help;}
 <SCRIPT src="$promsPath{html}/js/other/rgbcolor.js"></SCRIPT>
 |;
 		}
-		print qq
-|<SCRIPT type="text/javascript">
-function updateLists(themeSel,listSel,XHR) {
-	parent.selItemsFrame.ajaxUpdateRestrict();
-	if (themeSel.value=='getLists:-1') { // update anaParent in selItemsFrame
-		var idData=XHR.responseText.match(/THEME_ID=(\\d+)/);
-		var nameData=XHR.responseText.match(/THEME_NAME=(.+)###/);
-		var selParent=parent.selItemsFrame.compForm.anaParent;
-		var idx=(selParent.options[selParent.length-1].text=='None')? selParent.length-1 : selParent.length;
-		selParent[idx]=new Option(nameData[1],'CLASSIFICATION:'+idData[1]);
-	}
-}
-|;
+		print "<SCRIPT type=\"text/javascript\">\n";
+# 		print qq # moved to parent.selItemsFrame --->
+# |function updateLists(themeSel,listSel,XHR) {
+# 	parent.selItemsFrame.ajaxUpdateRestrict();
+# 	if (themeSel.value=='getLists:-1') { // update anaParent in selItemsFrame
+# 		var idData=XHR.responseText.match(/THEME_ID=(\\d+)/);
+# 		var nameData=XHR.responseText.match(/THEME_NAME=(.+)###/);
+# 		var selParent=parent.selItemsFrame.compForm.anaParent;
+# 		var idx=(selParent.options[selParent.length-1].text=='None')? selParent.length-1 : selParent.length;
+# 		selParent[idx]=new Option(nameData[1],'CLASSIFICATION:'+idData[1]);
+# 	}
+# }
+# |;
 		##>Save proteins to custom Lists
-		&promsMod::printAjaxManageSaveProteins($projectID,\%promsPath,'document.protView.chkProt','updateLists');
+		&promsMod::printAjaxManageSaveProteins($projectID,\%promsPath,'document.protView.chkProt','parent.selItemsFrame.updateLists');
 
 		&promsMod::popupInfo();
 
@@ -313,28 +314,32 @@ my $projQuery2=qq |SELECT E.NAME,S.NAME,A.NAME FROM EXPERIMENT E,SAMPLE S,ANALYS
 						WHERE A.ID_ANALYSIS=? AND S.ID_SAMPLE=A.ID_SAMPLE AND E.ID_EXPERIMENT=S.ID_EXPERIMENT AND S.ID_SPOT IS NULL|;
 push @sthAnaList,($dbh->prepare($projQuery1),$dbh->prepare($projQuery2)); # free sample then gel
 
+# my $sthCatInfo=$dbh->prepare("SELECT CL.NAME, C.NAME
+# 							  FROM CLASSIFICATION CL
+# 							  INNER JOIN CATEGORY C ON C.ID_CLASSIFICATION=CL.ID_CLASSIFICATION
+# 							  INNER JOIN EXPERIMENT E ON E.ID_PROJECT=CL.ID_PROJECT
+# 							  WHERE ID_CATEGORY=? AND E.ID_EXPERIMENT NOT IN (
+# 								SELECT EU.ID_EXPERIMENT
+# 								FROM USER_EXPERIMENT_LOCK EU
+# 								INNER JOIN EXPERIMENT E2 ON E2.ID_EXPERIMENT=EU.ID_EXPERIMENT
+# 								WHERE E2.ID_PROJECT=$projectID AND EU.ID_USER='$userID'
+# 							  )");
+# my $sthCatProt=$dbh->prepare("SELECT ID_PROTEIN
+# 							 FROM CATEGORY_PROTEIN CP
+# 							 INNER JOIN CATEGORY C ON C.ID_CATEGORY=CP.ID_CATEGORY
+# 							 INNER JOIN CLASSIFICATION CL ON CL.ID_CLASSIFICATION=C.ID_CLASSIFICATION
+# 							 INNER JOIN EXPERIMENT E ON E.ID_PROJECT=CL.ID_PROJECT
+# 							 WHERE C.ID_CATEGORY=? AND E.ID_EXPERIMENT NOT IN (
+# 								SELECT EU.ID_EXPERIMENT
+# 								FROM USER_EXPERIMENT_LOCK EU
+# 								INNER JOIN EXPERIMENT E2 ON E2.ID_EXPERIMENT=EU.ID_EXPERIMENT
+# 								WHERE E2.ID_PROJECT=$projectID AND EU.ID_USER='$userID'
+# 							)");
 my $sthCatInfo=$dbh->prepare("SELECT CL.NAME, C.NAME
 							  FROM CLASSIFICATION CL
 							  INNER JOIN CATEGORY C ON C.ID_CLASSIFICATION=CL.ID_CLASSIFICATION
-							  INNER JOIN EXPERIMENT E ON E.ID_PROJECT=CL.ID_PROJECT
-							  WHERE ID_CATEGORY=? AND E.ID_EXPERIMENT NOT IN (
-								SELECT EU.ID_EXPERIMENT
-								FROM USER_EXPERIMENT_LOCK EU
-								INNER JOIN EXPERIMENT E2 ON E2.ID_EXPERIMENT=EU.ID_EXPERIMENT
-								WHERE E2.ID_PROJECT=$projectID AND EU.ID_USER='$userID'
-							  )");
-
-my $sthCatProt=$dbh->prepare("SELECT ID_PROTEIN
-							 FROM CATEGORY_PROTEIN CP
-							 INNER JOIN CATEGORY C ON C.ID_CATEGORY=CP.ID_CATEGORY
-							 INNER JOIN CLASSIFICATION CL ON CL.ID_CLASSIFICATION=C.ID_CLASSIFICATION
-							 INNER JOIN EXPERIMENT E ON E.ID_PROJECT=CL.ID_PROJECT
-							 WHERE C.ID_CATEGORY=? AND E.ID_EXPERIMENT NOT IN (
-								SELECT EU.ID_EXPERIMENT
-								FROM USER_EXPERIMENT_LOCK EU
-								INNER JOIN EXPERIMENT E2 ON E2.ID_EXPERIMENT=EU.ID_EXPERIMENT
-								WHERE E2.ID_PROJECT=$projectID AND EU.ID_USER='$userID'
-							)");
+							  WHERE ID_CATEGORY=?");
+my $sthCatProt=$dbh->prepare("SELECT DISTINCT ID_PROTEIN FROM CATEGORY_PROTEIN WHERE C.ID_CATEGORY=?"); # Only at protein-level (sites are downgraded)
 #}
 #elsif ($item eq 'experiment') {
 #	push @sthAnaList,$dbh->prepare("SELECT SAMPLE.NAME,ANALYSIS.NAME FROM SAMPLE,ANALYSIS WHERE ID_ANALYSIS=? AND SAMPLE.ID_SAMPLE=ANALYSIS.ID_SAMPLE AND SAMPLE.ID_SPOT IS NULL"); # free sample
@@ -812,9 +817,9 @@ if ($pepThreshold > 1) {
 	}
 }
 
-###################################
-####>1 vs 1 Protein Comparison<####
-###################################
+#############################################
+####>1 vs 1 (Summary) Protein Comparison<####
+#############################################
 if ($compType eq '1v1_prot') {
 
 	$dbh->disconnect;
@@ -895,16 +900,10 @@ if ($numAnaGroups==2) {
 	}
 }
 
-####>Fetching protein annotation & distribution<####
-&updateProgress('Fetching protein annotation...') unless $exportType;
-my (%protAnnotation,%protDistribution,%masterProteins);
-my $sthProt=$dbh->prepare("SELECT ALIAS,PROT_DES,MW,ORGANISM,ID_MASTER_PROTEIN FROM PROTEIN WHERE ID_PROTEIN=?");
-my ($geneNameID)=$dbh->selectrow_array("SELECT ID_IDENTIFIER FROM IDENTIFIER WHERE CODE='GN'");
-my $sthMPG=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_MASTER_PROTEIN=? AND ID_IDENTIFIER=$geneNameID ORDER BY RANK");
+####>Fetching protein distribution<####
+&updateProgress('Computing protein distribution...') unless $exportType;
+my %protDistribution;
 foreach my $protID (keys %proteinList) {
-	$sthProt->execute($protID);
-	@{$protAnnotation{$protID}}=$sthProt->fetchrow_array;
-	$protAnnotation{$protID}[2]=sprintf "%.1f",$protAnnotation{$protID}[2]/1000; # MW
 	if ($sortOrder eq 'peptide') {
 		@{$protDistribution{$protID}}=(0,0,0);
 		foreach my $g (0..$#analysisGroups) {
@@ -917,19 +916,32 @@ foreach my $protID (keys %proteinList) {
 		}
 		$protDistribution{$protID}[1]=sprintf "%.10f",$protDistribution{$protID}[1]/$protDistribution{$protID}[2]; # normalized sum of deltas to average
 	}
-	if ($protAnnotation{$protID}[4]) {
-		my $masterProtID=$protAnnotation{$protID}[4];
-		unless ($masterProteins{$masterProtID}) {
-			@{$masterProteins{$masterProtID}}=();
-			$sthMPG->execute($masterProtID);
-			while (my ($gene)=$sthMPG->fetchrow_array) {
-				push @{$masterProteins{$masterProtID}},$gene;
-			}
-		}
-	}
 }
-$sthProt->finish;
-$sthMPG->finish;
+
+####>Fetching protein annotation<####
+&updateProgress('Fetching protein annotation...') unless $exportType;
+my (%protAnnotation,%masterProteins);	
+my ($GNidentID)=$dbh->selectrow_array("SELECT ID_IDENTIFIER FROM IDENTIFIER WHERE CODE='GN'");
+my @protIdList=keys %proteinList;
+while (my @subProtList=splice(@protIdList,0,1000)) { # chuncks of 1000 proteins
+	my $protIdStrg=join(',',@subProtList);
+	my $sthProtInfo=$dbh->prepare("SELECT P.ID_PROTEIN,ALIAS,PROT_DES,MW,ORGANISM,P.ID_MASTER_PROTEIN,GROUP_CONCAT(DISTINCT MI.VALUE ORDER BY IDENT_RANK SEPARATOR ',')
+									FROM PROTEIN P
+									LEFT JOIN MASTERPROT_IDENTIFIER MI ON P.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN AND MI.ID_IDENTIFIER=$GNidentID
+									WHERE P.ID_PROTEIN IN ($protIdStrg) GROUP BY P.ID_PROTEIN"); # P.ID_PROJECT=$projectID
+	$sthProtInfo->execute;
+	while (my ($protID,$alias,$protDes,$mw,$organism,$masterProtID,$geneStrg)=$sthProtInfo->fetchrow_array) {
+		next unless $proteinList{$protID}; # just to be safe
+		$alias=~s/ .*//; # clean alias from badly parsed characters (identifier conversion)
+		$mw=($mw)? 1*(sprintf "%.1f",$mw/1000) : 0;
+		@{$protAnnotation{$protID}}=($alias,$protDes,$mw,$organism,$masterProtID);
+		if ($masterProtID && !$masterProteins{$masterProtID}) {
+			@{$masterProteins{$masterProtID}}=($geneStrg)? split(',',$geneStrg) : ();
+		}
+	}	
+	$sthProtInfo->finish;
+	&updateProgress('.','+=');
+}
 
 
 #####################
@@ -961,11 +973,11 @@ if ($exportType) {
 			identHidBC =>			$workbook->add_format(align=>'left',valign=>'top',size=>10,border=>1,color=>'grey'),
 			identVisVP =>			$workbook->add_format(align=>'left',valign=>'top',size=>10,border=>1,bold=>1,italic=>1),
 			identHidVP =>			$workbook->add_format(align=>'left',valign=>'top',size=>10,border=>1,italic=>1),
-#mergeIdent =>		$workbook->add_format(align=>'left',valign=>'top',size=>10,border=>1),
+	#mergeIdent =>		$workbook->add_format(align=>'left',valign=>'top',size=>10,border=>1),
 			identBC =>			$workbook->add_format(align=>'left',size=>10,color=>'grey',border=>1),
-#mergeIdentBC =>		$workbook->add_format(align=>'left',valign=>'top',size=>10,color=>'grey',border=>1),
+	#mergeIdentBC =>		$workbook->add_format(align=>'left',valign=>'top',size=>10,color=>'grey',border=>1),
 			identVP =>			$workbook->add_format(align=>'left',size=>10,italic=>1,border=>1),
-#mergeIdentVP =>		$workbook->add_format(align=>'left',valign=>'top',size=>10,italic=>1,border=>1),
+	#mergeIdentVP =>		$workbook->add_format(align=>'left',valign=>'top',size=>10,italic=>1,border=>1),
 			text =>				$workbook->add_format(align=>'left',size=>10,valign=>'top',text_wrap=>0,border=>1),
 			textWrap =>				$workbook->add_format(align=>'left',size=>10,valign=>'top',text_wrap=>1,border=>1),
 			mergeText =>		$workbook->add_format(align=>'left',size=>10,valign=>'top',text_wrap=>0,border=>1),
@@ -979,7 +991,7 @@ if ($exportType) {
 			number =>			$workbook->add_format(size=>10,align=>'center',valign=>'top',border=>1),
 			mergeNumber =>		$workbook->add_format(size=>10,align=>'center',valign=>'top',border=>1),
 			number1d =>			$workbook->add_format(size=>10,align=>'center',valign=>'top',num_format=>'0.0',border=>1),
-#mergeNumber1d =>	$workbook->add_format(size=>10,align=>'center',valign=>'top',num_format=>'0.0',border=>1)
+	#mergeNumber1d =>	$workbook->add_format(size=>10,align=>'center',valign=>'top',num_format=>'0.0',border=>1)
 			);
 
 	my $worksheet=$workbook->add_worksheet('Results');
@@ -1059,7 +1071,7 @@ if ($exportType) {
 	$xlsRow++;
 	$xlsCol=2;
 	$worksheet->set_row($xlsRow,15*(1+$maxItemInGr)) if $maxItemInGr > 1; # row height
-#my $smiley = "\x{263A}";
+
 	foreach my $g (0..$#analysisGroups) {
 		my $labelStrg=($numGroups)? "$groupLabels[$g][0]:$newLine$groupLabels[$g][1]" : $groupLabels[$g][1];
 		my $endCol=$xlsCol+$grColSpans[$g]-1;
@@ -1254,19 +1266,19 @@ if ($exportType) {
 }
 
 ####>Fetching list of available classification and categories<####
-my (%classifications,%categories);
-my $sthClass=$dbh->prepare("SELECT ID_CLASSIFICATION,NAME FROM CLASSIFICATION WHERE ID_PROJECT=$projectID");
-my $sthCat=$dbh->prepare("SELECT ID_CATEGORY,NAME,DISPLAY_POS FROM CATEGORY WHERE ID_CLASSIFICATION=?");
-$sthClass->execute;
-while (my ($classID,$className)=$sthClass->fetchrow_array) {
-	$classifications{$classID}=$className;
-	$sthCat->execute($classID);
-	while (my ($catID,$catName,$displayPos)=$sthCat->fetchrow_array) {
-		@{$categories{$classID}{$catID}}=($catName,$displayPos);
-	}
-}
-$sthClass->finish;
-$sthCat->finish;
+# my (%classifications,%categories);
+# my $sthClass=$dbh->prepare("SELECT ID_CLASSIFICATION,NAME FROM CLASSIFICATION WHERE ID_PROJECT=$projectID");
+# $sthClass->execute;
+# while (my ($classID,$className)=$sthClass->fetchrow_array) {
+# 	$classifications{$classID}=$className;
+# }
+# $sthClass->finish;
+# my $sthCat=$dbh->prepare("SELECT ID_CLASSIFICATION,ID_CATEGORY,NAME,DISPLAY_POS FROM CATEGORY WHERE ID_CLASSIFICATION IN (".(join(',',keys %classifications)).")");
+# $sthCat->execute;
+# while (my ($classID,$catID,$catName,$displayPos)=$sthCat->fetchrow_array) {
+# 	@{$categories{$classID}{$catID}}=($catName,$displayPos);
+# }
+# $sthCat->finish;
 
 $dbh->disconnect;
 
@@ -1336,7 +1348,7 @@ $onloadStrg.=($okAutocheck && $numAllProteins)? "updateComparisonStrategy('$filt
 ###>PTMs
 print qq
 |<SCRIPT type="text/javascript">
-//PTMs data
+// PTMs data
 var usedPTMs=new Object();
 |;
 if (scalar keys %ptmProteins) {
@@ -1345,35 +1357,36 @@ if (scalar keys %ptmProteins) {
 	}
 }
 print qq
-|var selectedProtID;
+|var selectedProtID,selectedImg;
 var isNav = (navigator.appName.indexOf("Netscape") !=-1);
 function unselectProtein() {
 	if (selectedProtID) {
 		document.getElementById('protDetailsDIV').style.display='none';
-		document.getElementById('IMG_'+selectedProtID).src="$promsPath{images}/plus.gif";
+		selectedImg.src="$promsPath{images}/plus.gif";
 	}
 	selectedProtID=null;
 }
-function ajaxGetProteinDetails(e,protID,bestAnaStrg) {
+function ajaxGetProteinDetails(img,e,protID,bestAnaStrg) {
 	var protDIV=document.getElementById('protDetailsDIV');
 	if (!protDIV) { // page is not fully loaded yet
 		alert('Display process is still on-going. Try again when completed.');
 		return;
 	}
 	if (protID==selectedProtID) { // image is minus1.gif
-		unselectProtein();
+		unselectProtein(); // resets selectedProtID
 		return;
 	}
 	unselectProtein();
 	selectedProtID=protID;
-	document.getElementById('IMG_'+protID).src="$promsPath{images}/minus1.gif";
+	selectedImg=img;
+	img.src="$promsPath{images}/minus1.gif";
 	var divX = (isNav)? e.pageX : event.clientX + document.body.scrollLeft; divX-=5;
 	var divY = (isNav)? e.pageY : event.clientY + document.body.scrollTop; divY+=10;
 	protDIV.style.left = divX + 'px';
 	protDIV.style.top = divY + 'px';
 	protDIV.innerHTML="<CENTER><BR><FONT class=\\"title3\\">Fetching data...</FONT><BR><IMG src=\\"$promsPath{images}/scrollbarGreen.gif\\"><BR><INPUT type=\\"button\\" value=\\" Cancel \\" class=\\"font11\\" onclick=\\"document.getElementById('protDetailsDIV').style.display='none'\\"><BR><BR>";
 	protDIV.style.display='';
-	//Creation of the XMLHTTPRequest object
+	// Creation of the XMLHTTPRequest object
 	var XHR = getXMLHTTP();
 	if (!XHR) {
 		return false;
@@ -1381,7 +1394,7 @@ function ajaxGetProteinDetails(e,protID,bestAnaStrg) {
 	/* POST */
 	var paramStrg="AJAX=getProtDetails&id_project=$projectID&protID="+protID+"&hiddenRule=$hiddenRule&pepRule=$peptideRule&pepThreshold=$pepThreshold&virtualData=$virtualData&pepSpecificity=$pepSpecificity&numGroups=$numGroups&groupPos=$groupPosStrg&anaList=$anaList&anaContext=$contextAna&bestAna="+bestAnaStrg;
 	XHR.open("POST","$promsPath{cgi}/compareAnalyses.cgi",true);
-	//Send the proper header information along with the request
+	// Send the proper header information along with the request
 	XHR.setRequestHeader("Content-type", "application/x-www-form-urlencoded; charset=UTF-8");
 	XHR.setRequestHeader("Content-length", paramStrg.length);
 	XHR.setRequestHeader("Connection", "close");
@@ -1502,7 +1515,7 @@ function manualCheck(chkStatus) {
 	parent.selItemsFrame.setComparisonAsModified(1);
 	var newChecked=(chkStatus)? 1 : -1;
 	updateNumChecked(newChecked);
-	//document.getElementById('manChkBUT').disabled=(numProtChecked > 0)? false : true;
+	// document.getElementById('manChkBUT').disabled=(numProtChecked > 0)? false : true;
 	update2ndVennDiagram();
 }
 function activatePtmFiltering(refPtm) {
@@ -1533,10 +1546,10 @@ function updateComparisonStrategy(strategy) {
 	}
 }
 function autoCheck(warn) {
-	//document.getElementById('manChkBUT').disabled=true;
+	// document.getElementById('manChkBUT').disabled=true;
 	var protForm=document.protView;
 	var checkBoxList=protForm.chkProt;
-	//Peptides
+	// Peptides
 	var pepDistribList=protForm.pepDistrib;
 	var pepCompSign=[];
 	var numPep=[];
@@ -1564,7 +1577,7 @@ function autoCheck(warn) {
 			numPtm[a]=document.getElementById('numPtm_'+a).value*1; //convert to number
 		}
 	}
-	//Scanning protein list
+	// Scanning protein list
 	var numMatch=0;
 	var allMatches=0;
 	PROT: for (let i=0; i<pepDistribList.length; i++) {
@@ -1576,13 +1589,13 @@ function autoCheck(warn) {
 			refPtmDistrib=allPtmDistib[refPtmIndex].split(':');
 		}
 		if (logic=='and') {
-			//Peptides
+			// Peptides
 			for (let a=0; a<pepCompSign.length; a++) {
 				if ((pepCompSign[a]=='>=' && anaDistrib[a]*1<numPep[a]) \|\| (pepCompSign[a]=='<=' && anaDistrib[a]*1>numPep[a])) {
 					continue PROT;
 				}
 			}
-			//PTMs
+			// PTMs
 			if (refPTM) {
 				for (let a=0; a<ptmCompSign.length; a++) {
 					if ((ptmCompSign[a]=='>=' && refPtmDistrib[a]*1<numPtm[a]) \|\| (ptmCompSign[a]=='<=' && refPtmDistrib[a]*1>numPtm[a])) {
@@ -1595,11 +1608,11 @@ function autoCheck(warn) {
 			var okMatch;
 			for (let a=0; a<pepCompSign.length; a++) { // same length than ptmCompSign
 				okMatch=true; // reset for each group
-				//Peptides
+				// Peptides
 				if ((pepCompSign[a]=='>=' && anaDistrib[a]*1<numPep[a]) \|\| (pepCompSign[a]=='<=' && anaDistrib[a]*1>numPep[a])) {
 					okMatch=false;
 				}
-				//PTMs
+				// PTMs
 				if (okMatch==true && refPTM) { // logic is always 'and' between pep & ptm
 					if ((ptmCompSign[a]=='>=' && refPtmDistrib[a]*1<numPtm[a]) \|\| (ptmCompSign[a]=='<=' && refPtmDistrib[a]*1>numPtm[a])) {
 						okMatch=false;
@@ -1610,13 +1623,13 @@ function autoCheck(warn) {
 			if (okMatch==false) {continue PROT;}
 		}
 		else { // frequency
-			//Peptides
+			// Peptides
 			var numMatchPep=0;
 			for (let a=0; a<anaDistrib.length; a++) {
 				if (anaDistrib[a]*1 >= freqPep.value) {numMatchPep++;}
 			}
 			if (numMatchPep < freqAnaGr.value) {continue PROT;}
-			//PTMs
+			// PTMs
 			if (refPTM) {
 				var numMatchPtm=0;
 				for (let a=0; a<refPtmDistrib.length; a++) {
@@ -1625,12 +1638,13 @@ function autoCheck(warn) {
 				if (numMatchPtm < freqAnaGr.value) {continue PROT;}
 			}
 		}
-		//Result
-		if (!checkBoxList[i].checked) { //okMatch &&
+		// Result
+		if (!checkBoxList[i].checked) { // okMatch &&
 			numMatch++;
 			checkBoxList[i].checked=true;
-			var chkData=checkBoxList[i].value.split(':');
-			var tr=document.getElementById('prot_'+chkData[chkData.length-1]);
+			// var chkData=checkBoxList[i].value.split(':');
+			// var tr=document.getElementById('prot_'+chkData[chkData.length-1]);
+			var tr=document.getElementById('prot_'+i);
 			tr.className='list row_'+(numMatch % 2);
 			tr.style.display=''; // make sure checked prot is visible
 		}
@@ -1694,9 +1708,10 @@ function hideShowUnchecked(warn) {
 	var checkBoxList=myForm.chkProt;
 	if (checkBoxList.length) {
 		var numVisible=0;
-		for (var i=0; i < checkBoxList.length; i++) {
-			var chkData=checkBoxList[i].value.split(':');
-			var tr=document.getElementById('prot_'+chkData[chkData.length-1]);
+		for (let i=0; i < checkBoxList.length; i++) {
+			// var chkData=checkBoxList[i].value.split(':');
+			// var tr=document.getElementById('prot_'+chkData[chkData.length-1]);
+			var tr=document.getElementById('prot_'+i);
 			if (myForm.hideShowStatus.value=='none') { // show checked only
 				if (checkBoxList[i].checked) {
 					numVisible++;
@@ -1715,8 +1730,8 @@ function hideShowUnchecked(warn) {
 		}
 	}
 	else if (!checkBoxList.checked) { // only 1 prot in comparison
-		var chkData=checkBoxList.value.split(':');
-		document.getElementById('prot_'+chkData[chkData.length-1]).style.display=myForm.hideShowStatus.value;
+		// var chkData=checkBoxList.value.split(':');
+		document.getElementById('prot_0').style.display=myForm.hideShowStatus.value;
 	}
 }
 function updateNumChecked(newChecked) {
@@ -1786,13 +1801,13 @@ function resetSelection() {
 	document.getElementById('logic').selectedIndex=0; // logic = 'and'
 	updateComparisonStrategy('and');
 	uncheckAll(myForm.chkProt);
-	//hideShowUnchecked(0);
-	for (var a=0; a < $numAnaGroups; a++) {
+	// hideShowUnchecked(0);
+	for (let a=0; a < $numAnaGroups; a++) {
 		document.getElementById('pepCompSign_'+a).selectedIndex=0;
 		document.getElementById('numPep_'+a).selectedIndex=0;
 	}
 	if (myForm.ptmDistrib) {
-		for (var a=0; a < $numAnaGroups; a++) {
+		for (let a=0; a < $numAnaGroups; a++) {
 			document.getElementById('ptmCompSign_'+a).selectedIndex=0;
 			document.getElementById('numPtm_'+a).selectedIndex=0;
 		}
@@ -1911,14 +1926,14 @@ print qq
 |</FONT>
 	</TH>
 	<TH class="rBorder" bgcolor=$color2 nowrap>
-&nbsp;Strategy<SUP onmouseover="popup('Select<BR>&nbsp;&nbsp;&nbsp;-A <B>logic</B> between Group filters: <B>And</B> (intersection) or <B>Or</B> (union)<BR>&nbsp;&nbsp;&nbsp;or<BR>&nbsp;&nbsp;&nbsp;-a global <B>frequency</B> of detection')\" onmouseout=\"popout()\">*</SUP>:
+&nbsp;Strategy<SUP onmouseover="popup('Select<BR>&nbsp;&nbsp;&nbsp;-A <B>logic</B> between Group filters: <B>And</B> (intersection) or <B>Or</B> (union)<BR>&nbsp;&nbsp;&nbsp;or<BR>&nbsp;&nbsp;&nbsp;-a global <B>frequency</B> of detection')\" onmouseout=\"popout()\">?</SUP>:
 <SELECT name="logic" id="logic" class="font11" onchange="updateComparisonStrategy(this.value)"><OPTION value="and">And</OPTION><OPTION value="or"$selOrStatus>Or</OPTION><OPTION value="frequency"$selFreqStatus>Frequency</OPTION></SELECT>&nbsp;<BR>
-&nbsp;<INPUT type="button" value="Check Matching" class="font11" style="width:110px" onclick="autoCheck(1)">&nbsp;<INPUT type="button" value="Uncheck All" class="font11" style="width:85px" onclick="uncheckAll(document.protView.chkProt)">&nbsp;
+&nbsp;<INPUT type="button" value="Check matching" class="font11" style="width:110px" onclick="autoCheck(1)">&nbsp;<INPUT type="button" value="Uncheck all" class="font11" style="width:85px" onclick="uncheckAll(document.protView.chkProt)">&nbsp;
 <BR>&nbsp;<INPUT type="button" name="hideShowButton" value="$hideShowStrg" class="font11" style="width:110px" onclick="hideShowUnchecked(1)">&nbsp;
 	</TH>
 	<TH nowrap valign=top><INPUT type="button" value="Save Comparison..." style="width:150px" onclick="showSaveCompForm('show')" $disSaveCompStrg><BR>
 <INPUT type="button" id="saveFormBUTTON" value="Save Selected..." style="width:150px" onclick="ajaxManageSaveProteins('getThemes');" $disSaveProtStrg></TH>
-	<TH nowrap valign=top><INPUT type="button" value="Export Selected" onclick="exportResult('sel')" style="width:120px"><BR><INPUT type="button" value="Export All" onclick="exportResult('all')" style="width:120px"></TD>
+	<TH nowrap valign=top><INPUT type="button" value="Export selected" onclick="exportResult('sel')" style="width:120px"><BR><INPUT type="button" value="Export all" onclick="exportResult('all')" style="width:120px"></TD>
 	<TH nowrap valign=top><INPUT type="button" value="Peptide Distribution" style="width:150px" onclick="graphicalView()"></TH>
 </TR></TABLE></TH></TR>
 <TR>
@@ -2028,8 +2043,8 @@ foreach my $g (0..$#analysisGroups) {
 }
 if ($numAnaGroups==2 && !$listComparison) {
 	print qq
-|<TH class="rbBorder" width=70><A href=\"javascript:selectSort('absDelta')\" onmouseover=\"popup('<B>Absolute delta:</B> #2-#1<BR>Click to sort proteins by <B>decreasing absolute delta</B>.')\" onmouseout=\"popout()\">$absDeltaText</A></TH>
-<TH class="rbBorder" width=70><A href=\"javascript:selectSort('relDelta')\" onmouseover=\"popup('<B>Relative delta:</B> (#2-#1)/(#1+#2)%<BR>Click to sort proteins by <B>decreasing relative delta</B>.')\" onmouseout=\"popout()\">$relDeltaText</A></TH>
+|<TH class="rbBorder" width=70><A href="javascript:selectSort('absDelta')" onmouseover="popup('<B>Absolute delta:</B> #2-#1<BR>Click to sort proteins by <B>decreasing absolute delta</B>.')" onmouseout="popout()">$absDeltaText</A></TH>
+<TH class="rbBorder" width=70><A href="javascript:selectSort('relDelta')" onmouseover="popup('<B>Relative delta:</B> (#2-#1)/(#1+#2)%<BR>Click to sort proteins by <B>decreasing relative delta</B>.')" onmouseout="popout()">$relDeltaText</A></TH>
 |;
 }
 print "</TR>\n";
@@ -2039,9 +2054,10 @@ foreach my $protID (sort{&sortProt($sortOrder)} keys %protAnnotation) {
 	my $chkStatus=($selectedProteins{$protID})? ' checked' : '';
 	#my $displayStatus=($chkStatus)? 'block' : $hideShowStatus;
 	my $displayStatusStrg=($chkStatus)? '' : " style=\"display:$hideShowStatus\"";
+	my $trID='prot_'.$numProt;
 	my $trClass='row_'.(++$numProt % 2);
 	#print "<TABLE id=\"prot_$protID\" cellspacing=0 cellpadding=0 width=$tableWidth border=0 style=\"display:$displayStatus\"><TR class=\"list $trClass\" valign=\"top\">\n";
-	print "<TR id=\"prot_$protID\" class=\"list $trClass\" valign=\"top\"$displayStatusStrg>\n";
+	print "<TR id=\"$trID\" class=\"list $trClass\" valign=\"top\"$displayStatusStrg>\n";
 	#>Protein
 	my $bestAnaStrg='';
 	my %distinctAna;
@@ -2058,12 +2074,12 @@ foreach my $protID (sort{&sortProt($sortOrder)} keys %protAnnotation) {
 			$bestAnaStrg.=($bestAnalysis{$protID}{$g})? $bestAnalysis{$protID}{$g} : 0;
 		}
 	}
-	my $chkBoxValue=join(':',keys %distinctAna,$protID);
+	#my $chkBoxValue=join(':',keys %distinctAna,$protID);
 	my $distAnaStrg=join(',',keys %distinctAna);
 	my ($protTag,$classStrg)=($bestVisibility{$protID}[1])? ('TH','') : ('TD',' class="hiddenProt"'); # $classStrg is important for proper recording to custom Lists!!!
 	print qq
 |<TD width=252 nowrap>
-<INPUT type="checkbox" name="chkProt"$classStrg value="$chkBoxValue" onclick="manualCheck(this.checked)"$chkStatus><A class="$protTag" href="javascript:sequenceView($protID,'$distAnaStrg')">$protAnnotation{$protID}[0]</A><IMG id="IMG_$protID" src="$promsPath{images}/plus.gif" align="top" onclick="ajaxGetProteinDetails(event,$protID,'$bestAnaStrg')">
+<INPUT type="checkbox" name="chkProt"$classStrg value="$protID" onclick="manualCheck(this.checked)"$chkStatus><A class="$protTag" href="javascript:sequenceView($protID,'$distAnaStrg')">$protAnnotation{$protID}[0]</A><IMG src="$promsPath{images}/plus.gif" align="top" onclick="ajaxGetProteinDetails(this,event,$protID,'$bestAnaStrg')">
 </TD>
 |;
 	#>Gene strg
@@ -2440,7 +2456,7 @@ sub selectAnalyses {
 
 	####<List of Analyses>####
 	my @queryList;
-	push @queryList,qq |SELECT DISTINCT CONCAT('EXPERIMENT:',E.ID_EXPERIMENT),E.NAME,CONCAT('GEL2D:',G.ID_GEL2D),G.NAME
+	push @queryList,qq |SELECT DISTINCT E.DISPLAY_POS,G.DISPLAY_POS,CONCAT('EXPERIMENT:',E.ID_EXPERIMENT),E.NAME,CONCAT('GEL2D:',G.ID_GEL2D),G.NAME
 							FROM EXPERIMENT E,GEL2D G,SPOT SP,SAMPLE S,ANALYSIS A
 							WHERE E.ID_PROJECT=$projectID AND E.ID_EXPERIMENT=G.ID_EXPERIMENT
 							AND G.ID_GEL2D=SP.ID_GEL2D AND SP.ID_SPOT=S.ID_SPOT
@@ -2448,7 +2464,7 @@ sub selectAnalyses {
 							AND E.ID_EXPERIMENT NOT IN (SELECT E2.ID_EXPERIMENT FROM EXPERIMENT E2 INNER JOIN USER_EXPERIMENT_LOCK EU ON EU.ID_EXPERIMENT=E2.ID_EXPERIMENT WHERE E2.ID_PROJECT=$itemID AND EU.ID_USER='$userID')
 							ORDER BY E.DISPLAY_POS ASC,G.DISPLAY_POS ASC
 							|; #,SP.NAME ASC
-	push @queryList,qq |SELECT DISTINCT CONCAT('EXPERIMENT:',E.ID_EXPERIMENT),E.NAME,CONCAT('SAMPLE:',S.ID_SAMPLE),S.NAME
+	push @queryList,qq |SELECT DISTINCT E.DISPLAY_POS,S.DISPLAY_POS,CONCAT('EXPERIMENT:',E.ID_EXPERIMENT),E.NAME,CONCAT('SAMPLE:',S.ID_SAMPLE),S.NAME
 							FROM EXPERIMENT E,SAMPLE S,ANALYSIS A
 							WHERE E.ID_PROJECT=$projectID AND E.ID_EXPERIMENT=S.ID_EXPERIMENT
 							AND S.ID_SAMPLE=A.ID_SAMPLE AND S.ID_SPOT IS NULL AND A.VALID_STATUS>=1
@@ -2458,7 +2474,7 @@ sub selectAnalyses {
 	foreach my $query (@queryList) {
 		my $sthItem=$dbh->prepare($query);
 		$sthItem->execute;
-		while (my @itemInfo=$sthItem->fetchrow_array) {
+		while (my ($disp1,$disp2,@itemInfo)=$sthItem->fetchrow_array) {
 			for (my $i=0; $i<$#itemInfo; $i+=2) {
 				next if $usedItems{$itemInfo[$i]};
 				my $labelString='';
@@ -2565,7 +2581,7 @@ comparisonList['0'].AUTOCHECK='$autochkStrg';
 	}
 	print qq
 |//<-----
-//------>Modifications specificity
+// ------>Modifications specificity
 var modifSpecificity={
 |;
 	my $numModifs=scalar keys %projectVarMods;
@@ -2588,19 +2604,19 @@ var modifSpecificity={
 	}
 	print qq
 |};
-//<-----
+// <-----
 var selCompName='$selCompName';
 var selCompIndex=$selCompIndex; // index of selected comparison in document.compForm.comparisonID!!!
 var modCompType=0;
 function selectComparisonType(newCompType) {
 	var myForm=document.compForm;
 	if (newCompType=='1v1_pep') {
-		//Peptide vs Protein options
+		// Peptide vs Protein options
 		document.getElementById('pepCompOptions').style.display='';
 		document.getElementById('protCompOptions').style.display='none';
 		disableListComparison();
 /*
-		//Disable all lists
+		// Disable all lists
 		for (var i=0; i<myForm.anaParent.options.length; i++) {
 			if (myForm.anaParent.options[i].value.match('CLASSIFICATION:')) {
 				if (i==myForm.anaParent.selectedIndex) { // deselect Classification opt
@@ -2610,13 +2626,13 @@ function selectComparisonType(newCompType) {
 				myForm.anaParent.options[i].disabled=true;
 			}
 		}
-		//Remove lists from selected items
+		// Remove lists from selected items
 		for (var i=myForm.usedAna.options.length-1; i>=0; i--) {
 			if (myForm.usedAna.options[i].value.match(/^C:/)) {
 				myForm.usedAna.removeChild(myForm.usedAna.options[i]);
 			}
 		}
-		//Remove lists from existing groups
+		// Remove lists from existing groups
 		var modGroup=false;
 		for (var g=0; g<analysisGroups.length; g++) {
 			for (var i=analysisGroups[g].length-2; i>=0; i-=2) {
@@ -2630,10 +2646,10 @@ function selectComparisonType(newCompType) {
 */
 	}
 	else {
-		//Peptide vs Protein options
+		// Peptide vs Protein options
 		document.getElementById('pepCompOptions').style.display='none';
 		document.getElementById('protCompOptions').style.display='';
-		//Activate all lists
+		// Activate all lists
 		for (var i=0; i<myForm.anaParent.options.length; i++) {
 			if (myForm.anaParent.options[i].value.match('CLASSIFICATION:')) {myForm.anaParent.options[i].disabled=false;}
 		}
@@ -2657,7 +2673,7 @@ function selectComparisonType(newCompType) {
 }
 function disableListComparison() {
 	var myForm=document.compForm;
-	//Disable all lists
+	// Disable all lists
 	for (var i=0; i<myForm.anaParent.options.length; i++) {
 		if (myForm.anaParent.options[i].value.match('CLASSIFICATION:')) {
 			if (i==myForm.anaParent.selectedIndex) { // deselect Classification opt
@@ -2668,14 +2684,14 @@ function disableListComparison() {
 		}
 	}
 	var listIsUsed=false;
-	//Remove lists from selected items
+	// Remove lists from selected items
 	for (var i=myForm.usedAna.options.length-1; i>=0; i--) {
 		if (myForm.usedAna.options[i].value.match(/^C:/)) {
 			myForm.usedAna.removeChild(myForm.usedAna.options[i]);
 			listIsUsed=true;
 		}
 	}
-	//Remove lists from existing groups
+	// Remove lists from existing groups
 	for (var g=0; g<analysisGroups.length; g++) {
 		for (var i=analysisGroups[g].length-2; i>=0; i-=2) {
 			if (analysisGroups[g][i+1].match(/^C:/)) { // remove 2 indexes text,value
@@ -2705,11 +2721,11 @@ function selectComparison(compID,onChange) {
 	updateNumGroups(newGrNumber);
 
 	/*** Peptide options ***/
-	//Reset all modif fiters to 'allow'
+	// Reset all modif fiters to 'allow'
 	var allMods=(myForm.modifList.value+'').split(',');
 	for (var m=0; m<allMods.length; m++) {myForm['filterMod_'+allMods[m]].selectedIndex=0;}
 	myForm.restrictModifLogic.selectedIndex=0; // restrictModifLogic
-	//Loop through all peptide options
+	// Loop through all peptide options
 	var pepParams=comparisonList[compID].PEP_PARAMS.split(';');
 	for (var p=0; p<pepParams.length; p++) {
 		if (!pepParams[p]) continue; // in case empty (;;)
@@ -2744,11 +2760,11 @@ function selectComparison(compID,onChange) {
 			}
 		}
 	}
-	//Sort Order & Autocheck (used after submission)
+	// Sort Order & Autocheck (used after submission)
 	myForm.sort.value=comparisonList[compID].SORT;
 	myForm.autocheck.value=comparisonList[compID].AUTOCHECK;
 
-	//Category filter
+	// Category filter
 	for (var i=0; i<myForm.catFilter.options.length; i++) {
 		if (myForm.catFilter.options[i].value==comparisonList[compID].FILTER) {
 			myForm.catFilter.selectedIndex=i;
@@ -2758,12 +2774,22 @@ function selectComparison(compID,onChange) {
 	// Category filter rule
 	myForm.catFilterRule.selectedIndex=(comparisonList[compID].FILTER_RULE=='exclude')? 1 : 0;
 
-	//AJAX-dependent processes (last because of server delay)
+	// AJAX-dependent processes (last because of server delay)
 	if (compID != 0) {
 		ajaxUpdateCompGroupAnalyses(newGrNumber,compID);
 	}
 	else {
 		selectedGroup=0;
+	}
+}
+function updateLists(themeSel,listSel,XHR) {
+	ajaxUpdateRestrict();
+	if (themeSel.value=='getLists:-1') { // update anaParent in selItemsFrame
+		var idData=XHR.responseText.match(/THEME_ID=(\\d+)/);
+		var nameData=XHR.responseText.match(/THEME_NAME=(.+)###/);
+		var selParent=document.compForm.anaParent;
+		var idx=(selParent.options[selParent.length-1].text=='None')? selParent.length-1 : selParent.length;
+		selParent[idx]=new Option(nameData[1],'CLASSIFICATION:'+idData[1]);
 	}
 }
 function showModifFilterForm(status) {
@@ -2836,7 +2862,7 @@ function updateNumGroups(newGrNumber) {
 }
 function setCurrentGroup(curGroup) {
 	var myForm=document.compForm;
-	//Storing analyses in selectedGroup
+	// Storing analyses in selectedGroup
 	analysisGroups[selectedGroup-1].length=0;
 	for (var i=0; i<myForm.usedAna.options.length; i++) {
 		analysisGroups[selectedGroup-1].push(myForm.usedAna.options[i].text);
@@ -2845,7 +2871,7 @@ function setCurrentGroup(curGroup) {
 	displayGroup(curGroup);
 }
 function displayGroup(selGroup) { //Display selGroup analyses
-	//selGroup*=1;
+	// selGroup*=1;
 	var myForm=document.compForm;
 	myForm.usedAna.options.length=0;
 	var anaCount=0;
@@ -2862,7 +2888,7 @@ function updateAnalyses(action) {
 	var selected=false;
 	if (action=='add') {
 		for (var i=0; i<usedSelect.options.length; i++) {usedSelect.options[i].selected=false;}
-		//Processing & adding parent label
+		// Processing & adding parent label
 		var selAnaParent=document.compForm.anaParent;
 		var parentLabel=selAnaParent.options[selAnaParent.options.selectedIndex].text;
 		var labelList=parentLabel.split(' > ');
@@ -2876,7 +2902,7 @@ function updateAnalyses(action) {
 		ALL:for (var i=0; i<allSelect.length; i++) {
 			if (allSelect.options[i].selected) {
 				selected=true;
-				//Check if not already used
+				// Check if not already used
 				for (var j=0; j<usedSelect.length; j++) {
 					if (usedSelect.options[j].value==allSelect.options[i].value) continue ALL;
 				}
@@ -2887,7 +2913,7 @@ function updateAnalyses(action) {
 		}
 		usedSelect.focus();
 	}
-	else { //remove
+	else { // remove
 		var keepOptions=new Array();
 		for (var i=0; i<usedSelect.length; i++) {
 			if (!usedSelect.options[i].selected) {
@@ -2958,7 +2984,7 @@ function checkSelectedAnalyses(myForm) {
 				return false;
 			}
 			if (g>0) myForm.anaList.value+=',';
-			//myForm.anaList.value+=g+'=';
+			// myForm.anaList.value+=g+'=';
 			for (var i=1; i<analysisGroups[g].length; i+=2) { // 2x indexes
 				if (i>1) myForm.anaList.value+='.'; // :
 				myForm.anaList.value+=analysisGroups[g][i];
@@ -2992,7 +3018,7 @@ function autoSelectAnalyses() {
 	for (var i=0;i<unsafe.length;++i) {
 		searchString=searchString.replace(new RegExp("\\\\"+unsafe.charAt(i),"g"),bs+unsafe.charAt(i));
 	}
-	//Searching option text
+	// Searching option text
 	var selStatus=(myForm.autoAction.value=='select')? true : false;
 	for (var i=0; i<myForm.allAna.length; i++) {
 		if (myForm.allAna.options[i].text.match(searchString)) {
@@ -3008,7 +3034,7 @@ function clearSelection() {
 }
 // AJAX --->
 function ajaxGetAnalysesList(branchID) {
-	//Creation of the XMLHTTPRequest object
+	// Creation of the XMLHTTPRequest object
 	var XHR = getXMLHTTP();
 	if (!XHR) {
 		return false;
@@ -3024,7 +3050,7 @@ function ajaxGetAnalysesList(branchID) {
 	XHR.send(null);
 }
 function ajaxUpdateRestrict(compID) {
-	//Creation of the XMLHTTPRequest object
+	// Creation of the XMLHTTPRequest object
 	var XHR = getXMLHTTP();
 	if (!XHR) {
 		return false;
@@ -3040,7 +3066,7 @@ function ajaxUpdateRestrict(compID) {
 	XHR.send(null);
 }
 function ajaxUpdateCompGroupAnalyses(newGrNumber,compID) {
-	//Creation of the XMLHTTPRequest object
+	// Creation of the XMLHTTPRequest object
 	var XHR = getXMLHTTP();
 	if (!XHR) {
 		return false;
@@ -3119,7 +3145,7 @@ function storeGroupAnalyses(newGrNumber,anaText) {
 function getElementPosition(e) {
 	var left=0;
 	var top=0;
-	while (e.offsetParent != undefined && e.offsetParent != null) { //Adding parent item position
+	while (e.offsetParent != undefined && e.offsetParent != null) { // Adding parent item position
 		left += e.offsetLeft + (e.clientLeft != null ? e.clientLeft : 0);
 		top += e.offsetTop + (e.clientTop != null ? e.clientTop : 0);
 		e = e.offsetParent;
@@ -3148,14 +3174,18 @@ window.onload=function() {
 <SELECT name="compType" id="compType" style="font-weight:bold;font-size:18px;color:#DD0000" onchange="selectComparisonType(this.value)"><OPTION value="1v1_pep"
 |;
 	print ' selected' if $compType eq '1v1_pep';
-	print ">1 vs 1 Peptide</OPTION><OPTION value=\"1v1_prot\"";
+	print ">Peptide Summary</OPTION><OPTION value=\"1v1_prot\"";
 	print ' selected' if $compType eq '1v1_prot';
-	print ">1 vs 1 Protein</OPTION><OPTION value=\"full_prot\"";
+	print ">Protein Summary</OPTION><OPTION value=\"full_prot\"";
 	print ' selected' if $compType eq 'full_prot';
-	print ">Full Protein</OPTION><OPTGROUP label=\"Modification sites:\">";
-	foreach my $modID (sort{lc($projectVarMods{$a}[0]) cmp lc($projectVarMods{$b}[0])} keys %projectVarMods) {
-		my $selStrg=($compType eq "modif_sites:$modID")? ' selected' : '';
-		print "<OPTION value=\"modif_sites:$modID\"$selStrg>$projectVarMods{$modID}[0]-sites</OPTION>";
+	print ">Full Protein</OPTION>\n";
+	if (scalar keys %projectVarMods) {
+		print "<OPTGROUP label=\"Modification sites:\">";
+		foreach my $modID (sort{lc($projectVarMods{$a}[0]) cmp lc($projectVarMods{$b}[0])} keys %projectVarMods) {
+			my $selStrg=($compType eq "modif_sites:$modID")? ' selected' : '';
+			print "<OPTION value=\"modif_sites:$modID\"$selStrg>$projectVarMods{$modID}[0]-sites</OPTION>";
+		}
+		print "</OPTGROUP>\n";
 	}
 	print qq
 |</SELECT>&nbsp;<FONT class="title2">Comparison with&nbsp;</FONT><FONT class="title2"><SELECT name="numGroups" style="font-weight:bold;font-size:16px" onchange="updateNumGroups(this.value); setComparisonAsModified(2)"><OPTION value="0">No</OPTION>
@@ -3193,7 +3223,7 @@ window.onload=function() {
 		print ' selected' if $refItem->[0] eq $usedParent;
 		print ">$refItem->[1]</OPTION>\n";
 	}
-	print "<OPTION value=\"\" disabled style=\"color:black;\">----- Custom lists -----</OPTION>\n";
+	print "<OPTION value=\"\" disabled style=\"color:black;\">----- Custom protein lists -----</OPTION>\n";
 	if (scalar %classificationList) {
 		foreach my $classID (sort{lc($classificationList{$a}[0]) cmp lc($classificationList{$b}[0])} keys %classificationList) {
 			print "<OPTION value=\"CLASSIFICATION:$classID\">$classificationList{$classID}[0]</OPTION>\n";
@@ -3214,8 +3244,8 @@ window.onload=function() {
 <TD valign=middle><BR><INPUT type="button" class="formButton" name="up" value="Up" style="width:50px" onclick="moveAnalyses('up')"/><BR><INPUT type="button" class="formButton" name="down" value="Down" style="width:50px" onclick="moveAnalyses('down')"/><BR><INPUT type="button" class="formButton" value="Clear" style="width:50px" onclick="clearAnalyses()"/></TD>
 </TR>
 <TR><TH colspan=3 align=left nowrap>
-<INPUT type="checkbox" name="virtualData" value="1" /><FONT class="formText" onmouseover="popup('Peptides added by quantification algorithms<BR>using the \\'<B>M</B>atch <B>B</B>etween <B>R</B>uns\\' feature')" onmouseout="popout()">Include MBR-rescued peptides<SUP>*</SUP></FONT>
-&nbsp;&nbsp;&nbsp;&nbsp;<FONT class="formText" onmouseover="popup('-<B>Proteotypic:</B> Peptides found in only 1 protein.<BR>-<B>Proteotypic + shared:</B> Use all peptides found for a protein if at least 1 is proteotypic.')" onmouseout="popout()">Peptide specificity<SUP>*</SUP>:</FONT><SELECT name="pepSpecificity"><OPTION value="all">All</OPTION><OPTION value="unique"$selUniquePep>Proteotypic</OPTION><OPTION value="unique_shared"$selUniqueSharedPep>Proteotypic + shared</OPTION></SELECT>
+<INPUT type="checkbox" name="virtualData" value="1" /><FONT class="formText" onmouseover="popup('Peptides added by quantification algorithms<BR>using the \\'<B>M</B>atch <B>B</B>etween <B>R</B>uns\\' feature')" onmouseout="popout()">Include MBR-rescued peptides<SUP>?</SUP></FONT>
+&nbsp;&nbsp;&nbsp;&nbsp;<FONT class="formText" onmouseover="popup('-<B>Proteotypic:</B> Peptides found in only 1 protein.<BR>-<B>Proteotypic + shared:</B> Use all peptides found for a protein if at least 1 is proteotypic.')" onmouseout="popout()">Peptide specificity<SUP>?</SUP>:</FONT><SELECT name="pepSpecificity"><OPTION value="all">All</OPTION><OPTION value="unique"$selUniquePep>Proteotypic</OPTION><OPTION value="unique_shared"$selUniqueSharedPep>Proteotypic + shared</OPTION></SELECT>
 
 <DIV id="pepCompOptions">
 <INPUT type="checkbox" name="noMissCut" value="1" /><FONT class="formText">Exclude peptides with missed cleavages</FONT>
@@ -3276,9 +3306,9 @@ window.onload=function() {
 	exit;
 }
 
-##########################################################################
-#####################<1 vs 1 Peptide comparison>##########################
-##########################################################################
+####################################################################################
+#####################<1 vs 1 (Summary) Peptide comparison>##########################
+####################################################################################
 sub comparePeptides {
 	#my $delocPhospho=param('delocPhospho') || 0;
 
@@ -3499,16 +3529,16 @@ ACRONYM {cursor:help;}
 		}
 		print qq
 |<SCRIPT type="text/javascript">
-var selectedSite;
+var selectedSite,selectedImg;
 var isNav = (navigator.appName.indexOf("Netscape") !=-1);
 function unselectSite() {
 	if (selectedSite) {
 		document.getElementById('siteModifDetailsDIV').style.display='none';
-		document.getElementById('IMG_'+selectedSite).src="$promsPath{images}/plus.gif";
+		selectedImg.src="$promsPath{images}/plus.gif";
 	}
 	selectedSite=null;
 }
-function ajaxGetModifSiteDetails(e,site,pepIdStrg) {
+function ajaxGetModifSiteDetails(img,e,site,pepIdStrg) {
 	var siteDIV=document.getElementById('siteModifDetailsDIV');
 	if (!siteDIV) { // page is not fully loaded yet
 		alert('Display process is still on-going. Try again when completed.');
@@ -3520,7 +3550,8 @@ function ajaxGetModifSiteDetails(e,site,pepIdStrg) {
 	}
 	unselectSite();
 	selectedSite=site;
-	document.getElementById('IMG_'+site).src="$promsPath{images}/minus1.gif";
+	selectedImg=img;
+	img.src="$promsPath{images}/minus1.gif";
 	var divX = (isNav)? e.pageX : event.clientX + document.body.scrollLeft; divX-=5;
 	var divY = (isNav)? e.pageY : event.clientY + document.body.scrollTop; divY+=10;
 	siteDIV.style.left = divX + 'px';
@@ -3533,9 +3564,9 @@ function ajaxGetModifSiteDetails(e,site,pepIdStrg) {
 		return false;
 	}
 	/* POST */
-	var paramStrg="AJAX=getSiteDetails&modID=$selModifID&site="+site+"&numGroups=$numGroups&anaList=$anaList&pepIDs="+pepIdStrg;
+	var paramStrg="AJAX=getSiteDetails&site="+site+"&numGroups=$numGroups&anaList=$anaList&pepIDs="+pepIdStrg;
 	XHR.open("POST","$promsPath{cgi}/compareAnalyses.cgi",true);
-	//Send the proper header information along with the request
+	// Send the proper header information along with the request
 	XHR.setRequestHeader("Content-type", "application/x-www-form-urlencoded; charset=UTF-8");
 	XHR.setRequestHeader("Content-length", paramStrg.length);
 	XHR.setRequestHeader("Connection", "close");
@@ -3575,11 +3606,11 @@ function generateAutoCheckString() {
 		autoChkStrg+=protForm.freqAnaGr.value+';1';
 	}
 	else {
-		//peptides
+		// peptides
 		for (var g=0; g<$numAnaGroups; g++) {
 			if (g>0) {autoChkStrg+=';'}
-			//var aGr=g+1;
-			//autoChkStrg+=aGr+':'+protForm['pepCompSign_'+g].value+':'+protForm['numPep_'+g].value;
+			// var aGr=g+1;
+			// autoChkStrg+=aGr+':'+protForm['pepCompSign_'+g].value+':'+protForm['numPep_'+g].value;
 			autoChkStrg+=(g+1)+':';
 			autoChkStrg+=(protForm['numPep_'+g].value*1 >= 0)? '>=:'+protForm['numPep_'+g].value : '<=:0'; // 0/1='Any,Found' : -1='Not found'
 		}
@@ -3651,7 +3682,7 @@ function updateComparisonStrategy(strategy) {
 function autoCheck(warn) {
 	var protForm=document.protView;
 	var checkBoxList=protForm.chkProt;
-	//Peptides
+	// Peptides
 	var pepDistribList=protForm.pepDistrib;
 	var numPep=[];
 	for (let a=0; a < $numAnaGroups; a++) {
@@ -3660,13 +3691,13 @@ function autoCheck(warn) {
 	var logic=document.getElementById('logic').value; //inter-group logic
 	var freqAnaGr=protForm.freqAnaGr;
 
-	//Scanning protein list
+	// Scanning protein list
 	var numMatch=0;
 	var allMatches=0;
 	PROT: for (let i=0; i<pepDistribList.length; i++) {
 		var anaDistrib=pepDistribList[i].value.split(':');
 		if (logic=='and') {
-			//Peptides
+			// Peptides
 			for (let a=0; a<anaDistrib.length; a++) {
 				if ((anaDistrib[a]*1==1 && numPep[a]==-1) \|\| (anaDistrib[a]*1==0 && numPep[a]==1)) {
 					continue PROT;
@@ -3691,12 +3722,13 @@ function autoCheck(warn) {
 			}
 			if (numMatchGr < freqAnaGr.value) {continue PROT;}
 		}
-		//Result
-		if (!checkBoxList[i].checked) { //okMatch &&
+		// Result
+		if (!checkBoxList[i].checked) { // okMatch &&
 			numMatch++;
 			checkBoxList[i].checked=true;
-			var chkData=checkBoxList[i].value.split(':');
-			var tr=document.getElementById('prot_'+chkData[chkData.length-1]);
+			// var chkData=checkBoxList[i].value.split(':');
+			// var tr=document.getElementById('prot_'+chkData[chkData.length-1]);
+			var tr=document.getElementById('prot_'+i);
 			tr.className='list row_'+(numMatch % 2);
 			tr.style.display=''; // make sure checked prot is visible
 		}
@@ -3726,8 +3758,9 @@ function hideShowUnchecked(warn) {
 	if (checkBoxList.length) {
 		var numVisible=0;
 		for (var i=0; i < checkBoxList.length; i++) {
-			var chkData=checkBoxList[i].value.split(':');
-			var tr=document.getElementById('prot_'+chkData[chkData.length-1]);
+			// var chkData=checkBoxList[i].value.split(':');
+			// var tr=document.getElementById('prot_'+chkData[chkData.length-1]);
+			var tr=document.getElementById('prot_'+i);
 			if (myForm.hideShowStatus.value=='none') { // show checked only
 				if (checkBoxList[i].checked) {
 					numVisible++;
@@ -3746,8 +3779,9 @@ function hideShowUnchecked(warn) {
 		}
 	}
 	else if (!checkBoxList.checked) { // only 1 prot in comparison
-		var chkData=checkBoxList.value.split(':');
-		document.getElementById('prot_'+chkData[chkData.length-1]).style.display=myForm.hideShowStatus.value;
+		// var chkData=checkBoxList.value.split(':');
+		// document.getElementById('prot_'+chkData[chkData.length-1]).style.display=myForm.hideShowStatus.value;
+		document.getElementById('prot_0').style.display=myForm.hideShowStatus.value;
 	}
 }
 function updateNumChecked(newChecked) {
@@ -3757,12 +3791,11 @@ function updateNumChecked(newChecked) {
 var numProtChecked=$numProtChecked;
 |;
 		##>Save proteins to custom Lists
-		&promsMod::printAjaxManageSaveProteins($projectID,\%promsPath,'document.protView.chkProt','updateLists');
+		&promsMod::printAjaxManageSaveProteins($projectID,\%promsPath,'document.protView.chkProt','parent.selItemsFrame.updateLists');
 
 		&promsMod::popupInfo();
 	} # end of no export
-	print qq
-|</SCRIPT>
+	print qq |</SCRIPT>
 </HEAD>
 <BODY style="margin:2px;" background="$promsPath{images}/bgProMS.gif">
 <CENTER>
@@ -3777,14 +3810,15 @@ $exportTitleStrg
 	####<Category filter>####
 	my ($filterClassName,$filterCatName);
 	if ($catFilter) {
-		my $sthCP=$dbh->prepare("SELECT ID_PROTEIN FROM CATEGORY_PROTEIN WHERE ID_CATEGORY=$catFilter");
 		%{$catProteins{$catFilter}}=();
-		$sthCP->execute;
-		while (my ($protID)=$sthCP->fetchrow_array) {
-			$catProteins{$catFilter}{$protID}=1;
-		}
-		$sthCP->finish;
-		($filterClassName,$filterCatName)=$dbh->selectrow_array("SELECT CLASSIFICATION.NAME,CATEGORY.NAME FROM CLASSIFICATION,CATEGORY WHERE CLASSIFICATION.ID_CLASSIFICATION=CATEGORY.ID_CLASSIFICATION AND ID_CATEGORY=$catFilter");
+		# my $sthCP=$dbh->prepare("SELECT ID_PROTEIN FROM CATEGORY_PROTEIN WHERE ID_CATEGORY=$catFilter");
+		# $sthCP->execute;
+		# while (my ($protID)=$sthCP->fetchrow_array) {
+		# 	$catProteins{$catFilter}{$protID}=1;
+		# }
+		# $sthCP->finish;
+		&promsQuantif::fetchCustomList($dbh,$catFilter,$catProteins{$catFilter});
+		($filterClassName,$filterCatName)=$dbh->selectrow_array("SELECT CL.NAME,CAT.NAME FROM CLASSIFICATION CL,CATEGORY CAT WHERE CL.ID_CLASSIFICATION=CAT.ID_CLASSIFICATION AND ID_CATEGORY=$catFilter");
 	}
 
 	####<Looping through analyses>####
@@ -3800,7 +3834,7 @@ $exportTitleStrg
 	my $protVisStrg=($hiddenRule==2)? 'AND VISIBILITY>=1' : '';
 	my $protPepSpecifStrg=($pepSpecificity=~/unique/)? 'AND PEP_SPECIFICITY=100' : '';
 	my $isSpecificStrg=($pepSpecificity eq 'unique')? 'AND IS_SPECIFIC=1' : '';
-	my $sthSites=$dbh->prepare("SELECT PPA.ID_PROTEIN,AP.VISIBILITY,AP.CONF_LEVEL,P.ID_PEPTIDE,P.PEP_SEQ,ABS(PEP_BEG),ABS(PEP_END),GROUP_CONCAT(DISTINCT PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),GROUP_CONCAT(DISTINCT PM.ID_MODIFICATION,':',COALESCE(PM.REF_POS_STRING,'') ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),P.DATA,P.SPEC_COUNT,P.SCORE
+	my $sthSites=$dbh->prepare("SELECT A.FILE_FORMAT,PPA.ID_PROTEIN,AP.VISIBILITY,AP.CONF_LEVEL,P.ID_PEPTIDE,P.PEP_SEQ,ABS(PEP_BEG),MIN(ABS(PEP_END)),GROUP_CONCAT(DISTINCT PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),GROUP_CONCAT(DISTINCT PM.ID_MODIFICATION,':',COALESCE(PM.REF_POS_STRING,'') ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),P.DATA,P.SPEC_COUNT,P.SCORE
 								FROM PEPTIDE_MODIFICATION PM
 								INNER JOIN PEPTIDE P ON P.ID_PEPTIDE=PM.ID_PEPTIDE
 								INNER JOIN PEPTIDE_PROTEIN_ATTRIB PPA ON P.ID_PEPTIDE=PPA.ID_PEPTIDE $isSpecificStrg
@@ -3813,7 +3847,7 @@ $exportTitleStrg
 									FROM USER_EXPERIMENT_LOCK EU
 									INNER JOIN EXPERIMENT E2 ON E2.ID_EXPERIMENT=EU.ID_EXPERIMENT
 									WHERE E2.ID_PROJECT=$itemID AND EU.ID_USER='$userID'
-								) GROUP BY ABS(PEP_BEG),P.ID_PEPTIDE,PPA.ID_PROTEIN");
+								) GROUP BY ABS(PEP_BEG),P.ID_PEPTIDE,PPA.ID_PROTEIN,A.ID_ANALYSIS");
 
 	####<Scanning analyses>####
 	my (@groupLabels,%proteinSites,%groupDistrib,%siteDistrib,%peptideIDs,%bestVisibility,%distinctAna,@numAnaInGr,%anaType,%proteinSeq,%sitesInProtein,%siteContext,%unlocalizedPep,%excludedProteins);
@@ -3850,7 +3884,7 @@ $exportTitleStrg
 			$sthSites->execute($anaID);
 			my $siteCount=0;
 			#while (my ($protID,$protVis,$pepID,$pepSeq,$pepBeg,$posStrg,$refPosStrg,$pepData,$specCount)=$sthSites->fetchrow_array) {#}
-			while (my ($protID,$protVis,$protConf,$pepID,$pepSeq,$pepBeg,$pepEnd,$varModCode,$refModInfo,$pepData,$specCount,$score)=$sthSites->fetchrow_array) { #,$charge
+			while (my ($anaFileFormat,$protID,$protVis,$protConf,$pepID,$pepSeq,$pepBeg,$pepEnd,$varModCode,$refModInfo,$pepData,$specCount,$score)=$sthSites->fetchrow_array) { #,$charge
 				unless ($pepBeg) { # cannot locate site on protein
 					$unlocalizedPep{$pepSeq}=1;
 					$excludedProteins{$protID}=1; # temp: will be deleted later if prot is matched by localized pepSeq
@@ -3861,7 +3895,7 @@ $exportTitleStrg
 				next if (!$varModCode || $varModCode !~ /(^|&)$selModifID:([^:&]+)/); # must contains vmod of interest
 				my $posStrg=$2;
 				#<Generate coverted seq
-				if ($exportType) {
+				if ($exportType) { # proteinSeq is made of X + peptides seq
 					my $protLength=length($proteinSeq{$protID});
 					if ($proteinSeq{$protID}) {
 						$proteinSeq{$protID}.='X' x ($pepEnd-$protLength) if $protLength < $pepEnd;
@@ -3870,16 +3904,20 @@ $exportTitleStrg
 					substr($proteinSeq{$protID},$pepBeg-1,$pepEnd-$pepBeg+1,$pepSeq); # works on index
 				}
 				#<Site probability
-				my (@prsData,%probMQ);
+				## PhosphoRS
+				my (@prsData,%probPTM);
 				if ($projectVarMods{$selModifID}[0]=~/Phospho/ && $pepData && $pepData =~ /PRS=([^##]+)/) {
 					@prsData=($1);
 					my ($status,$proba,$positions)=split(';',$prsData[0]);
 					push @prsData,$proba,$pepBeg-1,$pepSeq;
 				}
-				if ($refModInfo && $refModInfo=~/(^|&)$selModifID:[^&#]*##PRB_MQ=([^&#]+)/) {
+				
+				## MaxQuant / Spectronaut / PtmRS
+				my $softwarePTMShort = ($anaFileFormat eq 'MAXQUANT.DIR') ? 'MQ' : ($anaFileFormat eq 'SPECTRONAUT.XLS') ? 'SPC' : 'PTMRS';
+				if ($refModInfo && $refModInfo=~/(^|&)$selModifID:[^&#]*##PRB_$softwarePTMShort=([^&#]+)/) {
 					my $modProbStrg=$2;
 					while ($modProbStrg =~ /([^,:]+):([^,]+)/g) {
-						$probMQ{$1}=$2;
+						$probPTM{$1}=$2;
 					}
 				}
 				#my ($x,$refPosStrg)=($refModInfo=~/(^|&)$selModifID:.*#PROB_MQ=([^:&]+)/);
@@ -3906,10 +3944,13 @@ $exportTitleStrg
 						$protPos=$pos+$pepBeg-1;
 					}
 					next unless $siteRes;
-					my $site="$protID-$siteRes$protPos";
+					#my $site="$protID-$siteRes$protPos";
+					my $modResStrg=$selModifID.':';
+					$modResStrg.=($siteRes eq '-')? 'ProtNt' : ($siteRes eq '=')? 'PepNt' : ($siteRes eq '+')? 'ProtCt' : ($siteRes eq '*')? 'PepCt' : $siteRes.$protPos;
+					my $site=$protID.'-'.$modResStrg;
 					next if ($exportType && $exportType eq 'sel' && !$selectedProteins{$protID} && !$selectedProteins{$site});
 					$siteOK=1;
-					@{$proteinSites{$site}}=($protID,$siteRes,$protPos,{},{}) unless $proteinSites{$site}; # only for 1st time seen
+					@{$proteinSites{$site}}=($protID,$modResStrg,$protPos,{},{},$anaType{$anaID}) unless $proteinSites{$site}; # only for 1st time seen
 					if (!$groupDistrib{$site} || !$groupDistrib{$site}{$g} || $groupDistrib{$site}{$g}[0] < $protVis) { # best vis in gr
 						$groupDistrib{$site}{$g}[0]=$protVis;
 						$groupDistrib{$site}{$g}[1]=$protConf;
@@ -3930,13 +3971,13 @@ $exportTitleStrg
 							$proteinSites{$site}[3]{$g}=\@prsData;
 						}
 					}
-					#>Best MQ Proba
-					if ($probMQ{$pos}) {
-						if (!$proteinSites{$site}[4]{$g} || $probMQ{$pos} > $proteinSites{$site}[4]{$g}) { # keep best PRS
-							$proteinSites{$site}[4]{$g}=$probMQ{$pos};
+					#>Best MaxQuant/Spectronaut/PtmRS Proba
+					if ($probPTM{$pos}) {
+						if (!$proteinSites{$site}[4]{$g} || $probPTM{$pos} > $proteinSites{$site}[4]{$g}) { # keep best MaxQuant/Spectronaut/PtmRS Proba
+							$proteinSites{$site}[4]{$g}=$probPTM{$pos};
 						}
 					}
-					elsif ($anaType{$anaID} eq 'MAXQUANT.DIR' && $score) {$proteinSites{$site}[4]{$g}=1;} # proba 100%
+					elsif ($anaType{$anaID} =~ /MAXQUANT.DIR|SPECTRONAUT/ && defined($score)) {$proteinSites{$site}[4]{$g}=1;} # proba 100%
 				}
 				next unless $siteOK;
 				$bestVisibility{$protID}=$protVis if (!$bestVisibility{$protID} || $bestVisibility{$protID}<$protVis);
@@ -3998,30 +4039,63 @@ $exportTitleStrg
 			}
 		}
 	}
+
 	####<Fetching protein info>####
 	&updateProgress('Fetching protein annotation...'); # unless $exportType;
-
-	my (%protAnnotation,%masterProteins);
-	my %sthProt=(
-				 SEQ=>$dbh->prepare("SELECT PROT_SEQ,ALIAS,PROT_DES,MW,ORGANISM,ID_MASTER_PROTEIN FROM PROTEIN WHERE ID_PROTEIN=?"),
-				 NO_SEQ=>$dbh->prepare("SELECT NULL,ALIAS,PROT_DES,MW,ORGANISM,ID_MASTER_PROTEIN FROM PROTEIN WHERE ID_PROTEIN=?")
-	);
-	my ($geneNameID)=$dbh->selectrow_array("SELECT ID_IDENTIFIER FROM IDENTIFIER WHERE CODE='GN'");
-	my $sthMPG=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_MASTER_PROTEIN=? AND ID_IDENTIFIER=$geneNameID ORDER BY RANK");
-	my $sthMPS=$dbh->prepare("SELECT PROT_SEQ FROM MASTER_PROTEIN WHERE ID_MASTER_PROTEIN=?");
-
-	my $count=0;
-	foreach my $protID (keys %bestVisibility) {
-		$count++;
-		if ($count >= 1000) {
-			&updateProgress('.','+='); # unless $exportType;
-			$count=0;
+	my %modifInfo=($selModifID=>[$projectVarMods{$selModifID}[1],(split(':#',$projectVarMods{$selModifID}[3]))[1],$projectVarMods{$selModifID}[0]]); # (code,color,name)
+	
+	my (%protAnnotation,%masterProteins,%masterProtSeq);
+	my $protSeqField=($exportType)? 'P.PROT_SEQ' : "''";
+	my ($GNidentID)=$dbh->selectrow_array("SELECT ID_IDENTIFIER FROM IDENTIFIER WHERE CODE='GN'");
+	my @protIdList=keys %bestVisibility;
+	while (my @subProtList=splice(@protIdList,0,1000)) { # chuncks of 1000 proteins
+		my $protIdStrg=join(',',@subProtList);
+		my $sthProtInfo=$dbh->prepare("SELECT P.ID_PROTEIN,ALIAS,PROT_DES,MW,ORGANISM,P.ID_MASTER_PROTEIN,GROUP_CONCAT(DISTINCT MI.VALUE ORDER BY IDENT_RANK SEPARATOR ','),$protSeqField
+										FROM PROTEIN P
+										LEFT JOIN MASTERPROT_IDENTIFIER MI ON P.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN AND MI.ID_IDENTIFIER=$GNidentID
+										WHERE P.ID_PROTEIN IN ($protIdStrg) GROUP BY P.ID_PROTEIN"); # P.ID_PROJECT=$projectID
+		$sthProtInfo->execute;
+		while (my ($protID,$alias,$protDes,$mw,$organism,$masterProtID,$geneStrg,$pSeq)=$sthProtInfo->fetchrow_array) {
+			next unless $bestVisibility{$protID}; # just to be safe
+			delete $excludedProteins{$protID}; # remove protein from this list if it is part of it
+			$alias=~s/ .*//; # clean alias from badly parsed characters (identifier conversion)
+			$mw=($mw)? 1*(sprintf "%.1f",$mw/1000) : 0;
+			@{$protAnnotation{$protID}}=($alias,$protDes,$mw,$organism,$masterProtID,$pSeq);
+			if ($masterProtID) {
+				unless ($masterProteins{$masterProtID}) {
+					@{$masterProteins{$masterProtID}}=($geneStrg)? split(',',$geneStrg) : ();
+				}
+				$masterProtSeq{$masterProtID}=0 if ($exportType && $pSeq eq '+');
+			}
+		}	
+		$sthProtInfo->finish;
+		&updateProgress('.','+=');
+	}
+	####<Fetching missing protein seq from master>####
+	if ($exportType && scalar keys %masterProtSeq) {
+		my @masterIdList=keys %masterProtSeq;
+		while (my @subMasterList=splice(@masterIdList,0,1000)) { # chuncks of 1000 proteins
+			my $masterIdStrg=join(',',@subMasterList);
+			my $sthMPS=$dbh->prepare("SELECT ID_MASTER_PROTEIN,PROT_SEQ FROM MASTER_PROTEIN WHERE ID_MASTER_PROTEIN IN ($masterIdStrg)");
+			$sthMPS->execute;
+			while (my ($masterProtID,$mSeq)=$sthMPS->fetchrow_array) {
+				$masterProtSeq{$masterProtID}=$mSeq;
+			}
+			$sthMPS->finish;
+			&updateProgress('.','+=');
 		}
-		delete $excludedProteins{$protID}; # remove protein from this list if it is part of it
-		my @badCoverage;
-		my $seqType='NO_SEQ'; # default
-		if ($exportType) { # check if protSeq is needed
+	}
+	$dbh->disconnect;
+
+	####<Building sites sequence context>####
+	if ($exportType) { # check if protSeq is needed
+		foreach my $protID (keys %bestVisibility) {
 			my $currProtLength=length($proteinSeq{$protID});
+			my $protSeq=$protAnnotation{$protID}[5];	
+			if ($protSeq eq '+' && $protAnnotation{$protID}[4]) { # masterProtID
+				$protSeq=$masterProtSeq{$protAnnotation{$protID}[4]};
+			}
+			my $protLength=length($protSeq);
 			foreach my $site (keys %{$sitesInProtein{$protID}}) {
 				my $sitePos=$sitesInProtein{$protID}{$site};
 				my ($extraNt,$extraCt)=('','');
@@ -4045,56 +4119,22 @@ $exportTitleStrg
 					}
 				}
 				my $context=substr($proteinSeq{$protID},$contBegIdx,$contLength);
-				if ($context=~/X/ || $extraCt) { # incomplete coverage
-					push @badCoverage,$site;
-					$seqType='SEQ';
-				}
+				if (($context=~/X/ || $extraCt) && $protLength > 1) { # incomplete coverage
+					if ($extraCt) { # reextract from real protSeq
+						next if $sitePos > $protLength; # in case wrong prot seq recorded!!!
+						$extraCt=''; # reset extraCt
+						$contLength=$CONTEXT_SIZE; # reset context length
+						if ($sitePos+6 > $protLength) { # after end of prot seq
+							$extraCt='_' x ($sitePos+$MID_CONTEXT-$protLength);
+							$contLength-=(length($extraNt)+length($extraCt));
+						}
+					}
+					$context=substr($protSeq,$contBegIdx,$contLength); #$siteContext{$site}[4]);
+				}	
 				@{$siteContext{$site}}=($extraNt,$context,$extraCt,$contBegIdx,$contLength);
 			}
 		}
-		$sthProt{$seqType}->execute($protID);
-		(my $protSeq,@{$protAnnotation{$protID}})=$sthProt{$seqType}->fetchrow_array;
-		$protAnnotation{$protID}[2]=($protAnnotation{$protID}[2])? sprintf "%.1f",$protAnnotation{$protID}[2]/1000 : 0; # MW
-		if ($protAnnotation{$protID}[4]) {
-			my $masterProtID=$protAnnotation{$protID}[4];
-			unless ($masterProteins{$masterProtID}) {
-				@{$masterProteins{$masterProtID}}=();
-				$sthMPG->execute($masterProtID);
-				while (my ($gene)=$sthMPG->fetchrow_array) {
-					push @{$masterProteins{$masterProtID}},$gene;
-				}
-			}
-			if ($seqType eq 'SEQ') {
-				next if (!$protSeq || $protSeq eq '-');
-				if ($protSeq eq '+') {
-					$sthMPS->execute($masterProtID);
-					($protSeq)=$sthMPS->fetchrow_array;
-				}
-			}
-		}
-		#<Reextract surounding sequence from real protSeq
-		foreach my $site (@badCoverage) { # only if exportType
-			if ($siteContext{$site}[2]) { # extraCt => reextract from real protSeq
-				my $sitePos=$sitesInProtein{$protID}{$site};
-				my $protLength=length($protSeq);
-				next if $sitePos > $protLength; # in case wrong prot seq recorded!!!
-				$siteContext{$site}[2]=''; # reset extraCt
-				$siteContext{$site}[4]=$CONTEXT_SIZE; # reset context length
-				if ($sitePos+6 > $protLength) { # after end of prot seq
-					$siteContext{$site}[2]='_' x ($sitePos+$MID_CONTEXT-$protLength);
-					$siteContext{$site}[4]-=(length($siteContext{$site}[0])+length($siteContext{$site}[2]));
-				}
-			}
-			$siteContext{$site}[1]=substr($protSeq,$siteContext{$site}[3],$siteContext{$site}[4]); #$siteContext{$site}[4]);
-		}
 	}
-	$sthProt{SEQ}->finish;
-	$sthProt{NO_SEQ}->finish;
-	$sthMPG->finish;
-	$sthMPS->finish;
-
-	$dbh->disconnect;
-
 
 	#####################
 	####<Export mode>####
@@ -4214,13 +4254,14 @@ $exportTitleStrg
 		###<Looping through sites>###
 		my $siteCount=0;
 		foreach my $site (sort{&sortModifSite($sortOrder,\%proteinSites,\%protAnnotation,\%groupDistrib,\%siteDistrib)} keys %proteinSites) {
-			my ($protID,$siteRes,$protPos,$refPRS,$refProb)=@{$proteinSites{$site}};
+			my ($protID,$modResStrg,$protPos,$refPRS,$refProb,$analysisType)=@{$proteinSites{$site}};
 			#next if ($exportType eq 'sel' && !$selectedProteins{$protID} && !$selectedProteins{$site});
 #print "$proteinSeq{$protID}<BR>\n$site: '",join('',@{$siteContext{$site}}[0..2]),"'<BR>\n";
 			$xlsCol=0;
 			##<Protein-Site
 			my $visTag=($bestVisibility{$protID})? 'Vis' : 'Hid';
-			my $dispProtSite=($siteRes eq '-')? "$projectVarMods{$selModifID}[1]~$protAnnotation{$protID}[0]" : ($siteRes eq '+')? "$protAnnotation{$protID}[0]~$projectVarMods{$selModifID}[1]" : "$protAnnotation{$protID}[0]-$siteRes$protPos";
+			#my $dispProtSite=($siteRes eq '-')? "$projectVarMods{$selModifID}[1]~$protAnnotation{$protID}[0]" : ($siteRes eq '+')? "$protAnnotation{$protID}[0]~$projectVarMods{$selModifID}[1]" : "$protAnnotation{$protID}[0]-$siteRes$protPos";
+			my $dispProtSite=$protAnnotation{$protID}[0].'-'.&promsQuantif::displayModificationSites($modResStrg,\%modifInfo,'export');
 			$worksheet->write_string(++$xlsRow,$xlsCol,$dispProtSite,$itemFormat{'ident'.$visTag}); #.$confTag
 			##<Gene
 			my $geneName=($protAnnotation{$protID}[4] && $masterProteins{$protAnnotation{$protID}[4]}[0])? $masterProteins{$protAnnotation{$protID}[4]}[0] : '-';
@@ -4246,7 +4287,10 @@ $exportTitleStrg
 						my ($status,$proba,$positions) = split(/;/,$refPRS->{$g}[0]);
 						$probStrg='PRS:'.(1*(sprintf("%.1f",$proba)));
 					}
-					elsif (defined $refProb->{$g}) {$probStrg='MQ:'.($refProb->{$g}*100);}
+					elsif (defined $refProb->{$g}) {
+						my $softwarePTMShort = ($analysisType eq 'MAXQUANT.DIR') ? "MQ" : ($analysisType eq 'SPECTRONAUT.XLS') ? "SPC" : 'PTMRS';
+						$probStrg="$softwarePTMShort:".($refProb->{$g}*100);
+					}
 					$worksheet->write_string($xlsRow,++$xlsCol,$probStrg,$itemFormat{'ident'.$gVis.$gConf});
 				}
 				else {
@@ -4375,8 +4419,8 @@ function resetSelection() {
 	document.getElementById('logic').selectedIndex=0; // logic = 'and'
 	updateComparisonStrategy('and');
 	uncheckAll(myForm.chkProt);
-	//hideShowUnchecked(0);
-	for (var a=0; a < $numAnaGroups; a++) {
+	// hideShowUnchecked(0);
+	for (let a=0; a < $numAnaGroups; a++) {
 		document.getElementById('numPep_'+a).selectedIndex=0; // 'Any'
 	}
 }
@@ -4446,22 +4490,23 @@ function resetSelection() {
 	my $disSaveProtStrg=($projectStatus > 0 || $projectAccess eq 'guest')? 'disabled' : ''; # project was ended/archived
 	my ($selOrStatus,$selFreqStatus)=($filterLogic eq 'or')? (' selected','') : ($filterLogic eq 'frequency')? ('',' selected') : ('','');
 	my $thTableColSpan=($numAnaGroups==2 && !$listComparison)? 4 : 2;
-	print qq
-|<TH class="rbBorder" rowspan=2 colspan=$thTableColSpan height=100% valign=top><TABLE border=0 cellpadding=0 cellspacing=0 height=100%><TR>
+	print qq |<TH class="rbBorder" rowspan=2 colspan=$thTableColSpan height=100% valign=top><TABLE border=0 cellpadding=0 cellspacing=0 height=100%><TR>
 	<TH class="rBorder" bgcolor=$color2 nowrap valign="top">
 &nbsp;Frequency:&nbsp;<BR>&nbsp;<SELECT name="freqAnaGr" id="freqAnaGr" class="font11" disabled>$freqStrg</SELECT>/$numAnaGroups&nbsp;
 	</TH>
 	<TH class="rBorder" bgcolor=$color2 nowrap>
-&nbsp;Strategy<SUP onmouseover="popup('Select<BR>&nbsp;&nbsp;&nbsp;-A <B>logic</B> between Group filters: <B>And</B> (intersection) or <B>Or</B> (union)<BR>&nbsp;&nbsp;&nbsp;or<BR>&nbsp;&nbsp;&nbsp;-a global <B>frequency</B> of detection')\" onmouseout=\"popout()\">*</SUP>:
+&nbsp;Strategy<SUP onmouseover="popup('Select<BR>&nbsp;&nbsp;&nbsp;-A <B>logic</B> between Group filters: <B>And</B> (intersection) or <B>Or</B> (union)<BR>&nbsp;&nbsp;&nbsp;or<BR>&nbsp;&nbsp;&nbsp;-a global <B>frequency</B> of detection')\" onmouseout=\"popout()\">?</SUP>:
 <SELECT name="logic" id="logic" class="font11" onchange="updateComparisonStrategy(this.value)"><OPTION value="and">And</OPTION><OPTION value="or"$selOrStatus>Or</OPTION><OPTION value="frequency"$selFreqStatus>Frequency</OPTION></SELECT>&nbsp;
-<BR>&nbsp;<INPUT type="button" value="Check Matching" class="font11" style="width:110px" onclick="autoCheck(1)">
-<INPUT type="button" value="Uncheck All" class="font11" style="width:85px" onclick="uncheckAll(document.protView.chkProt)">
+<BR>&nbsp;<INPUT type="button" value="Check matching" class="font11" style="width:110px" onclick="autoCheck(1)">
+<INPUT type="button" value="Uncheck all" class="font11" style="width:85px" onclick="uncheckAll(document.protView.chkProt)">
 <INPUT type="button" name="hideShowButton" value="$hideShowStrg" class="font11" style="width:110px" onclick="hideShowUnchecked(1)">&nbsp;
 	</TH>
-	<TH nowrap valign=top><INPUT type="button" value="Save Comparison..." style="width:150px" onclick="showSaveCompForm('show')" $disSaveCompStrg><BR>
-<INPUT type="button" id="saveFormBUTTON" value="Save Selected..." style="width:150px" onclick="ajaxManageSaveProteins('getThemes');" $disSaveProtStrg></TH>
-	<TH nowrap valign=top><INPUT type="button" value="Export Selected" onclick="exportSites('sel')" style="width:120px"><BR><INPUT type="button" value="Export All" onclick="exportSites('all')" style="width:120px"></TD>
-	<!--<TH nowrap valign=top><INPUT type="button" value="Peptide Distribution" style="width:150px" onclick="graphicalView()"></TH>-->
+	<TH nowrap valign=top><INPUT type="button" id="saveSiteFormBUTTON" value="Save sites..." style="width:150px" onclick="ajaxManageSaveProteins('getThemes','SITE')" $disSaveProtStrg><BR>
+<INPUT type="button" id="saveFormBUTTON" value="Save proteins..." style="width:150px" onclick="ajaxManageSaveProteins('getThemes','PROT')" $disSaveProtStrg></TH>
+	<TH nowrap valign=top><INPUT type="button" value="Export selected" onclick="exportSites('sel')" style="width:120px"><BR><INPUT type="button" value="Export all" onclick="exportSites('all')" style="width:120px"></TD>
+	<TH nowrap valign=top><INPUT type="button" value="Save Comparison..." style="width:150px" onclick="showSaveCompForm('show')" $disSaveCompStrg>
+<!--<BR><INPUT type="button" value="Peptide Distribution" style="width:150px" onclick="graphicalView()">-->
+	</TH>
 </TR></TABLE></TH></TR>
 <TR>
 |;
@@ -4518,11 +4563,12 @@ function resetSelection() {
 	my $dataIdx=($siteMeasure eq 'occ')? 2 : 4;
 	my $numSites=0;
 	foreach my $site (sort{&sortModifSite($sortOrder,\%proteinSites,\%protAnnotation,\%groupDistrib,\%siteDistrib)} keys %proteinSites) {
-		my ($protID,$siteRes,$protPos,$refPRS,$refProb)=@{$proteinSites{$site}};
+		my ($protID,$modResStrg,$protPos,$refPRS,$refProb,$analysisType)=@{$proteinSites{$site}};
 		my $chkStatus=($selectedProteins{$protID} || $selectedProteins{$site})? ' checked' : '';
 		my $displayStatusStrg=($chkStatus)? '' : " style=\"display:$hideShowStatus\"";
+		my $trID='prot_'.$numSites; # index (starts at 0)
 		my $trClass='row_'.(++$numSites % 2);
-		my $chkBoxValue=join(':',keys %{$distinctAna{$protID}},$site);
+		#my $chkBoxValue=join(':',keys %{$distinctAna{$protID}},$site);
 		my $distAnaStrg=join(',',keys %{$distinctAna{$protID}});
 		my ($protTag,$classStrg)=($bestVisibility{$protID})? ('TH','') : ('TD',' class="hiddenProt"'); # $classStrg is important for proper recording to custom Lists!!!
 
@@ -4533,7 +4579,12 @@ function resetSelection() {
 		foreach my $g (0..$#analysisGroups) {
 			my ($freqTag,$occ)=($groupDistrib{$site}{$g}[0])? ('TH',1) : ('TD',0); # protein best visibility in gr
 			my $prsStrg=($occ && $refPRS->{$g})? '&nbsp;'.&phosphoRS::printIcon($refPRS->{$g}[0],{format=>'text',posShift=>$refPRS->{$g}[2],pepSeq=>$refPRS->{$g}[3]}) : '';
-			$prsStrg.='&nbsp;'.&promsMod::MaxQuantProbIcon($refProb->{$g},{popupText=>'MaxQuant probablity='.($refProb->{$g}*100).'%'}) if defined $refProb->{$g};
+			
+			if(defined $refProb->{$g}) {
+				my $softwarePTMShort = ($analysisType eq 'MAXQUANT.DIR') ? 'MQ' : ($analysisType eq 'SPECTRONAUT.XLS') ? 'SPC' : 'PTMRS';
+				my $softwarePTM = ($analysisType eq 'MAXQUANT.DIR') ? 'MaxQuant' : ($analysisType eq 'SPECTRONAUT.XLS') ? 'Spectronaut' : 'PtmRS';
+				$prsStrg.='&nbsp;'.&promsMod::PTMProbIcon($refProb->{$g},{text=>$softwarePTMShort, popupText=>"$softwarePTM probablity=".($refProb->{$g}*100).'%'});
+			}
 			push @distrib,$occ;
 			$pepIdStrg.=',' if $g > 0;
 			#$pepIdStrg.="$g:";
@@ -4543,10 +4594,12 @@ function resetSelection() {
 			$dataString.="</TD>";
 		}
 
-		my $dispProtSite=($siteRes eq '-')? "<FONT class=\"$projectVarMods{$selModifID}[2]\">$projectVarMods{$selModifID}[1]~</FONT>$protAnnotation{$protID}[0]" : ($siteRes eq '+')? "$protAnnotation{$protID}[0]<FONT class=\"$projectVarMods{$selModifID}[2]\">~$projectVarMods{$selModifID}[1]</FONT>" : "$protAnnotation{$protID}[0]<FONT class=\"$projectVarMods{$selModifID}[2]\">-$siteRes$protPos</FONT>";
+		#my $dispProtSite=($siteRes eq '-')? "<FONT class=\"$projectVarMods{$selModifID}[2]\">$projectVarMods{$selModifID}[1]~</FONT>$protAnnotation{$protID}[0]" : ($siteRes eq '+')? "$protAnnotation{$protID}[0]<FONT class=\"$projectVarMods{$selModifID}[2]\">~$projectVarMods{$selModifID}[1]</FONT>" : "$protAnnotation{$protID}[0]<FONT class=\"$projectVarMods{$selModifID}[2]\">-$siteRes$protPos</FONT>";
+		#my ($modResStrg)=$site=~/^\d+-(.+)/;
+		my $dispProtSite=$protAnnotation{$protID}[0].'-'.&promsQuantif::displayModificationSites($modResStrg,\%modifInfo,'html');
 		print qq
-|<TR id="prot_$site" class="list $trClass" valign="top"$displayStatusStrg>
-<TD nowrap><INPUT type="checkbox" name="chkProt"$classStrg value="$chkBoxValue" onclick="manualCheck(this.checked)"$chkStatus><A class="$protTag" href="javascript:sequenceView($protID,'$distAnaStrg')">$dispProtSite</A><IMG id="IMG_$site" src="$promsPath{images}/plus.gif" align="top" onclick="ajaxGetModifSiteDetails(event,'$site','$pepIdStrg')"></TD>
+|<TR id="$trID" class="list $trClass" valign="top"$displayStatusStrg>
+<TD nowrap><INPUT type="checkbox" name="chkProt"$classStrg value="$site" onclick="manualCheck(this.checked)"$chkStatus><A class="$protTag" href="javascript:sequenceView($protID,'$distAnaStrg')">$dispProtSite</A><IMG src="$promsPath{images}/plus.gif" align="top" onclick="ajaxGetModifSiteDetails(this,event,'$site','$pepIdStrg')"></TD>
 |;
 		#<Gene strg
 		my $masterProtID=$protAnnotation{$protID}[4];
@@ -4587,9 +4640,9 @@ whenWindowLoaded();
 	exit;
 }
 
-##########################################################################
-#############<HEAD for 1 vs 1 Peptide/Protein comparisons>################
-##########################################################################
+####################################################################################
+#############<HEAD for 1 vs 1 (Summary) Peptide/Protein comparisons>################
+####################################################################################
 sub display1v1ComparisonHead {
 	if ($exportType) {
 		my $timeStamp1=strftime("%Y%m%d %H-%M",localtime);
@@ -4627,9 +4680,9 @@ function preparePopup(item1,item2,ratio1,ratio2) {
 	}
 }
 
-##########################################################################
-#############<BODY for 1 vs 1 Peptide/Protein comparisons>################
-##########################################################################
+####################################################################################
+#############<BODY for 1 vs 1 (Summary) Peptide/Protein comparisons>################
+####################################################################################
 sub display1v1ComparisonBody {
 	my ($elementType,$refGroupLabels,$refElementDistrib,$refGroupDistrib)=@_;
 
@@ -5107,12 +5160,12 @@ sub ajaxRestrictProteinList {
 	my $catFilter=param('catFilter') || 0;
 
 	my $dbh=&promsConfig::dbConnect;
-	my $sthL=$dbh->prepare("SELECT T.ID_CLASSIFICATION,T.NAME,L.ID_CATEGORY,L.NAME,L.DISPLAY_POS,L.LIST_TYPE FROM CLASSIFICATION T,CATEGORY L WHERE T.ID_CLASSIFICATION=L.ID_CLASSIFICATION AND T.ID_PROJECT=$projectID");
+	my $sthL=$dbh->prepare("SELECT T.ID_CLASSIFICATION,T.NAME,L.ID_CATEGORY,L.NAME,L.DISPLAY_POS,LIST_TYPE,COUNT(CP.ID_CATEGORY_PROTEIN) FROM CLASSIFICATION T,CATEGORY L,CATEGORY_PROTEIN CP WHERE T.ID_CLASSIFICATION=L.ID_CLASSIFICATION AND L.ID_CATEGORY=CP.ID_CATEGORY AND T.ID_PROJECT=$projectID GROUP BY L.ID_CATEGORY");
 	$sthL->execute;
 	my (%savedLists,%themeInfo);
-	while (my ($themeID,$themeName,$listID,$listName,$listPos,$type)=$sthL->fetchrow_array) {
+	while (my ($themeID,$themeName,$listID,$listName,$listPos,$type,$numItems)=$sthL->fetchrow_array) {
 		$themeInfo{$themeID}=$themeName;
-		@{$savedLists{$themeID}{$listID}}=($listName,$listPos,$type);
+		@{$savedLists{$themeID}{$listID}}=($listName,$listPos,$type,$numItems);
 	}
 	$sthL->finish;
 	$dbh->disconnect;
@@ -5127,9 +5180,8 @@ sub ajaxRestrictProteinList {
 		foreach my $listID (sort{lc($savedLists{$themeID}{$a}[1]) cmp lc($savedLists{$themeID}{$b}[1])} keys %{$savedLists{$themeID}}) {
 			print "<OPTION value=\"$listID\"";
 			print ' selected' if $listID==$catFilter; # in case a list was already selected
-			print ">$savedLists{$themeID}{$listID}[0]";
-			print ' [sites]' if $savedLists{$themeID}{$listID}[2] eq 'site';
-			print "</OPTION>\n";
+			my $typeStrg=($savedLists{$themeID}{$listID}[2] eq 'SITE')? 'Sites ' : '';
+			print ">$savedLists{$themeID}{$listID}[0] [$typeStrg"."x$savedLists{$themeID}{$listID}[3]]</OPTION>\n";
 		}
 		print "</OPTGROUP>\n";
 	}
@@ -5271,7 +5323,7 @@ sub ajaxGetProteinDetails {
 	my $sthCP=$dbh->prepare("SELECT 1 FROM CATEGORY_PROTEIN WHERE ID_PROTEIN=$proteinID AND ID_CATEGORY=?");
 	my $pepBegStrg=($virtualData)? '' : 'AND VALID_STATUS > 0'; #'AND PEP_BEG > 0';
 	my $isSpecificStrg=($pepSpecificity eq 'unique')? 'AND IS_SPECIFIC=1' : '';
-	my $sthPep=$dbh->prepare("SELECT P.ID_PEPTIDE,PEP_SEQ,ABS(PEP_BEG),ABS(PEP_END),VALID_STATUS,GROUP_CONCAT(DISTINCT PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&')
+	my $sthPep=$dbh->prepare("SELECT P.ID_PEPTIDE,PEP_SEQ,MIN(ABS(PEP_BEG)),MIN(ABS(PEP_END)),VALID_STATUS,GROUP_CONCAT(DISTINCT PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&')
 											FROM PEPTIDE P
 											LEFT JOIN PEPTIDE_MODIFICATION PM ON P.ID_PEPTIDE=PM.ID_PEPTIDE
 											INNER JOIN PEPTIDE_PROTEIN_ATTRIB PPA ON P.ID_PEPTIDE=PPA.ID_PEPTIDE $isSpecificStrg
@@ -5508,15 +5560,15 @@ sub ajaxGetProteinDetails {
 }
 
 
-sub ajaxGetModificationSiteDetails {
-	my $selModifID=param('modID');
+sub ajaxGetModificationSiteDetails {;
 	my $site=param('site');
 	my $numGroups=param('numGroups');
 	my $pepIdStrg=param('pepIDs');
 	my $anaList=param('anaList');
-	my ($proteinID,$siteRes,$sitePos)=($site=~/^(\d+)-(.)(\d*)/);
+	my ($proteinID,$modResStrg)=$site=~/^(\d+)-(.+)/;
+	my ($selModifID,$siteRes,$sitePos)=$modResStrg=~/^(\d+):([a-zA-Z]+)(\d*)/;
 	my %convertPos2Text=('-'=>'Protein N-term','='=>'Any N-term','+'=>'Protein C-term','*'=>'Any C-term');
-
+	# my ($softwarePTM, $softwarePTMShort) = ('', ''); # Software used to compute PTMs probabilities (full name, display name)
 #print header(-type=>'text/plain',-charset=>'utf-8'); warningsToBrowser(1); # DEBUG
 	###<Connecting to the database>###
 	my $dbh=&promsConfig::dbConnect;
@@ -5565,10 +5617,11 @@ sub ajaxGetModificationSiteDetails {
 	my ($alias,$protDes,$organism,$protLength)=$dbh->selectrow_array("SELECT ALIAS,PROT_DES,ORGANISM,PROT_LENGTH FROM PROTEIN WHERE ID_PROTEIN=$proteinID");
 	$protLength='?' unless $protLength;
 
-	##<Modif info
-	my ($modifDispCode,$modifACC)=$dbh->selectrow_array("SELECT DISPLAY_CODE,UNIMOD_ACC FROM MODIFICATION WHERE ID_MODIFICATION=$selModifID");
+	##<Site info
+	my ($modifDispCode,$dispColor,$modifACC)=$dbh->selectrow_array("SELECT DISPLAY_CODE,DISPLAY_COLOR,UNIMOD_ACC FROM MODIFICATION WHERE ID_MODIFICATION=$selModifID");
 	my $isPhospho=($modifACC==21)? 1 : 0;
-
+	my %modifInfo=($selModifID=>[$modifDispCode,$dispColor,'']); # code,color,name (not needed)
+	
 	##<Peptide data
 	my $sthSite=$dbh->prepare("SELECT P.ID_ANALYSIS,PEP_SEQ,CHARGE,GROUP_CONCAT(DISTINCT ABS(PEP_BEG) ORDER BY ABS(PEP_BEG) ASC),GROUP_CONCAT(DISTINCT PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),GROUP_CONCAT(DISTINCT PM.ID_MODIFICATION,':',COALESCE(PM.REF_POS_STRING,'') ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),SCORE,DATA,SPEC_COUNT,QUERY_NUM,PEP_RANK
 								FROM PEPTIDE_MODIFICATION PM
@@ -5577,8 +5630,8 @@ sub ajaxGetModificationSiteDetails {
 								WHERE ID_PROTEIN=$proteinID AND P.ID_PEPTIDE=?
 								GROUP BY P.ID_PEPTIDE");
 	my $sthAna=$dbh->prepare("SELECT FILE_FORMAT FROM ANALYSIS WHERE ID_ANALYSIS=?");
-
-	my (%anaType,%peptides,%posInSequence,%varModString,%varMods);
+	
+	my (%anaType,%peptides,%posInSequence,%varModString,%varMods,%hasPtmProb,%softwarePTM,%softwarePTMShort);
 	my $g=-1;
 	foreach my $grData (split(',',$pepIdStrg)) {
 		$g++;
@@ -5604,10 +5657,14 @@ sub ajaxGetModificationSiteDetails {
 			my @posProb;
 			if ($isPhospho && $pepData && $pepData =~ /PRS=([^##]+)/) { # $projectVarMods{$selModifID}[0]=~/Phospho/ &&
 				$prsStrg=$1;
+				#$softwarePTMShort{$anaID}='PRS';
+				$hasPtmProb{$anaID}=1;
 			}
-			# MaxQuant proba
-			if ($anaType{$anaID} eq 'MAXQUANT.DIR') {
-				if ($refModInfo && $refModInfo=~/(^|&)$selModifID:[^&#]*##PRB_MQ=([^&#]+)/) {
+			# MaxQuant/Spectronaut proba
+			if ($anaType{$anaID} =~ /MAXQUANT.DIR|SPECTRONAUT.XLS|SEQUEST.PDM/) {
+				$softwarePTMShort{$anaID} = ($anaType{$anaID} eq 'MAXQUANT.DIR') ? 'MQ' : ($anaType{$anaID} eq 'SPECTRONAUT.XLS') ? 'SPC' : 'PTMRS';
+				$softwarePTM{$anaID} = ($anaType{$anaID} eq 'MAXQUANT.DIR') ? 'MaxQuant' : ($anaType{$anaID} eq 'SPECTRONAUT.XLS') ? 'Spectronaut' : 'PtmRS';
+				if ($refModInfo && $refModInfo=~/(^|&)$selModifID:[^&#]*##PRB_$softwarePTMShort{$anaID}=([^&#]+)/) {
 					my $modProbStrg=$2;
 					foreach my $posProb (split(',',$modProbStrg)) {
 						my ($pos,$prob)=split(':',$posProb);
@@ -5615,8 +5672,9 @@ sub ajaxGetModificationSiteDetails {
 						$probStrg=$prob if $pos eq $sitePos;
 						push @posProb,[$pos,$prob];
 					}
+					$hasPtmProb{$anaID}=1;
 				}
-				elsif ($score) {
+				elsif (defined($score)) {
 					$probStrg=1;
 					my ($x,$modPosStrg)=$varModCode=~/(^|&)$selModifID:([^&]+)/;
 					foreach my $pos (split(/\./,$modPosStrg)) {
@@ -5625,7 +5683,7 @@ sub ajaxGetModificationSiteDetails {
 					}
 				}
 			}
-			push @{$peptides{$pepSeq}{$varModCode}{$charge}{$g}},[$score,$prsStrg,$probStrg,\@posProb,$specCount,$pepID,$qNum,$rank];
+			push @{$peptides{$pepSeq}{$varModCode}{$charge}{$g}},[$score,$prsStrg,$probStrg,\@posProb,$specCount,$pepID,$qNum,$rank,$anaID];
 		}
 	}
 	$sthSite->finish;
@@ -5639,12 +5697,22 @@ sub ajaxGetModificationSiteDetails {
 	my $protClass='TH'; # ($bestProtVisibility[0])? 'TH' : 'TD';
 
 	my $anaStrg=join(',',keys %allAnaList);
-	my ($NtermStrg,$siteStrg,$CtermStrg)=('','','');
-	if ($siteRes eq '-') {$NtermStrg="<FONT class=\"modifSite mod_$selModifID\">$modifDispCode~</FONT>";}
-	elsif ($siteRes eq '+') {$CtermStrg="<FONT class=\"modifSite mod_$selModifID\">~$modifDispCode</FONT>";}
-	else {$siteStrg="<FONT class=\"modifSite mod_$selModifID\">-$siteRes$sitePos</FONT>";}
+	my ($dispProtSite,$NtermStrg,$CtermStrg)=('','','');
+	if ($siteRes =~ /Nt/) {
+		$NtermStrg="<FONT class=\"modifSite mod_$selModifID\">$modifDispCode~</FONT>";
+		$dispProtSite=$NtermStrg.$alias; # eg: P~EZRI_HUMAN
+	}
+	elsif ($siteRes =~ /Ct/) {
+		$CtermStrg="<FONT class=\"modifSite mod_$selModifID\">~$modifDispCode</FONT>";
+		$dispProtSite=$alias.$CtermStrg; # eg: EZRI_HUMAN~P
+	}
+	else {$dispProtSite=$alias.'-'.&promsQuantif::displayModificationSites($modResStrg,\%modifInfo,'html');
+}
+	# else {$siteStrg="<FONT class=\"modifSite mod_$selModifID\">-$siteRes$sitePos</FONT>";}
+# $NtermStrg<A class="$protClass" href="javascript:sequenceView($proteinID,'$anaStrg')">$alias</A>$siteStrg$CtermStrg: $protDes - <FONT class="org">$organism</FONT> ($protLength aa.)<BR>
 	print qq
-|$NtermStrg<A class="$protClass" href="javascript:sequenceView($proteinID,'$anaStrg')">$alias</A>$siteStrg$CtermStrg: $protDes - <FONT class="org">$organism</FONT> ($protLength aa.)<BR>
+|<DIV style="float:right">&nbsp;<INPUT type="button" class="font11" value=" Close " onclick="unselectSite()"></DIV>
+<A class="$protClass" href="javascript:sequenceView($proteinID,'$anaStrg')">$dispProtSite</A>: $protDes - <FONT class="org">$organism</FONT> ($protLength aa.)<BR>
 <TABLE border=0 cellspacing=0>
 <TR bgcolor="$color2">
 <TH class="rbBorder" rowspan=2>&nbsp;Start&nbsp;</TH><TH class="rbBorder" rowspan=2>&nbsp;Charge&nbsp;</TH><TH class="rbBorder" rowspan=2>&nbsp;Sequence&nbsp;</TH><TH class="rbBorder" rowspan=2>&nbsp;Modifications&nbsp;</TH>
@@ -5657,7 +5725,9 @@ sub ajaxGetModificationSiteDetails {
 	print "</TR>\n<TR bgcolor=\"$color2\">";
 	foreach my $g (0..$#analysisGroups) {
 		my $class=($g==$#analysisGroups)? 'bBorder' : 'rbBorder';
-		print "<TH class=\"rbBorder\">&nbsp;Sc.&nbsp;</TH><TH class=\"rbBorder\">&nbsp;Pb.&nbsp;</TH><TH class=\"$class\">&nbsp;Sp.&nbsp;</TH>\n";
+		print qq
+|<TH class="rbBorder" onmouseover="popup('Score')" onmouseout="popout()">&nbsp;Sc.&nbsp;</TH><TH class="rbBorder" onmouseover="popup('PTM localisation probability')" onmouseout="popout()">&nbsp;Pb.&nbsp;</TH><TH class="$class" onmouseover="popup('Spectral count')" onmouseout="popout()">&nbsp;Sp.&nbsp;</TH>
+|;
 	}
 	my $numCols=($numGroups*3)+4;
 	my $bgColor=$color1;
@@ -5669,7 +5739,7 @@ sub ajaxGetModificationSiteDetails {
 		my ($pepBeg,$pepBegStrg)=@{$posInSequence{$pepSeq}};
 		my $displayedSeq=$pepSeq;
 		if ($sitePos) {
-			for (substr $displayedSeq,$sitePos-$pepBeg,1) {$_="</FONT><FONT class=\"modifSite mod_$selModifID\">$_</FONT><FONT>";} # only 1 loop!
+			for (substr $displayedSeq,$sitePos-$pepBeg,1) {$_="</FONT><FONT class=\"modifSite mod_$selModifID\">$_</FONT><FONT class=\"seq\">";} # only 1 loop!
 			$displayedSeq='<FONT class="seq">'.$displayedSeq.'</FONT>';
 		}
 		else {
@@ -5706,7 +5776,7 @@ sub ajaxGetModificationSiteDetails {
 					print "<TD>&nbsp;$aaShiftStrg$displayedSeq&nbsp;</TD><TD nowrap>&nbsp;$varModString{$varModCode}&nbsp;</TD>\n";
 					foreach my $g (0..$#analysisGroups) {
 						if ($peptides{$pepSeq}{$varModCode}{$charge}{$g} && $peptides{$pepSeq}{$varModCode}{$charge}{$g}[$pepIdx]) {
-							my ($score,$prsStrg,$prob,$refPosProb,$specCount,$pepID,$qNum,$rank)=@{$peptides{$pepSeq}{$varModCode}{$charge}{$g}[$pepIdx]};
+							my ($score,$prsStrg,$prob,$refPosProb,$specCount,$pepID,$qNum,$rank,$anaID)=@{$peptides{$pepSeq}{$varModCode}{$charge}{$g}[$pepIdx]};
 							if ($score) {
 								$score=1*(sprintf "%.2f",$score);
 								print "<TD align=\"center\">&nbsp;<A id=\"pep_$pepID\" href=\"javascript:drawSpectrum('pep_$pepID','pep_${pepID}_${qNum}_$rank')\" onmouseover=\"popup('Click to display fragmentation spectrum')\" onmouseout=\"popout()\">$score</A>&nbsp;</TD>";
@@ -5714,15 +5784,15 @@ sub ajaxGetModificationSiteDetails {
 							else {print "<TD align=\"center\">?</TD>";}
 							my $probStrg='?';
 							if ($prsStrg) {$probStrg=&phosphoRS::printIcon($prsStrg,{format=>'text',posShift=>$pepBeg-1,pepSeq=>$pepSeq});}
-							if ($prob) {
-								#$probStrg=&promsMod::MaxQuantProbIcon($prob,{popupText=>'MaxQuant probablity='.($prob*100).'%'});
-								my $mqProbStrg='<B>MaxQuant probabilities:</B>';
+							elsif ($hasPtmProb{$anaID} && $prob) {
+								#$probStrg=&promsMod::PTMProbIcon($prob,{popupText=>'MaxQuant probablity='.($prob*100).'%'});
+								my $probStrgPopup="<B>$softwarePTM{$anaID} probabilities:</B>";
 								foreach my $refPos (@{$refPosProb}) {
 									my $pos=$convertPos2Text{$refPos->[0]} || $refPos->[0];
 									my $posStrg=($refPos->[0] eq $sitePos)? '<B>'.$pos.'</B>' : $pos;
-									$mqProbStrg.="<BR>&nbsp;-$posStrg:".&promsMod::MaxQuantProbIcon($refPos->[1],{text=>'&nbsp;'.($refPos->[1]*100).'%&nbsp;',inPopup=>1});
+									$probStrgPopup.="<BR>&nbsp;-$posStrg:".&promsMod::PTMProbIcon($refPos->[1],{text=>'&nbsp;'.($refPos->[1]*100).'%&nbsp;',inPopup=>1});
 								}
-								$probStrg=&promsMod::MaxQuantProbIcon($prob,{popupText=>$mqProbStrg});
+								$probStrg=&promsMod::PTMProbIcon($prob,{text=>$softwarePTMShort{$anaID}, popupText=>$probStrgPopup});
 							}
 							$specCount='?' unless $specCount;
 							print "<TD align=\"center\">&nbsp;$probStrg&nbsp;</TD><TD align=\"right\">&nbsp;$specCount&nbsp;</TD>\n";
@@ -5740,15 +5810,15 @@ sub ajaxGetModificationSiteDetails {
 			}
 		}
 	}
-	print qq
-|</TABLE>
-&nbsp;&nbsp;<INPUT type="button" class="font11" value=" Close " onclick="unselectSite()">
-|;
-
+	print "</TABLE>";
 	exit;
 }
 
 ####>Revision history<####
+# 2.4.0 [UPDATE] Uses standardized protein site format & multiple enhancements and bug fixes (PP 20/05/21)
+# 2.3.8 [FEATURE] Handles PtmRS PTMs info displaying (VS 21/08/20)
+# 2.3.7 [FEATURE] Handles Spectronaut PTMs info displaying (VS 06/06/20)
+# 2.3.6 [UPDATE] Changed RANK field to IDENT_RANK for compatibility with MySQL 8 (PP 04/03/20) 
 # 2.3.5 [BUGFIX] Use peptide specificity filter on export (VS 09/12/19)
 # 2.3.4 [FEATURE] Split counts into true and rescued peptides in protein details mode (PP 14/11/19)
 # 2.3.3 [FEATURE] Remove locked experiments from comparable proteins queries (VS 08/08/19)

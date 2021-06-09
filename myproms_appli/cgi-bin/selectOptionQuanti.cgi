@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# selectOptionQuanti.cgi    1.2.21                                             #
+# selectOptionQuanti.cgi    1.2.25                                             #
 # Authors: P. Poullet, V. Sabatet (Institut Curie)                             #
 # Contact: myproms@curie.fr                                                    #
 # Generates list of options available to user                                  #
@@ -83,6 +83,7 @@ my $nbExpCond=0;
 my $okAddQuantif=0;
 my $quantifType='';
 my $status;# for quantification only
+my $isModifQuantif = 0;  # for quantification only -> don't display GSEA button if isModif
 
 ####>Checking if parent Experiment has quantifs<####
 my $experimentID=$itemInfo[1]{'ID'};
@@ -97,8 +98,15 @@ if ($item eq 'DESIGN') {
 	($nbExpCond)=$dbh->selectrow_array("SELECT COUNT(*) FROM EXPCONDITION WHERE ID_DESIGN=$itemID");
 	if ($nbExpCond) {
 		$hasChildren=$nbExpCond;
-		#($okAddQuantif)=$dbh->selectrow_array("SELECT COUNT(*) FROM EXPCONDITION EC,OBSERVATION O WHERE EC.ID_EXPCONDITION=O.ID_EXPCONDITION AND EC.ID_DESIGN=$itemID");
-		($okAddQuantif)=$dbh->selectrow_array("SELECT 1 FROM EXPCONDITION EC,OBS_EXPCONDITION OE WHERE EC.ID_EXPCONDITION=OE.ID_EXPCONDITION AND EC.ID_DESIGN=$itemID LIMIT 1");
+		# ($okAddQuantif)=$dbh->selectrow_array("SELECT COUNT(*) FROM EXPCONDITION EC,OBSERVATION O WHERE EC.ID_EXPCONDITION=O.ID_EXPCONDITION AND EC.ID_DESIGN=$itemID");
+		# ($okAddQuantif)=$dbh->selectrow_array("SELECT 1 FROM EXPCONDITION EC,OBS_EXPCONDITION OE WHERE EC.ID_EXPCONDITION=OE.ID_EXPCONDITION AND EC.ID_DESIGN=$itemID LIMIT 1");
+		($okAddQuantif)=$dbh->selectrow_array("SELECT 1 FROM QUANTIFICATION Q
+													INNER JOIN ANA_QUANTIFICATION AQ ON Q.ID_QUANTIFICATION=AQ.ID_QUANTIFICATION
+													INNER JOIN OBSERVATION O ON AQ.ID_ANALYSIS=O.ID_ANALYSIS
+													INNER JOIN OBS_EXPCONDITION OE ON O.ID_OBSERVATION=OE.ID_OBSERVATION
+													INNER JOIN EXPCONDITION EC ON OE.ID_EXPCONDITION=EC.ID_EXPCONDITION
+													WHERE EC.ID_DESIGN=$itemID AND FOCUS='peptide' AND Q.STATUS >= 1 LIMIT 1"
+												);
 		($desHasQuantif)=$dbh->selectrow_array("SELECT 1 FROM QUANTIFICATION WHERE ID_DESIGN=$itemID AND FOCUS='protein' AND STATUS > 0 LIMIT 1");
 		
 		####>Checking if design has suitable quantifs for Proteomic Ruler<####
@@ -128,6 +136,15 @@ elsif ($item eq 'QUANTIFICATION') {
 	#	my ($analysisID)=$dbh->selectrow_array("SELECT ID_ANALYSIS FROM ANA_QUANTIFICATION WHERE ID_QUANTIFICATION=$itemID");
 	#	$anaString="id_ana=$analysisID";
 	#}
+	my ($modifQuantifID, $multiModifStrg) = $dbh->selectrow_array("SELECT Q.ID_MODIFICATION, 
+		GROUP_CONCAT(MQ.ID_MODIFICATION ORDER BY MQ.MODIF_RANK SEPARATOR ',')
+		FROM QUANTIFICATION Q
+		LEFT JOIN MULTIMODIF_QUANTIFICATION MQ ON Q.ID_QUANTIFICATION = MQ.ID_QUANTIFICATION
+		WHERE Q.ID_QUANTIFICATION = $itemID
+		GROUP BY Q.ID_QUANTIFICATION"
+	);
+	$isModifQuantif = ($modifQuantifID || $multiModifStrg)? 1 : 0;
+
 	if ($quantifType eq 'SWATH') {
         $hasChildren=1;
     }
@@ -182,7 +199,7 @@ function selectOption(selectedButton) {
 		top.promsFrame.selectedAction=action;
 	}
 
-	if (action=='summary' \|\| action=='delete' \|\| action=='deleteMulti' \|\| action=='edit') {
+	if (action.match('summary\|edit\|delete')) {
 		if (action=='delete' && !confirm('Delete selected item ?')) {
 			selectOption(document.getElementById('summary'));
 		}
@@ -214,7 +231,7 @@ function selectOption(selectedButton) {
 	}
 	else if (action=='quantiData') {
 		if ('$focus'=='peptide' \|\| '$focus'=='fragment') {
-			top.promsFrame.resultFrame.location="$promsPath{cgi}/showPepQuantification.cgi?CALL=quanti&id_quantif=$itemID";
+			top.promsFrame.resultFrame.location="$promsPath{cgi}/showPepQuantification.cgi?CALL=quanti&id_quantif=$itemID&ACT=view";
 		}
 		else { // protein
 			if ('$quantifType'=='SSPA') {
@@ -239,6 +256,9 @@ function selectOption(selectedButton) {
 	else if (action == 'goAnalysis') {
 		top.promsFrame.resultFrame.location="$promsPath{cgi}/startGOQuantiAnalysis.cgi?quanti=$itemID";
 	}
+	else if (action == 'gsea') {
+		top.promsFrame.resultFrame.location="$promsPath{cgi}/startGSEA.cgi?quanti=$itemID";
+	}
 	//else if ('$item'=='QUANTIFICATION' && action != 'launch'){
 	//	top.promsFrame.resultFrame.location="$promsPath{cgi}/manageQuantification.cgi?ACT="+action+"&ID=$itemID&branchID=$branchID&PROJECT_ID=$projectID";
 	//}
@@ -255,7 +275,7 @@ function selectOption(selectedButton) {
 		top.promsFrame.resultFrame.location="$promsPath{cgi}/startDesignProtRulerQuantif.cgi?ID=$itemID";
 	}
 	else if (action == 'monitor'){
-		var monitorWindow=window.open("$promsPath{cgi}/monitorJobs.cgi?filterType=Quantification&filterDateNumber=1&filterDateType=DAY&filterStatus=Queued&filterStatus=Running",'monitorJobsWindow','width=1000,height=500,scrollbars=yes,resizable=yes');
+		var monitorWindow=window.open("$promsPath{cgi}/monitorJobs.cgi?filterType=Quantification&filterDateNumber=1&filterDateType=DAY&filterStatus=Queued&filterStatus=Running&filterProject=$projectID",'monitorJobsWindow','width=1000,height=500,scrollbars=yes,resizable=yes');
 	}
 	else {alert('Unrecognized option');}
 }
@@ -333,7 +353,17 @@ if ($projectAccess ne 'guest') { #$projectFullAccess
 			print "<TD nowrap>",&compQuantifsButton,"</TD>\n";
 			print "<TD nowrap>",&exportQuantifsButton,"</TD>\n";
 		}
-		print "<TD nowrap>",&goAnalysisButton,"</TD>\n" if ($quantifType=~/PROT_RATIO_PEP|TNPQ/ && $status > 0);
+		if ($status > 0) {
+			if ($quantifType =~ /PROT_RATIO_PEP/ && !$isModifQuantif) {  # GSEA on modif quantif not supported yet
+				print "<TD nowrap>", &goAnalysisButton;
+				print "<BR>\n", &gseaButton;
+				print "</TD>\n";
+			} elsif ($quantifType =~ /PROT_RATIO_PEP|TNPQ/) {
+				print "<TD nowrap>", &goAnalysisButton, "</TD>\n";
+			# } elsif ($quantifType =~ /PROT_ABUNDANCE|PROT_RULER/ && !$isModifQuantif) {
+			# 	print "<TD nowrap>", &gseaButton, "</TD>\n";
+			}
+		}
 	}
 	print "<TD nowrap>",&monitorButton,"</TD>\n";
 }
@@ -412,8 +442,12 @@ sub exportQuantifsButton {
 	return "<INPUT type=\"button\" id=\"exportQuantifs\" style=\"width:175px\" value=\"Export Quantifications\" onclick=\"selectOption(this)\">";
 }
 ####<GO analysis>####
-sub goAnalysisButton{
+sub goAnalysisButton {
 	return "<INPUT type=\"button\" id=\"goAnalysis\" style=\"width:180px\" value=\"Start Q. GO Analysis\" onclick=\"selectOption(this)\">";
+}
+####<Gene Set Enrichment Analysis>####
+sub gseaButton {
+	return "<INPUT type=\"button\" id=\"gsea\" style=\"width:180px\" value=\"Start GSEA\" onclick=\"selectOption(this)\">";
 }
 ####<Add Analysis to EXPCONDITION>####
 #sub addAnalysisButton {
@@ -430,6 +464,10 @@ sub monitorButton {
 
 
 ####>Revision history<####
+# 1.2.25 [FEATURE] Add GSEA button (VL 23/10/20)
+# 1.2.24 [CHANGE] Requires completed (STATUS >= 1) peptide quantification to allow protein quantification (PP 02/02/21)
+# 1.2.23 [MINOR] Added project selection when opening monitor jobs windows (VS 02/09/20)
+# 1.2.22 [CHANGE] Minor change in parameter handling in JS (PP 08/06/20)
 # 1.2.21 [ENHANCEMENT] Add PROT_ABUNDANCE to possible methods of Proteomic Ruler and display button (VL 11/02/20)
 # 1.2.20 [CHANGES] In action buttons order and child-detection queries for Design (PP 07/02/20)
 # 1.2.19 [CHANGES] Set same name for all monitor window so it does not open multiple instances of it (VS 08/01/20)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# selectOptionBioSample.cgi    1.0.5                                           #
+# selectOptionBioSample.cgi    1.0.6                                           #
 # Authors: P. Poullet, S.Liva (Institut Curie)                                 #
 # Contact: myproms@curie.fr                                                    #
 # Generates list of options available to user                                  #
@@ -141,6 +141,9 @@ function selectOption(selectedButton) {
 	else if (action == 'createBS') { //create a new biological sample
 		parent.resultFrame.location="$promsPath{cgi}/manageBioSample.cgi?ACT=add&projectID=$projectID";
 	}
+	else if (action == 'importBS') { //import biological samples from file
+		parent.resultFrame.location="$promsPath{cgi}/importBioSampleData.cgi?projectID=$projectID";
+	}
 	else if (action == 'createSP') { //create a new species
 		parent.resultFrame.location="$promsPath{cgi}/manageSpecies.cgi?ACT=add";
 	}
@@ -180,7 +183,7 @@ print qq
 <TR align=center valign=top>
 |;
 if ($item eq 'ALL') {
-	print "<TD nowrap>",&createBioSample,"</TD>\n";
+	print "<TD nowrap>",&createBioSample,"<BR>",&importBioSample,"</TD>\n";
 	print "<TD nowrap>",&sampleProperties,"<BR>",&sampleTreatments,"</TD>\n";
 	print "<TD nowrap>",&createSpecies,"</TD>\n";
 }
@@ -214,6 +217,10 @@ sub createBioSample {
 	my $disabSamp = ($projectFullAccess)? '' : ' disabled' ;
 	return "<INPUT type=\"button\" id=\"createBS\" style=\"width:170px\" value=\"New Biological Sample\" onclick=\"selectOption(this)\"$disabSamp>";
 }
+sub importBioSample {
+	my $disabSamp = ($projectFullAccess)? '' : ' disabled' ;
+	return "<INPUT type=\"button\" id=\"importBS\" style=\"width:170px\" value=\"Import from File\" onclick=\"selectOption(this)\"$disabSamp>";
+}
 sub createSpecies {
 	my $disabSpecies = ($projectFullAccess)? '' : ' disabled' ;
 	return "<INPUT type=\"button\" id=\"createSP\" style=\"width:110px\" value=\"New Species\" onclick=\"selectOption(this)\"$disabSpecies>";
@@ -230,6 +237,7 @@ sub linkToObservations {
 }
 
 ####>Revision history<####
+# 1.0.6 [FEATURE] Added option button for biological sample import from file (PP 10/03/20)
 # 1.0.5 CSS style for active button (PP 15/03/16)
 # 1.0.4 Left border color code to help navigation (PP 19/10/15)
 # 1.0.3 Disable Observation Link option for guest (PP 16/09/14)

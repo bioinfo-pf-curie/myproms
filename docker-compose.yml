@@ -12,7 +12,8 @@ services:
  myproms-server:
   depends_on:
    - myproms-mysql
-  image: myproms/myproms_base:1.3.2
+  image: myproms/myproms_base:1.3.5.1
+
   container_name: myproms-server
   hostname: myproms.myinstitute.com
   env_file:
@@ -20,7 +21,7 @@ services:
    - Mascot/mascot.env
   environment:
    - "EMAIL_CONTACT=myproms@curie.fr"
-   - "SERVER_ADMIN=myproms@curie.fr"
+   - "SERVER_ADMIN=myProMS"
    - "SERVICE_80_NAME=myproms-server"
    - "SERVICE_80_TAGS=apache,cgi"
    - "APPLI_DIR=/myproms"
@@ -32,6 +33,8 @@ services:
    - "MASSCHROQ_DIR=/usr/bin"
    - "TPP_DIR=/usr/local/tpp/bin"
    - "PYTHON_DIR=/usr/bin"
+   - "PYTHON2_DIR=/usr/bin"
+   - "PYTHON3_DIR=/usr/bin"
    - "PYPROPHET_DIR=/usr/local/bin"
    - "MSPROTEO_DIR=/usr/local/bin"
    - "OPENMS_DIR=/usr/bin"

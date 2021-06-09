@@ -5,7 +5,7 @@ Go to **myProMS** [home page](http://myproms-demo.curie.fr) for more information
 myProMS can run on any operating system compatible with [Docker](https://www.docker.com).
 
 ## Version
-Current version is 3.9.1.
+Current version is 3.9.3.
 Check [releases](https://github.com/bioinfo-pf-curie/myproms/releases) for versions history.
 
 ## License
@@ -14,14 +14,14 @@ myProMS is freely available under [CeCILL license](LICENSE).
 ## Requirements
 * Docker: [https://www.docker.com](https://www.docker.com)
 Two Docker images are required:
-  * [myproms/myproms\_base:1.3.2](https://hub.docker.com/r/myproms/myproms_base): Tools and system dependencies.
+  * [myproms/myproms\_base:1.3.5.1](https://hub.docker.com/r/myproms/myproms_base): Tools and system dependencies.
   * [mysql:5.5](https://hub.docker.com/_/mysql): For database management.
   * These images will be automatically pulled from dockerhub at first launch of the server if necessary.
 * Git: [https://git-scm.com](https://git-scm.com) - *Recommanded*
 
 ## Repository
 This repository contains:
-* All HTLM/JavaScript/Image/MySQL/Perl/R/Java/bash files/scripts specific to myProMS Server.
+* All HTLM/JavaScript/Image/MySQL/Perl/R/Java/Python files/scripts used by myProMS Server.
 * Scripts, configuration files and instructions for installing and running the application.
 
 ## Installation and run instructions
@@ -30,7 +30,7 @@ This repository contains:
 2. Open a console.
 3. Pull the required docker images (optional):
 ```
-docker pull myproms/myproms_base:1.3.2
+docker pull myproms/myproms_base:1.3.5.1
 docker pull mysql:5.5
 ```
 4. Create a home directory for your docker projects (optional):
@@ -39,7 +39,7 @@ mkdir docker
 cd docker
 ```
 5. Retrieve myproms **repository** from GitHub:  
-`git clone --depth 1 https://github.com/bioinfo-pf-curie/myproms myproms` - *Recommanded*  
+`git clone https://github.com/bioinfo-pf-curie/myproms myproms` - *Recommanded*  
 Or download and extract a compressed archive of the repository (https://github.com/bioinfo-pf-curie/myproms).  
 This will create a directory named `myproms` containing all files on this repository.  
 **Important**:

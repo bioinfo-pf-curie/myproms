@@ -1,6 +1,6 @@
 #!/usr/local/bin/perl -w
 #################################################################################
-# selectOptionMotif.cgi    1.0.1                                                #
+# selectOptionMotif.cgi    1.0.2                                                #
 # Authors: P. Poullet, S. Liva (Institut Curie)                   				#
 # Contact: myproms@curie.fr                                                     #
 # Generates list of options available to user, in case of GO analysis item      #
@@ -76,7 +76,7 @@ my ($strgMotif, $strgTitle) = ($itemType eq 'motifanalysis' && $anaType eq "MOTI
 ####>Fetching user information<####
 my @userInfo=&promsMod::getUserInfo($dbh,$userID,$projectID);
 my $projectAccess=${$userInfo[2]}{$projectID};
-my $projectFullAccess=($projectAccess eq 'bioinfo' ||$projectAccess eq 'mass' || $projectAccess =~ /super/)? 1 : 0;
+my $projectGuestAccess = ($projectAccess eq 'guest')? 1 : 0;
 $dbh->disconnect;
 
 ####>HTML<####
@@ -148,11 +148,16 @@ var currentButton; // currently selected button
 |;
 if ($itemType eq 'motifanalysis') {
 	print "<TD nowrap>",&summaryOption;
-	print "<BR>",&editOption,"</TD>\n";
-	print "<TD nowrap>",&deleteOption,"</TD><TD nowrap>",&displayAnalysisButton,"</TD>";
+	unless ($projectGuestAccess) {
+		print "<BR>",&editOption,"</TD>\n";
+		print "<TD nowrap>",&deleteOption;
+	}
+	print "</TD>\n";
+	print "<TD nowrap>",&displayAnalysisButton,"</TD>\n";
 }
 else {
-	print "<TD nowrap>",&motifAnalysisButton,"</TD><TD nowrap>",&heatMapMotifAnalysisButton,"</TD>";
+	print "<TD nowrap>",&motifAnalysisButton,"</TD>\n";
+	print "<TD nowrap>",&heatMapMotifAnalysisButton,"</TD>\n";
 }
 print qq
 |</TR></TABLE>
@@ -184,10 +189,11 @@ sub motifAnalysisButton {
 }
 ###<heatMap motif analysis>###
 sub heatMapMotifAnalysisButton {
-	my $disabHM = ($countAna<2)? " disabled" : " ";
+	my $disabHM = ($countAna<2 || $projectGuestAccess)? " disabled" : " ";
 	return "<INPUT type=\"button\" id=\"heatMapMotifAnalysis\" value=\"HeatMap Motif Analysis\" onclick=\"selectOption(this)\"$disabHM>";
 }
 
 ####>Revision history<####
+# 1.0.2 [BUGFIX] Disable edition and deletion by guest users (VL 28/01/21)
 # 1.0.1 add revision history tag (SL 14/03/18)
 # 1.0.0 New script for action buttons in option frame for motif analyses (SL 31/05/17)

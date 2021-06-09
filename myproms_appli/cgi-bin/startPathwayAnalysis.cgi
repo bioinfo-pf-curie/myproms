@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# startPathwayAnalysis.cgi       1.0.4                                         #
+# startPathwayAnalysis.cgi       1.0.5                                         #
 # Authors: P. Poullet, G. Arras, S.Liva (Institut Curie)                       #
 # Contact: myproms@curie.fr                                                    #
 # Fetch and provide proteins and parameters for Pathway enrichment analysis    #
@@ -57,6 +57,12 @@ my ($lightColor,$darkColor)=&promsConfig::getRowColors;
 my $dbh=&promsConfig::dbConnect;
 my $expID = param('id_exp');
 my $projectID=&promsMod::getProjectID($dbh,$expID,'EXPERIMENT');
+
+####>Fetching user information<####
+my $userID = $ENV{'REMOTE_USER'};
+my @userInfo = &promsMod::getUserInfo($dbh, $userID, $projectID);
+my $projectAccess = ${$userInfo[2]}{$projectID};
+my $projectGuestAccess = ($projectAccess eq 'guest')? 1 : 0;
 
 if(param('start')){
     &processForm;
@@ -213,7 +219,16 @@ function actionOnCheck(){}
 </HEAD>
 <BODY background="$promsPath{images}/bgProMS.gif">
 <CENTER><FONT class="title">Pathway Enrichment Analysis</FONT><BR><BR><BR>
-<TABLE border=0 cellpadding=0 cellspacing=0>
+|;
+
+if ($projectGuestAccess) {  # Guests users cannot start pathway analysis
+	print qq
+|<FONT class="title2">Your guest status does not allow you to start a Pathway Analysis.<BR>You may only check the results of existing analyses.</FONT>
+|;
+
+} else {
+	print qq
+|<TABLE border=0 cellpadding=0 cellspacing=0>
     <TR>
 	<TD nowrap valign='top'>
 	    <FORM name="enrichForm" method="post" onsubmit="return(checkForm(this))" enctype="multipart/form-data">
@@ -254,13 +269,15 @@ function actionOnCheck(){}
 	</DIV>
 	<SCRIPT type="text/javascript">setPopup();</SCRIPT>
 |;
-my $tableIndex=0;
+	my $tableIndex=0;
 
-&promsMod::printTree(\@experimentTree,\%treeOptions,\$tableIndex,1);
+	&promsMod::printTree(\@experimentTree,\%treeOptions,\$tableIndex,1);
+
+	print "</TABLE>\n";
+}
 
 print qq
-|</TABLE>
-</CENTER>
+|</CENTER>
 </BODY>
 </HTML>
 |;
@@ -271,7 +288,6 @@ sub processForm {
     #######################
     # Fetching parameters #
     #######################
-    my $userID = $ENV{'REMOTE_USER'};
     my $name = param('anaName');
     my $description = param('description');
     my $totItemStrg = param('checkedItems');
@@ -362,6 +378,7 @@ sub processForm {
 |;
 }
 ####>Revision history<####
+# 1.0.5 [BUGFIX] Disable creation of analysis for guest users (VL 28/01/21)
 # 1.0.4 Comment checkForm FDR test to prevent launch without selection of analysis/category set (GA 01/03/17)
 # 1.0.3 comment FDR statistics, put defaut p-value to 0.05  (SL 20/10/15)
 # 1.0.2 add fork new script runPathwayAnalysis.pl, replace runAndDisplayPathwayAnalysis (SL 03/09/15)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# autoSelect.cgi              1.6.7                                            #
+# autoSelect.cgi              1.7.2                                            #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Displays myProMS main entry page with links to different sections            #
@@ -69,6 +69,13 @@ my $action=(param('ACT'))? param('ACT') : (param('clearMode'))? param('clearMode
 #my $selMsType=(param('MSTYPE'))? param('MSTYPE') : 'MIS'; # only for auto-select within validation mode (1 analysis)
 my $selMsType=param('MSTYPE'); # not defined for 1st call of autoselect outside validation mode
 my @analysisList=($ITEM eq 'ANALYSIS')? ($itemID) : (param('anaList'))? param('anaList') : (); #Global!!!!!
+
+
+if (param('AJAX')) {
+	if (param('AJAX') eq 'hasPTMProb' && param('anaID')) {&ajaxAnaHasPTMProb(param('anaID'));}
+	exit;
+}
+
 if (scalar @analysisList) { # Only 1 ana or after form submission (except auto-select)
 	if ($action eq 'restore') {&restoreValidation;} # no longer maintained
 	elsif ($action eq 'clearSelection' && $ITEM eq 'ANALYSIS') {&selectClearLevel;} # only for in validation mode (1 analysis)
@@ -379,9 +386,13 @@ print qq
 |	myForm.flaggedUp.disabled=disab;
 	myForm.flaggedDown.disabled=disab;
 	myForm.oneInt.disabled=disab;
+	myForm.oneSeq.disabled=disab;
+	myForm.oneSeqType.disabled=disab;
 	myForm.overPep.disabled=disab;
 	if (myForm.selGoodInt.checked==false) {
 		myForm.oneInt.disabled=true;
+		myForm.oneSeq.disabled=true;
+		myForm.oneSeqType.disabled=true;
 	}
 }
 function activateProtSel() {
@@ -465,9 +476,10 @@ function checkall(checkStatus){
 		for (i=0; i < anaBox.length; i++){
 			if (anaBox[i].disabled) continue;
 			anaBox[i].checked=checkStatus;
+			updatePTMGrpButton(anaBox[i].value, checkStatus);
 		}
 	}
-	else {anaBox.checked=checkStatus;} // Only 1 checkboxes
+	else {anaBox.checked=checkStatus; updatePTMGrpButton(anaBox.value, checkStatus);} // Only 1 checkboxes
 }
 |;
 }
@@ -505,6 +517,88 @@ print qq
 	}
 	myForm.template_name.value = (index > 0)? myForm.templateList.options[index].text : '';
 }
+
+
+function getXMLHTTP(){
+	var xhr=null;
+	if(window.XMLHttpRequest) {// Firefox & others
+		xhr = new XMLHttpRequest();
+	}
+	else if(window.ActiveXObject){ // Internet Explorer
+		try {
+		  xhr = new ActiveXObject("Msxml2.XMLHTTP");
+		} catch (e) {
+			try {
+				xhr = new ActiveXObject("Microsoft.XMLHTTP");
+			} catch (e1) {
+				xhr = null;
+			}
+		}
+	}
+	else { // XMLHttpRequest not supported by browser
+		alert("Your browser does not support XMLHTTPRequest objects...");
+	}
+	return xhr;
+}
+
+var nCheckedTrue = 0;
+var anaHasPTM = {};
+function updatePTMGrpButton(itemID, isChecked) {
+	//Creation of the XMLHTTPRequest object
+	XHR = getXMLHTTP();
+	if (!XHR) {
+		return false;
+	}
+	
+	var isSelectingOnlyOne = document.getElementById('oneSeq').checked;
+	
+	if(itemID in anaHasPTM) {
+		if(isChecked && anaHasPTM[itemID])
+			nCheckedTrue++;
+		else if(!isChecked && anaHasPTM[itemID])
+			nCheckedTrue--;
+			
+		if(nCheckedTrue == 1 && isSelectingOnlyOne) {
+			document.getElementById('grpPtmProb').disabled = false;
+			
+			if(isSelectingOnlyOne) {
+				document.getElementById('grpPtmProb').checked = true;
+				document.getElementById('grpPtmProbSpan').style.display = "inline";
+			}
+		} else if(nCheckedTrue == 0) {
+			document.getElementById('grpPtmProb').disabled = true;
+			document.getElementById('grpPtmProb').checked = false;
+			document.getElementById('grpPtmProbSpan').style.display = "none";
+		}
+	} else if(isChecked) {
+		XHR.open("GET","$promsPath{cgi}/autoSelect.cgi?AJAX=hasPTMProb&anaID=" + itemID);
+		XHR.onreadystatechange=function() {
+			if (XHR.readyState==4 && XHR.responseText) {
+				var hasPTM = XHR.responseText;
+				if(hasPTM == "1") {
+					nCheckedTrue++;
+					anaHasPTM[itemID] = true;
+				} else {
+					anaHasPTM[itemID] = false;
+				}
+				
+				if(nCheckedTrue == 1) {
+					document.getElementById('grpPtmProb').disabled = false;
+					
+					if(isSelectingOnlyOne) {
+						document.getElementById('grpPtmProb').checked = true;
+						document.getElementById('grpPtmProbSpan').style.display = "inline";
+					}
+				} else if(nCheckedTrue == 0) {
+					document.getElementById('grpPtmProb').disabled = true;
+					document.getElementById('grpPtmProb').checked = false;
+					document.getElementById('grpPtmProbSpan').style.display = "none";
+				}
+			}
+		}
+		XHR.send(null);
+	}
+}
 </SCRIPT>
 </HEAD>
 <BODY topmargin=0 background="$promsPath{images}/bgProMS.gif" onload="document.autoValForm.templateList.selectedIndex = $defaultIndex; useTemplate($defaultIndex);">
@@ -522,7 +616,7 @@ $lowScoreString
 <TR bgcolor=$darkColor><TH colspan=2><FONT class="title2">&nbsp&nbsp;Interpretation Selection Rules</FONT></TH></TR>
 <TR bgcolor=$lightColor><TD width=30></TD><TH nowrap align=left>
 <INPUT type="checkbox" name="selGoodInt" value=1 onclick="activatePepSel()" checked > Select interpretations meeting the following criteria.<BR>
-<INPUT type="checkbox" name="rejBadInt" value=1 onclick="activatePepSel()" checked > Reject interpretations that <U>do not</U> meet these criteria.<BR>
+<INPUT type="checkbox" name="rejBadInt" value=1 onclick="activatePepSel()" checked > Reject interpretations that <U>do not</U> meet these criteria.<BR><br/>
 <FONT style="font-size:4px"><BR></FONT>+ Criteria:<BR>
 |;
 if ($selFileFormat=~/SEQUEST/) {
@@ -554,9 +648,7 @@ else {
 <FONT class="title3">&#8805</FONT>3:<INPUT type="text" name="minIntSc3" value="$absMinScore" size="4" onchange="updateScores()" $disableMS2> peptides/protein.<BR>
 |;
 }
-print qq
-|&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp;
-<INPUT type="checkbox" name="noReject" value=1 checked /> Exclude already rejected interpretations (if any) from count.</FONT><BR>
+print qq |
 &nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp;- and size from <INPUT type="text" name="minSize" value="" size="1" placeholder="1">aa to <INPUT type="text" name="maxSize" value="" size="1" placeholder="999">aa.<BR>
 &nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp;- and mass error <FONT class="title3">&#8804</FONT><INPUT type="text" name="minDelta" value="" size="4" placeholder="10"> Da.<BR>
 &nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp;- and Rank for MS <FONT class=\"title3\">&#8804</FONT><SELECT name=\"newMaxRankMS1\" $disableMS1>
@@ -578,13 +670,24 @@ print qq
 &nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp;-<INPUT type="checkbox" name="flaggedDown" value="1"> Interpretation was not <IMG src="$promsPath{images}/lightOrange1.gif" hspace=0 border=0 height=11 width=11> flagged.<BR>
 
 
-<FONT style="font-size:4px"><BR></FONT>
-<INPUT type="checkbox" name="oneInt" value=1 checked /> Select only 1 (best) interpretation/query.<BR>
-<INPUT type="checkbox" name="overPep" value=1 /> Overwrite previous selections/rejections.<BR>
+<FONT style="font-size:4px"><BR><br/></FONT>
+<INPUT type="checkbox" name="oneInt" value=1 checked /> Select only one interpretation per query (best matching rank)<BR>
+<INPUT type="checkbox" name="oneSeq" id="oneSeq" onclick="document.getElementById('grpPtmProbSpan').style.display = (nCheckedTrue > 0 && this.checked) ? 'inline' : 'none';" value=1 checked /> Select only one query per
+<SELECT name="oneSeqType">
+	<OPTION value="ion">ion</OPTION>
+	<OPTION value="peptide">peptide</OPTION>
+</SELECT>
+ (best score)</FONT><BR>
+<span id="grpPtmProbSpan" style="display:none;">&nbsp;&nbsp;&nbsp;&nbsp;<label><INPUT type="checkbox" id="grpPtmProb" name="grpPtmProb" value=1 disabled /> Group PTMs probabilities using
+<SELECT name="grpPtmProbType">
+	<OPTION value="weighted_mean">Weighted Mean</OPTION>
+</SELECT></label><BR></span><br/>
+<INPUT type="checkbox" name="noReject" value=1 /> Exclude already rejected interpretations (if any) from count.</FONT><BR>
+<INPUT type="checkbox" name="overPep" value=1 checked /> Overwrite previous selections/rejections.<BR><br/>
 <FONT style="font-size:4px"><BR></FONT>
 </TH></TR>
 <TR bgcolor=$lightColor><TH colspan=2>
-<FONT style="font-style:italic;">All proteins matched by selected peptides will be selected unless<BR>Protein Selection Rules are applied.</FONT>
+<FONT style="display:inline-block;font-style:italic;padding-bottom:14px;">All proteins matched by selected peptides will be selected unless<BR>Protein Selection Rules are applied.</FONT>
 </TH></TR>
 
 <TR bgcolor=$darkColor><TH colspan=2><FONT class="title2">&nbsp&nbsp;Protein Selection Rules</FONT></TH></TR>
@@ -594,7 +697,7 @@ print qq
 &nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp;- and with score<SUP>*</SUP> <FONT class="title3">&#8805</FONT><INPUT type="text" name="minProtSc" value="$absMinScore" size="3" $disableMS2><BR>
 &nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp;- and with peptide coverage <FONT class="title3">&#8805</FONT><INPUT type="text" name="minCov" value="" size="2" placeholder="0">%.<BR>
 <INPUT type="checkbox" name="bestMatch" value=1 /> Keep only best matching protein(s) for each match group.<BR>
-<INPUT type="checkbox" name="overProt" value=1 /> Overwrite previous exclusions.
+<INPUT type="checkbox" name="overProt" value=1 checked /> Overwrite previous exclusions.
 <FONT style="font-size=7px;"><BR></FONT>
 </TH></TR>
 <TR bgcolor=$darkColor><TD width=30></TD><TH align=left><INPUT type="checkbox" name="actTemplate" value=1 onclick="showTemplateBox()"/>Save parameters as template <INPUT type="text" name="template_name" style='visibility:hidden'>
@@ -607,7 +710,7 @@ print qq
 </TD>
 |;
 if ($ITEM eq 'ANALYSIS') {
-	print "<INPUT type=\"hidden\" name=\"anaList\" value=\"$itemID\">";
+	print "<INPUT type=\"hidden\" name=\"anaList\" onclick=\"updatePTMGrpButton('$itemID', this.checked)\" value=\"$itemID\">";
 }
 else {
 	print qq
@@ -631,7 +734,7 @@ else {
 		}
 		##>Checkbox (or -)
 		#my $disabStrg=($valStat>1 || $fileFormat !~ /$selFileFormat/ || $msType ne $selMsType)? ' disabled' : '';
-		my $boxStr = ($valStat > 1 || $fileFormat !~ /$selFileFormat/ || $msType ne $selMsType)? '-' : "<INPUT type=\"checkbox\" name=\"anaList\" value=\"$anaID\">"; #$disabStrg
+		my $boxStr = ($valStat > 1 || $fileFormat !~ /$selFileFormat/ || $msType ne $selMsType)? '-' : "<INPUT type=\"checkbox\" name=\"anaList\" onclick=\"updatePTMGrpButton('$anaID', this.checked)\" value=\"$anaID\">"; #$disabStrg
 		##>Parents
 		my $parentStrg='';
 		for (my $i=0;$i<=$#projHierarchy-2;$i+=2) { # stops before ana name
@@ -709,6 +812,10 @@ sub processSelectionForm {
 	my $selGoodInt=(param('selGoodInt'))? 1 : 0;
 	my $rejBadInt=(param('rejBadInt'))? 1 : 0;
 	my $oneInt=(param('oneInt'))? 1 : 0;
+	my $oneSeq=(param('oneSeq'))? 1 : 0;
+	my $oneSeqType=(param('oneSeqType'))? param('oneSeqType') : '';
+	my $grpPTMProb=(param('grpPtmProb')) ? 1 : 0;
+	my $grpPTMProbType=(param('grpPtmProbType')) ? param('grpPtmProbType') : '';
 	my $overPep=(param('overPep'))? 1 : 0;
 	$absMinScore=(param('minScore'))? param('minScore') : 0; # => no peptide selection at all (Re-validation pass on protein selection)
 	my (%minIntScore,%paramMaxRank);
@@ -768,6 +875,10 @@ sub processSelectionForm {
 	$paramStrg .= "flaggedUp:check:$flaggedUp;" if $flaggedUp;
 	$paramStrg .= "flaggedDown:check:$flaggedDown;" if $flaggedDown;
 	$paramStrg .= "oneInt:check:$oneInt;" if $oneInt;
+	$paramStrg .= "oneSeq:check:$oneSeq;" if $oneSeq;
+	$paramStrg .= "oneSeqType:text:$oneSeqType;" if $oneSeqType;
+	$paramStrg .= "grpPtmProb:check:$grpPTMProb;" if $grpPTMProb;
+	$paramStrg .= "grpPtmProbType:text:$grpPTMProbType;" if $grpPTMProbType;
 	$paramStrg .= "overPep:check:$overPep;" if $overPep;
 	$paramStrg .= "selProt:check:$selProt;" if $selProt;
 	$paramStrg .= "minPep:text:$minMatchPep;";
@@ -808,89 +919,266 @@ sub processSelectionForm {
 		####<Fetching Query & Protein match data>####
 		#############################################
 		print "&nbsp&nbsp&nbsp<B>Fetching Peptide/Protein Match Data...";
-		my (%queryStatus,%goodPeptides,%startingSelect,%noSelect,%allRankInfo,%trueRank,%queryID2Num,%queryNum2ID,%queryCharge,%pepSize,%pepScore,%pepFlag,%queryMStype);
+		my (%queryStatus,%goodPeptides,%queryScore,%allQueryIons,%startingSelect,%noSelect,%allRankInfo,%trueRank,%queryID2Num,%queryNum2ID,%queryCharge,%queryPTMProb,%srcPTMPos,$ptmSoft,%pepSize,%queryRankScore,%pepQueryRanks,%pepFlag,%queryMStype);
 
 		my $infoString=''; #'INFO_PEP0';
 		foreach my $rank (1..$absMaxRank) {$infoString.=",INFO_PEP$rank";}
-		my $sthQD=$dbh->prepare("SELECT ID_QUERY,QUERY_NUM,MAX_SCORE,CHARGE$infoString FROM QUERY_VALIDATION WHERE ID_ANALYSIS=$analysisID AND VALID_STATUS >= -3");
+		my $sthQD=$dbh->prepare("SELECT QV.ID_QUERY,QUERY_NUM,MAX_SCORE,CHARGE,GROUP_CONCAT(CONCAT(QM.ID_MODIFICATION, '=', QM.POS_STRING, '=', SUBSTRING_INDEX(REF_POS_STRING, '##PRB', 1), '=', SUBSTRING_INDEX(QM.REF_POS_STRING, '##PRB_', -1)) SEPARATOR '&&') AS PTM_INFO$infoString FROM QUERY_VALIDATION QV LEFT JOIN QUERY_MODIFICATION QM ON QM.ID_QUERY=QV.ID_QUERY WHERE QV.ID_ANALYSIS=$analysisID AND VALID_STATUS >= -3 GROUP BY QV.ID_QUERY");
 		$sthQD->execute;
 
-		while (my($queryID,$queryNum,$isMS2,$charge,@pepInfo)=$sthQD->fetchrow_array) { # MAX_SCORE=0 if MS1
+		while (my($queryID,$queryNum,$isMS2,$charge,$queryPTMInfo,@pepInfo)=$sthQD->fetchrow_array) { # MAX_SCORE=0 if MS1
 			$queryID2Num{$queryID}=$queryNum;
 			$queryNum2ID{$queryNum}=$queryID;
 			$queryMStype{$queryID}=($isMS2)? 'MS2' : 'MS1';
 			$queryCharge{$queryID}=($charge)? $charge : 2; # just in case: defaults to 2+ <=> lower score
 			my $trueRk=1;
-			my $prevScore;
+			my $prevQueryRankScore;
 			my $rank=0;
 			my $refNumPep=($isPDM && $queryNum<0)? 1 : 3;
 			foreach my $info (@pepInfo) {
 				$rank++;
 				last unless $info;
-				($pepScore{"$queryNum:$rank"})=($info=~/SC=(\d*\.*\d*)/);
+				($queryRankScore{"$queryNum:$rank"})=($info=~/SC=(\d*\.*\d*)/);
 				if ($isMS2) { # MS/MS
-					if ($prevScore) { # rank>1; peptides with same score are considered to be of same true rank !!!!!!!!!!
-						$trueRk++ if $pepScore{"$queryNum:$rank"}<$prevScore;
+					if ($prevQueryRankScore) { # rank>1; peptides with same score are considered to be of same true rank !!!!!!!!!!
+						$trueRk++ if $queryRankScore{"$queryNum:$rank"}<$prevQueryRankScore;
 					}
 				}
 				else { # MS (score=0)
 					$trueRk=$rank;
 				}
 				$trueRank{"$queryNum:$rank"}=$trueRk;
-				$prevScore=$pepScore{"$queryNum:$rank"};
+				$prevQueryRankScore=$queryRankScore{"$queryNum:$rank"};
 				$pepFlag{"$queryNum:$rank"}= ($info=~/FLT=(-?\d)/)? $1 : 0;
+				
+				if ($queryPTMInfo) {
+					foreach my $modifInfos (split(/\&\&/, $queryPTMInfo)) {
+						(my $modifID, my $ptmCurrPos, my $ptmRefPos, $ptmSoft, my $ptmProb) = split(/=/, $modifInfos);
+						next unless($modifID && $ptmProb);
+						$srcPTMPos{"$queryNum:$rank"}{$modifID} = ($ptmRefPos) ? $ptmRefPos : $ptmCurrPos;
+						$queryPTMProb{"$queryNum:$rank"}{$modifID} = $ptmProb;
+					}
+				}
+				
 				my ($sequence)=($info=~/SEQ=(\w+)/);
+				my ($vmod)=($info=~/VMOD=(.+?)(?:,|$)/);
+				$vmod='' if(!$vmod);
+				
 				$pepSize{"$queryNum:$rank"}=length($sequence);
 				my ($select)=($info=~/SEL=(-*\d)/);
-				if ($select==-3 || $select==-1 || ($select==-2 && $noRejected)) {	# skip if manual rejection  || better score exists ...
-					$allRankInfo{$queryID}{$rank}=$info;							# || exclude already rejected interpretations
+				if ($select==-3 || ($select==-1 && $oneSeq && !$rejBadInt) || ($select==-2 && $noRejected)) {	# skip if manual rejection  || better score exists and only keep ion with best score without rejecting peptides not matching rules...
+					$allRankInfo{$queryID}{$rank}=$info;														# || exclude already rejected interpretations
 					next;
 				}
+				
+				my $selectQuery = 0;
 				if ($selGoodInt || $rejBadInt) { # normal case
-					$noSelect{$queryNum}=$rank if (($select==2 || ($select==1 && !$overPep)) && $oneInt);
+					$noSelect{$queryNum}=$trueRk if (($select==2 || ($select==1 && !$overPep) && $oneInt)); # Defines query selection rank
 					if ($selFileFormat=~/SEQUEST/) {
 						my $usedCharge=($charge<=4)? $charge : 4;
-						if ($isMS2 && $select<2 && ($overPep || $select==0) && $pepScore{"$queryNum:$rank"} < $minIntScore{"$usedCharge:$refNumPep"}) { # quick check for very bad MS2 peptides
-							if ($rejBadInt) {$info=~s/SEL=-*\d/SEL=-2/;}
+						if ($isMS2 && $select<2 && ($overPep || $select==0) && $queryRankScore{"$queryNum:$rank"} < $minIntScore{"$usedCharge:$refNumPep"}) { # quick check for very bad MS2 peptides
+							if ($rejBadInt) {$info=~s/SEL=-*\d/SEL=-2/}
 							#!!! bug fix 03/06 ->
 							elsif ($overPep) { # in case pep is already selected
-								$goodPeptides{"$queryNum:$rank"}=$startingSelect{"$queryNum:$rank"}=$select;
+								$selectQuery=1;
 							}
 							#<-!!!
 						}
-						else {$goodPeptides{"$queryNum:$rank"}=$startingSelect{"$queryNum:$rank"}=$select;}
+						else {$selectQuery=1;}
 					}
 					else {
-						if ($isMS2 && $select<2 && ($overPep || $select==0) && $pepScore{"$queryNum:$rank"} < $minIntScore{$refNumPep}) { # quick check for very bad MS2 peptides
-							if ($rejBadInt) {$info=~s/SEL=-*\d/SEL=-2/;}
+						if ($isMS2 && $select<2 && ($overPep || $select==0) && $queryRankScore{"$queryNum:$rank"} < $minIntScore{$refNumPep}) { # quick check for very bad MS2 peptides
+							if ($rejBadInt) {$info=~s/SEL=-*\d/SEL=-2/}
 							#!!! bug fix 03/06 ->
 							elsif ($overPep) { # in case pep is already selected
-								$goodPeptides{"$queryNum:$rank"}=$startingSelect{"$queryNum:$rank"}=$select;
+								$selectQuery=1;
 							}
 							#<-!!!
 						}
-						else {$goodPeptides{"$queryNum:$rank"}=$startingSelect{"$queryNum:$rank"}=$select;}
+						else {$selectQuery=1;}
 					}
 				}
-				else { # no peptide (re)selection
-					$goodPeptides{"$queryNum:$rank"}=$startingSelect{"$queryNum:$rank"}=$select if $select >=0;
+				elsif($select >= 0) { # no peptide (re)selection
+					$selectQuery=1;
 				}
+				
+				if($selectQuery) {
+					$goodPeptides{"$queryNum:$rank"}=$startingSelect{"$queryNum:$rank"}=$select;
+					
+					if($oneSeq) {
+						my $keySeq = ($oneSeqType eq 'ion') ? "$sequence$vmod\_$charge" : "$sequence$vmod";
+						if(!$pepQueryRanks{$keySeq}) {
+							$pepQueryRanks{$keySeq}{"bestQuery"} = "$queryNum:$rank";
+							$pepQueryRanks{$keySeq}{"allQueries"} = ();
+						} else {
+							if($queryRankScore{"$queryNum:$rank"} > $queryRankScore{$pepQueryRanks{$keySeq}{"bestQuery"}}) {
+								$pepQueryRanks{$keySeq}{"bestQuery"} = "$queryNum:$rank";
+							}
+						}
+						push(@{$pepQueryRanks{$keySeq}{"allQueries"}}, "$queryNum:$rank");
+					}
+				}
+				
 				$allRankInfo{$queryID}{$rank}=$info;
 			}
 		}
 		$sthQD->finish;
-
-		####<Cleaning list of auto-selectable peptides>#### rejecting already selected 2ndary peptides if $oneInt
+		
+		# Cleaning list of auto-selectable peptides
+		### If $oneInt, reject all already selected 2ndary queries (other than preselected rank)
 		foreach my $queryNum (keys %noSelect) {
 			foreach my $rank (1..$absMaxRank) {
-				next if $rank==$noSelect{$queryNum}; # preselected rank
+				next if($rank==$noSelect{$queryNum});
 				if (defined($goodPeptides{"$queryNum:$rank"})) {
 					delete $goodPeptides{"$queryNum:$rank"};
-					$allRankInfo{$queryNum2ID{$queryNum}}{$rank}=~s/SEL=-*\d/SEL=-2/ if $rejBadInt; # \d cannot be -3
+					$allRankInfo{$queryNum2ID{$queryNum}}{$rank}=~s/SEL=-*\d/SEL=-2/ if($rejBadInt); # \d cannot be -3
 				}
 			}
 		}
 		
+		### If $oneSeq, keep only best score ion for each peptide
+		if($oneSeq) {
+			my $sthUpQM=$dbh->prepare("UPDATE QUERY_MODIFICATION SET POS_STRING=?, REF_POS_STRING=? WHERE ID_QUERY=? AND ID_MODIFICATION=?");
+			foreach my $pepSeq (keys %pepQueryRanks) {
+				my (%pepGrpPTM, %allScores);
+				my $bestQueryRank = $pepQueryRanks{$pepSeq}{"bestQuery"};
+				my ($queryNum, $queryRank) = split(/:/, $pepQueryRanks{$pepSeq}{"bestQuery"});
+				#print("<br/>For Seq : $pepSeq => <br/>");
+				foreach my $currentQueryRank (@{$pepQueryRanks{$pepSeq}{"allQueries"}}) { # TODO Here: Get all probabilities + All existing sites and compute weighted mean based on query score
+					if($grpPTMProb && scalar keys %{$queryPTMProb{$currentQueryRank}} > 0) {
+						foreach my $modID (keys %{$queryPTMProb{$currentQueryRank}}) {
+							my $nSites = 0;
+							$nSites = () = $srcPTMPos{$bestQueryRank}{$modID} =~ /\Q./g if($srcPTMPos{$bestQueryRank}{$modID});
+							$nSites += 1 if($nSites);
+							
+							$allScores{$queryRankScore{$currentQueryRank}} = 1 if(!$allScores{$queryRankScore{$currentQueryRank}});
+							foreach my $ptmInfo (split(/,/, $queryPTMProb{$currentQueryRank}{$modID})) {
+								my ($ptmPos, $ptmProb) = split(/:/, $ptmInfo);
+								$pepGrpPTM{$modID}{$ptmPos}{"SCORE"}{$queryRankScore{$currentQueryRank}} = $ptmProb;
+							}
+						}
+					}
+					
+					next if($currentQueryRank eq $bestQueryRank);
+					delete $goodPeptides{$currentQueryRank} if(defined($goodPeptides{$currentQueryRank}));
+					my ($queryNum, $rank) = split(/:/, $currentQueryRank);
+					my ($select)=($allRankInfo{$queryNum2ID{$queryNum}}{$rank}=~/SEL=(-*\d)/);
+					my $newSelect = ($rejBadInt || ($select == -2 && $noRejected)) ? -2 : -1;
+					
+					$allRankInfo{$queryNum2ID{$queryNum}}{$rank}=~s/SEL=-*\d/SEL=$newSelect/ if($select <= 0 || $overPep); # \d cannot be -3
+				}
+				
+				if($grpPTMProb && %pepGrpPTM) {
+					if($grpPTMProbType eq 'weighted_mean') {
+						my ($minScore, $maxScore, $sumScore);
+						my $delta = 0.05;
+						
+						# Fill PTMProb matrix with 0 when no value found
+						# Get Max/Min Score to normalize data
+						foreach my $modID (keys %pepGrpPTM) {
+							foreach my $ptmPos (keys %{$pepGrpPTM{$modID}}) {
+								foreach my $score (keys %allScores) {
+									$pepGrpPTM{$modID}{$ptmPos}{"SCORE"}{$score} = 0 if(!$pepGrpPTM{$modID}{$ptmPos}{"SCORE"}{$score});
+									if(!$minScore || $score < $minScore) {
+										$minScore = $score;
+									}
+									if(!$maxScore || $score > $maxScore) {
+										$maxScore = $score;
+									}
+								}
+							}
+						}
+						
+						# Normalize Scores
+						my %normalizedScore;
+						foreach my $score (keys %allScores) {
+							my $normalizedScore = ($score-($minScore*(1-$delta)))/($maxScore-($minScore*(1-$delta)));
+							$normalizedScore{$score} = $normalizedScore;
+						}
+						
+						# Compute sumprod of all values/scores and sum of normalized scores
+						foreach my $modID (keys %pepGrpPTM) {
+							foreach my $ptmPos (keys %{$pepGrpPTM{$modID}}) {
+								my $sumProd = 0;
+								my $sumScore = 0;
+								foreach my $score (keys %{$pepGrpPTM{$modID}{$ptmPos}{"SCORE"}}) {
+									my $normScore = $normalizedScore{$score};
+									$sumProd = $sumProd+($normScore*$pepGrpPTM{$modID}{$ptmPos}{"SCORE"}{$score});
+									$sumScore += $normScore;
+								}
+								$pepGrpPTM{$modID}{$ptmPos}{"weighted_mean"} = sprintf("%.3f", $sumProd/$sumScore);
+							}
+						}
+					}
+					
+					# Recreate most probable POS_STRING field value based on PTM probabilities
+					my $bestPTMProbStr;
+					foreach my $modID (keys %{$queryPTMProb{$bestQueryRank}}) {
+						my %grpPtmProbPos;
+						
+						# Search for top N PTM (N being the initial amount of sites)
+						my @topPTMs;
+						my @existingSites = ($srcPTMPos{$bestQueryRank}{$modID}) ? split(/\./, $srcPTMPos{$bestQueryRank}{$modID}) : ();
+						
+						if(@existingSites) {
+							my @sortedSites = sort {$pepGrpPTM{$modID}{$b}{$grpPTMProbType}<=>$pepGrpPTM{$modID}{$a}{$grpPTMProbType}} keys %{$pepGrpPTM{$modID}};
+							my @possibleSites;
+							my $nSites = scalar @existingSites;
+							my $nTopSites = 0;
+							
+							for(my $i=0; $i<scalar @sortedSites; $i++) {
+								my $currentPos = $sortedSites[$i];
+								my ($currentProb, $nextProb) = ($pepGrpPTM{$modID}{$currentPos}{$grpPTMProbType}, ($i+1<scalar @sortedSites) ? $pepGrpPTM{$modID}{$sortedSites[$i+1]}{$grpPTMProbType} : -1);
+								
+								push(@possibleSites, $currentPos);
+								if($currentProb != $nextProb) {
+									if(scalar @possibleSites == 1) {
+										push(@topPTMs, int($currentPos)); $nTopSites++;
+									} else { # Check for most probable sites
+										for(my $y=0; $y<scalar @possibleSites; $y++) {
+											my $pos = $possibleSites[$y];
+											if(index(".".$srcPTMPos{$bestQueryRank}{$modID}.".", ".$pos.") != -1 && $nTopSites < $nSites) {
+												push(@topPTMs, int($pos)); $nTopSites++;
+												splice(@possibleSites, $y, 1); $y--;
+											}
+										}
+										
+										if($nTopSites < $nSites) {
+											foreach my $pos (@possibleSites) {
+												push(@topPTMs, int($pos)); $nTopSites++;
+												last if($nTopSites >= $nSites);
+											}
+										}
+									}
+									@possibleSites = ();
+								}
+								
+								last if($nTopSites >= $nSites); # Stop if when expected amoung of (top) sites is reached
+							}
+							
+							@topPTMs = sort { $a <=> $b } @topPTMs if(@topPTMs);
+						}
+						my $newPos = join('.', @topPTMs);
+						
+						# Create REF_POS_STRING field
+						$bestPTMProbStr = "";
+						foreach my $ptmInfo (split(/,/, $queryPTMProb{$bestQueryRank}{$modID})) {
+							my ($ptmPos, $ptmProb) = split(/:/, $ptmInfo);
+							$bestPTMProbStr .= "," if($bestPTMProbStr);
+							$bestPTMProbStr .= "$ptmPos:$ptmProb";
+							$bestPTMProbStr .= ":".$pepGrpPTM{$modID}{$ptmPos}{$grpPTMProbType} if($pepGrpPTM{$modID}{$ptmPos}{$grpPTMProbType});
+						}
+						
+						if($newPos ne $srcPTMPos{$bestQueryRank}{$modID}) {
+							$bestPTMProbStr = $srcPTMPos{$bestQueryRank}{$modID}."##PRB_$ptmSoft=$bestPTMProbStr";
+						} else {
+							$bestPTMProbStr = "##PRB_$ptmSoft=$bestPTMProbStr";
+						}
+						$sthUpQM->execute("$newPos", "$bestPTMProbStr", $queryNum2ID{$queryNum}, $modID);
+					}
+				}
+			}
+		}
 		
 		####<Fetching all protein hits>####
 		my (%numPepProt,%pepProtHit);
@@ -901,7 +1189,6 @@ sub processSelectionForm {
 		while (my ($identifier,$queryNum,$rank,$begInfo)=$sthMP->fetchrow_array) {
 			$count++;
 			if ($count==1000) {$count=0; print '.';}
-			next if $allRankInfo{$queryNum2ID{$queryNum}}{$rank}=~/SEL=-1/; # better score exists
 			push @{$matchedProt{$identifier}},"$queryNum:$rank:$begInfo"; # for protein validation
 			next unless (defined($goodPeptides{"$queryNum:$rank"}));
 			$numPepProt{$identifier}++;
@@ -940,10 +1227,11 @@ sub processSelectionForm {
 					if ($oneInt) {
 						##<Quick scan to detect already selected rank
 						foreach my $rank (sort{$a<=>$b} keys %{$allRankInfo{$queryID}}) {
-							if ($allRankInfo{$queryID}{$rank}=~/SEL=2/ || ($allRankInfo{$queryID}{$rank}=~/SEL=1/ && !$overPep)) {$locNoSelect=$rank; last;}
+							if ($allRankInfo{$queryID}{$rank}=~/SEL=2/ || ($allRankInfo{$queryID}{$rank}=~/SEL=1/ && !$overPep)) {$locNoSelect=$trueRank{"$queryNum:$rank"}; last;}
 						}
 					}
 				}
+
 				foreach my $rank (sort{$a<=>$b} keys %{$allRankInfo{$queryID}}) {
 					next unless defined($goodPeptides{"$queryNum:$rank"});
 
@@ -962,26 +1250,26 @@ sub processSelectionForm {
 						my $rejected=0;
 						if ($selFileFormat=~/SEQUEST/) {
 							my $usedCharge=($queryCharge{$queryID}<=4)? $queryCharge{$queryID} : 4;
-							if (($queryMStype{$queryID} eq 'MS1' || $pepScore{"$queryNum:$rank"}>=$minIntScore{"$usedCharge:$refNumPep"}) && $pepSize{"$queryNum:$rank"}>=$minSize && $pepSize{"$queryNum:$rank"}<=$maxSize && $absDelta<=$minDelta && $trueRank{"$queryNum:$rank"}<=$paramMaxRank{$queryMStype{$queryID}} && ($pepFlag{"$queryNum:$rank"}==1 || $flaggedUp!=1) && ($pepFlag{"$queryNum:$rank"} !=-1 || $flaggedDown!=1 )) {
-								if (defined($locNoSelect) && $rank != $locNoSelect) {$rejected=1;} # another inter already selected
+							if (($queryMStype{$queryID} eq 'MS1' || $queryRankScore{"$queryNum:$rank"}>=$minIntScore{"$usedCharge:$refNumPep"}) && $pepSize{"$queryNum:$rank"}>=$minSize && $pepSize{"$queryNum:$rank"}<=$maxSize && $absDelta<=$minDelta && $trueRank{"$queryNum:$rank"}<=$paramMaxRank{$queryMStype{$queryID}} && ($pepFlag{"$queryNum:$rank"}==1 || $flaggedUp!=1) && ($pepFlag{"$queryNum:$rank"} !=-1 || $flaggedDown!=1 )) {
+								if (defined($locNoSelect) && $trueRank{"$queryNum:$rank"} != $locNoSelect) {$rejected=1;} # another inter already selected
 								elsif ($selGoodInt) { # important to go from rank0 to last
 									$select=1;
-									$locNoSelect=$rank if $oneInt;
+									$locNoSelect=$trueRank{"$queryNum:$rank"} if($oneInt);
 								}
 							}
 							else {$rejected=1;} # Pep did not pass selection
 						}
 						else {
-							if (($queryMStype{$queryID} eq 'MS1' || $pepScore{"$queryNum:$rank"}>=$minIntScore{$refNumPep}) && $pepSize{"$queryNum:$rank"}>=$minSize && $pepSize{"$queryNum:$rank"}<=$maxSize && $absDelta<=$minDelta && $trueRank{"$queryNum:$rank"}<=$paramMaxRank{$queryMStype{$queryID}} && ($pepFlag{"$queryNum:$rank"}==1 || $flaggedUp!=1) && ($pepFlag{"$queryNum:$rank"} !=-1 || $flaggedDown!=1 )) {
-								if (defined($locNoSelect) && $rank != $locNoSelect) {$rejected=1;} # another inter already selected
+							if (($queryMStype{$queryID} eq 'MS1' || $queryRankScore{"$queryNum:$rank"}>=$minIntScore{$refNumPep}) && $pepSize{"$queryNum:$rank"}>=$minSize && $pepSize{"$queryNum:$rank"}<=$maxSize && $absDelta<=$minDelta && $trueRank{"$queryNum:$rank"}<=$paramMaxRank{$queryMStype{$queryID}} && ($pepFlag{"$queryNum:$rank"}==1 || $flaggedUp!=1) && ($pepFlag{"$queryNum:$rank"} !=-1 || $flaggedDown!=1 )) {
+								if (defined($locNoSelect) && $trueRank{"$queryNum:$rank"} != $locNoSelect) {$rejected=1;} # another inter already selected
 								elsif ($selGoodInt) { # important to go from rank0 to last
 									$select=1;
-									$locNoSelect=$rank if $oneInt;
+									$locNoSelect=$trueRank{"$queryNum:$rank"} if($oneInt);
 								}
 							}
 							else {$rejected=1;} # Pep did not pass selection
 						}
-
+						
 						my $tmpSelect=$select; #!!! bug fix 03/06
 						if ($rejected) {
 							$select=-2 if $rejBadInt; # failed => reject
@@ -1051,6 +1339,55 @@ sub processSelectionForm {
 		$sthUpQ->finish;
 		print " Done.</B><BR>\n";
 
+		print "&nbsp&nbsp&nbsp<B>Updating Peptides score distribution graph ...";
+		my $anaDir = "$promsPath{data}/validation/ana_$analysisID";
+		(my $dataFile) = $dbh->selectrow_array("SELECT DATA_FILE FROM ANALYSIS WHERE ID_ANALYSIS=$analysisID");
+		(my $rootName=$dataFile)=~s/\.[^\.]+\Z//;
+		my $targetValFile = "$anaDir/$rootName.target_val";
+		open (SCORE,">$targetValFile");
+		foreach my $queryID (keys %queryStatus) {
+			if($queryStatus{$queryID} > 0) {
+				foreach my $rank (1..$absMaxRank) {
+					my $queryNum = $queryID2Num{$queryID};
+					print SCORE $queryRankScore{"$queryNum:$rank"}."\n" if($queryRankScore{"$queryNum:$rank"});
+				}
+			}
+		}
+		close(SCORE);
+
+		if(-e $targetValFile) {
+			##<Drawing density plot with R
+			my $Rscript = "$anaDir/density.R";
+			my $targetFile = "$anaDir/$rootName.target";
+			my $decoyFile = "$anaDir/$rootName.decoy";
+
+			open(R,">$Rscript");
+			print R qq |
+library(ggplot2)
+target <- read.csv("$targetFile", header = FALSE)
+target_val <- read.csv("$targetValFile", header = FALSE)
+decoy <- read.csv("$decoyFile", header = FALSE)
+
+png(filename="$anaDir/scores.png", width=500, height=500, units = "px")
+
+rep = rbind(data.frame(type=factor('Target'), value=target), data.frame(type=factor('Target Validated'), value=target_val), data.frame(type=factor('Decoy'), value=decoy))
+sc_threshold = quantile(rep[rep\$type == 'Decoy',]\$V1, 0.99, na.rm = TRUE)
+p <- ggplot(rep, aes(V1, color=type)) +
+geom_density(aes(y = ..count..), alpha=.2) +
+labs(title="Identification score distribution of $rootName", 
+	x="Score",
+	y="Peptides amount")
+plot(p)
+dev.off()
+	|;
+			close R;
+			system "cd $anaDir; $promsPath{R}/R CMD BATCH --no-save --no-restore $Rscript";
+			sleep 1;
+			unlink $Rscript;
+			unlink $Rscript.'out' if -e $Rscript.'out';
+		}
+		print " Done.</B><BR>\n";
+
 		###########################################
 		####<Updating protein selection status>####
 		###########################################
@@ -1061,17 +1398,18 @@ sub processSelectionForm {
 			# -3 and no overProt -2 already removed
 			next unless $protInfo{$identifier};
 			my ($protID,$selStatus,$protLength,$maxMatch,$matchGroup,$oldConfLevel,$oldNumMatch)=@{$protInfo{$identifier}};
-			my ($numMatch,$protScore,$rejectedMatch)=(0,0,0);
+			my ($numMatch,$protScore,$rejectedMatch,$noStatusPeptides)=(0,0,0,0);
 			my %posPeptide;
 			foreach my $matchInfo (@{$matchedProt{$identifier}}) {
 				my ($queryNum,$rank,@aaData)=split(/:/,$matchInfo);
 				my $queryID=$queryNum2ID{$queryNum};
 				if ($allRankInfo{$queryID}{$rank}=~/SEL=[12]/) {
 					$numMatch++;
-					#$protScore+=(scalar (@aaData) * $pepScore{"$queryNum:$rank"}); # matchFreq * pepScore
-					$protScore+=$pepScore{"$queryNum:$rank"}; # pepScore
+					#$protScore+=(scalar (@aaData) * $queryRankScore{"$queryNum:$rank"}); # matchFreq * queryRankScore
+					$protScore+=$queryRankScore{"$queryNum:$rank"}; # queryRankScore
 				}
 				elsif ($allRankInfo{$queryID}{$rank}=~/SEL=-[23]/) {$rejectedMatch++;}
+				elsif ($allRankInfo{$queryID}{$rank}=~/SEL=0/) {$noStatusPeptides++;}
 				foreach my $aaStr (@aaData) { # aaStr=begAa,flankNterAA,flankCterAA
 					my $beg=(split(/,/,$aaStr))[0];
 					$posPeptide{$beg}=$pepSize{"$queryNum:$rank"};
@@ -1084,6 +1422,7 @@ sub processSelectionForm {
 
 			####<Applying exclusion rules>####
 			if ($protInfo{$identifier}[1]>-3 && ($overProt || $protInfo{$identifier}[1]>-2)) { # !filtered or overProt+excluded
+				$maxMatch = $numMatch+$rejectedMatch+$noStatusPeptides;
 # print "**$identifier => $protInfo{$identifier}[1]<BR>\n";
 				if ($numMatch) { # at least 1 peptide selected
 					my $excludeProt;
@@ -1117,7 +1456,12 @@ sub processSelectionForm {
 					}
 					if ($excludeProt) {$protInfo{$identifier}[1]=-2;}
 					elsif ($selStatus>=-1 || $overProt) {
-						$protInfo{$identifier}[1]=($numMatch+$rejectedMatch==$maxMatch)? 2 : 1;
+						if($numMatch+$rejectedMatch==$maxMatch) {
+							$protInfo{$identifier}[1] = 2;
+						} else {
+							$protInfo{$identifier}[1] = 1;
+						}
+						$protInfo{$identifier}[3] = $maxMatch;
 					}
 				}
 				else { # no peptides selected
@@ -1140,10 +1484,10 @@ sub processSelectionForm {
 		####<Updating Proteins in DB>####
 		#################################
 		print '.';
-		my $sthUpProt=$dbh->prepare("UPDATE PROTEIN_VALIDATION SET SEL_STATUS=?,CONF_LEVEL=?,NUM_MATCH=?,SCORE=? WHERE ID_PROT_VALID=?");
+		my $sthUpProt=$dbh->prepare("UPDATE PROTEIN_VALIDATION SET SEL_STATUS=?,CONF_LEVEL=?,NUM_MATCH=?,SCORE=?,MAX_MATCH=? WHERE ID_PROT_VALID=?");
 		foreach my $identifier (keys %matchedProt) {
 # print "($protInfo{$identifier}[1], @{$protInfo{$identifier}}[5..7], $protInfo{$identifier}[0])<BR>\n";
-			$sthUpProt->execute($protInfo{$identifier}[1],@{$protInfo{$identifier}}[5..7],$protInfo{$identifier}[0]);
+			$sthUpProt->execute($protInfo{$identifier}[1],@{$protInfo{$identifier}}[5..7],$protInfo{$identifier}[3],$protInfo{$identifier}[0]);
 		}
 		$sthUpProt->finish;
 
@@ -1393,6 +1737,15 @@ top.promsFrame.spectrumFrame.location="$promsPath{html}/nothing.html";
 	&reloadFrames;
 }
 
+sub ajaxAnaHasPTMProb {
+	my ($anaID) = @_;
+	my ($nbModQueries) = $dbh->selectrow_array("SELECT COUNT(*) AS NB_MODIFIED_QUERIES FROM QUERY_VALIDATION QV INNER JOIN QUERY_MODIFICATION QM ON QV.ID_QUERY=QM.ID_QUERY WHERE ID_ANALYSIS=$anaID AND QM.REF_POS_STRING LIKE '%PRB_%'");
+	
+	print header(-'content-encoding'=>'no',-charset=>'utf-8');
+	warningsToBrowser(1);
+	print(($nbModQueries) ? "1" : "0");
+}
+
 #########################################################
 ####<<<Select auto- or all for clearing selections>>>####
 #########################################################
@@ -1467,7 +1820,7 @@ sub clearValidations {
 
 		####<Setting all validatable queries to 'not verified' (VALID_STATUS=-1)>#### (RANK 0 set to NULL)
 		print "&nbsp&nbsp&nbsp<B>Clearing peptide selections...";
-		my $infoString='ID_QUERY,QUERY_NUM';
+		my $infoString="QV.ID_QUERY,QUERY_NUM,GROUP_CONCAT(CONCAT(QM.ID_MODIFICATION, '=', QM.POS_STRING, '=', SUBSTRING_INDEX(REF_POS_STRING, '##PRB', 1), '=', SUBSTRING_INDEX(REF_POS_STRING, '##PRB_', -1)) SEPARATOR '&&') AS PTM_POS";
 		my %sthRank;
 		foreach my $rank (1..$absMaxRank) {
 			$infoString.=",INFO_PEP$rank";
@@ -1479,14 +1832,15 @@ sub clearValidations {
 			#}
 		}
 		print '.';
-		my $sthSelQ=$dbh->prepare("SELECT $infoString FROM QUERY_VALIDATION WHERE ID_ANALYSIS=$analysisID AND VALID_STATUS>=-3");
-		my $sthUpQ=$dbh->prepare("UPDATE QUERY_VALIDATION SET VALID_STATUS=? WHERE ID_QUERY=?");
+		my $sthSelQ=$dbh->prepare("SELECT $infoString FROM QUERY_VALIDATION QV INNER JOIN QUERY_MODIFICATION QM ON QM.ID_QUERY=QV.ID_QUERY WHERE ID_ANALYSIS=$analysisID AND VALID_STATUS>=-3 GROUP BY QV.ID_QUERY");
+		my $sthUpQV=$dbh->prepare("UPDATE QUERY_VALIDATION SET VALID_STATUS=? WHERE ID_QUERY=?");
+		my $sthUpQM=$dbh->prepare("UPDATE QUERY_MODIFICATION SET POS_STRING=?, REF_POS_STRING=? WHERE ID_QUERY=? AND ID_MODIFICATION=?");
 
 		$sthSelQ->execute;
 		print '.';
 		#my %rank0Score; # records the scores of rank 0 peptides
 		my %selectedRanks;
-		while (my ($queryID,$queryNum,@pepInfoList)=$sthSelQ->fetchrow_array) {
+		while (my ($queryID,$queryNum,$queryPTMInfo,@pepInfoList)=$sthSelQ->fetchrow_array) {
 			my %pepInfo;
 			my $i=0;
 			foreach my $rank (1..$absMaxRank) {
@@ -1495,6 +1849,7 @@ sub clearValidations {
 			}
 			my $validStatus;
 			my ($totRank,$badRank,$selRank,$rejRank)=(0,0,0,0);
+			my $shouldUpdatePTMs = 0;
 			#if ($pepInfo{0}) { # rank0 defined
 			#	#($rank0Score{$queryNum})=($pepInfo{0}=~/SC=(\d+\.*\d*)/);
 			#	$sthRank{0}->execute($queryID);
@@ -1507,11 +1862,13 @@ sub clearValidations {
 				if ($clearLevel==2 && ($select>=1 || $select<=-2)) { # selected or rejected (not -1 and 0)
 					$pepInfo{$rank}=~s/SEL=$select/SEL=0/; # 0=never verified
 					$sthRank{$rank}->execute($pepInfo{$rank},$queryID);
+					$shouldUpdatePTMs = 1;
 				}
 				elsif ($clearLevel==1) {
 					if ($select==1 || $select==-2) { # selected or rejected
 						$pepInfo{$rank}=~s/SEL=-*\d/SEL=0/; # 0=never verified
 						$sthRank{$rank}->execute($pepInfo{$rank},$queryID);
+						$shouldUpdatePTMs = 1;
 					}
 					elsif ($select==2) {
 						$selRank++;
@@ -1525,11 +1882,25 @@ sub clearValidations {
 				#}
 				if ($select==-1) {$badRank++;}
 			}
+			
+			# Reset PTMs to initial position and remove grouped localization metrics if any					
+			if($shouldUpdatePTMs && $queryPTMInfo) {
+				foreach my $modifInfos (split(/\&\&/, $queryPTMInfo)) {
+					my ($modifID, $ptmCurrPos, $ptmRefPos, $ptmSoft, $ptmProb) = split(/=/, $modifInfos);
+					my $ptmPos = ($ptmRefPos) ? $ptmRefPos : $ptmCurrPos;
+					if($ptmProb) {
+						$ptmProb =~ s/([\d\.]+)+?:([\d\.]+)+:?(?:[\d\.]+)?(,|$)/$1:$2$3/g;
+						$ptmProb = "##PRB_$ptmSoft=$ptmProb";
+					}
+					$sthUpQM->execute("$ptmPos", "$ptmProb", $queryID, $modifID);
+				}
+			}
+			
 			$validStatus=($totRank==0)? -4 : ($badRank==$totRank)? -3 : ($selRank)? $selRank : ($rejRank)? -2 : -1;
-			$sthUpQ->execute($validStatus,$queryID);
+			$sthUpQV->execute($validStatus,$queryID);
 		}
 		foreach my $rank (keys %sthRank) {$sthRank{$rank}->finish;}
-		$sthUpQ->finish;
+		$sthUpQV->finish;
 		#print '.';
 		#print " Done.</B><BR>\n";
 
@@ -1744,6 +2115,11 @@ parent.optionFrame.selectOption();
 }
 
 ####>Revision history<####
+# 1.7.2 [ENHANCEMENT] Update peptide score distribution graph on validation (VS 09/12/20)
+# 1.7.1 [BUGFIX] Checks if PTM probability variables are defined (PP 02/10/20)
+# 1.7.0 [BUGFIX] Fixed selection of all peptides instead of modified ones (VS 09/09/20)
+# 1.6.9 [FEATURE] Handles PtmRS site localization probabilities as grouping strategy for queries groups (VS 21/08/2020)
+# 1.6.8 [ENHANCEMENT] Added selection of best query per ion + Fix NUM_MATCH computing (VS 30/03/20)
 # 1.6.7 Modif to select 'SEQUEST' as default search engine for Qualitative Peptide/Protein selection (MLP 16/04/18)
 # 1.6.6 Minor modif on protein SCORE calculation (PROTEIN_VALIDATION) (MLP 04/05/17) 
 # 1.6.5 Minor modif for TANDEM format (MLP 05/04/17)

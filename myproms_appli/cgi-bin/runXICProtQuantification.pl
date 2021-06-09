@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# runXICProtQuantification.pl       2.14.1                                     #
+# runXICProtQuantification.pl       2.19.7                                     #
 # Component of site myProMS Web Server                                         #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
@@ -40,6 +40,16 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 #-------------------------------------------------------------------------------
+### myProMS code version for quantification: $MYPROMS_XIC_VERSION (based on R scripts & data preprocessing)
+# 1: FC scripts (Ratio/TnPQ)
+# 2: ML scripts
+# 3: AS scripts before site-ratio correction by reference protein ratio (AnaDiff <= 4.0.13)
+# 3.1: AS site-ratio correction & IB (AnaDiff >= 4.2.0)
+# 3.2: Multi-modif quantif (format of modProtID is now <protID>-<modifRank1>#<pos1>.<pos2>&...)
+# 3.3: TDA, DIA and Protein Abundance
+# 3.4: shared prot/pep for normalization & multi-file normalization boxplots if too many samples
+# 3.5: Protein-level normalization (Abundance only) / rejected proteins file [PP 18/01/21]
+# 3.6: New infinite ratio decision rules (PP 11/04/21)
 
 $| = 1;
 use strict;
@@ -53,96 +63,198 @@ use promsConfig;
 use promsMod;
 use promsQuantif;
 
-#exit;
+# exit;
 ###############################
 ####>Recovering parameters<####
 ###############################
 my ($quantifID,$quantifDate,$runMode)=@ARGV; # only $quantifID & $quantifDate defined if Design-quantif
-$runMode='MASTER' unless $runMode; # MASTER, ABUND_NORM, ABUND_RSCRIPT, ABUND_SPLIT:<numJobs>, ABUND_RUN:<numJobs>, ABUND_JOB:<jobNum>, REF, NORM
+die "ERROR: Missing quantification id or job directory" if (!$quantifID || !$quantifDate);
+$runMode='MASTER' unless $runMode; # MASTER, ABUND_DATA, ABUND_RSCRIPT:<context>, ABUND_SPLIT:<numAbundJobs>, ABUND_RUN:<numAbundJobs>, ABUND_JOB:<jobNum>, REF, NORM
+# REF: To generate tableRef.txt file for protein-level correction of sites
+# NORM: To generate temporary tableNorm.txt file from manually-selected list of peptides for site (global) normalization (TDA only)
 
 #######################
 ####>Configuration<####
 #######################
+my $MYPROMS_XIC_VERSION='3.6';
 my %promsPath=&promsConfig::getServerInfo('no_user');
 my %cluster=&promsConfig::getClusterInfo; #('debian') # default is 'centos'
 my $pathR=($cluster{'on'})? $cluster{'path'}{'R'} : $promsPath{'R'};
-my $pathPython=($cluster{'on'})? $cluster{'path'}{'python'} : $promsPath{'python'};
+my $pathPython3=($cluster{'on'})? $cluster{'path'}{'python3'} : $promsPath{'python3'};
 #my $minProtNumber=30; # used to desactivate FDR option
-#my $currentQuantifDir="$promsPath{tmp}/quantification/current";
+my $currentQuantifDir="$promsPath{tmp}/quantification/current";
+my $errorFile="$currentQuantifDir/$quantifID\_$quantifDate\_error.txt";
 my $quantifDir="$promsPath{tmp}/quantification/$quantifDate";
 my $fileStat="$quantifDir/status_$quantifID.out"; # : "$quantifDir/status_$quantItemID.out";
 my $runDir="$quantifDir/quanti_$quantifID";
 my $dataDir="$runDir/data";
 my $resultDir="$runDir/results";
 my $graphDir="$resultDir/graph";
+my $absDir = "$quantifDir/absolute";
 
 my %quantifParameters=&promsQuantif::getQuantificationParameters("$quantifDir/quantif_info.txt");
-my $algoType=$quantifParameters{'DB'}{'ALGO_TYPE'}[0]; # <=> {R}{design} for v3+ only! [PEP_RATIO|PEP_INTENSITY|TDA|DIA]
+my $algoType=$quantifParameters{'DB'}{'ALGO_TYPE'}[0]; # <=> {R}{design} for v3+ only! [PEP_RATIO|PEP_INTENSITY|TDA|DIA] or 'MSstats
+my $software=($algoType eq 'MSstats')? 'MSstats' : 'myProMS';
 my $ratioType=$quantifParameters{'DB'}{'RATIO_TYPE'}[0]; # SuperRatio or SimpleRatio or None (Abundance);
-my $numSteps=($ratioType=~/S\w+Ratio/)? 3 : 4;
+my $numStates=scalar @{$quantifParameters{'DB'}{'STATES'}};
+my $countIdentifiedPep=($quantifParameters{'DB'}{'NUM_TRUE_USED'})? $quantifParameters{'DB'}{'NUM_TRUE_USED'}[0] : 0;
+
+#>>> For Abundance only >>>
+#my $normalizeProteins=($ratioType eq 'None')? 1 : 0; # TEMP <- Flag for protein-level normalization
+my $normalizeIons=($quantifParameters{'DB'}{'BIAS_CORRECTION'}[0]=~/^TRUE,ion/)? 1 : 0; # Only for Abundance (ratioType='None')
+my $normalizeProteins=($ratioType eq 'None' && $quantifParameters{'DB'}{'BIAS_CORRECTION'}[0]=~/^TRUE,.*prot$/)? 1 : 0; # Only for Abundance (ratioType='None')
+my %optDataFiles=(	SUM_INT			=> 'resultsSUM.txt',
+					MEAN_INT		=> 'resultsMEAN.txt',
+					GEO_MEAN_INT	=> 'resultsGEO.txt',
+					MEDIAN_INT		=> 'resultsMEDIAN.txt',
+					MY_LFQ			=> 'resultsLFQ.txt',
+					NUM_TRUE_USED	=> 'peptidesTRUE.txt'
+				);
+my %dataFiles=(	NUM_PEP_USED 	=> 'peptidesUSED.txt',
+				DIST_PEP_USED	=> 'peptidesDIST.txt'
+				); # NUM_PEP_TOTAL in allProteins.txt
+$dataFiles{'NUM_TRUE_USED'}=$optDataFiles{'NUM_TRUE_USED'} if $countIdentifiedPep;
+my %absMeasures;  # To store absolute quantification measures
+#<<<
+
+my $numSteps=($ratioType=~/S\w+Ratio/)? 3 : ($normalizeProteins)? 5 : 4;
 
 
-#>>>>>>>>> PROCESSING PROTEIN ABUNDANCE METHOD <<<<<<<<<<<<<
+#############################################################
+#>>>>>>>>> PROCESSING PROTEIN ABUNDANCE METHOD <<<<<<<<<<<<<#
+#############################################################
 if ($runMode eq 'MASTER' && $ratioType eq 'None') { # 1st call for Abundance
 	
 	my $dbh=&promsConfig::dbConnect('no_user');
-	$dbh->do("UPDATE QUANTIFICATION SET STATUS=0 WHERE ID_QUANTIFICATION=$quantifID");
+	$dbh->do("UPDATE QUANTIFICATION SET STATUS=0,QUANTIF_ANNOT=REPLACE(QUANTIF_ANNOT,'SOFTWARE=myProMS','SOFTWARE=myProMS;$MYPROMS_XIC_VERSION') WHERE ID_QUANTIFICATION=$quantifID");
 	$dbh->commit;
+	my ($quantifAnnot)=$dbh->selectrow_array("SELECT QUANTIF_ANNOT FROM QUANTIFICATION WHERE ID_QUANTIFICATION=$quantifID"); # needed later if restoring
+	$dbh->disconnect;
 	
-	#>Normalizing peptide XICs
-#if (-e "$promsPath{tmp}/quantification/abundance/data") {
-#	my $dbh=&promsConfig::dbConnect('no_user');
-#	$dbh->do("UPDATE QUANTIFICATION SET STATUS=0 WHERE ID_QUANTIFICATION=$quantifID");
-#	$dbh->commit;
-#	$dbh->disconnect;
-#	open(FILESTAT,">>$fileStat");
-#	print FILESTAT "Retrieving data from previous quantif\n";
-#	close FILESTAT;
-#	mkdir $runDir unless -e $runDir; # already created if runXICProtQuantification.pl launched on cluster
-#	#mkdir $dataDir;
-#	#mkdir $resultDir;
-#	#mkdir $graphDir;
-#	system "mv $promsPath{tmp}/quantification/abundance/data $runDir/.";
-#	system "mv $promsPath{tmp}/quantification/abundance/results $runDir/.";
-#	system "mv $promsPath{tmp}/quantification/abundance/AnalysisDiff* $runDir/.";
-#}
-#else {
-	if (!-e $dataDir || !-e "$dataDir/table.txt") { # in case using data from previous incomplete quantif
-		system "./runXICProtQuantification.pl $quantifID $quantifDate ABUND_NORM"; # 2>> $currentQuantifDir/$quantifID\_$quantifDate\_error.txt; # Default mode. Stops after R normalization results
+	#>Resuming from previous failed quantification
+	if (-e $dataDir && -e "$dataDir/endData.flag") { # table.txt
+		open(FILESTAT,">>$fileStat");
+		print FILESTAT "Resuming previous quantification job\n";
+		close FILESTAT;
+	}
+
+	#>Generating data file from peptide/fragment XICs
+	if (!-e $dataDir || !-e "$dataDir/endData.flag") { # skip if usable data from previous incomplete quantif
+		system "./runXICProtQuantification.pl $quantifID $quantifDate ABUND_DATA 2>> $errorFile"; # Default mode. Stops after R normalization results
+		
+		#>Check resulting data file
+		my $okData=(-e "$dataDir/table.txt")? `head -3 $dataDir/table.txt | wc -l` : 0;
+		$okData=~s/\D//g;
+		warn "ERROR: Not enough entries in starting data file!" if $okData < 3;
+		sleep 3;
+		&checkForErrors;
+		system "echo END > $dataDir/endData.flag"; # Data table generated without error
+
+		# my $dataError=(-e "$dataDir/endData.flag")? 0 : 1;
+		# unless ($dataError) {
+		# 	my $okData=(-e "$dataDir/table.txt")? `head -3 $dataDir/table.txt | wc -l` : 0;
+		# 	$okData=~s/\D//g;
+		# 	$dataError=1 if $okData < 3;
+		# }
+		# if ($dataError) {
+		# 	warn "ERROR: Not enough data in resulting file!";
+		# 	$dbh=&promsConfig::dbConnect('no_user');
+		# 	&checkForErrors($dbh);
+		# }
 	}
 	
 	#>Launch R normalization
-	unless (-e "$resultDir/resultsPep.txt") { # in case using data from previous incomplete quantif
-		system "./runXICProtQuantification.pl $quantifID $quantifDate ABUND_RSCRIPT"; # 2>> $currentQuantifDir/$quantifID\_$quantifDate\_error.txt; # Default mode. Stops after R normalization results
-		&checkRsuccess;
+	unless (-e "$resultDir/resultsPep.txt" && -e "$runDir/endR.flag") { # in case using data from previous incomplete quantif
+		system "./runXICProtQuantification.pl $quantifID $quantifDate ABUND_RSCRIPT:PRIMARY 2>> $errorFile"; # Default mode. Stops after R normalization results
+		# or simply &launchRscript('PRIMARY'); # Runs in master process
 	}
-#}	
+
 	#>Splitting resultsPep.txt for parallel jobs
-	$dbh=&promsConfig::dbConnect('no_user'); # reconnect
-	my ($quantifAnnot)=$dbh->selectrow_array("SELECT QUANTIF_ANNOT FROM QUANTIFICATION WHERE ID_QUANTIFICATION=$quantifID");
-	$quantifAnnot=~s/::/§/g;
-	my ($stateStrg)=$quantifAnnot=~/STATES=([^§]+)/;
-	my $numAllRep=scalar(split(/[;.&]/,$stateStrg));
-	my $numLines=`wc -l $resultDir/resultsPep.txt`;
-	$numLines=~s/^(\d+).*/$1/;
-	my $numJobLn=int(1.5 + $numLines / 2.5E5);
-	my $numJobSt=$numAllRep;
-	my $numJobs=($numJobLn >= $numJobSt)? $numJobLn : $numJobSt;	
-	$numJobs=5 if $numJobs < 5;
-	
-	unless (-e "$resultDir/ABUND$numJobs/resultsPep.txt") {
-		system "./runXICProtQuantification.pl $quantifID $quantifDate ABUND_SPLIT:$numJobs"; # 2>> $currentQuantifDir/$quantifID\_$quantifDate\_error.txt; # Compute a Abundance & LFQ from R results
+	my $computeLFQ = 0;
+	my $computeAbsolute = 0;
+	my $computeOther = 0;  # SUM_INT, MEAN_INT, GEO_MEAN_INT, MEDIAN_INT
+	my $computeNonAbsolute = 0;  # LFQ or other abundance measure that does not compute amounts
+	my $numAbundJobs = 0;
+	foreach my $meas (@{$quantifParameters{'DB'}{'ABUND_MEASURES'}}) {
+		last if ($computeLFQ && $computeAbsolute && $computeOther);		
+		if ($meas =~ /^MY_LFQ/) {
+			$computeLFQ=1;
+		} elsif ($meas =~ /^aLFQ/) {
+			$computeAbsolute = 1;
+		} else {
+			$computeOther = 1;
+		}
 	}
+	$computeNonAbsolute = ($computeLFQ || $computeOther);
+
+	if ($computeAbsolute) {
+		system "./runXICProtQuantification.pl $quantifID $quantifDate ABSOLUTE 2>> $errorFile"; # Compute absolute quantification with aLFQ R package
+		&checkRsuccess("$absDir/aLFQ.Rout");  # Check that abs quantif computation has run correctly
+	}
+
+	if ($computeNonAbsolute) {  # No need to compute this if only absolute quantif was required
+
+		$numAbundJobs = 1;
+		if ($computeLFQ) {
+			if (-e "$resultDir/endSplit.flag") { # split already done
+				$numAbundJobs=`head -1 $resultDir/endSplit.flag`;
+				$numAbundJobs=~s/\D//g;
+			}
+			else { # run split
+				$quantifAnnot=~s/::/§/g;
+				my ($stateStrg)=$quantifAnnot=~/STATES=([^§]+)/;
+				my $numAllRep=scalar(split(/[;.&]/,$stateStrg));
+				my $numLines=`wc -l $resultDir/resultsPep.txt`;
+				$numLines=~s/^(\d+).*/$1/;
+				my $numJobLn=int(1.5 + $numLines / 2.5E5);
+				my $numJobSt=$numAllRep;
+				$numAbundJobs=($numJobLn >= $numJobSt)? $numJobLn : $numJobSt;
+				$numAbundJobs=5 if $numAbundJobs < 5;
+			}
+		}
+		#>Launching data-splitting job
+		if (!-e "$resultDir/endSplit.flag") { # skip if usable data from previous incomplete quantif
+			#>Launching resultsPep splitting
+			system "./runXICProtQuantification.pl $quantifID $quantifDate ABUND_SPLIT:$numAbundJobs 2>> $errorFile";
+			&checkForErrors;
+			system "echo $numAbundJobs > $resultDir/endSplit.flag"; # ends w/o error
+		}
+		#>Launching parallel abundance computation main job
+		if (!-e "$resultDir/endAbund.flag") { # skip if usable data from previous incomplete quantif
+			system "./runXICProtQuantification.pl $quantifID $quantifDate ABUND_RUN:$numAbundJobs 2>> $errorFile";
+			&checkForErrors;
+			system "echo END > $resultDir/endAbund.flag"; # ends w/o error
+		}
+	}
+	else {  # Need to compute protein data for absolute if not done with other abundance measures
+		&getAllProtPepNb($absDir);
+	}
+
+	my (%proteinAbundance,%allPeptides,%lostProteins); # records final data to import in DB
+	my $stepNumber=4;
 	
-	#>Launching parallel abundance computation jobs
-	system "./runXICProtQuantification.pl $quantifID $quantifDate ABUND_RUN:$numJobs"; # 2>> $currentQuantifDir/$quantifID\_$quantifDate\_error.txt; # Compute a Abundance & LFQ from R results
-	
-	#>Parsing & importing results in DB
-	&importProteinAbundance($numJobs);
+	#>Protein-level normalization
+	if ($normalizeProteins) {
+		#>Parse primary results
+		my %primaryAbundance;
+		&parsePrimaryAbundanceResults($numAbundJobs,\%primaryAbundance,\%allPeptides,\%lostProteins,\%proteinAbundance); # %proteinAbundance will only collect peptide counts at this stage
+		
+		unless (-e "$resultDir/end2ndNorm.flag") { # resumed Protein normalization generated without error
+			&runSecondaryNormalizations($numAbundJobs,\%primaryAbundance,\%proteinAbundance,\%allPeptides,\%lostProteins);
+		}
+		$stepNumber++;
+	}
+
+	#>Processing final results (primary/2ndary normalization)
+	&processFinalAbundanceResults($stepNumber,$numAbundJobs, $computeAbsolute, $computeNonAbsolute, \%proteinAbundance,\%allPeptides,\%lostProteins);
+
+	#>Importing results in SQLite database
+	&importAbundanceInDB($stepNumber,$numAbundJobs, $computeAbsolute, \%proteinAbundance,\%allPeptides,\%lostProteins); # DB import
+
 	exit;
 }
-elsif ($runMode eq 'ABUND_RSCRIPT') {
-	&launchRscript;
+elsif ($runMode=~/ABUND_RSCRIPT:(.+)/) {
+	&launchRscript($1);
 	exit;
 }
 elsif ($runMode=~/ABUND_SPLIT:(\d+)/) { # Split resultsPep.txt file for parallel LFQ jobs. Done in a different process to release memory after reading result file
@@ -157,19 +269,25 @@ elsif ($runMode=~/ABUND_JOB:(\d+)/) {
 	&jobProteinAbundance($1);
 	exit;
 }
+elsif ($runMode=~/ABSOLUTE/) {
+	&runAbsoluteQuantif();
+	exit;
+}
 
-######>>>>>>>>>> $runMode: MASTER/REF/NORM (diffAna) or ABUND_NORM (normalization only) >>>>>>>>
 
-my $topN=($quantifParameters{'DB'}{'TOP_N'})? $quantifParameters{'DB'}{'TOP_N'}[0] : 0; # number peptide used for label-free (except old algo 'Ratio')
+##################################################################################
+#>>>>>>>>>> MASTER/REF/NORM (diffAna) or ABUND_DATA (normalization only) >>>>>>>>#
+##################################################################################
+my $topN=($quantifParameters{'DB'}{'TOP_N'})? $quantifParameters{'DB'}{'TOP_N'}[0] : 0; # number peptide used for PEP_INTENSITY (except MSstats)
 my $matchingPep=($quantifParameters{'DB'}{'MATCH_PEP'})? $quantifParameters{'DB'}{'MATCH_PEP'}[0] : 0; # label-free SimpleRatio: peptides must be the same across conditions
-my $referenceMode=($runMode =~/^(REF|NORM)$/)? $runMode : ''; # for table(Ref/Norm).txt
+my $referenceMode=($runMode =~/^(REF|NORM)$/)? $runMode : ''; # for table(Ref/Norm).txt (not for MSstats)
 my $referenceStrg=($referenceMode eq 'REF')? ' reference' : ($referenceMode eq 'NORM')? ' normalization' : '';
-#open (DEBUG,">$promsPath{tmp}/quantification/debug.txt") if !$referenceMode; # DEBUG!!!!
+# open (DEBUG,">$promsPath{tmp}/quantification/debug.txt") if !$referenceMode; # DEBUG!!!!
 my $dbh=&promsConfig::dbConnect('no_user');
 
 if (!$referenceMode) {
 	if ($ratioType=~/S\w+Ratio/) {
-		$dbh->do("UPDATE QUANTIFICATION SET STATUS=0 WHERE ID_QUANTIFICATION=$quantifID");
+		$dbh->do("UPDATE QUANTIFICATION SET STATUS=0,QUANTIF_ANNOT=REPLACE(QUANTIF_ANNOT,'SOFTWARE=myProMS','SOFTWARE=myProMS;$MYPROMS_XIC_VERSION') WHERE ID_QUANTIFICATION=$quantifID");
 		$dbh->commit;
 	}
 	
@@ -187,12 +305,12 @@ if (!$referenceMode) {
 my $projectID=&promsMod::getProjectID($dbh,$quantifID,'QUANTIFICATION');
 
 #my ($quantiAnnotation,$quantifiedModifID)=$dbh->selectrow_array("SELECT QUANTIF_ANNOT,ID_MODIFICATION FROM QUANTIFICATION WHERE ID_QUANTIFICATION=$quantifID");
-my ($quantiAnnotation,$quantifiedModifID,$quantifModStrg)=$dbh->selectrow_array("SELECT QUANTIF_ANNOT,Q.ID_MODIFICATION,GROUP_CONCAT(MQ.ID_MODIFICATION ORDER BY MQ.MODIF_RANK SEPARATOR ',')
+my ($quantiAnnotation,$quantifiedModifID,$quantifModStrg)=$dbh->selectrow_array("SELECT QUANTIF_ANNOT,Q.ID_MODIFICATION,GROUP_CONCAT(MQ.ID_MODIFICATION ORDER BY MQ.MODIF_RANK SEPARATOR ','),Q.ID_QUANTIFICATION
 																					 FROM QUANTIFICATION Q
 																					 LEFT JOIN MULTIMODIF_QUANTIFICATION MQ ON Q.ID_QUANTIFICATION=MQ.ID_QUANTIFICATION
 																					 WHERE Q.ID_QUANTIFICATION=$quantifID
 																					 GROUP BY Q.ID_QUANTIFICATION");
-my $isModifQuantif=0;
+my ($isModifQuantif,$trueModifQuantif,$isFreeResQuantif)=(0,0,0);
 my (%modifQuantifRank,%rankQuantifModif,@modifQuantifs);
 my $matchQuantifModStrg='';
 if ($quantifiedModifID || $quantifModStrg) {
@@ -204,10 +322,21 @@ if ($quantifiedModifID || $quantifModStrg) {
 		$modifQuantifRank{$modID}=$modifRank;
 		$rankQuantifModif{$modifRank}=$modID;
 		push @modifQuantifs,$modID; # ordered list of modifs
+		if ($modID > 0) {$trueModifQuantif=1;} else {$isFreeResQuantif=1;} # -1 for fake "FreeResidue"
 	}
-	$quantifiedModifID=$modifQuantifs[0] if $modifRank==1; # back compatibility in case QUANTIFICATION.ID_QUANTIFICATION no longer used
+	$quantifiedModifID=$modifQuantifs[0] if $modifRank==1; # single PTM: back compatibility in case QUANTIFICATION.ID_MODIFICATION no longer used
 	$matchQuantifModStrg=join('|',@modifQuantifs); # Needed later for regexp on pep varmod
 }
+my $keepSeqContext=($isModifQuantif && $quantifParameters{'DB'}{'KEEP_SEQ_CONTEXT'} && $quantifParameters{'DB'}{'KEEP_SEQ_CONTEXT'}[0])? 1 : 0; #keep sequence context of PTM (=> Do not combine site from fully cleaved & missed cleaved peptides)
+
+###>Protein enriched by PTMs?
+my $isProteinByPTM=0;
+my (%proteinPTMcontexts,%peptideContextMatch,%proteinSequence); # also used if FREE_RESIDUE
+if ($quantifParameters{'DB'}{'PROTEIN_PTM'}) { # Restrict peptides to specific PTMs & context
+	$isProteinByPTM=1;
+	&promsQuantif::preparePTMcontexts(\%proteinPTMcontexts,$quantifParameters{'DB'}{'PROTEIN_PTM'});
+}
+
 my ($labeling)=($quantiAnnotation=~/LABEL=([^:]+)/);
 $labeling=uc($labeling);
 
@@ -217,10 +346,10 @@ if ($referenceMode) { # Switching to non-modif quantif
 	$quantifiedModifID=0;
 	$isModifQuantif=0;
 }
-my $quantifiedModifRemoved=0; # to handle site for which targeted PTM was removed by experimental protocole
-if ($isModifQuantif && $quantifParameters{'DB'}{'CREATE_PTM'}) {
-	$quantifiedModifRemoved=1;
-}
+# my $quantifiedModifRemoved=0; # to handle site for which targeted PTM was removed by experimental protocole
+# if ($isModifQuantif && $quantifParameters{'DB'}{'CREATE_PTM'}) {
+# 	$quantifiedModifRemoved=1;
+# }
 
 ####> R part : statistical analysis of the proteins values
 ####> 1st: Create the directories for R analysis
@@ -236,7 +365,7 @@ unless ($referenceMode) {
 	####>Protein-level correction for quantif sites (tableRef.txt)
 	if ($quantifParameters{'DB'}{'INTRA_PROT_REF'}) {
 		if ($quantifParameters{'DB'}{'INTRA_PROT_REF'}[0] eq '-1') { # current dataset
-			system "./runXICProtQuantification.pl $quantifID $quantifDate REF"; # 2>> $currentQuantifDir/$quantifID\_$quantifDate\_error.txt; # referenceMode set to REF to create tableRef.txt
+			system "./runXICProtQuantification.pl $quantifID $quantifDate REF 2>> $errorFile"; # referenceMode set to REF to create tableRef.txt
 			$quantifParameters{'R'}{'normalization.ref.test'}[0]=$quantifParameters{'DB'}{'NORMALIZATION_METHOD'}[0]; # 'ref' part of ref.test
 		}
 		else {
@@ -247,19 +376,19 @@ unless ($referenceMode) {
 	}
 	####>Peptide set experimental normalization for quantif sites (tableNorm.txt)
 	if ($quantifParameters{'DB'}{'PEPTIDES_NORM'}) {
-		system "./runXICProtQuantification.pl $quantifID $quantifDate NORM"; # 2>> $currentQuantifDir/$quantifID\_$quantifDate\_error.txt; # referenceMode set to NORM to create tableNorm.txt
+		system "./runXICProtQuantification.pl $quantifID $quantifDate NORM 2>> $errorFile"; # referenceMode set to NORM to create tableNorm.txt
 	}
 }
 
 ####>Main data file
-my $dataFile=($referenceMode eq 'REF')? "$dataDir/tableRef.txt" : ($referenceMode eq 'NORM')? "$dataDir/tableNorm.txt" : "$dataDir/table.txt";
-open(DATA,">$dataFile"); # Name of data table
-#if ($ratioType eq 'Ratio') { # Old algos (FC)
-#	print DATA "Protein_ID\tPep_Seq\tVar_Mod\tCharge\tPeptide_IDs\tProtein_Name\tProtein_Validity";
-#}
-#else { # Algos v2+
-	print DATA "Protein_ID\tPeptide\tSample\tTreatment\tReplicate\tTechnical_Replicate\tExperiment\tQuantif_Set\tPeptide_IDs\tProtein_Name\tProtein_Validity\tValue" unless $referenceMode eq 'NORM';
-#}
+#my $dataFile=($referenceMode eq 'REF')? "$dataDir/tableRef.txt" : ($referenceMode eq 'NORM')? "$dataDir/tableNorm.txt" : "$dataDir/table.txt";
+#open(DATA,">$dataFile"); # Name of data table
+##if ($ratioType eq 'Ratio') { # Old algos (FC)
+##	print DATA "Protein_ID\tPep_Seq\tVar_Mod\tCharge\tPeptide_IDs\tProtein_Name\tProtein_Validity";
+##}
+##else { # Algos v2+
+#	print DATA "Protein_ID\tPeptide\tSample\tTreatment\tReplicate\tTechnical_Replicate\tExperiment\tQuantif_Set\tPeptide_IDs\tProtein_Name\tProtein_Validity\tValue" unless $referenceMode eq 'NORM';
+##}
 my %statesInFile;
 
 ################################
@@ -269,11 +398,13 @@ my @quantiOrder;# In order to print the table in a good way for R
 my %observationInfo; # for (Super/Simple)Ratio only
 my (%poolGroup2Cond,%ana2Obs,%cond2Obs,%obs2Cond,%labelModifs,%anaLabelModifs,%xicEngine); #,%obsID2Cond,%ana2Cond
 my (%ana2Experiment,%anaConds,%anaState1RatioPos); #<----- NEW EXPERIMENT assignment 31/10/17 -----
+#my (%ana2Quant,%stateToCond,%conditionList,%condPeptideList); # for MSstats
+
 my $sthPQN=$dbh->prepare("SELECT QUANTIF_ANNOT FROM QUANTIFICATION WHERE ID_QUANTIFICATION=?"); # peptide quantifs
 
 my @ratioTarget;
 my %replicateTargetPos; my $numRepTgtPos=0;
-my $numConditions=0;
+#my ($hasMultiBioReps,$hasMultiTechReps)=(0,0);
 my $poolObservations=0;
 #my %experimentCode; # SILAC paired experiments
 my @conditionList;
@@ -285,14 +416,22 @@ my $sthALM=$dbh->prepare("SELECT M.ID_MODIFICATION FROM ANALYSIS_MODIFICATION AM
 	###> Add on 26/10/12 -> To get new STATES info
 	foreach my $annoStrg (split (/::/,$quantiAnnotation)) {
 		#### STATES ####
+		my $statePos=0;
 		if ($annoStrg =~ /^STATES=(.*)/) { # 'state1;state2;---;stateN',  stateX='nbBioRep,bioRep1.bioRep2.---.bioRepN,#condID', bioRepX='techRep1=techRep2=---=techRepN', techRepX='frac1+frac2+---+fracN'
 			##my (%replicAnaStrg,%anaExpCode,%commonRefCondAna); # ,$multiTechRep for (Super/Simple)Ratio only
 			##my $lastReplicInRefIdx=-1; # for SuperRatio only: last index of all bio/tech replicates for reference condition in @quantiOrder
 #----- NEW EXPERIMENT assignment 31/10/17 ----->
 my (@anaOrder,%anaTargetPosCond); # to distinguish different Experiments (labeled ana only)
+			my $MSstatsRun=0; # for MSstats
 			foreach my $state (split(/;/,$1)) {
 				$poolObservations=1 if $state=~/\+/;
-				$numConditions++;
+				# if ($poolObservations && $algoType=~/^(TDA|DIA|MSstats)$/ ) {
+				# 	warn "ERROR: Fractions are not compatible with TDA/DIA quantification. Correct your design.";
+				# 	sleep 5;
+				# 	&checkForErrors($dbh);
+				# }
+				$statePos++;
+				
 				### Tests fractions if Label-Free ###
 				###if ($labeling eq 'FREE' && $poolObservations) {
 				###	close DATA;
@@ -300,46 +439,45 @@ my (@anaOrder,%anaTargetPosCond); # to distinguish different Experiments (labele
 				###	$sthALM->finish;
 				###	$sthObsMod->finish;
 				###	$dbh->disconnect;
-				###	die "ERROR in State #$numConditions: Fractions detected for Label-Free quantification. Correct your design.";
+				###	die "ERROR in State #$statePos: Fractions detected for Label-Free quantification. Correct your design.";
 				###}
 #----- EXPERIMENT assignment #OLD ----->
-				##my $expCode=chr(63+$numConditions); # SuperRatio only 2 -> A, 3 -> B, ... (not used for ref cond=1)
-				#$experimentCode{$expCode}=1 if $numConditions >= 2; # skip Ref (1st) Cond
+				##my $expCode=chr(63+$statePos); # SuperRatio only 2 -> A, 3 -> B, ... (not used for ref cond=1)
+				#$experimentCode{$expCode}=1 if $statePos >= 2; # skip Ref (1st) Cond
 				$state=~s/#//g; # remove all id tags
 				my ($numBioRep,$quantiObsIDs,$condID)=split(/,/,$state);
 				#if ($ratioType eq 'Ratio') {
 				#	push @{$quantifParameters{'R'}{'grp'}},$numBioRep; # Number of replicates of the condition
-				#	push @{$quantifParameters{'R'}{'name.grp'}},"State$numConditions"; # $condID
+				#	push @{$quantifParameters{'R'}{'name.grp'}},"State$statePos"; # $condID
 				#}
 #elsif ($ratioType eq 'SuperRatio') { # to build primary ratio
 	push @conditionList,$condID;
 #}
-				#elsif ($numConditions==1) {$lastReplicInRefIdx++;} # for SuperRatio only
+				#elsif ($statePos==1) {$lastReplicInRefIdx++;} # for SuperRatio only
 				my $bioRepCount=0;
 				my $allRepCount=0;
 				my $multiRep=($quantiObsIDs=~/[.&]/)? 1 : 0; # for Ratio only
 				#my %stateAna; # for SuperRatio only
 				foreach my $bioReplicate (split(/\./,$quantiObsIDs)) {
 					$bioRepCount++;
+#$hasMultiBioReps=1 if $bioRepCount > 1;
 					my $techRepCount=0;
 					foreach my $techReplicate (split(/&/,$bioReplicate)) {
-						##$lastReplicInRefIdx++ if $numConditions==1; # for SuperRatio only
+						##$lastReplicInRefIdx++ if $statePos==1; # for SuperRatio only
 						$allRepCount++;
 						$techRepCount++;
+						$MSstatsRun++;
+#$hasMultiTechReps=1 if $techRepCount > 1;
+
 ##>REPLICATE DEFINITION: BIOREP or TECHREP BASED on RESIDUAL_VAR!!!
-$numRepTgtPos++ if ($techRepCount==1 || $quantifParameters{'DB'}{'RESIDUAL_VAR'}[0] eq 'technical'); # count either bioRep or techRep
-$replicateTargetPos{"State$numConditions.rep$bioRepCount.techRep$techRepCount"}=$numRepTgtPos;
+$numRepTgtPos++ if ($techRepCount==1 || ($quantifParameters{'DB'}{'RESIDUAL_VAR'} && $quantifParameters{'DB'}{'RESIDUAL_VAR'}[0] eq 'technical')); # count either bioRep or techRep
+$replicateTargetPos{"State$statePos.rep$bioRepCount.techRep$techRepCount"}=$numRepTgtPos;
 						###$multiTechRep=1 if $techRepCount>1; # records if exists multiple tech rep
 						push @quantiOrder,$techReplicate;
 						$obs2Cond{$techReplicate} = $condID;
-#print DEBUG "\$techReplicate='$techReplicate' \$condID=$condID \$numConditions=$numConditions\n";
-						#if ($ratioType eq 'Ratio') {
-						#	print DATA "\tState$numConditions"; # $condID
-						#	print DATA ".rep$allRepCount" if $multiRep;
-						#}
+
 						#>Required to detect +/- infinite ratios (except %labelModifs)
 						$poolGroup2Cond{$techReplicate}=$condID;
-						my %replicAna;
 						foreach my $fraction (split(/\+/,$techReplicate)) {
 							my @obsData=split(/:/,$fraction); # obsID,parQuantifID,anaID,targetPos
 							my ($obsID,$parQuantifID,$anaID,$targetPos)=@obsData;
@@ -350,21 +488,16 @@ $replicateTargetPos{"State$numConditions.rep$bioRepCount.techRep$techRepCount"}=
 							}
 							push @{$cond2Obs{$condID}},\@obsData;
 							%{$labelModifs{$obsID}}=();
-							if ($labeling eq 'FREE') { # LABEL-FREE
-								$replicAna{0}=1; # no data linking
-								#$stateAna{0}=1; # no data linking
-								#$ana2Cond{$anaID}=$condID;
+							if ($labeling eq 'FREE') {  # Need labeling eq FREE and not algoType ne PEP_RATIO 17/09/20
 								push @{$ana2Obs{$anaID}},$obsID;
 							}
 							else {
-$anaTargetPosCond{$anaID}{$targetPos}=$condID;
-push @anaOrder,$anaID;
-$anaConds{$anaID}{$condID}=1; # needed later for infinite ratio check
-								$replicAna{$anaID}=1; # for data linking inside same analysis
-								#$stateAna{$anaID}=1; # for data linking inside same analysis
+								$anaTargetPosCond{$anaID}{$targetPos}=$condID;
+								push @anaOrder,$anaID;
+								$anaConds{$anaID}{$condID}=1; # needed later for infinite ratio check
 								if ($labeling eq 'SILAC') { # SILAC QUANTI
 									##if ($ratioType eq 'SuperRatio') {
-									##	if ($numConditions==1) {push @{$commonRefCondAna{$techReplicate}},$anaID;} # Common ref condition
+									##	if ($statePos==1) {push @{$commonRefCondAna{$techReplicate}},$anaID;} # Common ref condition
 									##	else {$anaExpCode{$anaID}=$expCode;} # SuperRatio only
 									##}
 									unless ($anaLabelModifs{$anaID}) {
@@ -390,7 +523,7 @@ $anaConds{$anaID}{$condID}=1; # needed later for infinite ratio check
 									else {
 										$sthALM->execute($anaID);
 										($modID)=$sthALM->fetchrow_array;
-						next unless $modID; # !!!TEMP!!! PARAGON quantif with no validated protein (PP 30/03/15)
+										next unless $modID; # !!!TEMP!!! PARAGON quantif with no validated protein (PP 30/03/15)
 										$anaLabelModifs{$anaID}{$modID}=1;
 									}
 									$labelModifs{$obsID}{$modID}=1; # if $modID;
@@ -402,39 +535,39 @@ $anaConds{$anaID}{$condID}=1; # needed later for infinite ratio check
 ####						if ($ratioType=~/S\w+Ratio/) {
 ####							if ($Rdesign eq 'LABELED') { # SPECIAL CASE to handle iTRAQ: bioRep count carried by Exp (techRep?!!!)
 ####								# Symetrical design between bioRep is MANDATORY: num bioRep StateX = num bioRep StateY!!!!!!
-####								#@{$observationInfo{$techReplicate}}=("State$numConditions",'rep1',"techRep$techRepCount",chr(64+$bioRepCount));
-####@{$observationInfo{$techReplicate}}=("State$numConditions","rep$bioRepCount","techRep$techRepCount",'A'); #chr(64+$bioRepCount)
-####								#$designCheck{chr(64+$bioRepCount)}{$numConditions}=1;
+####								#@{$observationInfo{$techReplicate}}=("State$statePos",'rep1',"techRep$techRepCount",chr(64+$bioRepCount));
+####@{$observationInfo{$techReplicate}}=("State$statePos","rep$bioRepCount","techRep$techRepCount",'A'); #chr(64+$bioRepCount)
+####								#$designCheck{chr(64+$bioRepCount)}{$statePos}=1;
 ####							}
 ####							else {
-####								@{$observationInfo{$techReplicate}}=("State$numConditions","rep$bioRepCount","techRep$techRepCount");
+####								@{$observationInfo{$techReplicate}}=("State$statePos","rep$bioRepCount","techRep$techRepCount");
 ####								if ($ratioType eq 'SimpleRatio') {
 ####									push @{$observationInfo{$techReplicate}},'A'; ###'NA';
-####									#$designCheck{'NA'}{$numConditions}=1;
+####									#$designCheck{'NA'}{$statePos}=1;
 ####								} # Experiment is irrelevent in table.txt but needed later
-####								elsif ($numConditions > 1) { # cond #1 has multiple exeriments
+####								elsif ($statePos > 1) { # cond #1 has multiple exeriments
 ####									push @{$observationInfo{$techReplicate}},$expCode;
-####									#$designCheck{$expCode}{$numConditions}=1;
+####									#$designCheck{$expCode}{$statePos}=1;
 ####								}
 ####							}
 ####						}
+						if ($ratioType=~/S\w+Ratio|None/) {
+							@{$observationInfo{$techReplicate}}=($software eq 'MSstats')? ("State$statePos","State$statePos\_BioRep$bioRepCount",$MSstatsRun) : ("State$statePos","rep$bioRepCount","techRep$techRepCount");
 #----- EXPERIMENT assignment #OLD ----->
-if ($ratioType=~/S\w+Ratio|None/) {
-	@{$observationInfo{$techReplicate}}=("State$numConditions","rep$bioRepCount","techRep$techRepCount");
-	##if ($Rdesign eq 'SUPERRATIO') {
-	##	push @{$observationInfo{$techReplicate}},$expCode if $numConditions > 1; # cond #1 has multiple experiments
-	##} # LABELFREE & LABELED experiment assignment handled later
-	####else { # LABELFREE & LABELED
-	####	push @{$observationInfo{$techReplicate}},'A'; # temp for LABELED
-	####}
-}
+							##if ($Rdesign eq 'SUPERRATIO') {
+							##	push @{$observationInfo{$techReplicate}},$expCode if $statePos > 1; # cond #1 has multiple experiments
+							##} # LABELFREE & LABELED experiment assignment handled later
+							####else { # LABELFREE & LABELED
+							####	push @{$observationInfo{$techReplicate}},'A'; # temp for LABELED
+							####}
+						}
 
 					} # end of tech replicate (sample)
 				} # end of bio-replicate
 				##>Find Experiment letter code for test(s) condition(s)
 				##if ($ratioType eq 'SuperRatio') {
 				##	my $anaStrg=join('.',sort{$a<=>$b} keys %stateAna); # label-free => '0' (string of all anaID used for state)
-				##	if ($numConditions > 1) { # not for common Ref ($numConditions=1)
+				##	if ($statePos > 1) { # not for common Ref ($statePos=1)
 				##		unless ($experimentCode{$anaStrg}) { # Should be the same between labeled channels to match same experiment
 				##			$experimentCode{$anaStrg}=chr(65 + scalar keys %experimentCode); # SuperRatio: 0,1,... -> A,B,...
 				##		}
@@ -463,7 +596,7 @@ if ($ratioType=~/S\w+Ratio|None/) {
 			##		}
 			##		#push @{$observationInfo{$techReplicate}},($expCode,$expCode); # index 3
 			##		push @{$observationInfo{$techReplicate}},$expCode; # index 3
-			##		#$designCheck{$expCode}{$numConditions}=1;
+			##		#$designCheck{$expCode}{$statePos}=1;
 			##	}
 			##}
 #----- NEW EXPERIMENT assignment 31/11/17 ----->
@@ -474,7 +607,7 @@ if ($ratioType=~/S\w+Ratio|None/) {
 #    -fractions
 #    -(bio/tech)Rep across different Experiments (eg. iTRAQ or TMT)
 #    -SuperRatio: state1 found in multiple Experiments
-if ($labeling ne 'FREE') {
+if ($algoType eq 'PEP_RATIO') { # former $labeling ne 'FREE' 27/04/20
 	my $expCode='A';
 	my %condSig2Experiment;
 	foreach my $anaID (@anaOrder) { # Exp follows with State pos increase
@@ -507,8 +640,8 @@ if ($labeling ne 'FREE') {
 	$sthObsMod->finish;
 
 ###>Computing number of targetPos used (needed later for recording of num pep per replicate)<###
-my $usedTargetPos=scalar @ratioTarget; # ($quantifParameters{'DB'}{'SINGLE_REF'})? $numConditions-1 : ($numConditions * ($numConditions-1)) / 2;
-$usedTargetPos+=$numConditions if $algoType=~/PEP_INTENSITY|TDA|DIA/; # num states (MEAN_INTENSITY)
+my $usedTargetPos=scalar @ratioTarget; # ($quantifParameters{'DB'}{'SINGLE_REF'})? $numStates-1 : ($numStates * ($numStates-1)) / 2;
+$usedTargetPos+=$numStates if $algoType ne 'PEP_RATIO'; # former =~/PEP_INTENSITY|TDA|DIA/ 27/04/20 # num states (MEAN_INTENSITY)
 foreach my $techReplicate (keys %replicateTargetPos) {
 	$replicateTargetPos{$techReplicate}+=$usedTargetPos; # shift to free target pos
 }
@@ -516,34 +649,27 @@ foreach my $techReplicate (keys %replicateTargetPos) {
 $sthPQN->finish;
 $sthALM->finish;
 
-#close DEBUG;
-#$dbh->disconnect; die "Test is complete!";
-
 ###>Handling Modification Quantif phosphoRS/MaxQuant threshold & PTM position ambiguity settings
 my ($ptmProbSoftCode,$ptmProbThreshold,$ambiguousModifPos,%quantifResMatchStrg,%qQuantifResMatchStrg)=('',0,0,'',''); # default ($qQuantifResMatchStrg PP 2017/06/22)
-my (%targetableRes,$matchProtCterm); # for recreated PTMs only
+# my (%targetableRes,$matchProtCterm); # for free residues PTMs only
 if ($isModifQuantif) {
-	if ($quantifParameters{'DB'}{'CREATE_PTM'}) { # assumes single-modif quantif!!!!!!!
-		#$quantifResMatchStrg=join('',@{$quantifParameters{'DB'}{'CREATE_PTM'}});
-		#$quantifResMatchStrg=~s/,.//g; # remove contexts
-		foreach my $createModStrg (@{$quantifParameters{'DB'}{'CREATE_PTM'}}) {
-			my ($modifRank,@targetRes)=split(/[:\.]/,$createModStrg);
-			my $modID=$rankQuantifModif{$modifRank};
-			foreach my $resCode (@targetRes) {
-				my ($res,$context)=split(',',$resCode);
-				push @{$targetableRes{$modID}},[$res,$context];
-				$quantifResMatchStrg{$modID}.=$res;
-				$matchProtCterm=1 if ($context && $context eq '+'); # for at least 1 modifID
-			}
-		}
+	if ($isFreeResQuantif) { # assumes single-modif quantif!!!!!!!
+		# my $context=''; # for now
+		# my $modID=$modifQuantifs[0]; # -1 (fake "freeResidus")
+		# foreach my $res (@{$quantifParameters{'DB'}{'FREE_RESIDUES'}}) {
+		# 	push @{$targetableRes{$modID}},[$res,$context];
+		# 	$quantifResMatchStrg{$modID}.=$res;
+		# 	$matchProtCterm=1 if ($res eq '+' || $context eq '+'); # for at least 1 modifID
+		# }
+		&promsQuantif::preparePTMcontexts(\%proteinPTMcontexts,$quantifParameters{'DB'}{'SITE_CONTEXT'});
 	}
-	else {
-		if ($quantifParameters{'DB'}{'PTM_POS'}[0]=~/(\w+):(\d+)/) { # PRS Phospho or MQ any PTM
-			$ptmProbSoftCode=$1; # PRS or MQ
-			$ptmProbThreshold=$2; $ptmProbThreshold/=100 if $ptmProbSoftCode eq 'MQ'; # 0-1
+	if ($trueModifQuantif) { # true PTMs to quantify
+		if ($quantifParameters{'DB'}{'PTM_POS'}[0]=~/(\w+):(\d+)/) { # PRS Phospho or MQ/SPC/PTMRS any PTM
+			$ptmProbSoftCode=$1; # PRS|MQ|SPC|PTMRS
+			$ptmProbThreshold=$2; $ptmProbThreshold/=100 if $ptmProbSoftCode =~ /^(MQ|SPC|PTMRS)$/; # 0-1
 			$ambiguousModifPos=1 if $quantifParameters{'DB'}{'PTM_POS'}[1] eq 'ambiguous';
 		}
-		elsif ($quantifParameters{'DB'}{'PTM_POS'}[0] eq 'ambiguous') { # other PTMs
+		elsif ($quantifParameters{'DB'}{'PTM_POS'}[0] eq 'ambiguous') { # other PTMs valid/ambiguous
 			$ambiguousModifPos=1;
 		}
 	
@@ -589,17 +715,45 @@ if ($quantifParameters{DB}{PROTEINS}) {
     }
 }
 
-###>Reference proteins for bias correction
-my $normProtUsage='';
-my (%forNormalization,%notForNormalization);
-if ($quantifParameters{DB}{BIAS_CORRECTION}[1] && !$referenceMode) { # done only once in normal mode
-	(my $listID,$normProtUsage)=@{$quantifParameters{DB}{BIAS_CORRECTION}}[1,2];
-    $listID=~s/#//; # remove id flag
-    $sthList->execute($listID);
-	my $refList=($normProtUsage eq 'use')? \%forNormalization : \%notForNormalization;
-	while (my ($protID)=$sthList->fetchrow_array) {
-		$refList->{$protID}=1;
+###>Contaminants
+my %contaminants;
+if ($quantifParameters{DB}{EXCL_CONTAMINANTS} && $quantifParameters{DB}{EXCL_CONTAMINANTS}[0]) {
+	my $sthCont=$dbh->prepare("SELECT DISTINCT ID_PROTEIN FROM ANALYSIS_PROTEIN AP
+								INNER JOIN ANALYSIS_DATABANK AD ON AP.ID_ANALYSIS=AD.ID_ANALYSIS
+								INNER JOIN DATABANK D ON AD.ID_DATABANK=D.ID_DATABANK
+								WHERE AP.ID_ANALYSIS=? AND D.IS_CRAP=1 AND AP.DB_RANK LIKE CONCAT('%',AD.DB_RANK,'%')"); # LIKE because 2 can be in 2 or 12!!!
+	foreach my $anaID (keys %ana2Obs) {
+		$sthCont->execute($anaID);
+		while (my ($protID)=$sthCont->fetchrow_array) {$contaminants{$protID}=1;}
 	}
+	$sthCont->finish;
+}
+
+###>Reference proteins for bias correction
+#my ($sharedProtNorm,$normProtUsage)=(0,'use');
+my $normProtUsage=''; # default: Normalization uses all proteins 
+my (%forNormalization,%notForNormalization);
+if ($quantifParameters{DB}{BIAS_CORRECTION}[1] && !$referenceMode) { # Correction with custom list. done only once in normal mode
+	#(my $listID,$normProtUsage)=@{$quantifParameters{DB}{BIAS_CORRECTION}}[1,2];
+	#$listID=~s/#//; # remove id flag
+	#if ($listID  eq 'shared') {
+	#	$sharedProtNorm=1;
+	#	$normProtUsage='use';
+	#}
+	#elsif ($listID  eq 'sharedPep') {
+	#	$sharedProtNorm=0;
+	#	$normProtUsage=''; # shared item computation: done later by R
+	#}
+	if ($quantifParameters{DB}{BIAS_CORRECTION}[1]=~/^#*(\d+)$/) { # Custom list
+		my $listID=$1;
+		$normProtUsage=$quantifParameters{DB}{BIAS_CORRECTION}[2] || 'use';
+		$sthList->execute($listID);
+		my $refList=($normProtUsage eq 'use')? \%forNormalization : \%notForNormalization;
+		while (my ($protID)=$sthList->fetchrow_array) {
+			$refList->{$protID}=1;
+		}
+	}
+	# Shared peptides handled by R
 }
 
 $sthList->finish;
@@ -610,8 +764,9 @@ $sthList->finish;
 ####>Query to get all the validated proteins and the peptides<####
 ##################################################################
 my ($pepSpecificity,$pepMissedCleavage,$ptmFilter,$pepChargeState,$pepSource)=@{$quantifParameters{'DB'}{'PEPTIDES'}};
-my $manualPepSelection=0;
-my (%manualPeptides,%manualProteins);
+my $MGSharedPep=($quantifParameters{'DB'}{'MG_SHARED_PEP'})? $quantifParameters{'DB'}{'MG_SHARED_PEP'}[0] : 'best'; # best|share|exclude. share only for Abundance (PP 20/01/21)
+my $manualPepSelection=0; # used in reference mode (REF|NORM) only
+my (%manualPeptides,%manualProteins); # used in reference mode (REF|NORM) only
 ###>Protein-level fold-change correction
 if ($referenceMode eq 'REF' && $quantifParameters{'DB'}{'PEPTIDES_REF'}[0] eq 'manual') { # if 'current', settings above are kept
 	$manualPepSelection=1;
@@ -624,15 +779,17 @@ if ($referenceMode eq 'REF' && $quantifParameters{'DB'}{'PEPTIDES_REF'}[0] eq 'm
 	}
 }
 ###>Peptide set for experimental normalization (incompatible with Protein-level fold-change correction)
-elsif ($referenceMode eq 'NORM' && $quantifParameters{'DB'}{'PEPTIDES_NORM'}[0] eq 'manual') {
-	$manualPepSelection=1;
-	$normProtUsage='use'; # needed to print normalization file
+elsif ($quantifParameters{'DB'}{'PEPTIDES_NORM'} && $quantifParameters{'DB'}{'PEPTIDES_NORM'}[0] eq 'manual') { # Bias correction with manually selected peptides
+	if ($referenceMode eq 'NORM') {$manualPepSelection=1;}
+	else {$normProtUsage='use';} # normal mode. needed to print normalization file
 	foreach my $i (1..$#{$quantifParameters{'DB'}{'PEPTIDES_NORM'}}) {
 		my ($protID,@pepIDs)=split(/[:,]/,$quantifParameters{'DB'}{'PEPTIDES_NORM'}[$i]);
-		foreach my $pepID (@pepIDs) {$manualPeptides{$pepID}=1;}
+		if ($referenceMode eq 'NORM') {
+			foreach my $pepID (@pepIDs) {$manualPeptides{$pepID}=1;}
 #print DEBUG "MANUAL PEP=@pepIDs\n";
-		$manualProteins{$protID}=1;
-		$forNormalization{$protID}=1;
+			$manualProteins{$protID}=1;
+		}
+		else {$forNormalization{$protID}=1;} # normal mode
 	}
 }
 
@@ -665,9 +822,9 @@ my $normalizeWithAll=0; # 0/1 (0<=>old version) <--- Will become a parameter
 
 #my $filterQueryStrg=($normalizeWithAll)? ',PPA.IS_SPECIFIC,AP.PEP_SPECIFICITY,MISS_CUT' : '';
 
-my $ptmProbQueryStrg=($ptmProbSoftCode eq 'MQ')? "GROUP_CONCAT(DISTINCT PM.ID_MODIFICATION,'%',COALESCE(PM.REF_POS_STRING,'') ORDER BY PM.ID_MODIFICATION SEPARATOR '&')" : "'-'";
+my $ptmProbQueryStrg=($ptmProbSoftCode && $ptmProbSoftCode ne 'PRS')? "GROUP_CONCAT(DISTINCT PM.ID_MODIFICATION,'%',COALESCE(PM.REF_POS_STRING,'') ORDER BY PM.ID_MODIFICATION SEPARATOR '&')" : "'-'";
 my $quantiQuery=qq
-|SELECT GROUP_CONCAT(DISTINCT PPA.ID_PROTEIN),P.ID_PEPTIDE,ABS(PEP_BEG),PEP_SEQ,GROUP_CONCAT(DISTINCT PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),$ptmProbQueryStrg,CHARGE,DATA,P.SCORE,PPA.IS_SPECIFIC,AP.PEP_SPECIFICITY,MISS_CUT
+|SELECT GROUP_CONCAT(DISTINCT PPA.ID_PROTEIN),P.ID_PEPTIDE,PEP_BEG,PEP_SEQ,GROUP_CONCAT(DISTINCT PM.ID_MODIFICATION,':',PM.POS_STRING ORDER BY PM.ID_MODIFICATION SEPARATOR '&'),$ptmProbQueryStrg,CHARGE,DATA,P.SCORE,PPA.IS_SPECIFIC,AP.PEP_SPECIFICITY,MISS_CUT
 	FROM PEPTIDE P
 	LEFT JOIN PEPTIDE_MODIFICATION PM ON P.ID_PEPTIDE=PM.ID_PEPTIDE
 	INNER JOIN PEPTIDE_PROTEIN_ATTRIB PPA ON P.ID_PEPTIDE=PPA.ID_PEPTIDE
@@ -680,10 +837,11 @@ if (!$normalizeWithAll && !$manualPepSelection) { # filter data
 if ($manualPepSelection) { # Do not apply user-defined peptide selection. Filter applied later on pepID
 	$quantiQuery.=($referenceMode eq 'REF')? ' AND PPA.ID_PROTEIN IN ('.(join(',',keys %manualProteins)).')' : ' AND P.ID_PEPTIDE IN ('.(join(',',keys %manualPeptides)).')'; # NORM
 }
-$quantiQuery.=' GROUP BY PPA.ID_PROTEIN,P.ID_PEPTIDE ORDER BY ABS(AP.VISIBILITY) DESC,AP.NUM_PEP DESC,ABS(PEP_BEG) ASC';
+$quantiQuery.=' GROUP BY PPA.ID_PROTEIN,P.ID_PEPTIDE,PEP_BEG ORDER BY ABS(AP.VISIBILITY) DESC,AP.PEP_SPECIFICITY DESC,AP.NUM_PEP DESC,ABS(PEP_BEG) ASC';
 
 
 #print DEBUG ">QUERY---------------\n$quantiQuery\n----------------------\n" if !$referenceMode;
+
 my $sthGetPepData=$dbh->prepare($quantiQuery);
 
 #my ($sthPepRT,$sthRefRT,%refRTcorrection);
@@ -718,11 +876,12 @@ foreach my $modID (@modifQuantifs) {
 #$sthPreInf->finish;
 ##########################
 
-my (%proteins,%intensity,%proteinAlias,%excludedSeq,%proteinInConds,%peptideBeg,%qSetSequence); # %retentionTime,%bestVisibility,%visInReplicate,%visInAnalysis,%visibility
+my (%proteins,%intensity,%proteinAlias,%excludedSeq,%peptideBeg,%qSetSequence); #,%proteinInConds %retentionTime,%bestVisibility,%visInReplicate,%visInAnalysis,%visibility
 my (%qSetBestVarMod,%qSetIsBad); # SILAC only
-my (%tempIntensity,%dataSource2ObsSet,%qSet2Protein); # for SILAC only
+my (%tempIntensity,%dataSource2ObsSet,%qSet2Protein,%pepSeq2qSet,%qSet2AllProteins); # for SILAC only
 my %notUsed4Quantif; # for future $normalizeWithAll management (Not yet used in table.txt)
 my %pepID2QuantifSetSILAC; # PP 25/10/17: used to better compute %usedPeptideSets for SILAC when qSets are summed
+my %isGhostPeptide; # list of ghosts for recording num true peptides/state. Needed at DB import step (global during table.txt generation & ratios import, local otherwise!)
 
 ##----- NEW EXPERIMENT assignment ----->
 ## RULES: 1 techRep <-> 1 experiment => 1 analysis <-> 1 experiment => 1 pepID <-> 1 experiment
@@ -733,39 +892,48 @@ my %pepID2QuantifSetSILAC; # PP 25/10/17: used to better compute %usedPeptideSet
 ##my (%analysis2Experiment,%techRep2Experiment); # %peptideID2Experiment,
 ##my $currentExperiment='A';
 
+my $entityStrg=($algoType=~/^(TDA|DIA|MSstats)$/)? 'fragment' : 'peptide';
 if (!$referenceMode || $referenceMode eq 'REF') {
-	my $entityStrg=($algoType=~/^(TDA|DIA)$/)? 'fragment' : 'peptide';
 	open(FILESTAT,">>$fileStat") || die "Error while opening $fileStat";
 	print FILESTAT "1/$numSteps Generating data files (1/4 Retrieving$referenceStrg $entityStrg intensity data)\n";
 	close FILESTAT;
 }
 my %pepQuantifValues;
-if ($algoType=~/^(TDA|DIA)$/) { # MS2 XIC
+my $numAllObs=0;
+if ($algoType=~/^(TDA|DIA|MSstats)$/) { # MS2 XIC
 	my %fragQuantifs;
 	foreach my $observationSet (@quantiOrder) {
 		foreach my $fraction (split(/\+/,$observationSet)) {
 			my ($obsID,$ms2Quantif,$anaID,$targetPos)=split(/:/,$fraction);
 			$fragQuantifs{$ms2Quantif}{$anaID}=1;
+			$numAllObs++;
 		}
 	}
+	my $numObsData=0;
 	QUANTI:foreach my $ms2Quantif (keys %fragQuantifs) {
 		foreach my $anaID (keys %{$fragQuantifs{$ms2Quantif}}) {
 			unless (-e "$promsPath{quantification}/project_$projectID/quanti_$ms2Quantif/swath_ana_$anaID.txt") {
 				warn "Missing fragment quantification file (#$ms2Quantif, Ana #$anaID)"; # warn to allow clean handling of exception by &checkForErrors
 				last QUANTI;
 			}
-			open (FRAG_QUANTIF,"$promsPath{quantification}/project_$projectID/quanti_$ms2Quantif/swath_ana_$anaID.txt") || die $!;
-#print DEBUG "XIC in $anaID:\n" if !$referenceMode;
+			open(FRAG_QUANTIF,"$promsPath{quantification}/project_$projectID/quanti_$ms2Quantif/swath_ana_$anaID.txt") || die $!;
 			while (<FRAG_QUANTIF>) {
-				next if /^PEP/; # $.=1
+				next if $.==1; # /^PEP/; #
 				s/\s\Z//g; # chomp is not enough. More hidden Windows character
 				my ($pepID,$fragMZ,$fragCharge,$fragType,$fragRes,$fragArea,$fragRT)=split(/!/,$_);
-				next if $fragArea=~/^(N\/A|None|0)$/;
+				#next if $fragArea=~/^(N\/*A|None)$/;
+				next if $fragArea=~/[^\d\.]/;
+				next if $fragArea <= 0; # can be '0.0'
 				#next if (!$peptideList{$pepID});
 				$pepQuantifValues{"$pepID:0"}{"$fragType$fragRes#$fragCharge"}=$fragArea;
-#print DEBUG "$pepID\t$fragArea\n" if !$referenceMode;
 			}
 			close FRAG_QUANTIF;
+			$numObsData++;
+			unless ($numObsData % 10) {
+				open(FILESTAT,">>$fileStat") || die "Error while opening $fileStat";
+				print FILESTAT "1/$numSteps Generating data files (1/4 Retrieving$referenceStrg $entityStrg intensity data: $numObsData/$numAllObs)\n";
+				close FILESTAT;
+			}
 		}
 	}
 }
@@ -776,8 +944,10 @@ else { # MS1 XIC
 			my ($obsID,$xicQuantif,$anaID,$targetPos)=split(/:/,$fraction);
 			$targetPos=0 unless $targetPos; # label-free
 			$peptideQuantifs{$xicQuantif}{$targetPos}=1;
+			$numAllObs++;
 		}
 	}
+	my $numObsData=0;
 	QUANTI:foreach my $xicQuantif (keys %peptideQuantifs) {
 		my $signalParamID;
 		foreach my $targetPos (keys %{$peptideQuantifs{$xicQuantif}}) {
@@ -792,6 +962,7 @@ else { # MS1 XIC
 				chomp;
 				my ($paramID,$pepID,$quantifValue)=split(/\t/,$_);
 				#next if $paramID != $peptideAreaParamID{$xicQuantif};
+				next if $quantifValue=~/[^\d\.]/;
 				next if $quantifValue <=0; # Isobaric bug
 				unless ($signalParamID) {
 					next unless $usedParamIDs{$xicQuantif}{$paramID};
@@ -801,6 +972,12 @@ else { # MS1 XIC
 				$pepQuantifValues{"$pepID:$targetPos"}{PEP}=$quantifValue;
 			}
 			close PEP_QUANTIF;
+			$numObsData++;
+			unless ($numObsData % 10) {
+				open(FILESTAT,">>$fileStat") || die "Error while opening $fileStat";
+				print FILESTAT "1/$numSteps Generating data files (1/4 Retrieving$referenceStrg $entityStrg intensity data: $numObsData/$numAllObs)\n";
+				close FILESTAT;
+			}
 		}
 	}
 }
@@ -810,9 +987,15 @@ open(FILESTAT,">>$fileStat") || die "Error while opening $fileStat";
 print FILESTAT "1/$numSteps Generating data files (2/4 Retrieving$referenceStrg identification data)\n";
 close FILESTAT;
 my %recreatedVarMods; # to prevent re-creating same varMod multiple times
-my %proteinLength; # Only if sites to be recreated at protein C-term
+#my %proteinLength; # Only if sites to be recreated at protein C-term
 my (%missedCutPeptides,%beg2pepSeq); # only if $pepMissedCleavage=-1 (exclude missCut AND overlapping cut peptides)
-my $sthProtL=$dbh->prepare('SELECT PROT_LENGTH FROM PROTEIN WHERE ID_PROTEIN=?');
+my (%fragmentsInPepIon);#,%peptidesUsedMSstats); # MSstats
+my %peptideSpecificity; # to attribute a shared peptide to the "best" proteins
+my %bestProteotypicity; # to attribute a shared peptide to the "best" proteins
+my %ptmProbability; # for other than PEP_RATIO+SILAC: if $ambiguousModifPos to decide if ion should be ambiguous or not
+# my $sthProtL=$dbh->prepare('SELECT PROT_LENGTH FROM PROTEIN WHERE ID_PROTEIN=?');
+my $sthProtSeq=$dbh->prepare('SELECT P.PROT_SEQ,MP.PROT_SEQ FROM PROTEIN P LEFT JOIN MASTER_PROTEIN MP ON P.ID_MASTER_PROTEIN=MP.ID_MASTER_PROTEIN WHERE P.ID_PROTEIN=?');
+my $numObsProt=0;
 foreach my $observationSet (@quantiOrder) {
 	#my $labelObs=scalar keys %{$labelModifs{$observationSet}}; # observation belongs (or not) to a label channel
 	my $anaInObsStrg=''; # list of anaIDs in observationSet
@@ -825,6 +1008,7 @@ foreach my $observationSet (@quantiOrder) {
 		}
 	}
 	foreach my $fraction (split(/\+/,$observationSet)) {
+		$numObsProt++;
 		my ($obsID,$xicQuantif,$anaID,$targetPos)=split(/:/,$fraction);
 		#if ($labeling eq 'FREE') {
 		#}
@@ -843,7 +1027,7 @@ foreach my $observationSet (@quantiOrder) {
 
 ##----- NEW EXPERIMENT assignment ----->
 #my $expCode='A'; # default
-#if ($Rdesign eq 'LABELED' && $numConditions > 2) {
+#if ($Rdesign eq 'LABELED' && $numStates > 2) {
 #	if ($analysis2Experiment{$anaID}) {$expCode=$analysis2Experiment{$anaID};}
 #	else {
 #		$expCode=$analysis2Experiment{$anaID}=$currentExperiment;
@@ -851,48 +1035,61 @@ foreach my $observationSet (@quantiOrder) {
 #	}
 #}
 
-		my $qSetStrg=($xicEngine{$xicQuantif}=~/^(PD|MQ)$/)? 'QSET' : "MCQSET_$xicQuantif";
-		my %peptidesUsed; # only if non-proteotypic peptides are used => makes sure the same protein is selected (analysis-specific to respect Match group decision!!!)
+		my $qSetStrg=($xicEngine{$xicQuantif}=~/^(PD|MQ)$/)? 'QSET' : "MCQSET_$xicQuantif"; # PEP_RATIO only
+		##my %peptidesUsed; # only if non-proteotypic peptides are used => makes sure the same protein is selected (analysis-specific to respect Match group decision!!!)
 		my $labelModStrg=join('|',keys %{$anaLabelModifs{$anaID}}) if $labeling eq 'SILAC'; # needed for SILAC
 		my %mcqXICs; # SILAC only
 		$sthGetPepData->execute($anaID);
 #print DEBUG "RUN_ANA $anaID ($targetPos)\n" if !$referenceMode;
-		while (my ($protID,$pepID,$pepBeg,$pepSeq,$varModStrg,$varProbStrg,$charge,$pepData,$score,$specif,$bestSpecif,$misscut)=$sthGetPepData->fetchrow_array) { # executed multiple time for labeled quantif
+		my %usedPepQuantifValues; # prevent multiple insertion of same value due to peptides shared by multiple proteins if non-proteotypic allowed
+		while (my ($protID,$pepID,$pepBeg0,$pepSeq,$varModStrg,$varProbStrg,$charge,$pepData,$score,$specif,$bestSpecif,$misscut)=$sthGetPepData->fetchrow_array) { # executed multiple time for labeled quantif
+			$varModStrg='' unless $varModStrg;
+			my $pepBeg=abs($pepBeg0); # $pepBeg0 required for ghost peptides detection
 
 			#>Protein filtering
+			next if $contaminants{$protID}; # only if option was checked
 			if ($protSelectionType) {
 				if ($protSelectionType eq 'exclude') {next if $selectExcludeProteins{$protID};}
 				else {next unless $selectExcludeProteins{$protID};} # restrict
 			}
 			
 #$varModStrg='' unless $varModStrg;
-#print DEBUG "$pepID,$pepBeg,$pepSeq,$varModStrg\n" if !$referenceMode;
-			next if ($manualPepSelection && (!$manualProteins{$protID} || !$manualPeptides{$pepID}));
-#print DEBUG "OK FILTER_1\n" if !$referenceMode;
+#print DEBUG "$pepID,$pepBeg,$pepSeq,$varModStrg\n" if $pepSeq eq 'FLYYEMGYK';
+			next if ($manualPepSelection && (!$manualProteins{$protID} || !$manualPeptides{$pepID})); # reference mode
 
-if ($pepMissedCleavage==-1 && $misscut) {
-	my $pepLength=length($pepSeq);
-	$missedCutPeptides{$protID}{$pepBeg}=$pepLength if (!$missedCutPeptides{$protID} || !$missedCutPeptides{$protID}{$pepBeg} || $missedCutPeptides{$protID}{$pepBeg} < $pepLength);
-	if ($normalizeWithAll) {$notUsed4Quantif{$pepID}=1;}
-	else {next;}
-}
-											   
+			if ($pepMissedCleavage==-1 && $misscut) {
+				my $pepLength=length($pepSeq);
+				$missedCutPeptides{$protID}{$pepBeg}=$pepLength if (!$missedCutPeptides{$protID} || !$missedCutPeptides{$protID}{$pepBeg} || $missedCutPeptides{$protID}{$pepBeg} < $pepLength);
+				if ($normalizeWithAll) {$notUsed4Quantif{$pepID}=1;}
+				else {next;}
+			}
+
+			next if ($labeling eq 'SILAC' && $pepSeq !~ /K|R/); # skip sequences not able to be labeled (C-term protein)
+
 			next unless $pepQuantifValues{"$pepID:$targetPos"}; # no quantif for pepID
 			my $quantifValue=$pepQuantifValues{"$pepID:$targetPos"}; # ref to last PEP/FRAGMENTS dimension
-#print DEBUG "OK FILTER_2\n" if !$referenceMode;
+
+			### NEW (18/02/21) Protein enriched by specific PTM(s) & sequence motif(s) => restrict to matching peptides
+			if ($isProteinByPTM) {
+				my $okPeptide=&promsQuantif::checkPTMcontext($pepSeq,$varModStrg,$pepBeg,$protID,$sthProtSeq,\%proteinPTMcontexts,\%peptideContextMatch,\%proteinSequence);
+				unless ($okPeptide) {
+					if ($normalizeWithAll) {$notUsed4Quantif{$pepID}=1;}
+					else {next;}
+				}
+			}
 
 			#>Normalization scope
 			$forNormalization{$protID}=1 if ($normProtUsage eq 'not' && !$notForNormalization{$protID});
 	
 			### NEW (25/01/19): Handle quantif PTM removed from samples => unmodifed res ARE the sites!
 			## PTM recreated in silico
-			$varModStrg='' unless $varModStrg;
-			if ($quantifParameters{'DB'}{'CREATE_PTM'}) {
-				if ($matchProtCterm && !defined $proteinLength{$protID}) {
-					$sthProtL->executed($protID);
-					($proteinLength{$protID})=$sthProtL->fetchrow_array;
-				}
-				$varModStrg=&recreateModifSites($pepSeq,$varModStrg,$pepBeg,$proteinLength{$protID},\%targetableRes,\%recreatedVarMods);
+			if ($isFreeResQuantif) {
+				# if ($matchProtCterm && !defined $proteinLength{$protID}) {
+				# 	$sthProtL->executed($protID);
+				# 	($proteinLength{$protID})=$sthProtL->fetchrow_array;
+				# }
+				# $varModStrg=&promsQuantif::modifyFreeResidues($pepSeq,$varModStrg,$pepBeg,$proteinLength{$protID},\%targetableRes,\%recreatedVarMods);
+				$varModStrg=&promsQuantif::modifyFreeResidues($pepSeq,$varModStrg,$pepBeg,$protID,$sthProtSeq,\%proteinPTMcontexts,\%recreatedVarMods,\%proteinSequence);
 			}
 
 ########!!!!!! TEST 18/08/15
@@ -903,12 +1100,18 @@ if ($pepMissedCleavage==-1 && $misscut) {
 				if ($normalizeWithAll) {$notUsed4Quantif{$pepID}=1;}
 				else {next;} # skip peptides not containing quantified modif
 			}
-#print DEBUG "OK FILTER_3\n" if !$referenceMode;
-			if ($pepSpecificity ne 'unique' && !$manualPepSelection) {  # && $bestSpecif < 100 not proteotypic peptide && in manual mode (TDA ref): allow duplicate
-				next if ($peptidesUsed{$pepSeq} && $peptidesUsed{$pepSeq} != $protID); # Use peptide ONLY once even if shared by multiple proteins ($pepSpecificity= unique_shared or all) (Required by ML algos)
-				$peptidesUsed{$pepSeq}=$protID;
-			}
-$proteinInConds{$protID}{$poolGroup2Cond{$observationSet}}=1; # protein "exists" in condition (detect before peptide filtering to prevent missleading info!!!)
+#print DEBUG "OK FILTER_3\n" if $pepSeq eq 'FLYYEMGYK';			
+			#if ($pepSpecificity ne 'unique' && !$manualPepSelection) {  # && $bestSpecif < 100 not proteotypic peptide && in manual mode (TDA ref): allow duplicate
+				##if ($software eq 'MSstats') { # prot attribution must be the same across whole design (otherwise duplications occur)
+				##	next if ($peptidesUsedMSstats{$pepSeq} && $peptidesUsedMSstats{$pepSeq} != $protID); # Use peptide ONLY once even if shared by multiple proteins ($pepSpecificity= unique_shared or all) (Required by ML algos)
+				##	$peptidesUsedMSstats{$pepSeq}=$protID;
+				##}
+				##else {
+				##	next if ($peptidesUsed{$pepSeq} && $peptidesUsed{$pepSeq} != $protID); # Use peptide ONLY once even if shared by multiple proteins ($pepSpecificity= unique_shared or all) (Required by ML algos)
+				##	$peptidesUsed{$pepSeq}=$protID;
+				##}
+			#}			
+#$proteinInConds{$protID}{$poolGroup2Cond{$observationSet}}=1; # protein "exists" in condition (detect before peptide filtering to prevent missleading info!!!)
 #$visInReplicate{$protID}{$observationSet}=1; # protein is visible in replicate (VISIBILITY > 0 in query) needed for table.txt only
 #$visInAnalysis{$protID}{$anaID}=1;
 #$bestVisibility{$protID}=$vis if (!defined($bestVisibility{$protID}) || $bestVisibility{$protID} < $vis); # Keep the Best-Visibility of the protein (only needed for FREE).
@@ -919,6 +1122,9 @@ $proteinInConds{$protID}{$poolGroup2Cond{$observationSet}}=1; # protein "exists"
 
 			$pepData='' unless $pepData;
 			$score=0 unless $score;
+			
+			$isGhostPeptide{$pepID}=1 if ($pepBeg0 < 0 && $countIdentifiedPep);
+			
 			#if ($ptmAllowed <= 0) {
 			#	my $numPTM=0;
 			#	$sthPTM->execute($pepID);
@@ -940,8 +1146,9 @@ $proteinInConds{$protID}{$poolGroup2Cond{$observationSet}}=1; # protein "exists"
 				my %hasPTMs;
 				my $hasRefMod=0; # for referenceMode only
 				foreach my $vMod (split('&',$varModStrg)) {
-					my ($modID)=($vMod=~/^(\d+)/);
+					my ($modID)=($vMod=~/^(-*\d+)/); # allow -1
 					next if $labelModifs{$obsID}{$modID}; # skip labeling modifs
+					next if $proteinPTMcontexts{$modID}; # skip context PTMs
 					if ($ptmAllowed != 1 && !$allowedPtmID{$modID}) {
 						$hasPTMs{$modID}=1;
 						last;
@@ -964,22 +1171,28 @@ $proteinInConds{$protID}{$poolGroup2Cond{$observationSet}}=1; # protein "exists"
 			elsif ($varModStrg) {
 				$varModCode='&'.$varModStrg;
 			}
-#print DEBUG "OK FILTER_4\n" if !$referenceMode;
+#print DEBUG "OK FILTER_4\n" if $pepSeq eq 'FLYYEMGYK';
 			# Non-SILAC phospho quantif
-			if ($ptmProbSoftCode && $labeling ne 'SILAC' && !$notUsed4Quantif{$pepID}) { # !$ptmProbSoftCode if 'CREATE_PTM'
+			if ($ptmProbSoftCode && $ptmProbThreshold > 0 && ($algoType ne 'PEP_RATIO' || $labeling ne 'SILAC') && !$notUsed4Quantif{$pepID}) { # SILAC case handled beloww
 				my $ptmPosProb;
 				if ($ptmProbSoftCode eq 'PRS') { 
 					($ptmPosProb)=($pepData=~/PRS=\d;([^;]+);/);
 				}
-				else { # assume MQ
-					$ptmPosProb=&extractPtmPosProbability(\%modifQuantifRank,$varModCode,$varProbStrg);
+				else { # MQ|SPC|PTMRS
+					$ptmPosProb=&promsMod::extractPtmPosProbability(\%modifQuantifRank,$varModCode,$varProbStrg); # returns 1 (100%) if no PTM in sites list
 				}
-				if (!defined $ptmPosProb || $ptmPosProb < $ptmProbThreshold) {
+				$ptmPosProb=-1 unless defined($ptmPosProb);
+				if ($ambiguousModifPos) {
+					my $pepIonKey="$pepSeq:$varModCode:$charge";
+					$ptmProbability{$pepIonKey}=$ptmPosProb if (defined $ptmPosProb && (!defined $ptmProbability{$pepIonKey} || $ptmProbability{$pepIonKey} > $ptmPosProb)); # keep the worst across whole dataset
+				}
+				elsif (!defined $ptmPosProb || $ptmPosProb < $ptmProbThreshold) {
+#print DEBUG "$pepID\t$varModCode\t$charge\t$varProbStrg\t$ptmPosProb\n";
 					if ($normalizeWithAll) {$notUsed4Quantif{$pepID}=1;}
 					else {next;} 
 				}
 			}
-#print DEBUG "OK FILTER_5\n" if !$referenceMode;
+#print DEBUG "OK FILTER_5\n" if $pepSeq eq 'FLYYEMGYK';
 			#$intensity{$pepID}=$quantifValue;
 			#unless ($dataSrc) {$dataSrc=($labeling eq 'FREE')? '-' : $anaID;}
 			#$dataSrc=($labeling eq 'FREE')? '-' : ($dataSrc)? $dataSrc : '#'.$anaID;
@@ -989,36 +1202,18 @@ $proteinInConds{$protID}{$poolGroup2Cond{$observationSet}}=1; # protein "exists"
 			#if ($labeling eq 'FREE' && $ratioType eq 'Ratio') {$dataSrc='-';}
 			##if ($labeling eq 'FREE') {$dataSrc='-';} # <---- mPP
 # <---- mPP
-			#else {
+			if ($software eq 'MSstats') {
+				$dataSrc='-';
+			}
+			else {
 				$dataSrc='#'.$anaID; # TODO: if LABEL-FREE: check if still compatible with fraction merge ($anaInObsStrg in Qset) PP 27/11/17
 				$dataSrc.='.'.$1 if $pepData=~/SOURCE_RANK=([^#]+)/;
-			#}
-			my $qSet;
-			if ($labeling eq 'FREE') { # No peptide pairing   || $algoType eq 'PEP_INTENSITY'
-# mPP----->
-#$qSet=($ratioType eq 'Ratio')? 'A0_Q0' : "P$pepID"."_Q0"; # <---- mPP
-#$qSet=($ratioType eq 'Ratio')? 'A0_Q0' : "A$anaInObsStrg"."_Q0"; # PP 10/08/17 Revert to "A$anaInObsStrg"."_Q0" to allow fractions merge !!!!!!!!!!!!!!! PP 18/04/16: anastrg incompatible with best Qset varMod coherence check
-#$qSet=($ratioType eq 'Ratio')? 'A0_Q0' : "A$anaID"."_Q0"; #"A$anaID"."_Q0";!!!!!!!!!!!!!!! PP 10/08/17 WARNING: Should not be compatible with best Qset varMod coherence check
-# <---- mPP
-				if ($poolObservations) {
-					$qSet="A$anaInObsStrg".'_Q0'; # += to cumulate fraction (<=> = if 1 fraction/replicate)
-					#$qSet="A$anaID".'_Q0'; += to cumulate same identifications in analysis (<=> = if 1 peptideIon/analysis)
-					#$intensity{"$pepSeq:$varModCode:$charge"}{$dataSrc}{$qSet}{$observationSet}[0]+=$quantifValue; #
-				}
-				else {
-					$qSet="A$anaID"."_Q0"; # "P$pepID"."_Q0" in algo v2!
-					#$qSet=($ratioType eq 'Ratio')? 'A0_Q0' : "A$anaID"."_Q0"; # "P$pepID"."_Q0" in algo v2!
-					#$intensity{"$pepSeq:$varModCode:$charge"}{$dataSrc}{$qSet}{$observationSet}[0]=$quantifValue;
-				}
-				#$intensity{"$pepSeq:$varModCode:$charge"}{$dataSrc}{$qSet}{$observationSet}[0]+=$quantifValue; # pool just in case multiple occurences
-				foreach my $feature (keys %{$quantifValue}) { # PEP of Fragments
-					$intensity{"$pepSeq:$varModCode:$charge"}{$dataSrc}{$qSet}{$observationSet}{$feature}[0]+=$quantifValue->{$feature};
-				}
 			}
-			else { # Labeling
+			my $qSet;
+			if ($algoType eq 'PEP_RATIO') {
 
-#----- NEW EXPERIMENT assignment ----->
-#$peptideID2Experiment{$pepID}=$expCode if $Rdesign eq 'LABELED'; # not for SUPERRATIO
+				#----- NEW EXPERIMENT assignment ----->
+				#$peptideID2Experiment{$pepID}=$expCode if $Rdesign eq 'LABELED'; # not for SUPERRATIO
 
 				$qSet="A$anaID".'_Q';
 				$qSet.=($pepData=~/$qSetStrg=(\d+)/)? $1 : ($labeling=~/ITRAQ|TMT/)? $pepID : 0;
@@ -1032,42 +1227,84 @@ $proteinInConds{$protID}{$poolGroup2Cond{$observationSet}}=1; # protein "exists"
 					}
 					$qSetSequence{$qSet}{$pepSeq}=1; # to check if same pep sequence in qSet
 					#push @{$intensity{"$pepSeq:$varModCode:$charge"}{$dataSrc}{$qSet}{$observationSet}},$quantifValue; # multiple QSET for same peptide (old PD SILAC reports before myProMS v3.5)
-					push @{$tempIntensity{"$pepSeq:#:$varModCode:#:$charge"}{$dataSrc}{$fraction}{$qSet}},$quantifValue->{PEP}; # $intensity computed later
+					push @{$tempIntensity{"$pepSeq:#:$varModCode:#:$charge"}{$dataSrc}{$fraction}{$qSet}},$quantifValue->{PEP} unless $usedPepQuantifValues{"$pepID:$targetPos"}; # $intensity computed later
 					$dataSource2ObsSet{$dataSrc}{$observationSet}=$fraction;
+if ($pepSpecificity ne 'unique' && !$manualPepSelection) {
+	push @{$pepSeq2qSet{$pepSeq}},$qSet unless $usedPepQuantifValues{"$pepID:$targetPos"}; # For now multiple proteins can share the same qSet!!!
+	$qSet2AllProteins{$qSet}{$protID}=1;
+#print DEBUG "SHARED_PROT=$protID Q=$qSet SEQ=$pepSeq VM=$varModCode\n" if $pepSeq eq 'MSGFIYQGK';
+}
+else {
 					$qSet2Protein{$qSet}=$protID;
-
+}
 					$pepID2QuantifSetSILAC{$pepID}=$qSet;
 				}
 				else {
-					push @{$intensity{"$pepSeq:$varModCode:$charge"}{$dataSrc}{$qSet}{$observationSet}{PEP}},$quantifValue->{PEP};
+					push @{$intensity{"$pepSeq:$varModCode:$charge"}{$dataSrc}{$qSet}{$observationSet}{PEP}},$quantifValue->{PEP} unless $usedPepQuantifValues{"$pepID:$targetPos"};
 				}
 			}
+			else { # PEP_INTENSITY: No peptide pairing   former $labeling eq 'FREE' 27/04/20
+# mPP----->
+#$qSet=($ratioType eq 'Ratio')? 'A0_Q0' : "P$pepID"."_Q0"; # <---- mPP
+#$qSet=($ratioType eq 'Ratio')? 'A0_Q0' : "A$anaInObsStrg"."_Q0"; # PP 10/08/17 Revert to "A$anaInObsStrg"."_Q0" to allow fractions merge !!!!!!!!!!!!!!! PP 18/04/16: anastrg incompatible with best Qset varMod coherence check
+#$qSet=($ratioType eq 'Ratio')? 'A0_Q0' : "A$anaID"."_Q0"; #"A$anaID"."_Q0";!!!!!!!!!!!!!!! PP 10/08/17 WARNING: Should not be compatible with best Qset varMod coherence check
+# <---- mPP
+				if ($software eq 'MSstats') {
+					$qSet='-';
+				}
+				elsif ($poolObservations) {
+					$qSet="A$anaInObsStrg".'_Q0'; # += to cumulate fraction (<=> = if 1 fraction/replicate)
+					#$qSet="A$anaID".'_Q0'; += to cumulate same identifications in analysis (<=> = if 1 peptideIon/analysis)
+					#$intensity{"$pepSeq:$varModCode:$charge"}{$dataSrc}{$qSet}{$observationSet}[0]+=$quantifValue; #
+				}
+				else {
+					$qSet="A$anaID"."_Q0"; # "P$pepID"."_Q0" in algo v2!
+					#$qSet=($ratioType eq 'Ratio')? 'A0_Q0' : "A$anaID"."_Q0"; # "P$pepID"."_Q0" in algo v2!
+					#$intensity{"$pepSeq:$varModCode:$charge"}{$dataSrc}{$qSet}{$observationSet}[0]=$quantifValue;
+				}
+				#$intensity{"$pepSeq:$varModCode:$charge"}{$dataSrc}{$qSet}{$observationSet}[0]+=$quantifValue; # pool just in case multiple occurences
 
+				unless ($usedPepQuantifValues{"$pepID:$targetPos"}) {
+					foreach my $feature (keys %{$quantifValue}) { # PEP of Fragments
+						$intensity{"$pepSeq:$varModCode:$charge"}{$dataSrc}{$qSet}{$observationSet}{$feature}[0]+=$quantifValue->{$feature};
+						$fragmentsInPepIon{"$pepSeq:$varModCode:$charge"}{$feature}=1 if $software eq 'MSstats';
+					}
+				}
+			}
+		
 			#my $usedObs=($ratioType eq 'Ratio')? 'ALL_OBS' : $observationSet;
 			#push @{$proteins{$protID}{$pepSeq}{$varModCode}{$charge}{$dataSrc}{$qSet}{$usedObs}},$pepID;
-push @{$proteins{$protID}{$pepSeq}{$varModCode}{$charge}{$dataSrc}{$qSet}{$observationSet}},$pepID;
+			push @{$proteins{$protID}{$pepSeq}{$varModCode}{$charge}{$dataSrc}{$qSet}{$observationSet}},$pepID;
+			if ($pepSpecificity ne 'unique' && !$manualPepSelection && $MGSharedPep ne 'share') { # not proteotypic peptide && in manual mode (TDA ref): allow duplicate
+				$peptideSpecificity{$pepSeq}{$protID}++;
+				$bestProteotypicity{$protID}=$bestSpecif if (!$bestProteotypicity{$protID} || $bestProteotypicity{$protID} < $bestSpecif);
+			}
 			$peptideBeg{$protID}{$pepSeq}=$pepBeg; # for modif quantification only
+			if ($pepMissedCleavage==-1 && !$misscut) {push @{$beg2pepSeq{$protID}{"$pepBeg:$pepSeq"}},$pepID;} # no need to include missed cleaved here
 			
-if ($pepMissedCleavage==-1 && !$misscut) {push @{$beg2pepSeq{$protID}{"$pepBeg:$pepSeq"}},$pepID;} # no need to include missed cleaved here
-	
-##>Records duplicate XIC scans if MCQ (eg multiple PD XICs reunited in a single one by MCQ => keep only 1 qSet)
-if ($xicEngine{$xicQuantif} eq 'MCQ' && $labeling eq 'SILAC') { # $labeling !~ /ITRAQ|TMT/
-	$mcqXICs{"$pepSeq:$charge:".$quantifValue->{PEP}}{$qSet}=1; # duplicate if more than 1 qSet with the same pepSeq,charge (ideally mass) have exactly the same XIC value
-} # assumes EXACTLY same XIC is computed by MCQ
-
+			next if $usedPepQuantifValues{"$pepID:$targetPos"}; # Do not add it again
+			$usedPepQuantifValues{"$pepID:$targetPos"}=1;
+			
 			##>Record best varMod of qSet in case incoherence (assumes same pepSeq!)
 			#if ($labeling ne 'FREE') { #} qSET has no meaning in label-free ***Also for FREE because of possible duplicate scan for same pepID with MassChroQ***
-			if ($labeling eq 'SILAC') {
-				if ($ptmProbSoftCode) { # Position confidence filtered earlier for non-SILAC. !$ptmProbSoftCode if 'CREATE_PTM'
+			if ($algoType eq 'PEP_RATIO' && $labeling eq 'SILAC') { # Specific to PEP_RATIO with SILAC (isotope labeling: qSet links multiple pepIDs)
+				
+##>Records duplicate XIC scans if MCQ (eg multiple PD XICs reunited in a single one by MCQ => keep only 1 qSet)
+if ($xicEngine{$xicQuantif} eq 'MCQ') {
+	$mcqXICs{"$pepSeq:$varModCode:$charge:".$quantifValue->{PEP}}{$qSet}=1; # duplicate if more than 1 qSet with the same pepSeq,charge (ideally mass) have exactly the same XIC value
+} # assumes EXACTLY same XIC is computed by MCQ		
+				
+				if ($ptmProbSoftCode) { # Position confidence filtered earlier for non-SILAC. !$ptmProbSoftCode if $isFreeResQuantif
 					my $ptmPosProb;
 					if ($ptmProbSoftCode eq 'PRS') {
 						($ptmPosProb)=($pepData=~/PRS=\d;([^;]+);/);
 					}
-					else { # assume MQ
-						$ptmPosProb=&extractPtmPosProbability(\%modifQuantifRank,$varModCode,$varProbStrg);
+					else { # MQ|PTMRS (SPC unlikely for SILAC)
+						$ptmPosProb=&promsMod::extractPtmPosProbability(\%modifQuantifRank,$varModCode,$varProbStrg);
 					}
-					$ptmPosProb=0 unless $ptmPosProb;
-					@{$qSetBestVarMod{$qSet}}=($ptmPosProb,$varModCode) if (!$qSetBestVarMod{$qSet} || $qSetBestVarMod{$qSet}[0] < $ptmPosProb); # record best phosphoRS/MaxQuant prob & vmod (both peptides in qSet will be filtered based on best prob)
+					$ptmPosProb=-1 unless defined($ptmPosProb);
+					@{$qSetBestVarMod{$qSet}}=($ptmPosProb,$varModCode) if (!$qSetBestVarMod{$qSet} || $qSetBestVarMod{$qSet}[0] < $ptmPosProb); # record best ptm probability & vmod (both peptides in qSet will be filtered based on best prob)
+#print DEBUG "$pepID\t$varModCode\t$charge\t$varProbStrg\t$ptmPosProb\n" if (!defined $ptmPosProb || $ptmPosProb < $ptmProbThreshold);
 				} 
 				else {
 					@{$qSetBestVarMod{$qSet}}=($score,$varModCode) if (!$qSetBestVarMod{$qSet} || $qSetBestVarMod{$qSet}[0] < $score); # record best
@@ -1076,20 +1313,20 @@ if ($xicEngine{$xicQuantif} eq 'MCQ' && $labeling eq 'SILAC') { # $labeling !~ /
 			#if ($ambiguousModifPos) {
 			#	$retentionTime{$pepID}=($elutionStrg && $elutionStrg=~/et([\d\.]+)/)? $1 : ($elutionStrg && $elutionStrg=~/^([\d\.]+)/)? $1 : 0;
 			#}
-#print DEBUG "OK\n" if !$referenceMode;
+#print DEBUG "OK\n" if $pepSeq eq 'FLYYEMGYK';
 		} # end of while
 
-##>Remove duplicate XIC scans if MCQ
-if ($labeling eq 'SILAC') {
-	foreach my $pepXICkey (keys %mcqXICs) {
-		next if scalar keys %{$mcqXICs{$pepXICkey}} == 1; # no duplicate
-		my $bestQset;
-		foreach my $qSet (sort{$qSetBestVarMod{$b}[0]<=>$qSetBestVarMod{$a}[0]} keys %{$mcqXICs{$pepXICkey}}) {
-			if ($bestQset) {$qSetIsBad{$qSet}=1;} # to be excluded
-			else {$bestQset=$qSet;} # keep only 1st in list
+		##>Remove duplicate XIC scans if MCQ
+		if ($algoType eq 'PEP_RATIO' && $labeling eq 'SILAC') {
+			foreach my $pepXICkey (keys %mcqXICs) {
+				next if scalar keys %{$mcqXICs{$pepXICkey}} == 1; # no duplicate
+				my $bestQset;
+				foreach my $qSet (sort{$qSetBestVarMod{$b}[0]<=>$qSetBestVarMod{$a}[0]} keys %{$mcqXICs{$pepXICkey}}) {
+					if ($bestQset) {$qSetIsBad{$qSet}=1;} # to be excluded
+					else {$bestQset=$qSet;} # keep only 1st in list
+				}
+			}
 		}
-	}
-}
 
 		###>Fetching Apex Retention time
 		#if ($ambiguousModifPos) {
@@ -1106,16 +1343,84 @@ if ($labeling eq 'SILAC') {
 		#		$retentionTime{$pepID}=$slope*$retTime + $yIntercept if $peptidesUsed{$pepID}; # COMMENT: Some targetPos might not be used for Prot quantif...
 		#	}
 		#}
+
+		unless ($numObsProt % 10) { # every 10 obs 
+			open(FILESTAT,">>$fileStat") || die "Error while opening $fileStat";
+			print FILESTAT "1/$numSteps Generating data files (2/4 Retrieving$referenceStrg identification data: $numObsProt/$numAllObs)\n";
+			close FILESTAT;
+		}
 	}
 }
 $sthGetPepData->finish;
-#$sthPTM->finish;
-#%pepQuantifValues=(); # hoping to free memory
+# $sthProtL->finish;
+$sthProtSeq->finish;
+# $sthPTM->finish;
+# %pepQuantifValues=(); # hoping to free memory
 
 open(FILESTAT,">>$fileStat") || die "Error while opening $fileStat";
 print FILESTAT "1/$numSteps Generating data files (3/4 Processing$referenceStrg dataset)\n";
 close FILESTAT;
+
+# Count initial number of potential peptides identified for each prot (before attribution)
+my %protPepNb;
+foreach my $protID (keys %proteins) {
+	$protPepNb{$protID} = scalar keys %{$proteins{$protID}};
+}
+
+##>Attributing shared peptides to their UNIQUE "best" protein (higher num pepSeq > higher num data points in design > smaller id)
+my %sharedPepProteins;
+if ($pepSpecificity ne 'unique' && !$manualPepSelection && !$MGSharedPep ne 'share') { # MGSharedPep can be best|exclude
+	foreach my $pepSeq (keys %peptideSpecificity) {
+		next unless scalar keys %{$peptideSpecificity{$pepSeq}} > 1;
+		my @excludedProt=(sort{$bestProteotypicity{$a} <=> $bestProteotypicity{$b} || $protPepNb{$b} <=> $protPepNb{$a} || $peptideSpecificity{$pepSeq}{$b} <=> $peptideSpecificity{$pepSeq}{$a} || $a <=> $b} keys %{$peptideSpecificity{$pepSeq}});
+#print DEBUG "ALL_SHARED_PROT=",join(',',@excludedProt)," SEQ=$pepSeq\n" if scalar @excludedProt > 1; #$pepSeq eq 'MSGFIYQGK';		
+		my $keptProtID=($MGSharedPep eq 'best')? shift @excludedProt : 0; # for THIS pepSeq: 'best': remove "best" protein from rejection list OR 'exclude': keep all proteins in rejection list
+		foreach my $protID (@excludedProt) {
+			delete $proteins{$protID}{$pepSeq}; # remove pepSeq from list of matching sequences
+			if ($pepMissedCleavage==-1) {
+				my $pepBeg=$peptideBeg{$protID}{$pepSeq};
+				delete $beg2pepSeq{$protID}{"$pepBeg:$pepSeq"} if ($beg2pepSeq{$protID} && $beg2pepSeq{$protID}{"$pepBeg:$pepSeq"});
+				delete $missedCutPeptides{$protID}{$pepBeg} if ($missedCutPeptides{$protID} && $missedCutPeptides{$protID}{$pepBeg});
+			}
+			delete $peptideBeg{$protID}{$pepSeq};
+			$sharedPepProteins{$protID}{$keptProtID}=1;
+		}
+	}
+
+	my %rejectedProteins;
+	foreach my $protID (keys %sharedPepProteins) {
+		if (scalar keys %{$proteins{$protID}}==0) { # no pepSeq left
+			delete $proteins{$protID};
+			delete $beg2pepSeq{$protID};
+			delete $peptideBeg{$protID};
+			delete $missedCutPeptides{$protID};
+			$rejectedProteins{$protID}=1;
+		}
+		if (scalar keys %rejectedProteins) {
+			open(REJECT,">$dataDir/rejectedProteins.txt"); # list of exluded proteins due to de-attribution of peptides shared with other proteins
+			print REJECT "Protein_ID\tOther\n";
+			foreach my $protID (keys %rejectedProteins) {
+				print REJECT "$protID\t",join(',',keys %{$sharedPepProteins{$protID}}),"\n"; # "protID 0" if $MGSharedPep is 'exclude'
+			}
+			close REJECT;
+		}
+	}
 	
+	#>Build final qSet2Protein (SILAC only)
+	if ($labeling eq 'SILAC') {
+		foreach my $pepSeq (keys %pepSeq2qSet) {
+			my $protID=(keys %{$peptideSpecificity{$pepSeq}})[0]; # there should be only 1 protein left!!!
+			foreach my $qSet (@{$pepSeq2qSet{$pepSeq}}) {
+				$qSet2Protein{$qSet}=$protID if $qSet2AllProteins{$qSet}{$protID}; # <= Protein may be missing (hidden) in qSet's observation => qSet is orphan => not used!!!
+			}
+		}
+		undef %pepSeq2qSet;
+	}
+	
+	undef %peptideSpecificity;
+	undef %qSet2AllProteins;
+}
+
 ##>Filter fully cut peptides included in missed-cut (if $pepMissedCleavage==-1). Match is CROSS-ANALYSIS!
 if ($pepMissedCleavage==-1) {
 	foreach my $protID (keys %missedCutPeptides) {
@@ -1139,11 +1444,12 @@ if ($pepMissedCleavage==-1) {
 undef %missedCutPeptides;
 undef %beg2pepSeq;
 
-if ($labeling eq 'SILAC') {
+if ($algoType eq 'PEP_RATIO' && $labeling eq 'SILAC') { # former $labeling eq 'SILAC' 27/04/20
 
 	##>Checking qSet sequence
 	foreach my $qSet (keys %qSetSequence) { # It happens that identifications are different between Light and (Medium/)Heavy spectra!!!!
 		$qSetIsBad{$qSet}=1 if scalar keys %{$qSetSequence{$qSet}} > 1;
+#print DEBUG "BAD_QSET=$qSet\n" if scalar keys %{$qSetSequence{$qSet}} > 1;
 	}
 
 	##>Cumulate all qSets matching same peptide ion for a given source (& fraction) & update %proteins
@@ -1167,6 +1473,7 @@ if ($labeling eq 'SILAC') {
 			foreach my $usedVmod (keys %qSetList) {
 				my $qSetMerged=join('+',sort keys %{$qSetList{$usedVmod}}); # same qSet string for all observationSets used by dataSrc to make sure qSet pairing is maintained!!! (in case of singleton qSets)
 
+#print DEBUG "QSET_OBS: S=$dataSrc VM=$varModCode UVM=$usedVmod QSETs=$qSetMerged ($pepSeq)\n" if $pepSeq eq 'MSGFIYQGK'; 
 				##>Merged qSet
 				if ($qSetMerged=~/\+/) {
 					$qSetMerged=~s/\+A\d+_/\+/g; # remove repeated A<anaID>_ except 1srt one: Axxx_Qyyy+Axxx_Qzzz -> Axxx_Qyyy+Qzzz
@@ -1177,17 +1484,27 @@ if ($labeling eq 'SILAC') {
 
 						##>Correcting %proteins with merged qSets
 						my $protID=$qSet2Protein{$qSetObsList{$observationSet}{$usedVmod}[0]};
+#print DEBUG "*ORPHAN QSETM=$qSetMerged SEQ=$pepSeq VM=$varModCode UVM=$usedVmod Z=$charge S=$dataSrc\n" unless $protID;
+						next unless $protID; # orphan qSet (best protein is missing: only for "shared peptides")
 						my @pepIdList;
+						my $okObs=0;
 						foreach my $qSet (@{$qSetObsList{$observationSet}{$usedVmod}}) {
+							next if ($sharedPepProteins{$protID} && (!$proteins{$protID} || !$proteins{$protID}{$pepSeq}));	# shares peptides with other proteins & has no unshared peptides
 							push @pepIdList,$proteins{$protID}{$pepSeq}{$varModCode}{$charge}{$dataSrc}{$qSet}{$observationSet}[0];
+							$okObs=1;
 #print DEBUG "+PROT=$protID Q=$qSet PEP=$pepSeq VM=$varModCode Z=$charge S=$dataSrc OBS=$observationSet\n" unless $proteins{$protID}{$pepSeq}{$varModCode}{$charge}{$dataSrc}{$qSet}{$observationSet}[0];
 						}
-						$proteins{$protID}{$pepSeq}{$usedVmod}{$charge}{$dataSrc}{$qSetMerged}{$observationSet}[0]=join('+',@pepIdList);
+						
+						$proteins{$protID}{$pepSeq}{$usedVmod}{$charge}{$dataSrc}{$qSetMerged}{$observationSet}[0]=join('+',@pepIdList) if $okObs;
+
+#print DEBUG "+NO: PROT=$protID Q=$qSetMerged PEP=$pepSeq VM=$varModCode Z=$charge S=$dataSrc OBS=$observationSet\n" unless $okObs;
+
 					}
 
 					foreach my $qSet (keys %{$qSetList{$usedVmod}}) {
 						##>Deleting obsolete qSets
-						delete $proteins{$qSet2Protein{$qSet}}{$pepSeq}{$varModCode}{$charge}{$dataSrc}{$qSet};
+						my $protID=$qSet2Protein{$qSet};
+						delete $proteins{$protID}{$pepSeq}{$varModCode}{$charge}{$dataSrc}{$qSet} if ($protID && $proteins{$protID} && $proteins{$protID}{$pepSeq});
 
 						##>Updating %qSetBestVarMod
 #print DEBUG "P=$pepIon S=$dataSrc Q=$qSet\n" unless $qSetBestVarMod{$qSet};
@@ -1200,33 +1517,13 @@ if ($labeling eq 'SILAC') {
 				else {
 					my $qSet=$qSetMerged;
 					my $protID=$qSet2Protein{$qSet};
+#print DEBUG "*ORPHAN QSET=$qSet SEQ=$pepSeq VM=$varModCode UVM=$usedVmod Z=$charge S=$dataSrc\n" unless $protID;
+					next unless $protID; # orphan qSet (best protein is missing: only for "shared peptides")
 					foreach my $observationSet (keys %{$dataSource2ObsSet{$dataSrc}}) {
 						next if (!$sumQuantifValues{$observationSet} || !$sumQuantifValues{$observationSet}{$usedVmod}); # no data for this channel
+						next if ($sharedPepProteins{$protID} && (!$proteins{$protID} || !$proteins{$protID}{$pepSeq}));	# shares peptides with other proteins & has no unshared peptides
 						$intensity{"$pepSeq:$usedVmod:$charge"}{$dataSrc}{$qSet}{$observationSet}{PEP}[0]=$sumQuantifValues{$observationSet}{$usedVmod}; # if ($sumQuantifValues{$observationSet} && $sumQuantifValues{$observationSet}{$usedVmod});
 						if ($usedVmod ne $varModCode) {
-#my $okString='';
-#if ($proteins{$protID}) {
-#	$okString.='protID_OK';
-#	if ($proteins{$protID}{$pepSeq}) {
-#		$okString.=' pepSeq_OK';
-#		if ($proteins{$protID}{$pepSeq}{$varModCode}) {
-#			$okString.=' varModCode_OK';
-#			if ($proteins{$protID}{$pepSeq}{$varModCode}{$charge}) {
-#				$okString.=' charge_OK';
-#				if ($proteins{$protID}{$pepSeq}{$varModCode}{$charge}{$dataSrc}) {
-#					$okString.=' dataSrc_OK';
-#					if ($proteins{$protID}{$pepSeq}{$varModCode}{$charge}{$dataSrc}{$qSet}) {
-#						$okString.=' qSet_OK';
-#						if ($proteins{$protID}{$pepSeq}{$varModCode}{$charge}{$dataSrc}{$qSet}{$observationSet}) {
-#							$okString.=' observationSet_OK';
-#						}
-#					}
-#				}
-#			}
-#		}
-#	}
-#}
-#print DEBUG ">$protID: '$usedVmod' <=> '$varModCode' $pepSeq $charge $dataSrc $qSet ($observationSet) => $okString\n";
 							@{$proteins{$protID}{$pepSeq}{$usedVmod}{$charge}{$dataSrc}{$qSet}{$observationSet}}=@{$proteins{$protID}{$pepSeq}{$varModCode}{$charge}{$dataSrc}{$qSet}{$observationSet}};
 							#delete $proteins{$protID}{$pepSeq}{$varModCode}{$charge}{$dataSrc}{$qSet};
 							delete $proteins{$protID}{$pepSeq}{$varModCode}{$charge}{$dataSrc}{$qSet}{$observationSet};
@@ -1250,45 +1547,109 @@ if ($labeling eq 'SILAC') {
 #		die "Incompatible RT scales used by peptide quantifications. Make sure all quantifications have an RT reference.";
 #	}
 #}
-
-if (scalar keys %proteins == 0) { # No data at all!!!
+my $numProteins=scalar keys %proteins;
+if ($numProteins == 0) { # No data at all!!!
 	my $dataType=($referenceMode eq 'REF')? ' protein reference' : ($referenceMode eq 'NORM')? ' normalizing peptide' : '';
 	warn "ERROR: No$dataType data available for quantification!";
 	&checkForErrors($dbh);
 }
-my $sthAlias=$dbh->prepare("SELECT ID_PROTEIN,ALIAS FROM PROTEIN WHERE ID_PROTEIN IN (".join(',',keys %proteins).")");
-$sthAlias->execute;
-while (my ($protID,$alias)=$sthAlias->fetchrow_array) {
-	$proteinAlias{$protID}=$alias;
+if ($software eq 'myProMS') {
+	my $computeiBAQ = 0;
+	my $computeAbsolute = 0;
+	foreach my $meas (@{$quantifParameters{'DB'}{'ABUND_MEASURES'}}) {
+		if ($meas =~ /^aLFQ_iBAQ/) {
+			$computeiBAQ = 1;
+			$computeAbsolute = 1;
+			last;
+		} elsif ($meas =~ /^aLFQ_TOP/) {
+			$computeAbsolute = 1;
+			last;
+		}
+	}
+
+	if ($computeAbsolute) {  # Absolute quantification requires some more processing
+		if (-d $absDir && -f "$absDir/aLFQ_info.txt") {
+			# Must convert user quantities file to custom format
+			my $aLFQInfoFile  = "$absDir/aLFQ_info.txt";
+			my $userQtyFile   = "$absDir/user_prot_quantities.csv";
+			my $customQtyFile = "$dataDir/prot_quantities.csv";
+			my $protMWFile 	  = "$dataDir/prot_molecular_weights.tsv";
+
+			open(aLFQ_INFO, ">>$aLFQInfoFile");  # The first part of the file was written in startDesignQuantification
+			# Only the molar/mass percent will be computed if user didn't provide quantities
+			print aLFQ_INFO "quantities\t$customQtyFile\n" if (-f $userQtyFile);
+			# If absolute quantif is from DDA experiment, we start from resultsPep.txt, not when from DIA
+			print aLFQ_INFO "resultsPep\t$resultDir/resultsPep.txt\n" if ($algoType eq 'PEP_INTENSITY');
+			print aLFQ_INFO "fasta\t$dataDir/protein_iBAQ.fasta\n" if ($computeiBAQ);
+			print aLFQ_INFO "molecular_weights\t$protMWFile\n";
+			close aLFQ_INFO;
+
+			my %protAlias2IDs;
+			my %protMolWeights;
+			my %protSequences;
+			my $sthAlias = $dbh->prepare("SELECT P.ID_PROTEIN, P.ALIAS, P.PROT_SEQ, MP.PROT_SEQ, P.MW, MP.MW FROM PROTEIN P LEFT JOIN MASTER_PROTEIN MP ON P.ID_MASTER_PROTEIN = MP.ID_MASTER_PROTEIN WHERE ID_PROTEIN IN (".join(',', keys %proteins).")");
+			$sthAlias->execute;
+			while (my ($protID, $alias, $protSeq, $masterProtSeq, $protMW, $masterProtMW) = $sthAlias->fetchrow_array) {
+				$proteinAlias{$protID} = $alias;
+				$protAlias2IDs{$alias} = $protID;
+
+				if ($protMW) {
+					$protMolWeights{$protID} = $protMW;
+				} elsif ($masterProtMW) {
+					$protMolWeights{$protID} = $masterProtMW;
+				} else {
+					next;  # Discard protein if no molecular weight (mass computation becomes meaningless)
+				}
+
+				if ($computeiBAQ) {  # Get sequences for fasta file if quantification uses aLFQ_iBAQ
+					if ($protSeq && $masterProtSeq) {
+						$protSequences{$protID} = ($protSeq eq '+')? $masterProtSeq : $protSeq;
+					} elsif ($masterProtSeq) {
+						$protSequences{$protID} = $masterProtSeq;
+					} elsif ($protSeq && $protSeq ne '+' && $protSeq ne '-') {
+						$protSequences{$protID} = $protSeq;
+					} else {
+						delete $protMolWeights{$protID} if $protMolWeights{$protID};
+						next;  # Discard protein if no sequence (aLFQ computation is meaningless if included in fasta)
+					}
+				}
+			}
+			$sthAlias->finish;
+
+			open(MOL_WEIGHTS,">$protMWFile");  # Record molecular weight of each prot to compute mass%
+			print MOL_WEIGHTS "ID_PROTEIN\tMW\n";
+			foreach my $protID (sort{$a<=>$b} keys %protMolWeights) {
+				print MOL_WEIGHTS "$protID\t$protMolWeights{$protID}\n";
+			}
+			close MOL_WEIGHTS;
+
+			if ($computeiBAQ) {  # Creation of the fasta file if quantification uses aLFQ_iBAQ
+				open(IBAQ_FASTA,">$dataDir/protein_iBAQ.fasta");
+				foreach my $protID (sort{$a<=>$b} keys %protSequences) {
+					print IBAQ_FASTA ">$protID\n$protSequences{$protID}\n";
+				}
+				close IBAQ_FASTA;
+			}
+
+			&formatQtyFile($quantifID, $userQtyFile, $customQtyFile, \%protAlias2IDs, \%protMolWeights) if (-f $userQtyFile);
+
+		} else {
+			warn "$absDir/aLFQ_info.txt was not written, impossible to launch absolute quantification without the required information !";
+		}
+
+	} else {
+		my $sthAlias=$dbh->prepare("SELECT ID_PROTEIN,ALIAS FROM PROTEIN WHERE ID_PROTEIN IN (".join(',',keys %proteins).")");
+		$sthAlias->execute;
+		while (my ($protID,$alias)=$sthAlias->fetchrow_array) {
+			$proteinAlias{$protID}=$alias;
+		}
+		$sthAlias->finish;
+	}
 }
-$sthAlias->finish;
 
 #print DEBUG scalar keys %proteins," proteins\n";
 #close DEBUG if !$referenceMode;
 #die "END OF TEST";
-
-######################################
-####> Printing normalization file<####
-######################################
-if ($normProtUsage) {
-	unless (scalar keys %forNormalization) {
-		warn "ERROR: No proteins found for normalization!\n";
-		&checkForErrors($dbh);
-	}
-	#if ($ratioType eq 'Ratio') {
-	#	foreach my $protID (keys %forNormalization) {
-	#		push @{$quantifParameters{'R'}{'prot.ref'}},$protID;
-	#	}
-	#}
-	#else {
-		open(NORM,">$dataDir/normProtein.txt");
-		print NORM "proteinId\n"; # header
-		foreach my $protID (sort{$a<=>$b} keys %forNormalization) {
-			print NORM "$protID\n";
-		}
-		close NORM;
-	#}
-}
 
 ##############################
 ####> Printing data table<####
@@ -1303,13 +1664,44 @@ my $protNumber=0;
 #my %prot2quantify;
 my $countCompletePeptides = 0;
 my $numPepValues=0;
-PROT:foreach my $protID (sort{$a<=>$b} keys %proteins) {
-#last PROT if $protNumber >=200; #!!!!!!!!!!!!!!!!
+
+####>Main data file
+my $dataFile=($referenceMode eq 'REF')? "$dataDir/tableRef.txt" : ($referenceMode eq 'NORM')? "$dataDir/tableNorm.txt" : "$dataDir/table.txt";
+open(DATA,">$dataFile"); # Name of data table
+if ($software eq 'MSstats') {
+	print DATA "ProteinName\tPeptideSequence\tPrecursorCharge\tFragmentIon\tProductCharge\tIsotopeLabelType\tCondition\tBioReplicate\tRun\tIntensity\n";
+}
+else {
+	print DATA "Protein_ID\tPeptide\tSample\tTreatment\tReplicate\tTechnical_Replicate\tExperiment\tQuantif_Set\tPeptide_IDs\tProtein_Name\tProtein_Validity\tValue" unless $referenceMode eq 'NORM';
+}
+my (%protein2Sites); #,%proteinSharing);
+#my %pepList; # MSstats
+my $pcStep=1;
+my $pcCurrent=0;
+my $countStep=($numProteins/100)*$pcStep;
+my $nextStep=$countStep;
+my $protCount=0;
+foreach my $protID (sort{$a<=>$b} keys %proteins) {
+#last if $protNumber >=200; #!!!!!!!!!!!!!!!!
 #print DEBUG ">$protID:\n";
+	$protCount++;
+	if ($protCount >= $nextStep) {
+		$pcCurrent+=$pcStep;
+		if ($numProteins >= 1000) {
+			open(FILESTAT,">>$fileStat") || die "Error while opening $fileStat";
+			print FILESTAT "1/$numSteps Generating data files (4/4 Printing$referenceStrg dataset to file: $pcCurrent%)\n";
+			close FILESTAT;
+		}
+		$nextStep+=$countStep;
+	}
 	my (%usableData,%numPepInCond,%numPepInCond4ModProt);
-	foreach my $pepSeq (keys %{$proteins{$protID}}) {
+	foreach my $pepSeq (keys %{$proteins{$protID}}) { # %{$peptideBeg{$protID}} safer than %{$proteins{$protID}} in case shared peptides are used
 		next if $excludedSeq{$pepSeq}; # excluded by ptmAllowed <= -1 or shared by multiple top proteins
 		#$prot2quantify{$protID}=1;
+#unless ($peptideBeg{$protID}{$pepSeq}) { # To prevent use of theorically deleted $proteins{$protID}{$pepSeq}
+#	print DEBUG "ERR: PROT=$protID SEQ=$pepSeq\n";
+#	next;
+#}
 		foreach my $vmod (keys %{$proteins{$protID}{$pepSeq}}) {
 			#>Finding usable charge state(s) & data sources
 			#my %usableData;
@@ -1324,7 +1716,7 @@ PROT:foreach my $protID (sort{$a<=>$b} keys %proteins) {
 						foreach my $qSet (keys %{$proteins{$protID}{$pepSeq}{$vmod}{$charge}{$dataSrc}}){
 							next if $qSetIsBad{$qSet}; # only for SILAC
 							foreach my $observationSet (keys %{$intensity{$pepIonKey}{$dataSrc}{$qSet}}){
-								foreach my $refIntens (values %{$intensity{$pepIonKey}{$dataSrc}{$qSet}{$observationSet}}) { # PEP or TDA=>Sum accross all fragments
+								foreach my $refIntens (values %{$intensity{$pepIonKey}{$dataSrc}{$qSet}{$observationSet}}) { # PEP or TDA/DIA=>Sum accross all fragments
 									$setValue+=$refIntens->[0]; # take first! => TODO: find a way to deal with multiple values here!!!
 								}
 							}
@@ -1348,7 +1740,7 @@ PROT:foreach my $protID (sort{$a<=>$b} keys %proteins) {
 		}
 	}
 
-	if ($labeling eq 'FREE' || $algoType eq 'PEP_INTENSITY') { # potential data filtering --->
+	if ($algoType ne 'PEP_RATIO') { # potential data filtering ---> 27/04/20
 		my %excludedData;
 
 		##>Peptides must match across conditions (Never for PTM quantif)
@@ -1372,7 +1764,7 @@ PROT:foreach my $protID (sort{$a<=>$b} keys %proteins) {
 								}
 							}
 						}
-						if (scalar keys %pepIonInCond < $numConditions) { # (< 2 keep any pairs? for 3+ conditions) peptide is missing in 1+ cond => flag to be deleted
+						if (scalar keys %pepIonInCond < $numStates) { # (< 2 keep any pairs? for 3+ conditions) peptide is missing in 1+ cond => flag to be deleted
 							foreach my $dataKey (keys %pepIonValues) {
 								#$excludedData{$dataKey}=1;
 								$checkExclusion{$dataKey}=1; # do not exclude yet. could become +/-INF protein
@@ -1465,6 +1857,7 @@ foreach my $pepIonKey (@backUpPepIons) { # Keep only backed up already-used pep 
 						}
 					}
 				}
+#print DEBUG "OK FILTER_6\n" if $pepSeq eq 'FLYYEMGYK';				
 			}
 		}
 
@@ -1472,6 +1865,7 @@ foreach my $pepIonKey (@backUpPepIons) { # Keep only backed up already-used pep 
 		foreach my $dataKey (keys %excludedData) {
 			my ($qSet,$observationSet,$pepSeq,$vmod,$charge,$dataSrc)=split(':#:',$dataKey);
 			my $pepIonKey="$pepSeq:$vmod:$charge";
+#print DEBUG "OUT FILTER_7.0\n" if $pepSeq eq 'FLYYEMGYK';
 			delete $intensity{$pepIonKey}{$dataSrc}{$qSet}{$observationSet};
 			unless (scalar keys %{$intensity{$pepIonKey}{$dataSrc}{$qSet}}) {
 				delete $intensity{$pepIonKey}{$dataSrc}{$qSet};
@@ -1487,6 +1881,7 @@ foreach my $pepIonKey (@backUpPepIons) { # Keep only backed up already-used pep 
 							delete $usableData{$pepSeq}{$vmod};
 							unless (scalar keys %{$usableData{$pepSeq}}) {
 								delete $usableData{$pepSeq};
+#print DEBUG "OUT FILTER_7.1\n" if $pepSeq eq 'FLYYEMGYK';
 							}
 						}
 					}
@@ -1498,41 +1893,44 @@ foreach my $pepIonKey (@backUpPepIons) { # Keep only backed up already-used pep 
 	##>Printing data to file
 	$protNumber++ if scalar keys %usableData;
 	foreach my $pepSeq (sort{$peptideBeg{$protID}{$a}<=>$peptideBeg{$protID}{$b} || length($a)<=>length($b)} keys %usableData) {
+#print DEBUG "OK DATA_1\n" if $pepSeq eq 'FLYYEMGYK';
+		my $pepSeqBeg=$peptideBeg{$protID}{$pepSeq};
+		my $pepSeqContext=($keepSeqContext && !$referenceMode)? '['.$pepSeqBeg.'.'.length($pepSeq).']' : ''; # only if $isModifQuantif
 		my @seq=split(//,$pepSeq);
 		foreach my $vmod (keys %{$usableData{$pepSeq}}) {
 			my $nonAmbigModProtID=$protID; # default
 			my $ambigModProtID=$protID; # default
 			my $seqIsAmbig=0;
-# (PP 2017/06/22) --->
 			if ($isModifQuantif) { # modif quantification
-my @pos;
+#>Required for conversion to function: Externals: $protID, $vmod, @modifQuantifs, @seq, $pepSeqBeg, $quantifiedModifID, %modifQuantifRank, %qQuantifResMatchStrg, %quantifResMatchStrg, $ambiguousModifPos
+#>Returns: $nonAmbigModProtID, $ambigModProtID, $seqIsAmbig
 				my $firstModQ=1;
 				foreach my $modID (@modifQuantifs) {
-					
 					my ($sep,$posStrg)=($vmod=~/(^|&)$modID:([\d+\.\-\=\+\*]+)/); # added N/C-term
 					next unless $posStrg; # in multi-modif quantif context: varmod does not necessarly contains all quantified modif
 					#>Non-ambiguous pos
 					my @pos=(); # reset
 					foreach my $pepPos (split(/\./,$posStrg)) {
-						if ($pepPos=~/\d+/) {push @pos,$seq[$pepPos-1].($peptideBeg{$protID}{$pepSeq}+$pepPos-1);}
+						if ($pepPos=~/\d+/) {push @pos,$seq[$pepPos-1].($pepSeqBeg+$pepPos-1);}
 						#elsif ($pepPos=~/[=\*]/) {next;} # skip peptide N/C-term: cannot be in protein TODO: add to table.txt for data normalisation but do not quantify
-						elsif ($pepPos eq '=') {push @pos,'n'.$peptideBeg{$protID}{$pepSeq};} # peptide N-term: kept for normalization purpose
+						elsif ($pepPos eq '=') {push @pos,'n'.$pepSeqBeg;} # peptide N-term: kept for normalization purpose
 						elsif ($pepPos eq '-') {push @pos,'n0';} # protein N-term: kept for normalization purpose
-						elsif ($pepPos eq '*') {push @pos,'c'.($peptideBeg{$protID}{$pepSeq}+$#seq);} # peptide C-term: kept for normalization purpose
+						elsif ($pepPos eq '*') {push @pos,'c'.($pepSeqBeg+$#seq);} # peptide C-term: kept for normalization purpose
 						elsif ($pepPos eq '+') {push @pos,'c0';} # protein C-term: kept for normalization purpose
 					}
-					#>THIS WHERE THE PROTEIN & MODIFICATION SITE(S) ARE CODED!!!!!!
+					#>THIS IS WHERE THE PROTEIN & MODIFICATION SITE(S) ARE CODED!!!!!!
 					# Single-modif quantif:
 					#	-Non-ambiguous: "ProtID-Res1Pos1[.Res2Pos2...]" eg "1234-S56.T78"
 					#	-Ambiguous: "ProtID-StartRes~EndRes:NumModifs/NumAcceptors" eg "1234-56~78:2/5"
 					# Mutli-modif quantif:
-					#	-Non-ambiguous: "ProtID-ModifXRank#Res1Pos1[.Res2Pos2...][&ModifYRank#Res3Pos3[.Res4Pos4...]]" eg "1234-1#S56.T78&2#C61"
-					#	-Ambiguous: "ProtID-ModifXRank#StartRes~EndRes:NumModifs/NumAcceptors" eg "1234-1#56~78:2/5&2#C61"
+					#	-Non-ambiguous: "ProtID-ModifXRank#Res1Pos1[.Res2Pos2...][&ModifYRank#Res3Pos3[.Res4Pos4...]]" eg "1234-1#S56.T78&2#C61" sorted by increasing rank!!!
+					#	-Ambiguous: "ProtID-ModifXRank#StartRes~EndRes:NumModifs/NumAcceptors" eg "1234-1#56~78:2/5&2#C61" (PP: Not allowed from start form as of 30/06/20)
 					my $nonAmbigMod=($quantifiedModifID)? join('.',@pos) : $modifQuantifRank{$modID}.'#'.join('.',@pos); # Add '<modif rank>#' if multi-modif quantif
 					$nonAmbigModProtID.=($firstModQ)? '-' : '&';
 					$nonAmbigModProtID.=$nonAmbigMod;
 					
 					# ==> Look for ambiguity
+			if ($ambiguousModifPos) {
 					$ambigModProtID.=($firstModQ)? '-' : '&';
 					$ambigModProtID.=$modifQuantifRank{$modID}.'#' unless $quantifiedModifID;
 					#my $numModifRes = () = $posStrg =~ /(\d+)/g;
@@ -1541,10 +1939,10 @@ my @pos;
 					while ($pepSeq =~ /[$qQuantifResMatchStrg{$modID}]/g) {push @targetResIdx,$-[0];} # position of match (1st=0)
 					my $numTargetRes=scalar @targetResIdx;
 					my ($NtermMatch,$CtermMatch)=('','');
-					if ($quantifResMatchStrg{$modID}=~/=/) {$NtermMatch='n'.$peptideBeg{$protID}{$pepSeq};} # peptide N-term
-					elsif ($quantifResMatchStrg{$modID}=~/\*/) {$CtermMatch='c'.($peptideBeg{$protID}{$pepSeq}+$#seq);} # peptide C-term
-					elsif ($quantifResMatchStrg{$modID}=~/-/) {$NtermMatch='n0' if $peptideBeg{$protID}{$pepSeq}==1;} # protein N-term
-					#elsif ($quantifResMatchStrg=~/\+/) {$CtermMatch='c0' if $peptideBeg{$protID}{$pepSeq}+length($pepSeq)-1==<protein length>;} # TODO: fetch prot length
+					if ($quantifResMatchStrg{$modID}=~/=/) {$NtermMatch='n'.$pepSeqBeg;} # peptide N-term
+					elsif ($quantifResMatchStrg{$modID}=~/\*/) {$CtermMatch='c'.($pepSeqBeg+$#seq);} # peptide C-term
+					elsif ($quantifResMatchStrg{$modID}=~/-/) {$NtermMatch='n0' if $pepSeqBeg==1;} # protein N-term
+					#elsif ($quantifResMatchStrg=~/\+/) {$CtermMatch='c0' if $pepSeqBeg+length($pepSeq)-1==<protein length>;} # TODO: fetch prot length
 					my $numAlltargets=$numTargetRes;
 					$numAlltargets++ if $NtermMatch;
 					$numAlltargets++ if $CtermMatch;
@@ -1553,81 +1951,88 @@ my @pos;
 						if ($ambiguousModifPos) {
 							#$ambigModProtID=$protID.'-';
 							if ($NtermMatch) {$ambigModProtID.=$NtermMatch;} # N-term
-							else {$ambigModProtID.=($peptideBeg{$protID}{$pepSeq}+$targetResIdx[0]);} # internal pos
+							else {$ambigModProtID.=($pepSeqBeg+$targetResIdx[0]);} # internal pos
 							$ambigModProtID.='~';
 							if ($CtermMatch) {$ambigModProtID.=$CtermMatch;} # C-term
-							else {$ambigModProtID.=($peptideBeg{$protID}{$pepSeq}+$targetResIdx[-1]);} # internal pos
+							else {$ambigModProtID.=($pepSeqBeg+$targetResIdx[-1]);} # internal pos
 							$ambigModProtID.=':'.$numModifRes.'/'.$numAlltargets;
 						}
 						else {$ambigModProtID.=$nonAmbigMod;}
 					}
 					else {$ambigModProtID.=$nonAmbigMod;}
+			}
 					$firstModQ=0;
 				}
-# <--- (PP 2017/06/22)
 			}
-			#my %numPepInCond4ModProt;
 			foreach my $charge (sort{$a<=>$b} keys %{$usableData{$pepSeq}{$vmod}}) {
 				my $pepIonKey="$pepSeq:$vmod:$charge";
 				foreach my $dataSrc (sort keys %{$usableData{$pepSeq}{$vmod}{$charge}}) {
-					my $infRatioDataSrc=($labeling eq 'FREE')? '-' : $dataSrc; # ignore dataSrc if label-free
+					my $infRatioDataSrc=($algoType ne 'PEP_RATIO')? '-' : $dataSrc; # ignore dataSrc if label-free former $labeling eq 'FREE' 27/04/20
 
 					foreach my $qSet (sort{$a cmp $b} keys %{$proteins{$protID}{$pepSeq}{$vmod}{$charge}{$dataSrc}}) { # sort cmp because Qset can be string
-						next if $qSetIsBad{$qSet}; # only for SILAC or duplicate MCQ
+						next if $qSetIsBad{$qSet}; # only for PEP_RATIO SILAC or duplicate MCQ
 						my $modProtID=$nonAmbigModProtID; # default
-						my $usedVmod=($labeling eq 'SILAC')? $qSetBestVarMod{$qSet}[1] : $vmod; # can be different from $vmod in case qSet incoherence (eg. phospho pos after phosphoRS update on ambiguous pepSeq)
-						if ($seqIsAmbig && $labeling eq 'SILAC') {
+						my $usedVmod=($algoType eq 'PEP_RATIO' && $labeling eq 'SILAC')? $qSetBestVarMod{$qSet}[1] : $vmod; # can be different from $vmod in case qSet incoherence (eg. phospho pos after phosphoRS update on ambiguous pepSeq)
+						if ($seqIsAmbig) {
 							if ($ptmProbSoftCode) {
-								if ($qSetBestVarMod{$qSet}[0] >= $ptmProbThreshold) { # check Phospho pos coherence inside qSet (=0 if no PRS data)
-									if ($qSetBestVarMod{$qSet}[2]) { # best nonAmbigModProtID has already been generated
-										###if ($qSetBestVarMod{$qSet}[1] ne $vmod) { # *** Position incoherence detected!!! ***
-										###	$usedVmod=$qSetBestVarMod{$qSet}[1];
-										###}
-									}
-									else { # best nonAmbigModProtID has not been generated yet => process now!
-										if ($usedVmod eq $vmod) {
-											$qSetBestVarMod{$qSet}[2]=$nonAmbigModProtID;
+								if ($algoType eq 'PEP_RATIO' && $labeling eq 'SILAC') {
+									if ($qSetBestVarMod{$qSet}[0] >= $ptmProbThreshold) { # check Phospho pos coherence inside qSet (=0 if no PRS data)
+										if ($qSetBestVarMod{$qSet}[2]) { # best nonAmbigModProtID has already been generated
+											###if ($qSetBestVarMod{$qSet}[1] ne $vmod) { # *** Position incoherence detected!!! ***
+											###	$usedVmod=$qSetBestVarMod{$qSet}[1];
+											###}
 										}
-										else { # *** Position incoherence detected!!! *** detected only if best vmod is 2nd to be scanned
-											$qSetBestVarMod{$qSet}[2]=$protID;
-											my $firstModQ=1;
-											foreach my $modID (@modifQuantifs) {
-											
-												my ($sep,$posStrg)=($usedVmod=~/(^|&)$modID:([\d+\.\-\=\+\*]+)/); # (PP 2017/06/22)
-												next unless $posStrg; # in multi-modif quantif context: varmod does not necessarly contains all quantified modif
-												my @pos;
-												#foreach my $pos (split(/\./,$posStrg)) {push @pos,$seq[$pos-1].($peptideBeg{$protID}{$pepSeq}+$pos-1);}
-												foreach my $pos (split(/\./,$posStrg)) {
-if (!$pos || ($pos=~/\d+/ && (!$seq[$pos-1])) || !$peptideBeg{$protID}{$pepSeq}) { # (PP 2017/06/22)
-	warn "PTM position Error: PROT=$protID, PEP=$pepSeq, VMOD=$vmod, UVMOD=$usedVmod, QSET=$qSet, SEP=$sep, STRG=$posStrg, BEG=$peptideBeg{$protID}{$pepSeq}\n";
-	&checkForErrors($dbh);
-}
-													push @pos,$seq[$pos-1].($peptideBeg{$protID}{$pepSeq}+$pos-1);
-												}
-												#>ALSO HERE => MODIFICATION SITE(S) ARE CODED!!!!!!
-												$qSetBestVarMod{$qSet}[2].=($firstModQ)? '-' : '&';
-												$qSetBestVarMod{$qSet}[2].=($quantifiedModifID)? join('.',@pos) : $modifQuantifRank{$modID}.'#'.join('.',@pos); # Add '<modif rank>:' if multi-modif quantif
-												###$usedVmod=$qSetBestVarMod{$qSet}[1];
+										else { # best nonAmbigModProtID has not been generated yet => process now!
+											if ($usedVmod eq $vmod) {
+												$qSetBestVarMod{$qSet}[2]=$nonAmbigModProtID;
+											}
+											else { # *** Position incoherence detected!!! *** detected only if best vmod is 2nd to be scanned
+												$qSetBestVarMod{$qSet}[2]=$protID;
+												my $firstModQ=1;
+												foreach my $modID (@modifQuantifs) {
 												
-												$firstModQ=0;
+													my ($sep,$posStrg)=($usedVmod=~/(^|&)$modID:([\d+\.\-\=\+\*]+)/); # (PP 2017/06/22)
+													next unless $posStrg; # in multi-modif quantif context: varmod does not necessarly contains all quantified modif
+													my @pos;
+													#foreach my $pos (split(/\./,$posStrg)) {push @pos,$seq[$pos-1].($pepSeqBeg+$pos-1);}
+													foreach my $pos (split(/\./,$posStrg)) {
+														# if (!$pos || ($pos=~/\d+/ && (!$seq[$pos-1])) || !$pepSeqBeg) { # (PP 2017/06/22)
+														# 	warn "PTM position Error: PROT=$protID, PEP=$pepSeq, VMOD=$vmod, UVMOD=$usedVmod, QSET=$qSet, SEP=$sep, STRG=$posStrg, BEG=$pepSeqBeg\n";
+														# 	&checkForErrors($dbh);
+														# }
+														push @pos,$seq[$pos-1].($pepSeqBeg+$pos-1);
+													}
+													#>ALSO HERE => MODIFICATION SITE(S) ARE CODED!!!!!!
+													$qSetBestVarMod{$qSet}[2].=($firstModQ)? '-' : '&';
+													$qSetBestVarMod{$qSet}[2].=($quantifiedModifID)? join('.',@pos) : $modifQuantifRank{$modID}.'#'.join('.',@pos); # Add '<modif rank>:' if multi-modif quantif
+													###$usedVmod=$qSetBestVarMod{$qSet}[1];
+													
+													$firstModQ=0;
+												}
 											}
 										}
+										$modProtID=$qSetBestVarMod{$qSet}[2];
 									}
-									$modProtID=$qSetBestVarMod{$qSet}[2];
+									else { # must be an ambiguous peptide (PRS < 100%)
+										if ($ambiguousModifPos) {
+											$modProtID=$ambigModProtID;
+										} # allow quantif below PRS as ambigous
+										else {
+											$qSetUsage{'EXCLUDED'}{$qSet}=1;
+											next;
+										} # exclude pep below PRS
+									}
 								}
-								else { # must be an ambiguous peptide (PRS < 100%)
-									if ($ambiguousModifPos) {
-										$modProtID=$ambigModProtID;
-									} # allow quantif below PRS as ambigous
-									else {
-										$qSetUsage{'EXCLUDED'}{$qSet}=1;
-										next;
-									} # exclude pep below PRS
+								elsif ($ambiguousModifPos &&  $ptmProbability{$pepIonKey} < $ptmProbThreshold) { # for everything except 'PEP_RATIO' with 'SILAC'
+									$modProtID=$ambigModProtID; # WARNING: ion is ambiguous across whole dataset if its ptm prob < $ptmProbThreshold in at least 1 obs!!!!
 								}
 							}
 							else {$modProtID=$ambigModProtID;} # non-Phospho PTM quantified as ambiguous
 						}
-
+						
+						###>Injecting sequence context to PTM
+						$modProtID.=$pepSeqContext;
+						
 ####---------------------------->
 ###$proteoForm{$modProtID}{$pepSeq}{$vmod}{$charge}{$dataSrc}{$qSet}=1 if (!$qSetUsage{'EXCLUDED'} || !$qSetUsage{'EXCLUDED'}{$qSet});
 ###
@@ -1659,7 +2064,7 @@ if (!$pos || ($pos=~/\d+/ && (!$seq[$pos-1])) || !$peptideBeg{$protID}{$pepSeq})
 ###							}
 ###						}
 ###						my $pepIonKey="$pepSeq:$vmod:$charge";
-###						if (scalar keys %pepIonInCond < $numConditions) { # (< 2 keep any pairs? for 3+ conditions) peptide is missing in 1+ cond => flag to be deleted
+###						if (scalar keys %pepIonInCond < $numStates) { # (< 2 keep any pairs? for 3+ conditions) peptide is missing in 1+ cond => flag to be deleted
 ###							foreach my $dataKey (keys %pepIonValues) {
 ###								#$excludedData{$dataKey}=1;
 ###								$checkExclusion{$dataKey}=1; # do not exclude yet. could become +/-INF protein
@@ -1766,7 +2171,7 @@ if (!$pos || ($pos=~/\d+/ && (!$seq[$pos-1])) || !$peptideBeg{$protID}{$pepSeq})
 						$qSetUsage{'USED'}{$qSet}=1;
 
 						#my $pepIdStrg=join(';',@{$proteins{$protID}{$pepSeq}{$vmod}{$charge}{$dataSrc}{$qSet}});
-						my %pepIsComplete; # records in which cond peptide has value
+						#my %pepIsComplete; # records in which cond peptide has value
 
 #						if ($ratioType eq 'Ratio') {
 #							#my $pepIdStrg=join(';',@{$proteins{$protID}{$pepSeq}{$vmod}{$charge}{$dataSrc}{$qSet}{'ALL_OBS'}});
@@ -1806,7 +2211,37 @@ if (!$pos || ($pos=~/\d+/ && (!$seq[$pos-1])) || !$peptideBeg{$protID}{$pepSeq})
 #						}
 #						else { # (Super/Simple)Ratio or None(Abundance)
 #my ($anaID)=$qSet=~/^A(\d+)/;
+					
+					
+							#>MSstats
+							if ($software eq 'MSstats') {
+								foreach my $feature (sort{&promsMod::sortSmart($a,$b)} keys %{$fragmentsInPepIon{$pepIonKey}}) { # sort: type/res/charge
+									my ($fragType,$fragCharge)=split('#',$feature);
+									
+									foreach my $observationSet (@quantiOrder) {
+										# No longer need to fill missing values with "NA" (PP 12/08/20)
+										if ($intensity{$pepIonKey} && $intensity{$pepIonKey}{'-'}{'-'}{$observationSet} && $intensity{$pepIonKey}{'-'}{'-'}{$observationSet}{$feature}) {
+											my $fragArea=$intensity{$pepIonKey}{'-'}{'-'}{$observationSet}{$feature}[0]*1 || 'NA'; # extra check
+											next if $fragArea eq 'NA';
+											#$pepList{$modProtID}{$observationInfo{$observationSet}[0]}{"$pepSeq$usedVmod\_$charge"}{"$fragType\_$fragCharge"}=1; # To count peptides, can be created after R by reading table.txt
+											
+											$statesInFile{$observationInfo{$observationSet}[0]}=1; # number of states with valid data
+if ($normProtUsage) { # Normalization uses a subset of proteins/sites
+	#if ($sharedProtNorm) {$proteinSharing{$modProtID}{$observationSet}=1;} # Normalization is restricted to shared proteins/sites across all techReps ($observationSet)
+	#els
+	if ($isModifQuantif && !$quantifParameters{'DB'}{'PEPTIDES_NORM'}) {$protein2Sites{$protID}{$modProtID}=1;} # to convert protID from normalization list to modProtID in quantif
+}																						
+											#           ProteinName PeptideSequence PrecursorCharge FragmentIon ProductCharge IsotopeLabelType Condition(StateX) BioReplicate(StateX_BioRepY)          Run                                   Intensity
+											print DATA "$modProtID\t$pepSeq$usedVmod\t$charge\t$fragType\t$fragCharge\tL\t$observationInfo{$observationSet}[0]\t$observationInfo{$observationSet}[1]\t$observationInfo{$observationSet}[2]\t$fragArea\n";
+										}
+									}
+								}	
+								next; # qSet only '-' for MSstats => all myProMS code below is skipped
+							}
+									
+							#>myProMS
 							foreach my $observationSet (@quantiOrder) {
+								
 								my $itraqStrg=($labeling=~/ITRAQ|TMT/)? $observationInfo{$observationSet}[1] : ''; # Fake SILAC for ITRAQ: ..._repX (PP Tibor set1)
 								#if ($visInReplicate{$protID}{$observationSet} && $intensity{"$pepSeq:$vmod:$charge"}{$dataSrc} && $intensity{"$pepSeq:$vmod:$charge"}{$dataSrc}{$qSet} && $intensity{"$pepSeq:$vmod:$charge"}{$dataSrc}{$qSet}{$observationSet}) {#}
 								if ($intensity{$pepIonKey}{$dataSrc} && $intensity{$pepIonKey}{$dataSrc}{$qSet} && $intensity{$pepIonKey}{$dataSrc}{$qSet}{$observationSet}) {
@@ -1817,7 +2252,7 @@ if (!$pos || ($pos=~/\d+/ && (!$seq[$pos-1])) || !$peptideBeg{$protID}{$pepSeq})
 next unless $proteins{$protID}{$pepSeq}{$vmod}{$charge}{$dataSrc}{$qSet}{$observationSet}; # TODO: Sometimes is not defined for last key. why?
 #----- NEW EXPERIMENT assignment (31/10/17) ----->
 my ($anaID)=$qSet=~/^A(\d+)/;
-my $expCode=($labeling eq 'FREE')? 'A' : $ana2Experiment{$anaID}; #$techRep2Experiment{$observationSet};
+my $expCode=($algoType ne 'PEP_RATIO')? 'A' : $ana2Experiment{$anaID}; #$techRep2Experiment{$observationSet}; # former  $labeling eq 'FREE' 27/04/40
 ##my $expCode='A'; # default. for LABELFREE
 ##if ($Rdesign eq 'SUPERRATIO') {$expCode=$observationInfo{$observationSet}[3];}
 ##elsif ($Rdesign eq 'LABELED') {
@@ -1826,7 +2261,7 @@ my $expCode=($labeling eq 'FREE')? 'A' : $ana2Experiment{$anaID}; #$techRep2Expe
 ##}
 
 									#$pepIsComplete{$obs2Cond{$observationSet}}{$observationSet} = 1;
-									my $sep=($labeling eq 'FREE')? '+' : '='; # XICs are summed for label FREE
+									my $sep=($algoType ne 'PEP_RATIO')? '+' : '='; # XICs are summed for label FREE, combined for SILAC former $labeling eq 'FREE' 27/04/20
 									my $pepIdStrg=join($sep,@{$proteins{$protID}{$pepSeq}{$vmod}{$charge}{$dataSrc}{$qSet}{$observationSet}}); # used to be ';'
 									#print DATA "\n$protID\t$pepSeq${vmod}_${charge}_$dataSrc\t$observationInfo{$observationSet}[0]\tNA\t$observationInfo{$observationSet}[1]\tA$observationInfo{$observationSet}[3]_Q$qSet\t$pepIdStrg\t$proteinAlias{$protID}\t1\t",$intensity{"$pepSeq:$vmod:$charge"}{$dataSrc}{$qSet}{$observationSet}[0];
 									
@@ -1834,14 +2269,19 @@ my $expCode=($labeling eq 'FREE')? 'A' : $ana2Experiment{$anaID}; #$techRep2Expe
 ##foreach my $feature (keys %{$intensity{$pepIonKey}{$dataSrc}{$qSet}{$observationSet}}) {
 ##	my $fragStrg=($feature eq 'PEP')? '' : '&'.$feature;
 ##	print DATA "\n$modProtID\t$pepSeq$usedVmod\_$charge$fragStrg\_$dataSrc\t$observationInfo{$observationSet}[0]\tNA\t$observationInfo{$observationSet}[1]\t$observationInfo{$observationSet}[2]\t$expCode\t$qSet$itraqStrg\t$pepIdStrg\t$proteinAlias{$protID}\t1\t",$intensity{$pepIonKey}{$dataSrc}{$qSet}{$observationSet}{$feature}[0]; #,"\t$usablePeptide";
-##}
-my $pepIntensity=0;
-foreach my $feature (keys %{$intensity{$pepIonKey}{$dataSrc}{$qSet}{$observationSet}}) {
-	$pepIntensity+=$intensity{$pepIonKey}{$dataSrc}{$qSet}{$observationSet}{$feature}[0];
+##}								
+									my $pepIntensity=0;
+									foreach my $feature (keys %{$intensity{$pepIonKey}{$dataSrc}{$qSet}{$observationSet}}) {
+										$pepIntensity+=$intensity{$pepIonKey}{$dataSrc}{$qSet}{$observationSet}{$feature}[0];
+									}
+									print DATA "\n$modProtID\t$pepSeq$usedVmod\_$charge\_$dataSrc\t$observationInfo{$observationSet}[0]\tNA\t$observationInfo{$observationSet}[1]\t$observationInfo{$observationSet}[2]\t$expCode\t$qSet$itraqStrg\t$pepIdStrg\t$proteinAlias{$protID}\t$protValidity\t$pepIntensity"; #,"\t$usablePeptide";
+									$statesInFile{$observationInfo{$observationSet}[0]}=1; # number of states actually written in table(Ref).txt
+
+if ($normProtUsage) { # Normalization uses a subset of proteins/sites
+	#if ($sharedProtNorm) {$proteinSharing{$modProtID}{$observationSet}=1;} # Normalization is restricted to shared proteins/sites across all techReps ($observationSet)
+	#els
+	if ($isModifQuantif && !$quantifParameters{'DB'}{'PEPTIDES_NORM'}) {$protein2Sites{$protID}{$modProtID}=1;} # to convert protID from normalization list to modProtID in quantif
 }
-print DATA "\n$modProtID\t$pepSeq$usedVmod\_$charge\_$dataSrc\t$observationInfo{$observationSet}[0]\tNA\t$observationInfo{$observationSet}[1]\t$observationInfo{$observationSet}[2]\t$expCode\t$qSet$itraqStrg\t$pepIdStrg\t$proteinAlias{$protID}\t$protValidity\t$pepIntensity"; #,"\t$usablePeptide";
-$statesInFile{$observationInfo{$observationSet}[0]}=1; # number of states actually written in table(Ref).txt
-									
 									#if ($usablePeptide) {
 									#$numPepInCond{$observationInfo{$observationSet}[3]}{$obs2Cond{$observationSet}}++; # numPepInCond{Exp}{condID} Exp needed because of SuperSILAC
 									#$numPepInCond4ModProt{$modProtID}{$observationInfo{$observationSet}[3]}{$obs2Cond{$observationSet}}++ if $quantifiedModifID;
@@ -1855,7 +2295,7 @@ $statesInFile{$observationInfo{$observationSet}[0]}=1; # number of states actual
 									# |
 									# |
 									# V
-									# Ratios are no longer Experiment-specific in SuperRatio => cannot use $usedExpCode as synonyme of ratio
+									# Ratios are no longer Experiment-specific in SuperRatio => cannot use $usedExpCode as synonym of ratio
 									my %contextRatios;
 									if ($ratioType eq 'SuperRatio' || $algoType eq 'PEP_RATIO') { # WARNING: Labeled w/ PEP_INTENSITY are not treated the same way (if more than 2 conds)
 										if ($observationInfo{$observationSet}[0] eq 'State1') { # state is ref -> find matching state(s) given current analysis
@@ -1888,7 +2328,7 @@ $statesInFile{$observationInfo{$observationSet}[0]}=1; # number of states actual
 								#else {
 								#	$pepIsComplete{$obs2Cond{$observationSet}}{$observationSet} = 0;
 								#}
-							}
+							} # end of observationSet
 # TODO: code below should be more efficient (19/02/15)
 ###if ($intensity{"$pepSeq:$vmod:$charge"}{$dataSrc} && $intensity{"$pepSeq:$vmod:$charge"}{$dataSrc}{$qSet}) {
 ###	foreach my $observationSet (keys %{$intensity{"$pepSeq:$vmod:$charge"}{$dataSrc}{$qSet}}) {
@@ -1925,7 +2365,7 @@ $statesInFile{$observationInfo{$observationSet}[0]}=1; # number of states actual
 
 	##>New +/-inf ratio decision for each cond pairs ********!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 	# infinite: if ratio >4 for 1,2 pep/protein or ratio >2 for 3+ pep/protein
-	if ($ratioType ne 'None') {
+	if ($ratioType ne 'None' && $software eq 'myProMS') {
 		if ($quantifParameters{'DB'}{'MIN_INF_RATIOS'}[0]==0 && !$referenceMode) { ##### $ratioType=~/S\w+Ratio/ &&
 			if ($isModifQuantif) {
 				foreach my $modProtID (keys %numPepInCond4ModProt) {
@@ -1940,43 +2380,102 @@ $statesInFile{$observationInfo{$observationSet}[0]}=1; # number of states actual
 }
 close DATA;
 if (scalar keys %statesInFile < 2) { # at least 2 states otherwise stop everything on error
-	my $fileType=($referenceMode eq 'REF')? 'protein reference' : ($referenceMode eq 'NORM')? 'normalizing peptide' : 'data';
-	warn "ERROR: Less than 2 state data found in $fileType file!";
+	if ($referenceMode) {
+		$dbh->disconnect;
+		my $fileType=($referenceMode eq 'REF')? 'protein reference' : 'normalizing peptide';
+		die "ERROR: Less than 2 state data found in $fileType file!<BR>Maybe not enough peptides passed your selection criteria."; # error will be handled by parent (MASTER) process
+	}
+	# MASTER here
+	warn "ERROR: Less than 2 state data found in data file!<BR>Maybe not enough peptides passed your selection criteria.";
+	sleep 2;
 	&checkForErrors($dbh);
 }
 
-if ($referenceMode) { ### <- End of Reference mode !
+if ($referenceMode) { ### <- End of Reference mode (REF|NORM)!
 	$dbh->disconnect;
 #close DEBUG;
 	exit;
 }
-elsif ($quantifParameters{'DB'}{'PEPTIDES_NORM'}) { ### <- Merge tableNorm.txt with table.txt
+
+######################################################
+####> Merge tmp tableNorm.txt file into table.txt<#### protein_validity=0 => not included in diff ana process
+######################################################
+if ($quantifParameters{'DB'}{'PEPTIDES_NORM'}) { ### <- Merge tableNorm.txt with table.txt
 	system "cat $dataDir/tableNorm.txt >> $dataFile";
 	unlink "$dataDir/tableNorm.txt";
 }
-#close DEBUG;
-#die "Test table.txt is complete!!!";
+
+######################################
+####> Printing normalization file<####
+######################################
+if ($normProtUsage) {
+	
+	#if ($sharedProtNorm) {
+	#	my $numTechReps=scalar @quantiOrder; # total num techRep
+	#	foreach my $modProtID (keys %proteinSharing) {
+	#		$forNormalization{$modProtID}=1 if scalar keys %{$proteinSharing{$modProtID}} == $numTechReps;
+	#	}
+	#}
+	
+	if ($software eq 'MSstats') {
+		open(NORM,">$dataDir/globalStandards.txt"); # no header
+	}
+	else {
+		open(NORM,">$dataDir/normProtein.txt");
+		print NORM "proteinId\n"; # header
+	}
+	if (!$isModifQuantif || $quantifParameters{'DB'}{'PEPTIDES_NORM'}) { # || $sharedProtNorm { # protID or modProtID in $sharedProtNorm
+		foreach my $protID (keys %forNormalization) {
+			print NORM "$protID\n";
+		}
+	}
+	else { # sites: convert protID from custom List to all matching modProtIDs
+		foreach my $protID (keys %forNormalization) {
+			if ($protein2Sites{$protID}) { # prot has quantified sites
+				foreach my $modProtID (keys %{$protein2Sites{$protID}}) {print NORM "$modProtID\n";}
+			}
+		}
+	}
+	close NORM;
+	
+	# Error handling
+	my $numLines=`wc -l $dataDir/normProtein.txt`;
+	chomp $numLines;
+	$numLines--;
+	if ($numLines < 1) {
+		my $item=($isModifQuantif)? 'sites' : 'proteins';
+		warn "ERROR: No $item found for normalization!\n";
+		&checkForErrors($dbh);
+	}
+	#elsif ($sharedProtNorm) { # store num shared prot in QUANTIF_ANNOT
+	#	$dbh->do("UPDATE QUANTIFICATION SET QUANTIF_ANNOT=REPLACE(QUANTIF_ANNOT,';shared',';shared;$numLines') WHERE ID_QUANTIFICATION=$quantifID");
+	#	$dbh->commit;
+	#}
+}
+# sleep 5;
+# close DEBUG;
+# die "Test table.txt is complete!!!";
 
 ####> Desactivate FDR option if the number of proteins sent to R is below a threshold : 1 (2 proteins needed)
 #my $protNumber=scalar keys %prot2quantify; #%proteins;
 #if ($quantifParameters{'R'}{'pAdj'}[0] eq 'TRUE' && $protNumber < $minProtNumber) {
-if ($quantifParameters{'R'}{'pAdj'} && $quantifParameters{'R'}{'pAdj'}[0] eq 'TRUE' && $protNumber == 1) { # only for old algo
-	@{$quantifParameters{'R'}{'pAdj'}}=('FALSE');
-	delete($quantifParameters{'R'}{'pAdj.method'});
-	my $newQuantiAnnotation='';
-	foreach my $annoStrg (split (/::/,$quantiAnnotation)) {
-		if ($annoStrg =~ /^FDR\_/ ) {
-			$newQuantiAnnotation.='FDR_CONTROL=FALSE::' if ($annoStrg =~ /^FDR_CONTROL/);
-		}
-		else{
-			$newQuantiAnnotation.=$annoStrg."::";
-		}
-	}
-	chop($newQuantiAnnotation);
-	chop($newQuantiAnnotation);
-	$dbh->do("UPDATE QUANTIFICATION SET QUANTIF_ANNOT='$newQuantiAnnotation' WHERE ID_QUANTIFICATION=$quantifID");
-	$dbh->commit;
-}
+#if ($quantifParameters{'R'}{'pAdj'} && $quantifParameters{'R'}{'pAdj'}[0] eq 'TRUE' && $protNumber == 1) { # only for old algo
+#	@{$quantifParameters{'R'}{'pAdj'}}=('FALSE');
+#	delete($quantifParameters{'R'}{'pAdj.method'});
+#	my $newQuantiAnnotation='';
+#	foreach my $annoStrg (split (/::/,$quantiAnnotation)) {
+#		if ($annoStrg =~ /^FDR\_/ ) {
+#			$newQuantiAnnotation.='FDR_CONTROL=FALSE::' if ($annoStrg =~ /^FDR_CONTROL/);
+#		}
+#		else{
+#			$newQuantiAnnotation.=$annoStrg."::";
+#		}
+#	}
+#	chop($newQuantiAnnotation);
+#	chop($newQuantiAnnotation);
+#	$dbh->do("UPDATE QUANTIFICATION SET QUANTIF_ANNOT='$newQuantiAnnotation' WHERE ID_QUANTIFICATION=$quantifID");
+#	$dbh->commit;
+#}
 
 # Checking if at least 1 complete peptide (no NA values)
 #if ($ratioType eq 'Ratio' && $countCompletePeptides == 0) {
@@ -2014,7 +2513,7 @@ undef %allowedPtmID;
 undef %proteins;
 undef %intensity;
 undef %excludedSeq;
-undef %proteinInConds;
+#undef %proteinInConds;
 undef %peptideBeg;
 undef %qSetSequence;
 undef %qSetBestVarMod;
@@ -2026,11 +2525,20 @@ undef %notUsed4Quantif;
 undef %pepQuantifValues;
 undef %recreatedVarMods;
 undef %noSuperRatioProteins; # used in sub
+undef %protein2Sites;
+#undef %proteinSharing;
 
+# system "echo END > $dataDir/endData.flag"; # Data table generated without error
 
-##################>ENDING SCRIPT HERE IF ABUNDANCE NORMALIZATION<#######################
+##################>ENDING SCRIPT HERE IF ABUNDANCE<#######################
 if ($ratioType eq 'None') {
-	$dbh->disconnect;
+	if ($countIdentifiedPep && scalar keys %isGhostPeptide) { # Write ghost peptides to file for later
+		open (GHOST,">$dataDir/ghosts.txt");
+		foreach my $pepIdCode (keys %isGhostPeptide) {
+			print GHOST $pepIdCode,"\n";
+		}
+		close GHOST;
+	}
 	exit;
 }
 
@@ -2039,141 +2547,39 @@ if ($ratioType eq 'None') {
 			#############################> RUNNING R SCRIPTS <##########################
 								############################################
 
-&launchRscript;
-&checkRsuccess;
+if ($software eq 'MSstats') { # MSstats
+	&launchMSstatsRscript;
+}
+else { # myProMS
+	&launchRscript('PRIMARY');
+}
+#&checkRsuccess;
 
-#####> 4th: Launch R script
-#my $progressStrg=($ratioType=~/S\w+Ratio/)? "2/$numSteps Running quantification" : "2/$numSteps Running normalization";
-#open(FILESTAT,">>$fileStat");
-#print FILESTAT "$progressStrg\n";
-#close FILESTAT;
-#
-#my $RcommandString='';
-##if ($ratioType eq 'Ratio') {
-##	$RcommandString="export LANG=en_US.UTF-8; cd $runDir; $pathR/R CMD BATCH --no-save --no-restore $promsPath{R_scripts}/LabeledAndUnlabeledQuanti.Function.R";
-##}
-##else { #  (Super/Simple)Ratio
-#	#foreach my $scriptName ('AnalysisDiffLimma.R','FunctionLimma.R','AffectDefaultValuesLimma.R','AffectParametersLimma.R') {
-#	#	symlink("$promsPath{R_scripts}/$scriptName","$runDir/$scriptName");
-#	#}
-#	open(R_SCRIPT,">$runDir/AnalysisDiffLimma.R");
-#	print R_SCRIPT qq
-#|
-####################################################################################
-## Launcher for quantification R scripts (provides path for sourcing dependencies) #
-####################################################################################
-#
-#filepath <- "$promsPath{R_scripts}/"
-#source(paste(filepath,"AnalysisDiffLimma.R",sep=""))
-#|;
-#	close R_SCRIPT;
-#	$RcommandString="export LANG=en_US.UTF-8; cd $runDir; $pathR/R CMD BATCH --no-save --no-restore AnalysisDiffLimma.R";
-##}
-#
-#### ALWAYS SKIP CLUSTER (PP 17/09/18)!!! ###
-####if ($cluster{'on'}) {
-####	my $bashFile = "$runDir/runXICProtQuantification.sh";
-####	my $clusterRcommandString=$cluster{'buildCommand'}->($runDir,$RcommandString);
-####	my $maxHours=int(0.5+($numPepValues/25000)); $maxHours=2 if $maxHours < 2; $maxHours=48 if $maxHours > 48; # 1 M lines -> 40 h
-####	#my $maxMem=($numPepValues < 250000)? int(0.5+($numPepValues/25000)) : int(0.5+($numPepValues/8000)); $maxMem=1 if $maxMem < 1; $maxMem.='gb'; # 1 M lines -> 80 gb
-####	#my $maxMem='2gb';
-####	# RAM = 8E-7 * <num lines> + 0.1614
-####	#my $maxMem=0.5 + 8E-7 * $numPepValues;
-####	#my $maxMem=0.5 + 1E-6 * $numPepValues;
-####	my $maxMem=int(1.5 + 1E-6 * $numPepValues);
-####	$maxMem=50 if $maxMem > 50;
-####	$maxMem.='Gb';
-####	open (BASH,">$bashFile");
-####	print BASH qq
-####|#!/bin/bash
-######resources
-#####PBS -l mem=$maxMem
-#####PBS -l nodes=1:ppn=1
-#####PBS -l walltime=$maxHours:00:00
-#####PBS -q batch
-######Information
-#####PBS -N myProMS_protQuant_$quantifID
-#####PBS -m abe
-#####PBS -o $runDir/PBS.txt
-#####PBS -e $runDir/PBSerror.txt
-#####PBS -d $runDir
-####
-###### Command
-####$clusterRcommandString
-####echo _END_$quantifID
-####|;
-#####close DEBUG;
-####	close BASH;
-####	my $modBash=0775;
-####	chmod $modBash, $bashFile;
-####	#system "$promsPath{qsub}/qsub $bashFile > $runDir/torqueID.txt";
-####	#system "$cluster{command} $bashFile > $runDir/torqueID.txt 2> $runDir/connection_error.txt";
-####	#system "ssh -q -o \"UserKnownHostsFile=/dev/null\" -o \"StrictHostKeyChecking no\" calcsub \"qsub $bashFile > $runDir/torqueID.txt\" 2>$runDir/ssh_error.txt ";
-####	$cluster{'sendToCluster'}->($bashFile); # bash file, qsub output file[, ssh error file (only for centos cluster)]
-####	sleep 30;
-####
-####	###>Waiting for R job to run
-####	my $pbsError;
-####	my $nbWhile=0;
-####	my $maxNbWhile=$maxHours*60*2;
-####	while ((!-e "$runDir/PBS.txt" || !`tail -3 $runDir/PBS.txt | grep _END_$quantifID`) && !$pbsError) {
-####		if ($nbWhile > $maxNbWhile) {
-####			$dbh=&promsConfig::dbConnect('no_user'); # reconnect
-####			$dbh->do("UPDATE QUANTIFICATION SET STATUS=-2 WHERE ID_QUANTIFICATION=$quantifID"); # Failed
-####			$dbh->commit;
-####			$dbh->disconnect;
-####			die "Aborting quantification: R is taking too long or died before completion";
-####		}
-####		sleep 30;
-####		#$pbsError=`head -5 $runDir/PBSerror.txt` if -e "$runDir/PBSerror.txt";
-####		$pbsError=$cluster{'checkError'}->("$runDir/PBSerror.txt");
-####		$nbWhile++;
-####	}
-####}
-####else { ###>Run job on Web server
-##	system $RcommandString;
-####}
-#sleep 3;
-#
-#$dbh=&promsConfig::dbConnect('no_user'); # reconnect
-#
-#####>ERROR Management<####
-##my $RoutFile=($ratioType eq 'Ratio')? 'LabeledAndUnlabeledQuanti.Function.Rout' : 'AnalysisDiffLimma.Rout';
-#my $RoutFile='AnalysisDiffLimma.Rout';
-#my $RoutStrg=`tail -3 $runDir/$RoutFile`;
-#unless ($RoutStrg=~/proc\.time\(\)/) {
-#	#$dbh->do("UPDATE QUANTIFICATION SET STATUS=-2 WHERE ID_QUANTIFICATION=$quantifID");
-#	#$dbh->commit;
-#	#$dbh->disconnect;
-#	$RoutStrg=`tail -20 $runDir/$RoutFile`;
-#	my $RerrorStrg="R script has generated an error!";
-#	my $inError=0;
-#	foreach my $line (split(/\n/,$RoutStrg)) {
-#		next if (!$inError && $line !~ /^Error in/); # skip everything before "Error in..."
-#		$inError=1;
-#		$RerrorStrg.="\n$line";
-#	}
-#	warn $RerrorStrg;
-#	&checkForErrors($dbh);
-#}
-
-#die "R quantification is finished!!!"; # DEBUG
-
+#die "TEST complete"; # TEST !!!
 
 									############################################
 			#############################> PARSING QUANTIFICATION RESULTS <########################## ONLY Super/SimpleRatio from now on
 									############################################
 
 open(FILESTAT,">>$fileStat");
-print FILESTAT "3/3 Parsing results\n";
+print FILESTAT "3/3 Processing results\n";
 close FILESTAT;
 #$dbh->disconnect; exit; # DEBUG
 
-my $numQuantifRatios=scalar @ratioTarget; # =numConditions*0.5*(numConditions-1)
+
+if ($software eq 'MSstats') { # MSstats
+	&processMSstatsResults;
+	exit;
+}
+
+### myProMS >>>
+my $numQuantifRatios=scalar @ratioTarget; # =numStates*0.5*(numStates-1)
 my $adjStrg=($ratioType=~/S\w+Ratio/ || ($quantifParameters{'DB'}{'FDR_CONTROL'} && $quantifParameters{'DB'}{'FDR_CONTROL'}[0] eq 'TRUE'))? '_ADJ' : '';
 
 ####>Fetching list of quantification parameters<####
 $dbh=&promsConfig::dbConnect('no_user'); # reconnect
+my $dbhLite=&promsQuantif::dbCreateProteinQuantification($quantifID,$runDir); # SQLite
+
 my %quantifParamIDs;
 my $sthQP=$dbh->prepare("SELECT QP.ID_QUANTIF_PARAMETER,QP.CODE FROM QUANTIFICATION Q,QUANTIFICATION_METHOD QM,QUANTIFICATION_PARAMETER QP WHERE Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD AND QM.ID_QUANTIFICATION_METHOD=QP.ID_QUANTIFICATION_METHOD AND Q.ID_QUANTIFICATION=$quantifID");
 $sthQP->execute;
@@ -2182,57 +2588,63 @@ while (my ($paramID,$code)=$sthQP->fetchrow_array) {
 }
 $sthQP->finish;
 
-my $sthInsProt=$dbh->prepare("INSERT INTO PROTEIN_QUANTIFICATION (ID_QUANTIFICATION,ID_PROTEIN,ID_QUANTIF_PARAMETER,QUANTIF_VALUE,TARGET_POS) VALUES ($quantifID,?,?,?,?)"); # PK autoincrement
-my ($sthInsModRes,$sthInsProtRes);
-if ($isModifQuantif) {
-	$sthInsModRes=($quantifiedModifID)? $dbh->prepare("INSERT INTO MODIFIED_RESIDUE (ID_QUANTIFICATION,RESIDUE,POSITION) VALUES ($quantifID,?,?)")
-									  : $dbh->prepare("INSERT INTO MODIFIED_RESIDUE (ID_QUANTIFICATION,RESIDUE,POSITION,MODIF_RANK) VALUES ($quantifID,?,?,?)");
-	$sthInsProtRes=$dbh->prepare("INSERT INTO PROTQUANTIF_MODRES (ID_MODIF_RES,ID_PROT_QUANTIF) VALUES (?,?)");
-}
+##my $sthInsProt=$dbh->prepare("INSERT INTO PROTEIN_QUANTIFICATION (ID_QUANTIFICATION,ID_PROTEIN,ID_QUANTIF_PARAMETER,QUANTIF_VALUE,TARGET_POS) VALUES ($quantifID,?,?,?,?)"); # PK autoincrement
+##my ($sthInsModRes,$sthInsProtRes);
+##if ($isModifQuantif) {
+##	$sthInsModRes=($quantifiedModifID)? $dbh->prepare("INSERT INTO MODIFIED_RESIDUE (ID_QUANTIFICATION,RESIDUE,POSITION) VALUES ($quantifID,?,?)")
+##									  : $dbh->prepare("INSERT INTO MODIFIED_RESIDUE (ID_QUANTIFICATION,RESIDUE,POSITION,MODIF_RANK) VALUES ($quantifID,?,?,?)");
+##	$sthInsProtRes=$dbh->prepare("INSERT INTO PROTQUANTIF_MODRES (ID_MODIF_RES,ID_PROT_QUANTIF) VALUES (?,?)");
+##}
+my $sthInsProt=$dbhLite->prepare("INSERT INTO PROTEIN_QUANTIFICATION (ID_PROTEIN,SITE_CODE,ID_QUANTIF_PARAMETER,QUANTIF_VALUE,TARGET_POS) VALUES (?,?,?,?,?)"); # PK autoincrement
 
-
-
-my (%protQuantified,%modResiduesID,%lostProteins);
+my (%protQuantified,%lostProteins); #%modResiduesID,
 
 ###################################>(Super/Simple)Ratio (ML->AS->IB scripts)<#############################################
 if ($ratioType=~/S\w+Ratio/) {
 	
 	open(FILESTAT,">>$fileStat");
-	print FILESTAT "3/$numSteps Parsing results\n";
+	print FILESTAT "3/$numSteps Processing results\n";
 	close FILESTAT;
 	
 	################################################################
 	####>Recording protein ratios (& p-values, Std. dev if any)<####
 	################################################################
 
-	####>Recording infinite ratios ratios<#### because prot might not be kept in quantif result files
-	if ($isModifQuantif) { # modif quantification
-		foreach my $modProtID (sort{&promsMod::sortSmart($a,$b)} keys %infiniteRatioProteins) {
-			my ($protID,@modQuantifs)=split(/[-&]/,$modProtID);
-			my @allModResidues;
-			foreach my $modQuantif (@modQuantifs) {
-				my @modResidues;
-				if ($quantifiedModifID) {@modResidues=split('\.',$modQuantif);}
-				else {
-					(my $modifRank,@modResidues)=split(/[#.]/,$modQuantif);
-					foreach my $i (0..$#modResidues) {$modResidues[$i]=$modifRank.'#'.$modResidues[$i];} # Convert '1#V32.K44' into ['1#V32','1#K44']
-				}
-				&promsQuantif::insertModifiedResidues($protID,\@modResidues,\%modResiduesID,$dbh,$sthInsModRes); # $modifRank undef for single-modif quantif
-				push @allModResidues,@modResidues;
-			}
-			foreach my $ratioPos (sort{$a<=>$b} keys %{$infiniteRatioProteins{$modProtID}}){
-				$sthInsProt->execute($protID,$quantifParamIDs{'RATIO'},$infiniteRatioProteins{$modProtID}{$ratioPos},$ratioPos);
-				&promsQuantif::insertProteinModResidues(\@allModResidues,$sthInsProtRes,$modResiduesID{$protID},$dbh->last_insert_id(undef,undef,'PROTEIN_QUANTIFICATION','ID_PROT_QUANTIF'));
-				$protQuantified{$modProtID}{$ratioPos}=1;
-			}
-		}
-	}
-	else { # whole protein quantif
-		foreach my $protID (sort{$a<=>$b} keys %infiniteRatioProteins) {
-			foreach my $ratioPos (sort{$a<=>$b} keys %{$infiniteRatioProteins{$protID}}){
-				$sthInsProt->execute($protID,$quantifParamIDs{'RATIO'},$infiniteRatioProteins{$protID}{$ratioPos},$ratioPos);
-				$protQuantified{$protID}{$ratioPos}=1;
-			}
+	####>Recording infinite ratios<#### because prot might not be kept in quantif result files
+	##if ($isModifQuantif) { # modif quantification
+	##	foreach my $modProtID (sort{&promsMod::sortSmart($a,$b)} keys %infiniteRatioProteins) {
+	##		my ($protID,@modQuantifs)=split(/[-&]/,$modProtID);
+	##		my @allModResidues;
+	##		foreach my $modQuantif (@modQuantifs) {
+	##			my @modResidues;
+	##			if ($quantifiedModifID) {@modResidues=split('\.',$modQuantif);}
+	##			else {
+	##				(my $modifRank,@modResidues)=split(/[#.]/,$modQuantif);
+	##				foreach my $i (0..$#modResidues) {$modResidues[$i]=$modifRank.'#'.$modResidues[$i];} # Convert '1#V32.K44' into ['1#V32','1#K44']
+	##			}
+	##			&promsQuantif::insertModifiedResidues($protID,\@modResidues,\%modResiduesID,$dbh,$sthInsModRes); # $modifRank undef for single-modif quantif
+	##			push @allModResidues,@modResidues;
+	##		}
+	##		foreach my $ratioPos (sort{$a<=>$b} keys %{$infiniteRatioProteins{$modProtID}}){
+	##			$sthInsProt->execute($protID,$quantifParamIDs{'RATIO'},$infiniteRatioProteins{$modProtID}{$ratioPos},$ratioPos);
+	##			&promsQuantif::insertProteinModResidues(\@allModResidues,$sthInsProtRes,$modResiduesID{$protID},$dbh->last_insert_id(undef,undef,'PROTEIN_QUANTIFICATION','ID_PROT_QUANTIF'));
+	##			$protQuantified{$modProtID}{$ratioPos}=1;
+	##		}
+	##	}
+	##}
+	##else { # whole protein quantif
+	##	foreach my $protID (sort{$a<=>$b} keys %infiniteRatioProteins) {
+	##		foreach my $ratioPos (sort{$a<=>$b} keys %{$infiniteRatioProteins{$protID}}){
+	##			$sthInsProt->execute($protID,$quantifParamIDs{'RATIO'},$infiniteRatioProteins{$protID}{$ratioPos},$ratioPos);
+	##			$protQuantified{$protID}{$ratioPos}=1;
+	##		}
+	##	}
+	##}
+	foreach my $modProtID (sort{&promsMod::sortSmart($a,$b)} keys %infiniteRatioProteins) {
+		my ($protID,$modStrg)=split(/-/,$modProtID);
+		foreach my $ratioPos (sort{$a<=>$b} keys %{$infiniteRatioProteins{$modProtID}}){
+			$sthInsProt->execute($protID,$modStrg,$quantifParamIDs{'RATIO'},$infiniteRatioProteins{$modProtID}{$ratioPos},$ratioPos);
+			$protQuantified{$modProtID}{$ratioPos}=1;
 		}
 	}
 
@@ -2240,46 +2652,10 @@ if ($ratioType=~/S\w+Ratio/) {
 
 	###>Generating ratio codes used by R<###
 	my (%measurePos2Code,%measureCode2RatioPos,%state2RatioPos); # a state can be involved in multiple ratios #,%experiment2RatioPos
+	my %state2StatePos;
 	my $rPos=0;
-####################### Old
-	####foreach my $s1 (1..$numConditions-1) {
-	####	foreach my $s2 ($s1+1..$numConditions) {
-	####		$rPos++;
-	####		$measurePos2Code{$rPos}="State$s2.State$s1";
-	####		$measureCode2RatioPos{"State$s2.State$s1"}=$rPos;
-	####		push @{$state2RatioPos{"State$s1"}},$rPos;
-	####		push @{$state2RatioPos{"State$s2"}},$rPos;
-	####	}
-	####	last if ($quantifParameters{'DB'}{'SINGLE_REF'} || $Rdesign eq 'SUPERRATIO');
-	####}
-	####if ($Rdesign eq 'SUPERRATIO') {
-	####	foreach my $s1 (2..$numConditions-1) {
-	####		foreach my $s2 ($s1+1..$numConditions) {
-	####			$rPos++;
-	####			$measurePos2Code{$rPos}="State$s2.State1.State$s1.State1";
-	####		}
-	####	}
-	####}
-	####elsif ($Rdesign eq 'LABELFREE') { # also record state mean
-	####	foreach my $s (1..$numConditions) {
-	####		$rPos++;
-	####		$measurePos2Code{$rPos}="State$s";
-	####	}
-	####}
-##################### New
-##if ($Rdesign eq 'SUPERRATIO') { # 2ndary ratios only (no primary ratios recorded!!!)
-##	foreach my $s1 (2..$numConditions-1) { # skip State1 -> 2ndary ratios rely on Experiments (B/A,C/A,D/A,...,C/B,D/B,...,C/D,...)
-##		foreach my $s2 ($s1+1..$numConditions) {
-##			$rPos++;
-##			$measurePos2Code{$rPos}="State$s2.State1.State$s1.State1"; # for ResultsDAProt.txt (used for SuperRatio only!!!)
-##			push @{$experiment2RatioPos{chr(63+$s1)}},$rPos; # 63+2=65->A,... for resultsPep.txt & table.txt
-##			push @{$experiment2RatioPos{chr(63+$s2)}},$rPos; # for resultsPep.txt & table.txt
-##		}
-##	}
-##}
-##else { # LABELED & LABELFREE
-	foreach my $s1 (1..$numConditions-1) { # Primary ratios
-		foreach my $s2 ($s1+1..$numConditions) {
+	foreach my $s1 (1..$numStates-1) { # Primary ratios
+		foreach my $s2 ($s1+1..$numStates) {
 			$rPos++;
 			$measurePos2Code{$rPos}="State$s2.State$s1"; # for ResultsDAProt.txt
 			if ($algoType =~ /PEP_INTENSITY|TDA|DIA/) {
@@ -2287,14 +2663,14 @@ if ($ratioType=~/S\w+Ratio/) {
 				push @{$measureCode2RatioPos{"State$s2"}},$rPos;
 			}
 			else {@{$measureCode2RatioPos{"State$s2.State$s1"}}=($rPos);} # for resultsPep.txt
-			push @{$state2RatioPos{"State$s1"}},$rPos if ($ratioType eq 'SimpleRatio' || $s1 > 1); # for inf ratios in table.txt. If SuperRatio: Skip primary ratios for State1 (recorded in %anaState1RatioPos because State1 ratios are analysis-dependant)
+			push @{$state2RatioPos{"State$s1"}},$rPos if ($ratioType eq 'SimpleRatio' || $s1 > 1); # for inf ratios in table.txt. If SuperRatio/PEP_RATIO: Skip primary ratios for State1 (recorded in %anaState1RatioPos because State1 ratios are analysis-dependant)
 			push @{$state2RatioPos{"State$s2"}},$rPos;
 		}
 		last if ($quantifParameters{'DB'}{'SINGLE_REF'} || $ratioType eq 'SuperRatio');
 	}
 	if ($ratioType eq 'SuperRatio') { # 2ndary ratios
-		foreach my $s1 (2..$numConditions-1) { # skip State1 -> 2ndary ratios rely on Experiments (B/A,C/A,D/A,...,C/B,D/B,...,C/D,...)
-			foreach my $s2 ($s1+1..$numConditions) {
+		foreach my $s1 (2..$numStates-1) { # skip State1 -> 2ndary ratios rely on Experiments (B/A,C/A,D/A,...,C/B,D/B,...,C/D,...)
+			foreach my $s2 ($s1+1..$numStates) {
 				$rPos++;
 				$measurePos2Code{$rPos}="State$s2.State1.State$s1.State1"; # for ResultsDAProt.txt (used for SuperRatio only!!!)
 				#push @{$experiment2RatioPos{chr(63+$s1)}},$rPos; # 63+2=65->A,... for resultsPep.txt & table.txt
@@ -2307,12 +2683,14 @@ if ($ratioType=~/S\w+Ratio/) {
 			}
 		}
 	}
-	elsif ($algoType =~ /PEP_INTENSITY|TDA|DIA/) { # also record state mean
-		foreach my $s (1..$numConditions) {
+	#elsif ($algoType ne 'PEP_RATIO') { # also record state mean former =~ /PEP_INTENSITY|TDA|DIA/ 27/04/20
+		foreach my $s (1..$numStates) {
 			$rPos++;
-			$measurePos2Code{$rPos}='State'.$s; # for ResultsDAProt.txt
+			my $state='State'.$s;
+			$measurePos2Code{$rPos}=$state if $algoType ne 'PEP_RATIO'; # for ResultsDAProt.txt
+$state2StatePos{$state}=$rPos; # for num true pep in State
 		}
-	}
+	#}
 
 #print DEBUG ">>measureCode2RatioPos\n";
 #foreach my $state (keys %measureCode2RatioPos) {
@@ -2342,22 +2720,24 @@ if ($ratioType=~/S\w+Ratio/) {
 		####>Data------------------
 		my $protID0=$lineData[0]; # $lineData[$protHeader2Idx{'proteinId'}];
 		next if !$protID0; # || $protID=~/\D/ just to be safe
-		my $protID=$protID0; # default
-		my @allModResidues;
-		if ($isModifQuantif) { # modif quantification
-			next if $protID0 !~ /-/; # must be a mod prot
-			($protID,my @modQuantifs)=split(/[-&]/,$protID0);
-			foreach my $modQuantif (@modQuantifs) {
-				my @modResidues;
-				if ($quantifiedModifID) {@modResidues=split('\.',$modQuantif);}
-				else {
-					(my $modifRank,@modResidues)=split(/[#.]/,$modQuantif);
-					foreach my $i (0..$#modResidues) {$modResidues[$i]=$modifRank.'#'.$modResidues[$i];} # Convert '1#V32.K44' into ['1#V32','1#K44']
-				}
-				&promsQuantif::insertModifiedResidues($protID,\@modResidues,\%modResiduesID,$dbh,$sthInsModRes); # <-- %modResiduesID should be full at <PROT1>
-				push @allModResidues,@modResidues;
-			}
-		}
+		my ($protID,$modStrg)=split(/-/,$protID0);
+		
+		# my $protID=$protID0; # default
+		# my @allModResidues;
+		# if ($isModifQuantif) { # modif quantification
+		# 	next if $protID0 !~ /-/; # must be a mod prot
+		# 	($protID,my @modQuantifs)=split(/[-&]/,$protID0);
+		# 	foreach my $modQuantif (@modQuantifs) {
+		# 		my @modResidues;
+		# 		if ($quantifiedModifID) {@modResidues=split('\.',$modQuantif);}
+		# 		else {
+		# 			(my $modifRank,@modResidues)=split(/[#.]/,$modQuantif);
+		# 			foreach my $i (0..$#modResidues) {$modResidues[$i]=$modifRank.'#'.$modResidues[$i];} # Convert '1#V32.K44' into ['1#V32','1#K44']
+		# 		}
+		# 		&promsQuantif::insertModifiedResidues($protID,\@modResidues,\%modResiduesID,$dbh,$sthInsModRes); # <-- %modResiduesID should be full at <PROT1>
+		# 		push @allModResidues,@modResidues;
+		# 	}
+		# }
 		
 		###>Conditions ratio data
 		foreach my $targetPos (sort{$a<=>$b} keys %measurePos2Code) { #(1..$numQuantifRatios) {
@@ -2368,24 +2748,24 @@ if ($ratioType=~/S\w+Ratio/) {
 				my $log2FC=$lineData[$protHeader2Idx{'Log2FC_'.$measurePos2Code{$targetPos}}];
 				next if $log2FC=~/NA/i; # NA or NaN
 				my $fcValue=($log2FC eq '-Inf')? 0.001 : ($log2FC eq 'Inf')? 1000 : 2**$log2FC; #exp($log2FC*$log2);
-				$sthInsProt->execute($protID,$quantifParamIDs{'RATIO'},$fcValue,$targetPos);
-				&promsQuantif::insertProteinModResidues(\@allModResidues,$sthInsProtRes,$modResiduesID{$protID},$dbh->last_insert_id(undef,undef,'PROTEIN_QUANTIFICATION','ID_PROT_QUANTIF')) if $isModifQuantif;
+				$sthInsProt->execute($protID,$modStrg,$quantifParamIDs{'RATIO'},$fcValue,$targetPos);
+				##&promsQuantif::insertProteinModResidues(\@allModResidues,$sthInsProtRes,$modResiduesID{$protID},$dbh->last_insert_id(undef,undef,'PROTEIN_QUANTIFICATION','ID_PROT_QUANTIF')) if $isModifQuantif;
 				$protQuantified{$protID0}{$targetPos}=1;
 			}
-			else { # mean state (LABELFREE)
+			else { # mean state (PEP_INTENSITY)
 next unless defined $protHeader2Idx{'Log2Mean_'.$measurePos2Code{$targetPos}}; # temp AS should had this again soon (PP 19/10/17)
 				my $log2Mean=$lineData[$protHeader2Idx{'Log2Mean_'.$measurePos2Code{$targetPos}}];
 				next if $log2Mean=~/NA/i; # NA or NaN
-				$sthInsProt->execute($protID,$quantifParamIDs{'MEAN_STATE'},2**$log2Mean,$targetPos); #  exp($log2Mean*$log2)
-				&promsQuantif::insertProteinModResidues(\@allModResidues,$sthInsProtRes,$modResiduesID{$protID},$dbh->last_insert_id(undef,undef,'PROTEIN_QUANTIFICATION','ID_PROT_QUANTIF')) if $isModifQuantif; # unlikely in LABELFREE...
+				$sthInsProt->execute($protID,$modStrg,$quantifParamIDs{'MEAN_STATE'},2**$log2Mean,$targetPos); #  exp($log2Mean*$log2)
+				##&promsQuantif::insertProteinModResidues(\@allModResidues,$sthInsProtRes,$modResiduesID{$protID},$dbh->last_insert_id(undef,undef,'PROTEIN_QUANTIFICATION','ID_PROT_QUANTIF')) if $isModifQuantif; # unlikely in LABELFREE...
 			}
 			#>Associated parameters
 			foreach my $refParam (@RDbCodeList) {
 				my ($paramR,$paramDB)=@{$refParam};
 				my $paramValue=$lineData[$protHeader2Idx{$paramR.'_'.$measurePos2Code{$targetPos}}];
 				next if $paramValue=~/NA/i; # NA or NaN
-				$sthInsProt->execute($protID,$quantifParamIDs{$paramDB},$paramValue,$targetPos);
-				&promsQuantif::insertProteinModResidues(\@allModResidues,$sthInsProtRes,$modResiduesID{$protID},$dbh->last_insert_id(undef,undef,'PROTEIN_QUANTIFICATION','ID_PROT_QUANTIF')) if $isModifQuantif;
+				$sthInsProt->execute($protID,$modStrg,$quantifParamIDs{$paramDB},$paramValue,$targetPos);
+				##&promsQuantif::insertProteinModResidues(\@allModResidues,$sthInsProtRes,$modResiduesID{$protID},$dbh->last_insert_id(undef,undef,'PROTEIN_QUANTIFICATION','ID_PROT_QUANTIF')) if $isModifQuantif;
 			}
 		} # next ratioPos
 
@@ -2393,8 +2773,9 @@ next unless defined $protHeader2Idx{'Log2Mean_'.$measurePos2Code{$targetPos}}; #
 	close PROT;
 
 	####>Computing peptide counts (NUM_PEP_TOTAL, NUM_PEP_USED & DIST_PEP_USED)<####
-	my (%numPeptideSets,%usedPeptideSets,%distinctPeptideSets); # Set <=> num label channels (1 for Label-Free)
+	my (%numPeptideSets,%usedPeptideSets,%distinctPeptideSets); # Set <=> num label channels (1 for PEP_INTENSITY)
 my (%usedPeptideReplicate,%distinctPeptideReplicate,%processedReplicates);
+my %usedTruePeptideState;
 	##>Step 1: Read resultsPep.txt for NUM_PEP_USED & DIST_PEP_USED
 	my %pepHeader2Idx;
 	open(PEP,"$resultDir/resultsPep.txt");
@@ -2418,7 +2799,7 @@ my (%usedPeptideReplicate,%distinctPeptideReplicate,%processedReplicates);
 		}
 		####>Data------------------
 		next if $lineData[$pepHeader2Idx{'out'}] ne 'NA'; # skip outliers
-		my $condCode=$lineData[$pepHeader2Idx{'Condition'}];
+		my $condCode=$lineData[$pepHeader2Idx{'Condition'}]; # StateX
 		next if ($algoType eq 'PEP_RATIO' && !$measureCode2RatioPos{$condCode}); # ratio not used (SINGLE_REF) StateY.StateX (not applicable for LABELFREE: StateX\nStateY)
 		my $seqVarMod=(split(/_/,$lineData[$pepHeader2Idx{'Peptide'}]))[0];
 		#my $numPepSets=scalar (split(';',$pepIdStrg));
@@ -2426,7 +2807,7 @@ my (%usedPeptideReplicate,%distinctPeptideReplicate,%processedReplicates);
 		my %numPepSets;
 		##my $numPepSets=1; # default
 		# TODO: True for SILAC & other Isotopes (not LF or isobar) --->
-		if ($labeling eq 'SILAC') {
+		if ($labeling eq 'SILAC' && $algoType eq 'PEP_RATIO') { # former $labeling eq 'SILAC'
 			#if ($lineData[$pepHeader2Idx{'PeptideId'}]=~/\+/) { # XIC were summed
 				##my %distinctQsets;
 				##foreach my $pepID (@pepIdList) {
@@ -2443,6 +2824,7 @@ my (%usedPeptideReplicate,%distinctPeptideReplicate,%processedReplicates);
 			foreach my $pepID (@pepIdList) {$numPepSets{$pepID}=1;}
 		}
 
+
 #my $refRatioList;
 #if ($Rdesign eq 'LABELFREE') {$refRatioList=$state2RatioPos{$condCode}} # StateX: multiple primary ratios
 ##elsif ($Rdesign eq 'LABELED') {$refRatioList=$measureCode2RatioPos{$condCode};} # StateY.StateX: only 1 primary ratio
@@ -2454,25 +2836,35 @@ my (%usedPeptideReplicate,%distinctPeptideReplicate,%processedReplicates);
 			next if ($infiniteRatioProteins{$protID0} && $infiniteRatioProteins{$protID0}{$ratioPos}); # computed later for inf ratios
 			$distinctPeptideSets{$protID0}{$ratioPos}{$seqVarMod}=1; # DIST_PEP_USED
 			##$usedPeptideSets{$protID0}{$ratioPos}+=$numPepSets;
-foreach my $pepIdCode (keys %numPepSets) {
-	$usedPeptideSets{$protID0}{$ratioPos}{$pepIdCode}=1;
-}
+			foreach my $pepIdCode (keys %numPepSets) {
+				$usedPeptideSets{$protID0}{$ratioPos}{$pepIdCode}=1;
+			}
 		}
-foreach my $state (split(/\./,$condCode)) {	# eg "StateY.StateX" for PEP_RATIO or "StateX" for PEP_INTENSITY/TDA
-	my $replicateTgtPos=$replicateTargetPos{ $state.'.'.$lineData[$pepHeader2Idx{'replicate'}].'.'.$lineData[$pepHeader2Idx{'repTech'}] };
-	$distinctPeptideReplicate{$protID0}{$replicateTgtPos}{NORM}{$seqVarMod}=1; # DIST_PEP_USED for replicates
-	foreach my $pepIdCode (keys %numPepSets) {
-		$usedPeptideReplicate{$protID0}{$replicateTgtPos}{NORM}{$pepIdCode}=1;
-	}
-	$processedReplicates{"$protID0:$replicateTgtPos"}=1;
-}		
+next unless $usedPeptideSets{$protID0}; # only +/-INF ratio(s) for protein => Skip 'NORM' (PP 18/09/20)
+		##>Num true peptides used in State
+		if ($countIdentifiedPep) { # only for 'PEP_INTENSITY' for now (not for PEP_RATIO: Value would be specific to ratio, not to State!)
+			my $stateTgtPos=$state2StatePos{$condCode};
+			%{$usedTruePeptideState{$protID0}{$stateTgtPos}}=() if (!$usedTruePeptideState{$protID0} || !$usedTruePeptideState{$protID0}{$stateTgtPos}); # defined because scalar=0 is recorded
+			foreach my $pepIdCode (keys %numPepSets) {
+				$usedTruePeptideState{$protID0}{$stateTgtPos}{$pepIdCode}=1 unless $isGhostPeptide{$pepIdCode};
+			}
+		}
+		##>Peptides in Replicates
+		foreach my $state (split(/\./,$condCode)) {	# eg "StateY.StateX" for PEP_RATIO or "StateX" for PEP_INTENSITY/TDA
+			my $replicateTgtPos=$replicateTargetPos{ $state.'.'.$lineData[$pepHeader2Idx{'replicate'}].'.'.$lineData[$pepHeader2Idx{'repTech'}] };
+			$distinctPeptideReplicate{$protID0}{$replicateTgtPos}{$seqVarMod}=1; # DIST_PEP_USED for replicates
+			foreach my $pepIdCode (keys %numPepSets) {
+				$usedPeptideReplicate{$protID0}{$replicateTgtPos}{$pepIdCode}=1;
+			}
+			$processedReplicates{"$protID0:$replicateTgtPos"}=1;
+		}		
 	}
 	close PEP;
 
 	##>Step 2: Read table.txt for NUM_PEP_TOTAL & inf ratios NUM_PEP_USED, DIST_PEP_USED
 	####my %expCode2RatioPos; # used for SuperRatio only!!!
 	####if ($Rdesign eq 'SUPERRATIO') {
-	####	foreach my $primRatioPos (1..$numConditions-1) {
+	####	foreach my $primRatioPos (1..$numStates-1) {
 	####		$expCode2RatioPos{chr(64+$primRatioPos)}=$primRatioPos;
 	####	}
 	####}
@@ -2491,7 +2883,7 @@ foreach my $state (split(/\./,$condCode)) {	# eg "StateY.StateX" for PEP_RATIO o
 		}
 		my @pepIdList=split(/[\.\+\=]/,$pepIdStrg);
 		my %numPepSets;
-		if ($labeling eq 'SILAC') {
+		if ($algoType eq 'PEP_RATIO' && $labeling eq 'SILAC') {
 			#if ($pepIdStrg=~/\+/) {
 				foreach my $pepID (@pepIdList) {
 					$numPepSets{$pepID2QuantifSetSILAC{$pepID}}=1;
@@ -2557,7 +2949,7 @@ foreach my $state (split(/\./,$condCode)) {	# eg "StateY.StateX" for PEP_RATIO o
 		my $refRatioList; #=($Rdesign eq 'SUPERRATIO')? $experiment2RatioPos{$experiment} : $state2RatioPos{$state};
 		# SUPERRATIO: State1-based primary ratios are analysis-specific. 2ndary ratio are not
 		# LABELED, LABELFREE: "State" carries ratioPos value(s):
-		if ($ratioType eq 'SuperRatio') {
+		if ($ratioType eq 'SuperRatio' || $algoType eq 'PEP_RATIO') {
 			if ($state eq 'State1') {
 				my ($anaID)=$qSet=~/^A(\d+)/;
 				#my @ratioList=@{$anaState1RatioPos{$anaID}}; # primary ratios using anaID
@@ -2567,6 +2959,7 @@ foreach my $state (split(/\./,$condCode)) {	# eg "StateY.StateX" for PEP_RATIO o
 				foreach my $rPos1 (@{$anaState1RatioPos{$anaID}}) {
 					$myRatioPos{$rPos1}=1; # primary ratioPos
 					#next if $quantifParameters{'DB'}{'SINGLE_REF'};
+					next if $ratioType ne 'SuperRatio';
 					my $testState='State'.($rPos1+1); # in test StateX, X=ratioPos+1 (primary ratios only)
 					foreach my $rPos2 (@{$state2RatioPos{$testState}}) { # 2ndary ratioPos
 						$myRatioPos{$rPos2}=1;
@@ -2589,14 +2982,26 @@ foreach my $pepIdCode (keys %numPepSets) {
 			$distinctPeptideSets{$protID0}{$ratioPos}{$seqVarMod}=1;
 			$stateInInfRatio=1; # state is involved in +/-Inf ratio
 		}
-my $replicateTgtPos=$replicateTargetPos{"$state.$bioRep.$techRep"};
-if (!$processedReplicates{"$protID0:$replicateTgtPos"} || $stateInInfRatio) { # WARNING: same state can be found in normal and inf ratios: num pep per replicates calculated will be based on normal ratio (from resultsPep.txt) => without excluded pep
-	my $ratioTypeKey=($stateInInfRatio)? 'INF' : 'NORM';
-	$distinctPeptideReplicate{$protID0}{$replicateTgtPos}{$ratioTypeKey}{$seqVarMod}=1; # DIST_PEP_USED for replicates
-	foreach my $pepIdCode (keys %numPepSets) {
-		$usedPeptideReplicate{$protID0}{$replicateTgtPos}{$ratioTypeKey}{$pepIdCode}=1; # $peptideData
-	}
-}
+next unless $stateInInfRatio; # Computed from ResultsPep.txt for normal ratios (PP 18/09/20)
+
+		##>Num true peptides used in State
+		if ($countIdentifiedPep) { # only for 'PEP_INTENSITY' for now (not for PEP_RATIO: Value would be specific to ratio, not to State!)
+			my $stateTgtPos=$state2StatePos{$state}; # Use -$stateTgtPos for data from INF ratio due to possible NORM & INF contexts
+			%{$usedTruePeptideState{$protID0}{-$stateTgtPos}}=() if (!$usedTruePeptideState{$protID0} || !$usedTruePeptideState{$protID0}{-$stateTgtPos}); # defined because scalar=0 is recorded
+			foreach my $pepIdCode (keys %numPepSets) {
+				$usedTruePeptideState{$protID0}{-$stateTgtPos}{$pepIdCode}=1 unless $isGhostPeptide{$pepIdCode};
+			}
+		}
+
+		##>Peptides in Replicates
+		my $replicateTgtPos=$replicateTargetPos{"$state.$bioRep.$techRep"};
+		#if (!$processedReplicates{"$protID0:$replicateTgtPos"} || $stateInInfRatio) { # WARNING: same state can be found in normal and inf ratios: num pep per replicates calculated will be based on normal ratio (from resultsPep.txt) => without excluded pep
+			#my $ratioTypeKey=($stateInInfRatio)? 'INF' : 'NORM';
+			$distinctPeptideReplicate{$protID0}{-$replicateTgtPos}{$seqVarMod}=1; # DIST_PEP_USED for replicates
+			foreach my $pepIdCode (keys %numPepSets) {
+				$usedPeptideReplicate{$protID0}{-$replicateTgtPos}{$pepIdCode}=1; # $peptideData
+			}
+		#}
 	}
 	close DATA;
 	#foreach my $protID0 (keys %usedPepSets) { # inf ratios only
@@ -2642,101 +3047,131 @@ if (!$processedReplicates{"$protID0:$replicateTgtPos"} || $stateInInfRatio) { # 
 	##>Step 4: Insert peptide counts in DB
 	#>DIST_PEP_USED
 	foreach my $protID0 (keys %distinctPeptideSets) {
-		#my ($protID,@modResidues)=($quantifiedModifID)? split(/[-.]/,$protID0) : ($protID0,undef);
-		my $protID=$protID0; # default
-		my @allModResidues;
-		if ($isModifQuantif) {
-			($protID,my @modQuantifs)=split(/[-&]/,$protID0);
-			foreach my $modQuantif (@modQuantifs) {
-				my @modResidues;
-				if ($quantifiedModifID) {@modResidues=split('\.',$modQuantif);}
-				else {
-					(my $modifRank,@modResidues)=split(/[#.]/,$modQuantif);
-					foreach my $i (0..$#modResidues) {$modResidues[$i]=$modifRank.'#'.$modResidues[$i];} # Convert '1#V32.K44' into ['1#V32','1#K44']
-				}
-				push @allModResidues,@modResidues;
-			}
-		}
+		my ($protID,$modStrg)=split(/-/,$protID0);
+		# my $protID=$protID0; # default
+		# my @allModResidues;
+		# if ($isModifQuantif) {
+		# 	($protID,my @modQuantifs)=split(/[-&]/,$protID0);
+		# 	foreach my $modQuantif (@modQuantifs) {
+		# 		my @modResidues;
+		# 		if ($quantifiedModifID) {@modResidues=split('\.',$modQuantif);}
+		# 		else {
+		# 			(my $modifRank,@modResidues)=split(/[#.]/,$modQuantif);
+		# 			foreach my $i (0..$#modResidues) {$modResidues[$i]=$modifRank.'#'.$modResidues[$i];} # Convert '1#V32.K44' into ['1#V32','1#K44']
+		# 		}
+		# 		push @allModResidues,@modResidues;
+		# 	}
+		# }
 		# Count for ratio
 		foreach my $ratioPos (keys %{$distinctPeptideSets{$protID0}}) {
 			next if (!$protQuantified{$protID0} || !$protQuantified{$protID0}{$ratioPos});
-			$sthInsProt->execute($protID,$quantifParamIDs{'DIST_PEP_USED'},scalar keys %{$distinctPeptideSets{$protID0}{$ratioPos}},$ratioPos);
-			&promsQuantif::insertProteinModResidues(\@allModResidues,$sthInsProtRes,$modResiduesID{$protID},$dbh->last_insert_id(undef,undef,'PROTEIN_QUANTIFICATION','ID_PROT_QUANTIF')) if $isModifQuantif;
+			$sthInsProt->execute($protID,$modStrg,$quantifParamIDs{'DIST_PEP_USED'},scalar keys %{$distinctPeptideSets{$protID0}{$ratioPos}},$ratioPos);
+			##&promsQuantif::insertProteinModResidues(\@allModResidues,$sthInsProtRes,$modResiduesID{$protID},$dbh->last_insert_id(undef,undef,'PROTEIN_QUANTIFICATION','ID_PROT_QUANTIF')) if $isModifQuantif;
 		}
 		next if !$protQuantified{$protID0};
 		# Count for replicate
-		foreach my $replicateTgtPos (keys %{$distinctPeptideReplicate{$protID0}}) {
-my $valueNorm=scalar keys %{$distinctPeptideReplicate{$protID0}{$replicateTgtPos}{NORM}}; # always defined
-my $valueInf=($distinctPeptideReplicate{$protID0}{$replicateTgtPos}{INF})? scalar keys %{$distinctPeptideReplicate{$protID0}{$replicateTgtPos}{INF}} : 0;
-if (!$valueInf || $valueInf==$valueNorm) {			
-			$sthInsProt->execute($protID,$quantifParamIDs{'DIST_PEP_USED'},$valueNorm,$replicateTgtPos);
-			&promsQuantif::insertProteinModResidues(\@allModResidues,$sthInsProtRes,$modResiduesID{$protID},$dbh->last_insert_id(undef,undef,'PROTEIN_QUANTIFICATION','ID_PROT_QUANTIF')) if $isModifQuantif;
-}
-if ($valueInf && $valueInf != $valueNorm) {
-	$sthInsProt->execute($protID,$quantifParamIDs{'DIST_PEP_USED'},$valueInf,-$replicateTgtPos);
-	&promsQuantif::insertProteinModResidues(\@allModResidues,$sthInsProtRes,$modResiduesID{$protID},$dbh->last_insert_id(undef,undef,'PROTEIN_QUANTIFICATION','ID_PROT_QUANTIF')) if $isModifQuantif;
-}
+		foreach my $replicateTgtPos (sort{$a<=>$b} keys %{$distinctPeptideReplicate{$protID0}}) {
+			$sthInsProt->execute($protID,$modStrg,$quantifParamIDs{'DIST_PEP_USED'},scalar keys %{$distinctPeptideReplicate{$protID0}{$replicateTgtPos}},$replicateTgtPos);
+			# my $valueNorm=($distinctPeptideReplicate{$protID0}{$replicateTgtPos}{NORM})? scalar keys %{$distinctPeptideReplicate{$protID0}{$replicateTgtPos}{NORM}} : 0; # defined unless all outliers
+			# my $valueInf=($distinctPeptideReplicate{$protID0}{$replicateTgtPos}{INF})? scalar keys %{$distinctPeptideReplicate{$protID0}{$replicateTgtPos}{INF}} : 0;
+			# if ($valueNorm) {		
+			# 	$sthInsProt->execute($protID,$modStrg,$quantifParamIDs{'DIST_PEP_USED'},$valueNorm,$replicateTgtPos);
+			# 	##&promsQuantif::insertProteinModResidues(\@allModResidues,$sthInsProtRes,$modResiduesID{$protID},$dbh->last_insert_id(undef,undef,'PROTEIN_QUANTIFICATION','ID_PROT_QUANTIF')) if $isModifQuantif;
+			# }
+			# if ($valueInf) { # tgtPos always < 0 for INF (PP 18/09/20)
+			# 	$sthInsProt->execute($protID,$modStrg,$quantifParamIDs{'DIST_PEP_USED'},$valueInf,-$replicateTgtPos);
+			# 	##&promsQuantif::insertProteinModResidues(\@allModResidues,$sthInsProtRes,$modResiduesID{$protID},$dbh->last_insert_id(undef,undef,'PROTEIN_QUANTIFICATION','ID_PROT_QUANTIF')) if $isModifQuantif;
+			# }
 		}
 	}
 	#>NUM_PEP_USED
 	foreach my $protID0 (keys %usedPeptideSets) {
-		#my ($protID,@modResidues)=($quantifiedModifID)? split(/[-.]/,$protID0) : ($protID0,undef);
-		my $protID=$protID0; # default
-		my @allModResidues;
-		if ($isModifQuantif) {
-			($protID,my @modQuantifs)=split(/[-&]/,$protID0);
-			foreach my $modQuantif (@modQuantifs) {
-				my @modResidues;
-				if ($quantifiedModifID) {@modResidues=split('\.',$modQuantif);}
-				else {
-					(my $modifRank,@modResidues)=split(/[#.]/,$modQuantif);
-					foreach my $i (0..$#modResidues) {$modResidues[$i]=$modifRank.'#'.$modResidues[$i];} # Convert '1#V32.K44' into ['1#V32','1#K44']
-				}
-				push @allModResidues,@modResidues;
-			}
-		}
+		my ($protID,$modStrg)=split(/-/,$protID0);
+		# my $protID=$protID0; # default
+		# my @allModResidues;
+		# if ($isModifQuantif) {
+		# 	($protID,my @modQuantifs)=split(/[-&]/,$protID0);
+		# 	foreach my $modQuantif (@modQuantifs) {
+		# 		my @modResidues;
+		# 		if ($quantifiedModifID) {@modResidues=split('\.',$modQuantif);}
+		# 		else {
+		# 			(my $modifRank,@modResidues)=split(/[#.]/,$modQuantif);
+		# 			foreach my $i (0..$#modResidues) {$modResidues[$i]=$modifRank.'#'.$modResidues[$i];} # Convert '1#V32.K44' into ['1#V32','1#K44']
+		# 		}
+		# 		push @allModResidues,@modResidues;
+		# 	}
+		# }
 		# Count for ratio
-		foreach my $ratioPos (sort keys %{$usedPeptideSets{$protID0}}) {
+		foreach my $ratioPos (sort{$a<=>$b} keys %{$usedPeptideSets{$protID0}}) {
 			next if (!$protQuantified{$protID0} || !$protQuantified{$protID0}{$ratioPos});
 			##$sthInsProt->execute($protID,$quantifParamIDs{'NUM_PEP_USED'},$usedPeptideSets{$protID0}{$ratioPos},$ratioPos);
-			$sthInsProt->execute($protID,$quantifParamIDs{'NUM_PEP_USED'},scalar keys %{$usedPeptideSets{$protID0}{$ratioPos}},$ratioPos);
-			&promsQuantif::insertProteinModResidues(\@allModResidues,$sthInsProtRes,$modResiduesID{$protID},$dbh->last_insert_id(undef,undef,'PROTEIN_QUANTIFICATION','ID_PROT_QUANTIF')) if $isModifQuantif;
+			$sthInsProt->execute($protID,$modStrg,$quantifParamIDs{'NUM_PEP_USED'},scalar keys %{$usedPeptideSets{$protID0}{$ratioPos}},$ratioPos);
+			##&promsQuantif::insertProteinModResidues(\@allModResidues,$sthInsProtRes,$modResiduesID{$protID},$dbh->last_insert_id(undef,undef,'PROTEIN_QUANTIFICATION','ID_PROT_QUANTIF')) if $isModifQuantif;
 		}
 		next if !$protQuantified{$protID0};
+		
 		# Count for replicate
-		foreach my $replicateTgtPos (keys %{$usedPeptideReplicate{$protID0}}) {
-my $valueNorm=scalar keys %{$usedPeptideReplicate{$protID0}{$replicateTgtPos}{NORM}}; # always defined
-my $valueInf=($usedPeptideReplicate{$protID0}{$replicateTgtPos}{INF})? scalar keys %{$usedPeptideReplicate{$protID0}{$replicateTgtPos}{INF}} : 0;
-if (!$valueInf || $valueInf==$valueNorm) {
-			$sthInsProt->execute($protID,$quantifParamIDs{'NUM_PEP_USED'},$valueNorm,$replicateTgtPos);
-			&promsQuantif::insertProteinModResidues(\@allModResidues,$sthInsProtRes,$modResiduesID{$protID},$dbh->last_insert_id(undef,undef,'PROTEIN_QUANTIFICATION','ID_PROT_QUANTIF')) if $isModifQuantif;
-}
-if ($valueInf && $valueInf != $valueNorm) {
-	$sthInsProt->execute($protID,$quantifParamIDs{'NUM_PEP_USED'},$valueInf,-$replicateTgtPos);
-	&promsQuantif::insertProteinModResidues(\@allModResidues,$sthInsProtRes,$modResiduesID{$protID},$dbh->last_insert_id(undef,undef,'PROTEIN_QUANTIFICATION','ID_PROT_QUANTIF')) if $isModifQuantif;
-}
+		foreach my $replicateTgtPos (sort{$a<=>$b} keys %{$usedPeptideReplicate{$protID0}}) {
+			$sthInsProt->execute($protID,$modStrg,$quantifParamIDs{'NUM_PEP_USED'}, scalar keys %{$usedPeptideReplicate{$protID0}{$replicateTgtPos}},$replicateTgtPos);
+			# my $valueNorm=($usedPeptideReplicate{$protID0}{$replicateTgtPos}{NORM})? scalar keys %{$usedPeptideReplicate{$protID0}{$replicateTgtPos}{NORM}} : 0; # defined unless all outliers
+			# my $valueInf=($usedPeptideReplicate{$protID0}{$replicateTgtPos}{INF})? scalar keys %{$usedPeptideReplicate{$protID0}{$replicateTgtPos}{INF}} : 0;
+			# if ($valueNorm) {
+			# 	$sthInsProt->execute($protID,$modStrg,$quantifParamIDs{'NUM_PEP_USED'},$valueNorm,$replicateTgtPos);
+			# 	##&promsQuantif::insertProteinModResidues(\@allModResidues,$sthInsProtRes,$modResiduesID{$protID},$dbh->last_insert_id(undef,undef,'PROTEIN_QUANTIFICATION','ID_PROT_QUANTIF')) if $isModifQuantif;
+			# }
+			# if ($valueInf) { # tgtPos always < 0 for INF (PP 18/09/20)
+			# 	$sthInsProt->execute($protID,$modStrg,$quantifParamIDs{'NUM_PEP_USED'},$valueInf,-$replicateTgtPos);
+			# 	##&promsQuantif::insertProteinModResidues(\@allModResidues,$sthInsProtRes,$modResiduesID{$protID},$dbh->last_insert_id(undef,undef,'PROTEIN_QUANTIFICATION','ID_PROT_QUANTIF')) if $isModifQuantif;
+			# }
+		}
+	}
+	#>NUM_TRUE_USED Count for non-ghost for each State
+	if ($countIdentifiedPep) {
+		foreach my $protID0 (keys %usedTruePeptideState) {
+			next if !$protQuantified{$protID0};
+			my ($protID,$modStrg)=split(/-/,$protID0);
+			# my $protID=$protID0; # default
+			# my @allModResidues;
+			# if ($isModifQuantif) {
+			# 	($protID,my @modQuantifs)=split(/[-&]/,$protID0);
+			# 	foreach my $modQuantif (@modQuantifs) {
+			# 		my @modResidues;
+			# 		if ($quantifiedModifID) {@modResidues=split('\.',$modQuantif);}
+			# 		else {
+			# 			(my $modifRank,@modResidues)=split(/[#.]/,$modQuantif);
+			# 			foreach my $i (0..$#modResidues) {$modResidues[$i]=$modifRank.'#'.$modResidues[$i];} # Convert '1#V32.K44' into ['1#V32','1#K44']
+			# 		}
+			# 		push @allModResidues,@modResidues;
+			# 	}
+			# }
+			foreach my $stateTgtPos (sort{$a<=>$b} keys %{$usedTruePeptideState{$protID0}}) {
+				my $value=scalar keys %{$usedTruePeptideState{$protID0}{$stateTgtPos}};
+				#next if $value > 5; # record only for if <= 5 (to save DB storage) => MUST store 0 values!!!
+				$sthInsProt->execute($protID,$modStrg,$quantifParamIDs{'NUM_TRUE_USED'},$value,$stateTgtPos);
+				##&promsQuantif::insertProteinModResidues(\@allModResidues,$sthInsProtRes,$modResiduesID{$protID},$dbh->last_insert_id(undef,undef,'PROTEIN_QUANTIFICATION','ID_PROT_QUANTIF')) if $isModifQuantif;
+			}
 		}
 	}
 	#>NUM_PEP_TOTAL
 	foreach my $protID0 (keys %numPeptideSets) {
 		next if !$protQuantified{$protID0};
-		#my ($protID,@modResidues)=($quantifiedModifID)? split(/[-.]/,$protID0) : ($protID0,undef);
-		my $protID=$protID0; # default
-		my @allModResidues;
-		if ($isModifQuantif) {
-			($protID,my @modQuantifs)=split(/[-&]/,$protID0);
-			foreach my $modQuantif (@modQuantifs) {
-				my @modResidues;
-				if ($quantifiedModifID) {@modResidues=split('\.',$modQuantif);}
-				else {
-					(my $modifRank,@modResidues)=split(/[#.]/,$modQuantif);
-					foreach my $i (0..$#modResidues) {$modResidues[$i]=$modifRank.'#'.$modResidues[$i];} # Convert '1#V32.K44' into ['1#V32','1#K44']
-				}
-				push @allModResidues,@modResidues;
-			}
-		}
-		$sthInsProt->execute($protID,$quantifParamIDs{'NUM_PEP_TOTAL'},scalar keys %{$numPeptideSets{$protID0}},undef); # no ratioPos
-		&promsQuantif::insertProteinModResidues(\@allModResidues,$sthInsProtRes,$modResiduesID{$protID},$dbh->last_insert_id(undef,undef,'PROTEIN_QUANTIFICATION','ID_PROT_QUANTIF')) if $isModifQuantif;
+		my ($protID,$modStrg)=split(/-/,$protID0);
+		# my $protID=$protID0; # default
+		# my @allModResidues;
+		# if ($isModifQuantif) {
+		# 	($protID,my @modQuantifs)=split(/[-&]/,$protID0);
+		# 	foreach my $modQuantif (@modQuantifs) {
+		# 		my @modResidues;
+		# 		if ($quantifiedModifID) {@modResidues=split('\.',$modQuantif);}
+		# 		else {
+		# 			(my $modifRank,@modResidues)=split(/[#.]/,$modQuantif);
+		# 			foreach my $i (0..$#modResidues) {$modResidues[$i]=$modifRank.'#'.$modResidues[$i];} # Convert '1#V32.K44' into ['1#V32','1#K44']
+		# 		}
+		# 		push @allModResidues,@modResidues;
+		# 	}
+		# }
+		$sthInsProt->execute($protID,$modStrg,$quantifParamIDs{'NUM_PEP_TOTAL'},scalar keys %{$numPeptideSets{$protID0}},undef); # no ratioPos
+		##&promsQuantif::insertProteinModResidues(\@allModResidues,$sthInsProtRes,$modResiduesID{$protID},$dbh->last_insert_id(undef,undef,'PROTEIN_QUANTIFICATION','ID_PROT_QUANTIF')) if $isModifQuantif;
 	}
 
 }
@@ -2745,29 +3180,46 @@ if ($valueInf && $valueInf != $valueNorm) {
 #close DEBUG;
 
 $sthInsProt->finish;
-if ($isModifQuantif) { # modif quantification
-	$sthInsModRes->finish;
-	$sthInsProtRes->finish;
-}
+# if ($isModifQuantif) { # modif quantification
+# 	$sthInsModRes->finish;
+# 	$sthInsProtRes->finish;
+# }
+$dbhLite->commit;
+$dbhLite->disconnect;
 
-my $extraQuantifAnnot=($labeling eq 'FREE')? '' : '::QSET_USED='.(scalar keys %{$qSetUsage{'USED'}}).'/'.((scalar keys %{$qSetUsage{'USED'}}) + (scalar keys %{$qSetUsage{'EXCLUDED'}}));
+my $extraQuantifAnnot=($algoType ne 'PEP_RATIO')? '' : '::QSET_USED='.(scalar keys %{$qSetUsage{'USED'}}).'/'.((scalar keys %{$qSetUsage{'USED'}}) + (scalar keys %{$qSetUsage{'EXCLUDED'}})); # former  $labeling eq 'FREE' 27/04/20
+
 
 &endQuantification($dbh,$projectID,\%lostProteins,\%proteinAlias,$extraQuantifAnnot);
 
+exit;
 
+#####################################<<<<< SUBROUTINES >>>>>#################################################
 
 ############################
 ####<Launching R script>####
 ############################
-sub launchRscript {
-	my $progressStrg=($ratioType=~/S\w+Ratio/)? "2/$numSteps Running quantification" : "2/$numSteps Running normalization";
-	open(FILESTAT,">>$fileStat");
-	print FILESTAT "$progressStrg\n";
-	close FILESTAT;
+sub launchRscript { # launched in $runDir by default (peptide-level normalization +/- quantification) or in directory of protein measure to be normalized (protein-level normalization)
+	my $context=$_[0] || 'PRIMARY';
 
-	&promsQuantif::writeQuantifParameterFiles($dataDir,$quantifParameters{'R'});
+	if ($context eq 'PRIMARY') { # primary (ion-level) normalization
+		my $progressStrg=($ratioType eq 'None' && $normalizeIons)? "2/$numSteps Running peptide-level normalization" : ($ratioType eq 'None')? "2/$numSteps Removing peptide-level outliers" : "2/$numSteps Running quantification";
+		open(FILESTAT,">>$fileStat");
+		print FILESTAT "$progressStrg\n";
+		close FILESTAT;
 
-	open(R_SCRIPT,">$runDir/AnalysisDiffLimma.R");
+		#<Abundance with protein-only bias correction
+		if ($ratioType eq 'None' && !$normalizeIons) { # overwrite R options
+			@{$quantifParameters{'R'}{'normalization.method'}}=('none.none');
+			delete $quantifParameters{'R'}{'common.peptides'};
+		}
+	}
+
+	my ($localDataDir,$localRunDir)=($context eq 'PRIMARY')? ($dataDir,$runDir) : ("$resultDir/resultsNorm/$context/data","$resultDir/resultsNorm/$context");
+	
+	&promsQuantif::writeQuantifParameterFiles($localDataDir,$quantifParameters{'R'});
+
+	open(R_SCRIPT,">$localRunDir/AnalysisDiffLimma.R");
 	print R_SCRIPT qq
 |
 ###################################################################################
@@ -2778,20 +3230,65 @@ filepath <- "$promsPath{R_scripts}/"
 source(paste(filepath,"AnalysisDiffLimma.R",sep=""))
 |;
 	close R_SCRIPT;
-	system "export LANG=en_US.UTF-8; cd $runDir; $pathR/R CMD BATCH --no-save --no-restore AnalysisDiffLimma.R";
-	
+
+	system "echo RUN > $localRunDir/runR.flag"; # run flag file
+	system "export LANG=en_US.UTF-8; cd $localRunDir; $pathR/R CMD BATCH --no-save --no-restore AnalysisDiffLimma.R";
 	sleep 5;
+	&checkRsuccess("$localRunDir/AnalysisDiffLimma.Rout");
+	system "rm -f $localRunDir/runR.flag; echo END > $localRunDir/endR.flag"; # end flag file (witten only if no R error, otherwise killed by &checkRsuccess)
 }
+
+sub launchMSstatsRscript { # MSstats
+	open(FILESTAT,">>$fileStat");
+	print FILESTAT "2/$numSteps Running quantification\n";
+	close FILESTAT;
+
+	&promsQuantif::writeQuantifParameterFiles($dataDir,$quantifParameters{'R'});
+	
+	open(R_SCRIPT,">$runDir/quantiSwath.R");
+	print R_SCRIPT qq
+|
+#########################################
+# Launcher for quantification R scripts #
+#########################################
+
+filepath="$promsPath{R_scripts}/"
+source(paste(filepath,"quantiSwath.R",sep=""))
+|;
+	close R_SCRIPT;
+	my $RcommandString="export LANG=en_US.UTF-8; cd $runDir; $pathR/R CMD BATCH --no-save --no-restore quantiSwath.R";
+	system $RcommandString;
+	sleep 5;
+	
+	if (-e "$resultDir/sessionInfo.txt") {
+		my $versionLine=`grep MSstats_ $resultDir/sessionInfo.txt`;
+		my ($version)=($versionLine=~/MSstats_(\S+)/);
+		if ($version) {
+			$dbh=&promsConfig::dbConnect('no_user'); # reconnect
+			my $MSstatsStrg='MSstats;'.$version.'::';
+			$dbh->do("UPDATE QUANTIFICATION SET QUANTIF_ANNOT=REPLACE(QUANTIF_ANNOT,'MSstats::','$MSstatsStrg') WHERE ID_QUANTIFICATION=$quantifID");
+			$dbh->commit;
+			$dbh->disconnect;
+		}
+	}
+	
+	&checkRsuccess("$runDir/quantiSwath.Rout");
+}
+
 sub checkRsuccess {
 	####<ERROR Management>####
-	my $RoutFile='AnalysisDiffLimma.Rout';
-	my $RoutStrg=`tail -3 $runDir/$RoutFile`;
+	my $hasError=0;
+	my ($RoutFile) = @_;
+	unless ($RoutFile && -e $RoutFile) {
+		warn "The .Rout file was not even written ! Check that the R script is actually run.\n";
+	}
+	my $RoutStrg = `tail -3 $RoutFile`;
 	unless ($RoutStrg=~/proc\.time\(\)/) {
-		$RoutStrg=`tail -20 $runDir/$RoutFile`;
+		$RoutStrg=`tail -20 $RoutFile`;
 		my $RerrorStrg="R script has generated an error!";
 		my $inError=0;
 		foreach my $line (split(/\n/,$RoutStrg)) {
-			next if (!$inError && $line !~ /^Error in/); # skip everything before "Error in..."
+			next if (!$inError && $line !~ /^Error in/ && $line !~ /^Error:/); # skip everything before "Error in..."
 			$inError=1;
 			$RerrorStrg.="\n$line";
 		}
@@ -2801,6 +3298,207 @@ sub checkRsuccess {
 	}
 }
 
+#################################
+####<Parsing MSstats results>####
+#################################
+sub processMSstatsResults {
+	
+	$dbh=&promsConfig::dbConnect('no_user'); # reconnect
+
+	unless (-e "$resultDir/ResultsDAProt.txt") { # File does not exist
+		warn "Missing result file !\n";
+		&checkForErrors($dbh);
+	}
+	
+	my %quantifParamIDs;
+	my $sthQP=$dbh->prepare("SELECT QP.ID_QUANTIF_PARAMETER,QP.CODE FROM QUANTIFICATION Q,QUANTIFICATION_METHOD QM,QUANTIFICATION_PARAMETER QP WHERE Q.ID_QUANTIFICATION_METHOD=QM.ID_QUANTIFICATION_METHOD AND QM.ID_QUANTIFICATION_METHOD=QP.ID_QUANTIFICATION_METHOD AND Q.ID_QUANTIFICATION=$quantifID");
+	$sthQP->execute;
+	while (my ($paramID,$paramCode)=$sthQP->fetchrow_array) {
+		$quantifParamIDs{$paramCode}=$paramID;
+	}
+	$sthQP->finish;
+	
+	###<Generating ratio codes used by R>###
+	my (%measurePos2Code,%measureCode2RatioPos,%ratioPos2states); # a state can be involved in multiple ratios
+	my $rPos=0;
+	foreach my $s1 (1..$numStates-1) {
+		foreach my $s2 ($s1+1..$numStates) {
+			$rPos++;
+			$measurePos2Code{$rPos}="State$s2-State$s1"; # for ResultsDAProt.txt
+			@{$ratioPos2states{$rPos}}=("State$s1","State$s2");
+		}
+		last if $quantifParameters{'DB'}{'SINGLE_REF'};
+	}
+	
+	####<Inserting data into DB>####
+	my $dbhLite=&promsQuantif::dbCreateProteinQuantification($quantifID,$runDir); # SQLite
+	my $sthInsProt=$dbhLite->prepare("INSERT INTO PROTEIN_QUANTIFICATION (ID_PROTEIN,SITE_CODE,ID_QUANTIF_PARAMETER,QUANTIF_VALUE,TARGET_POS) VALUES (?,?,?,?,?)"); # PK autoincrement
+	
+	my (%protQuantified,%lostProteins,%pepList);
+	my @RDbCodeList=(['pval','PVAL_ADJ'],['SD','SD_GEO']);
+	my %protHeader2Idx;
+	open(PROT,"$resultDir/ResultsDAProt.txt") or die "[$resultDir/ResultsDAProt.txt] $!";
+	while (<PROT>) {
+		$_=~s/\s*\Z//;
+		my @lineData=split(/\t/,$_);
+		#<Header------------------
+		if ($.==1) { # 1st line of the file
+			my $colIdx=0;
+			foreach my $colName (@lineData) {
+				$protHeader2Idx{$colName}=$colIdx;
+				$colIdx++;
+			}
+			next;
+		}
+		#<Data------------------
+		my $protID0=$lineData[0]; # $lineData[$protHeader2Idx{'Protein'}];
+		next if !$protID0; # just to be safe
+		my ($protID,$modStrg)=split(/-/,$protID0);
+		next if ($quantifiedModifID && !$modStrg); # must be a mod prot
+
+		###<Conditions ratio data
+		foreach my $targetPos (sort{$a<=>$b} keys %measurePos2Code) {
+			#<Fold change
+			my $log2FC=$lineData[$protHeader2Idx{'log2FC_'.$measurePos2Code{$targetPos}}];
+			next if $log2FC=~/NA/i; # NA or NaN
+			my $fcValue=($log2FC eq '-Inf')? 0.001 : ($log2FC eq 'Inf')? 1000 : 2**$log2FC; #exp($log2FC*$log2);
+			$sthInsProt->execute($protID,$modStrg,$quantifParamIDs{'RATIO'},$fcValue,$targetPos);
+			$protQuantified{$protID0}{$targetPos}=1;
+			
+			#<Associated parameters
+			foreach my $refParam (@RDbCodeList) {
+				my ($paramR,$paramDB)=@{$refParam};
+				my $paramValue=$lineData[$protHeader2Idx{$paramR.'_'.$measurePos2Code{$targetPos}}];
+				next if $paramValue=~/NA/i; # NA or NaN
+				$sthInsProt->execute($protID,$modStrg,$quantifParamIDs{$paramDB},$paramValue,$targetPos);
+			}
+		} # next ratioPos
+
+	} # next line
+	close PROT;
+	
+	####<Computing peptide counts>####
+	###<Read table.txt
+	open(DATA,"$dataDir/table.txt");
+	while(<DATA>) {
+		next if $.==1;
+		chomp;
+		#ProteinName     PeptideSequence PrecursorCharge FragmentIon     ProductCharge
+		my ($protID0,$peptide,$charge,$fragType,$fragCharge,$labelType,$state,$bioRep,$run,$fragArea)=split(/\t/,$_);
+		if ($protQuantified{$protID0}) {
+			$pepList{$protID0}{$state}{"$peptide\_$charge"}{"$fragType\_$fragCharge"}=1 if $fragArea ne 'NA';
+		}
+		else {$lostProteins{$protID0}=1;}
+	}
+	close DATA;
+	
+	###<Read CVoutPep.txt to recover outliers
+	if (-e "$resultDir/CVoutPep.txt") {
+		open(OUTLIERS,"$resultDir/CVoutPep.txt") or die $!;
+		while (<OUTLIERS>) {
+			next if $.==1;
+			my ($protID0,$pep,$state,$value)=split(/\s/,$_);
+			next unless $protQuantified{$protID0};
+			my ($peptide,$pepCharge,$pepIon,$ionCharge)=split(/_/,$pep);
+			delete $pepList{$protID0}{$state}{"$peptide\_$pepCharge"}{"$pepIon\_$ionCharge"};
+			delete $pepList{$protID0}{$state}{"$peptide\_$pepCharge"} if scalar keys %{$pepList{$protID0}{$state}{"$peptide\_$pepCharge"}} == 0;
+		}
+		close OUTLIERS;
+	}
+	
+	###<Read excluded.txt
+	if (-e "$dataDir/excluded.txt") {
+		open(EXCLUDED,"$dataDir/excluded.txt") or die $!;
+		while (<EXCLUDED>) {
+			next if $.==1;
+			my @lineInfo=split(/\s/,$_);
+			next unless $protQuantified{$lineInfo[0]};
+			delete $pepList{$lineInfo[0]}{$lineInfo[6]}{"$lineInfo[1]\_$lineInfo[2]"}{"$lineInfo[3]\_$lineInfo[4]"};    ##$lineInfo[0] -> protID ; $lineInfo[1] -> peptide seq ; $lineInfo[2] -> peptide charge ; $lineInfo[3] -> fragment ; $lineInfo[4] -> fragment charge ; $lineInfo[6] -> state
+			delete $pepList{$lineInfo[0]}{$lineInfo[6]}{"$lineInfo[1]\_$lineInfo[2]"} if scalar keys %{$pepList{$lineInfo[0]}{$lineInfo[6]}{"$lineInfo[1]\_$lineInfo[2]"}} == 0;
+		}
+		close EXCLUDED;
+	}
+	#else { # File not read (does not exist)
+	#	$dbh->do("UPDATE QUANTIFICATION SET STATUS=-2 WHERE ID_QUANTIFICATION=$quantifID");
+	#	$dbh->commit;
+	#	$dbh->disconnect;
+	#	die "Missing file 'excluded.txt'!\n";
+	#}
+	
+	###<Compute peptide counts
+	foreach my $protID0 (keys %pepList) {
+		next if !$protQuantified{$protID0};
+		my ($protID,$modStrg)=split(/-/,$protID0);
+		next if ($quantifiedModifID && !$modStrg); # must be a mod prot
+		my %pepUsed;
+		my $numPepTotal=0;
+		foreach my $ratioPos (sort {$a <=> $b} keys %ratioPos2states) {
+			next if !$protQuantified{$protID0}{$ratioPos};
+			my %pepDistinct;
+			my $numPepUsed=0;
+			foreach my $state (@{$ratioPos2states{$ratioPos}}) {
+				unless ($pepUsed{$state}) { # same state can be used in different ratios
+					$pepUsed{$state}=scalar keys %{$pepList{$protID0}{$state}};
+					$numPepTotal+=$pepUsed{$state};
+				}
+				foreach my $pep (keys %{$pepList{$protID0}{$state}}) {
+					my ($pepVmod,$pepCharge)=split(/_/,$pep);
+					$pepDistinct{$pepVmod}=1;
+				}
+				$numPepUsed+=$pepUsed{$state}; # WARNING: Changed from runSWATHProtQuantification.pl to match counting done in runXICProtQuantification.pl
+			}
+			$sthInsProt->execute($protID,$modStrg,$quantifParamIDs{'NUM_PEP_USED'},$numPepUsed,$ratioPos);
+			$sthInsProt->execute($protID,$modStrg,$quantifParamIDs{'DIST_PEP_USED'},scalar keys %pepDistinct,$ratioPos);
+		}
+		$sthInsProt->execute($protID,$modStrg,$quantifParamIDs{'NUM_PEP_TOTAL'},$numPepTotal,undef);
+	}
+	$sthInsProt->finish;
+	$dbhLite->commit;
+
+	###<Lost proteins
+	my %proteinAlias;
+	&getProteinAlias($dbh,\%lostProteins,\%proteinAlias);
+	
+	####<End quantification process>####
+	&endQuantification($dbh,$projectID,\%lostProteins,\%proteinAlias);
+	#my $status=($quantifParameters{'DB'}{'VISIBILITY'})? $quantifParameters{'DB'}{'VISIBILITY'}[0] : 1;
+	#$dbh->do("UPDATE QUANTIFICATION SET STATUS=$status WHERE ID_QUANTIFICATION=$quantifID");
+	#$dbh->commit;
+	#
+	#$dbh->disconnect;
+	#
+	#open(FILESTAT,">>$fileStat");
+	#print FILESTAT "Ended ",strftime("%H:%M:%S %d/%m/%Y",localtime),"\n";
+	#close FILESTAT;
+	
+	####> Moving final files
+	#mkdir "$promsPath{quantification}/project_$projectID" unless -e "$promsPath{quantification}/project_$projectID";
+	#dirmove($runDir,"$promsPath{quantification}/project_$projectID/quanti_$quantifID");
+	#
+	#sleep 2;
+
+	exit;
+}
+
+sub getProteinAlias {
+	my ($dbh,$refLostProteins,$refProtAlias)=@_;
+	if (scalar keys %{$refLostProteins}) {
+		foreach my $protID0 (keys %{$refLostProteins}) {
+			my ($protID)=$protID0=~/^(\d+)/;
+			$refProtAlias->{$protID}='-'; # default
+		}
+		
+		my $sthAlias=$dbh->prepare("SELECT ID_PROTEIN,ALIAS FROM PROTEIN WHERE ID_PROTEIN IN (".join(',',keys %{$refProtAlias}).")");
+		$sthAlias->execute;
+		while (my ($protID,$alias)=$sthAlias->fetchrow_array) {
+			$refProtAlias->{$protID}=$alias;
+		}
+		$sthAlias->finish;
+	}
+}
+
+
+
 ###############################
 ####<Endind Quantification>####
 ###############################
@@ -2808,7 +3506,7 @@ sub endQuantification { # Globals: $quantifID,%promsPath,%quantifParameters,$run
 	my ($dbh,$projectID,$refLostProteins,$refProteinAlias,$extraQuantifAnnot)=@_;
 	$extraQuantifAnnot='' unless $extraQuantifAnnot;
 	
-	my $numLostProteins=scalar keys %{$refLostProteins}; # proteins in table.txt but not quantified at all!!!
+	my $numLostProteins=scalar keys %{$refLostProteins}; # proteins in table.txt but not quantified at all!!! Sites if site-quantif!
 	if ($numLostProteins) {
 		open (LOST,">$resultDir/lostProteins.txt");
 		print LOST "Protein_ID\tProtein_Name";
@@ -2819,10 +3517,37 @@ sub endQuantification { # Globals: $quantifID,%promsPath,%quantifParameters,$run
 		close LOST;
 	}
 	&checkForErrors($dbh);
-	
+
+	##<LFQ lost proteins
+	my $lostLFQstrg='';
+	if ($ratioType eq 'None') {
+		my $hasLFQ=0;
+		foreach my $measType (@{$quantifParameters{'DB'}{'ABUND_MEASURES'}}) {
+			if ($measType =~ /MY_LFQ/) {$hasLFQ=1; last;}
+		}
+		if ($hasLFQ) { # Only if Abundance with LFQ
+			$lostLFQstrg='::LOST_PROTEINS_LFQ=';
+			my $numLost=0;
+			if (-e "$resultDir/lostProteinsLFQ.txt") {
+				$numLost=`wc -l $resultDir/lostProteinsLFQ.txt`;
+				$numLost=~s/^(\d+).*/$1/;
+				$numLost--; # do not count header line
+			}
+			$lostLFQstrg.=$numLost;
+		}
+	}
+
+	##<Proteins (NOT sites) lost due to shared peptides
+	my $numRejectedProteins=0;
+	if (-e "$dataDir/rejectedProteins.txt") {
+		$numRejectedProteins=`wc -l $dataDir/rejectedProteins.txt`;
+		$numRejectedProteins=~s/^(\d+).*/$1/;
+		$numRejectedProteins--; # do not count header line
+	}
+
 	###> Quantification is finished.
 	my $status=($quantifParameters{'DB'}{'VISIBILITY'})? $quantifParameters{'DB'}{'VISIBILITY'}[0] : 1;
-	$dbh->do("UPDATE QUANTIFICATION SET STATUS=$status,QUANTIF_ANNOT=CONCAT(QUANTIF_ANNOT,'$extraQuantifAnnot\:\:LOST_PROTEINS=$numLostProteins') WHERE ID_QUANTIFICATION=$quantifID");
+	$dbh->do("UPDATE QUANTIFICATION SET STATUS=$status,QUANTIF_ANNOT=CONCAT(QUANTIF_ANNOT,'$extraQuantifAnnot\:\:REJECTED_PROTEINS=$numRejectedProteins\:\:LOST_PROTEINS=$numLostProteins$lostLFQstrg') WHERE ID_QUANTIFICATION=$quantifID");
 	
 	$dbh->commit;
 	
@@ -2831,19 +3556,19 @@ sub endQuantification { # Globals: $quantifID,%promsPath,%quantifParameters,$run
 	
 	open(FILESTAT,">>$fileStat");
 	print FILESTAT "Ended ",strftime("%H:%M:%S %d/%m/%Y",localtime),"\n";
-	close(FILESTAT);
+	close FILESTAT;
 	
 	####> 7th: Move all the created files in a specific directory so as to clean the directory
 	#if ($ratioType=~/S\w+Ratio|None/) {
 		#foreach my $scriptName ('AnalysisDiffLimma.R','FunctionLimma.R','AffectDefaultValuesLimma.R','AffectParametersLimma.R') {
 		#	unlink "$runDir/$scriptName";
 		#}
-		unlink "$runDir/AnalysisDiffLimma.R";
+		#unlink "$runDir/AnalysisDiffLimma.R";
 	#}
-	
+
 	mkdir "$promsPath{quantification}/project_$projectID" unless -e "$promsPath{quantification}/project_$projectID";
 	dirmove($runDir,"$promsPath{quantification}/project_$projectID/quanti_$quantifID");
-	
+
 	sleep 2;
 	
 }
@@ -2852,11 +3577,18 @@ sub endQuantification { # Globals: $quantifID,%promsPath,%quantifParameters,$run
 ####<Computing protein abundance (mean, median, sum & LFQ?)>####
 ################################################################
 sub splitResultsPepFile {
-	my ($numJobs)=@_;
+	my ($numAbundJobs)=@_;
 	
 	open(FILESTAT,">>$fileStat");
 	print FILESTAT "3/$numSteps Computing protein abundances\n";
 	close FILESTAT;
+				
+	system "rm -rf $resultDir/ABUND*" if glob("$resultDir/ABUND*"); # clean up, just to be safe
+	if ($numAbundJobs==1) {
+		mkdir "$resultDir/ABUND1";
+		system "ln -s $resultDir/resultsPep.txt $resultDir/ABUND1/resultsPep.txt";
+		exit;
+	}
 	
 	my ($header,%pepHeader2Idx,%proteinData);
 	open(PEP,"$resultDir/resultsPep.txt") || die $!;
@@ -2877,7 +3609,7 @@ sub splitResultsPepFile {
 	close PEP;
 	
 	my %fileHandle;
-	foreach my $job (1..$numJobs) {
+	foreach my $job (1..$numAbundJobs) {
 		rmtree "$resultDir/ABUND$job" if -e "$resultDir/ABUND$job"; # just to be safe
 		mkdir "$resultDir/ABUND$job";
 		open ($fileHandle{$job},">$resultDir/ABUND$job/resultsPep.txt") || die $!;
@@ -2889,30 +3621,43 @@ sub splitResultsPepFile {
 			print {$fileHandle{$currentJob}} $lineData; # contains "\n"
 		}
 		$currentJob++;
-		$currentJob=1 if $currentJob > $numJobs;
+		$currentJob=1 if $currentJob > $numAbundJobs;
 	}
-	foreach my $job (1..$numJobs) {
+	foreach my $job (1..$numAbundJobs) {
 		close $fileHandle{$job};
 	}
 	
 	exit;
 }
-sub runProteinAbundance {
-	my ($numJobs)=@_;
-	
+
+sub runProteinAbundance { # all non-absolute measures: SUM,MEDIAN,...,LFQ
+	my ($numAbundJobs)=@_;
+
+	system "rm -f $resultDir/results_* errorLFQ.txt"; # in case restored from quantif w. LFQ bug (job file is copied into $resultDir)
+
 	####<Launching parallel LFQ jobs>####
+	open (ABUND_LOG,">$resultDir/abundance.log");
+	print ABUND_LOG "$numAbundJobs job(s) to run\n";
 	my %cluster=&promsConfig::getClusterInfo;
-	if ($cluster{'on'}) { #$numJobs > 1 && 
+
+	if ($numAbundJobs > 1 && $cluster{'on'}) {
+
+		#<Detect PTM quantif
+		my $dataLine=`head $dataDir/table.txt | tail -1`;
+		my $isModifQuantif=($dataLine=~/^\d+\-\S/)? 1 : 0;
+
 		my $MAX_PARALLEL_QUANTIFS=$cluster{'maxJobs'};
-#$MAX_PARALLEL_QUANTIFS=25;
+		#$MAX_PARALLEL_QUANTIFS=25;
 		my $cgiUnixDir=`pwd`;
 		$cgiUnixDir=~s/\/*\s*$//; # cd is required for script to find myproms .pm files!!!!
 
-		my $startMem=int(1.5 * $numJobs**2 / 4500); # numJobs <=> num bio/tech replicates
-		#my $startMem=int(1.5 * $numJobs / 12.5);
+		#my $startMem=int(1.5 + $numAbundJobs**2 / 4500); # numAbundJobs <=> num bio/tech replicates
+		my $startMem=($isModifQuantif)? int(1.5 + $numAbundJobs**2 / 1500) : int(1.5 + $numAbundJobs**2 / 4500); # numAbundJobs <=> num bio/tech replicates, x3 for PTM quantif
+		#my $startMem=int(1.5 + $numAbundJobs / 12.5);
 		#my $startMem=32; # in Gb <-------------------------
+		print ABUND_LOG $startMem."Gb RAM/job\n";
+		close ABUND_LOG;
 		my %allJobsParameters=(
-			#maxMem=>$startMem.'Gb',
 			numCPUs=>1,
 			maxHours=>48,
 			pbsRunDir=>$cgiUnixDir,
@@ -2921,22 +3666,40 @@ sub runProteinAbundance {
 		
 		my (%launchedJobs,	# total num jobs launched (finished + running)
 			%runningJobs,	# num jobs currently running
-			%triedJobs		# num tries for each job (max. 3/job allowed before erroring quantif)
+			%durationJobs,	# records job duration statistics
+			%triedJobs,		# num tries for each job (max. 3/job allowed before erroring quantif)
+			%restartJobs	# jobs restarted because of error or bad cluster nodes
 			);
-		my $numJobToRun=$numJobs;
+		my $numJobToRun=$numAbundJobs;
+		my $numJobsFinished=0;
 		MAIN_LOOP:while ($numJobToRun) {
 
 			###<Parallel launch of up to $MAX_PARALLEL_QUANTIFS jobs
+			open (ABUND_LOG,">>$resultDir/abundance.log");
 			while (scalar (keys %runningJobs) < $MAX_PARALLEL_QUANTIFS) {
 				
 				#<Scan all job lists for job to be run (in case a previously launched job has failed and must be relaunched)
 				my $currentJob=0;
-				foreach my $job (1..$numJobs) {
+				foreach my $job (1..$numAbundJobs) {
+					my $jobDir="$resultDir/ABUND$job";
 					if (!$launchedJobs{$job}) {
-						if (-e "$resultDir/ABUND$job/end.flag") { # in case using data from previous incomplete quantif
+						if (-e "$jobDir/end.flag") { # in case using data from previous incomplete quantif
 							$launchedJobs{$job}=1;
 							$numJobToRun--;
+							my @statStart=stat("$jobDir/run.flag");
+							$durationJobs{START}{$job}=$statStart[9];
+							my @statEnd=stat("$jobDir/end.flag");
+							push @{$durationJobs{ALL}},$statEnd[9]-$durationJobs{START}{$job} if $statEnd[9]-$durationJobs{START}{$job} > 10; # job duration in seconds/ check in case restored w/o timestamp
+							print ABUND_LOG "Job #$job already run. Skipping\n";
 							next;
+						}
+						elsif (-e "$resultDir/ABUND$job/launch.flag") { # in case incomplete job launched by previously failed master quantification => clean dir
+							opendir (DIR,"$resultDir/ABUND$job");
+							while (my $file=readdir(DIR)) {
+								next if ($file eq '.' || $file eq '..' || $file eq 'resultsPep.txt');
+								unlink "$resultDir/ABUND$job/$file";
+							}
+							close DIR;
 						}
 						$currentJob=$job;
 						last;
@@ -2944,22 +3707,25 @@ sub runProteinAbundance {
 				}
 				last unless $currentJob; # no more jobs to launch (but some jobs could still be running)
 
-				#<Launchjob
+				#<Launching a new job
 				my $jobDir="$resultDir/ABUND$currentJob";
 				system "echo LAUNCH > $jobDir/launch.flag"; # launch flag file
 				my %jobParameters=%allJobsParameters;
-				$jobParameters{'commandBefore'}="echo RUN > $jobDir/run.flag", # run flag file
-				$jobParameters{'commandAfter'}="echo END > $jobDir/end.flag", # end flag file
+				# $jobParameters{'commandBefore'}="echo RUN > $jobDir/run.flag"; # run flag file
+				# $jobParameters{'commandAfter'}="echo END > $jobDir/end.flag"; # end flag file
 				
 				my $commandString="export LC_ALL=\"C\"; cd $cgiUnixDir; $cluster{path}{perl}/perl runXICProtQuantification.pl $quantifID $quantifDate ABUND_JOB:$currentJob"; # 2> $jobDir/errorJob.txt
 				
 				while (1) { # try launching job (max 3 times)
 					$triedJobs{$currentJob}++;
+					$restartJobs{$currentJob}++ if $triedJobs{$currentJob} > 1;
 					$jobParameters{'jobName'}="myProMS_protQuant_ABUND_$quantifID.$currentJob.$triedJobs{$currentJob}";
-					$jobParameters{'maxMem'}=($startMem * $triedJobs{$currentJob}).'Gb';
+					$jobParameters{'maxMem'}=int($startMem + 0.5 * $startMem * ($triedJobs{$currentJob}-1)).'Gb';
+					
+					print ABUND_LOG "Launching job #$currentJob ($jobParameters{maxMem} RAM)... ";
 					my ($pbsError,$pbsErrorFile,$jobClusterID)=$cluster{'runJob'}->($jobDir,$commandString,\%jobParameters);
 					if ($pbsError) {
-						if ($triedJobs{$currentJob} == 3) {
+						if ($triedJobs{$currentJob} == 5) {
 							die "Job #$currentJob ($jobClusterID): $pbsError\n"; # error will be handled by parent process (MASTER)
 						}
 						else { # clean dir & retry
@@ -2970,26 +3736,30 @@ sub runProteinAbundance {
 							}
 							close DIR;
 							sleep 10;
+							print ABUND_LOG "failed (x$triedJobs{$currentJob})!\n";
 						}
 					}
 					else {
 						@{$runningJobs{$currentJob}}=($jobDir,$pbsErrorFile,$jobClusterID);
 						$launchedJobs{$currentJob}=1;
+						print ABUND_LOG "running on $jobClusterID\n";
 						last;
 					}
 				}
 				
 				my $numJobsLaunched=scalar keys %launchedJobs;
+				my $numJobsRestarted=scalar keys %restartJobs;
+				my $restartStrg=($numJobsRestarted)? " [$numJobsRestarted restarted]" : '';
 				open(FILESTAT,">>$fileStat");
 				if ($numJobToRun >= $MAX_PARALLEL_QUANTIFS) {
-					print FILESTAT "3/$numSteps Computing abundances ($numJobsLaunched/$numJobs tasks launched)\n";
+					print FILESTAT "3/$numSteps Computing abundances ($numJobsLaunched/$numAbundJobs tasks launched$restartStrg)\n";
 				}
 				else { # less than $MAX_PARALLEL_QUANTIFS jobs left: display number of remaining jobs
-					print FILESTAT "3/$numSteps Computing abundances ($numJobToRun/$numJobs tasks remaining)\n";
+					print FILESTAT "3/$numSteps Computing abundances ($numJobToRun/$numAbundJobs tasks remaining$restartStrg)\n";
 				}
 				close FILESTAT;
 				
-				last if $numJobsLaunched==$numJobs; # not necessary
+				last if $numJobsLaunched==$numAbundJobs; # not necessary
 				sleep 5;
 			}
 			
@@ -2997,10 +3767,16 @@ sub runProteinAbundance {
 			sleep 30;
 			foreach my $job (sort{$a<=>$b} keys %runningJobs) {
 				my ($jobDir,$pbsErrorFile,$jobClusterID)=@{$runningJobs{$job}};
+
+				#<Check for error
 				if (-e $pbsErrorFile) {
 					my $pbsError=$cluster{'checkError'}->($pbsErrorFile);
 					if ($pbsError) {
-						if ($triedJobs{$job} == 3) {
+						print ABUND_LOG "**Job #$job on $jobClusterID has failed $triedJobs{$job} time(s)!**\n";
+						if ($triedJobs{$job} == 5) {
+							close ABUND_LOG;
+							system "echo FAILED > $jobDir/failed.flag";
+							unlink "$jobDir/end.flag" if -e "$jobDir/end.flag";
 							die "Job #$job ($jobClusterID) has failed"; #error will be handled by parent process (MASTER)
 							#$numJobToRun--;
 						}
@@ -3014,29 +3790,115 @@ sub runProteinAbundance {
 							close DIR;
 							delete $runningJobs{$job};
 							delete $launchedJobs{$job};
+							delete $durationJobs{START}{$job} if $durationJobs{START};
 							next; # job
 						}
 					}
 				}
-				if (-e "$jobDir/end.flag") { # job has ended
+
+				if (-e "$jobDir/end.flag") { #  new job has ended without (cluster launch) error
 					delete $runningJobs{$job};
+					if (!-e "$jobDir/resultsLFQ.txt") { # unexpected script error
+						print ABUND_LOG "**Job #$job on $jobClusterID has ended prematurely!**\n";
+						#<Clean jobDir except resultsPep.txt
+						opendir(DIR,$jobDir);
+						while (my $file = readdir(DIR)) {
+							next if ($file eq '.' || $file eq '..' || $file eq 'resultsPep.txt');
+							unlink	"$jobDir/$file";
+						}
+						close DIR;
+						delete $launchedJobs{$job};
+						delete $durationJobs{START}{$job} if $durationJobs{START};
+						next; # job
+					}
+
+					#<End with no error
 					$numJobToRun--;
+					$numJobsFinished++;
+					print ABUND_LOG "Job #$job is finished\n";
+
+					#<Computing job duration statistics
+					if (!$durationJobs{START} || !$durationJobs{START}{$job}) {
+						my @statStart=stat("$jobDir/run.flag");
+						$durationJobs{START}{$job}=$statStart[9];
+					}
+					my @statEnd=stat("$jobDir/end.flag");
+					push @{$durationJobs{ALL}},$statEnd[9]-$durationJobs{START}{$job}; # job duration in seconds
+					my $numDurations=scalar @{$durationJobs{ALL}};
+					if (scalar  keys %launchedJobs > $numJobToRun && $numDurations >= 3) { # more than half jobs finished
+						my @sortedDurations=sort{$a<=>$b} @{$durationJobs{ALL}};
+						my $midRank=int($numDurations/2);
+						my $median=($midRank % 2)? $sortedDurations[$midRank] : ($sortedDurations[$midRank-1]+$sortedDurations[$midRank])/2;
+						my $lowQuatRank=int($numDurations/4);
+						my $lowerQuatLimit=($lowQuatRank % 2)? $sortedDurations[$lowQuatRank] : ($sortedDurations[$lowQuatRank-1]+$sortedDurations[$lowQuatRank])/2;
+						my $upQuatRank=int(3*$numDurations/4);
+						my $upperQuatLimit=($upQuatRank % 2)? $sortedDurations[$upQuatRank] : ($sortedDurations[$upQuatRank-1]+$sortedDurations[$upQuatRank])/2;
+						my $outLimit=$upperQuatLimit + 1.5*($upperQuatLimit-$lowerQuatLimit); # Q3 + 1.5 * IQR = upper outlier limit
+						$durationJobs{LIMIT}=($outLimit < 900)? 900: ($outLimit < 2*$median)? 2*$median : int(0.5+$outLimit); # allow at least 15 min or 2 medians
+						#$durationJobs{MEDIAN_STRG}=int($median/60).'m'.($median % 60).'s';
+						print ABUND_LOG "[Job duration statistics for $numDurations recorded jobs: median=$median sec, max. allowed=$durationJobs{LIMIT} sec\n";
+					}
+
+					if ($numJobToRun < $MAX_PARALLEL_QUANTIFS) { # less than $MAX_PARALLEL_QUANTIFS jobs left: display number of remaining jobs
+						open(FILESTAT,">>$fileStat");
+						print FILESTAT "3/$numSteps Computing abundances ($numJobToRun/$numAbundJobs tasks remaining)\n";
+						close FILESTAT;
+					}
 				}
+
+				elsif (-e "$jobDir/run.flag") { # job is running
+					if (!$durationJobs{START} || !$durationJobs{START}{$job}) {
+						my @statStart=stat("$jobDir/run.flag");
+						$durationJobs{START}{$job}=$statStart[9];
+					}
+					if ($durationJobs{LIMIT}) { # Check if job is not taking too long (Some cluster nodes are deficient!!!)
+						my $now=time; # time in sec
+						if ($now-$durationJobs{START}{$job} > $durationJobs{LIMIT} * $triedJobs{$job}) { # job has been running for too long => Kill & prepare for relaunch
+							my $jobClusterID=$runningJobs{$job}[2];
+							print ABUND_LOG "Job #$job on $jobClusterID is taking too long (attempt #$triedJobs{$job}). Killing... ";
+							$cluster{'killJob'}->([$jobClusterID]);
+							if ($triedJobs{$job} == 3) {
+								print ABUND_LOG "No more retry. Quantification has failed!\n";
+								close ABUND_LOG;
+								system "echo FAILED > $jobDir/failed.flag";
+								unlink "$jobDir/end.flag" if -e "$jobDir/end.flag";
+								die "Job #$job ($jobClusterID) has failed"; #error will be handled by parent process (MASTER)
+							}
+							opendir (DIR,$jobDir);
+							while (my $file=readdir(DIR)) {
+								next if ($file eq '.' || $file eq '..' || $file eq 'resultsPep.txt');
+								unlink "$jobDir/$file";
+							}
+							close DIR;
+							delete $runningJobs{$job};
+							delete $launchedJobs{$job};
+							delete $durationJobs{START}{$job};
+							print ABUND_LOG "Successfully killed\n";
+							sleep 10;
+						}
+					}
+				}
+
 				sleep 2;
 			}
+			close ABUND_LOG;
 		}
 	}
-	else { # local job
+	else { # single job or no cluster ("local" run)
+		close ABUND_LOG;
 		my $MAX_PARALLEL_QUANTIFS=&promsConfig::getMaxParallelJobs;
-#$MAX_PARALLEL_QUANTIFS=4;		
+		#$MAX_PARALLEL_QUANTIFS=4;		
 		my %runningJobs;
-		my $numJobToRun=$numJobs;
+		my $numJobToRun=$numAbundJobs;
 		$SIG{CHLD} = sub { # sub called when child communicates with parent (occur during parent sleep)
 			local $!; # good practice. avoids changing errno.
 			while (1) { # while because multiple children could finish at same time
 				my $childPid = waitpid(-1,WNOHANG); # WNOHANG: parent doesn't hang during waitpid
 				#my $childPid = waitpid(-1,POSIX->WNOHANG); # WNOHANG: parent doesn't hang during waitpid
 				last unless ($childPid > 0); # No more to reap.
+				open (ABUND_LOG,">>$resultDir/abundance.log");
+				print ABUND_LOG "Job #$runningJobs{$childPid} is finished\n";
+				close ABUND_LOG;
 				delete $runningJobs{$childPid}; # untrack child.
 				$numJobToRun--;
 			}
@@ -3044,14 +3906,15 @@ sub runProteinAbundance {
 	
 		####>Looping through job list (No restart on job error!)
 		my $currentJob=0;
-		MAIN_LOOP:while ($numJobToRun) {
+		MAIN_LOOP:while ($currentJob < $numAbundJobs) {
 	
 			###>Parallel launch of up to $MAX_PARALLEL_QUANTIFS jobs
+			open (ABUND_LOG,">>$resultDir/abundance.log");
 			my $newJobs=0;
 			while (scalar (keys %runningJobs) < $MAX_PARALLEL_QUANTIFS) {
 					
 				##>Also check other user/launches jobs
-				my $numProc=`ps -edf | grep runXICProtQuantification.pl | grep ABUND_JOB | grep -v grep | wc -l`;
+				my $numProc=`ps -edf | grep ABUND_JOB | grep -v grep | wc -l`;
 				chomp($numProc);
 				last if $numProc >= $MAX_PARALLEL_QUANTIFS;
 	
@@ -3060,27 +3923,33 @@ sub runProteinAbundance {
 				my $jobDir="$resultDir/ABUND$currentJob";
 				if (-e "$jobDir/end.flag") { # in case using data from previous incomplete quantif
 					$numJobToRun--;
+					print ABUND_LOG "Job #$currentJob already run. Skipping\n";
 				}
 				else {
-					system "echo LAUNCH > $jobDir/launch.flag"; # launch flag file
+					print ABUND_LOG "Launching job #$currentJob... ";
 					my $childPid = fork;
-					unless ($childPid) { # child here	
+					unless ($childPid) { # child here
+						close ABUND_LOG;
+						#system "echo RUN > $jobDir/run.flag", # run flag file
 						system "./runXICProtQuantification.pl $quantifID $quantifDate ABUND_JOB:$currentJob";					
+						#system "echo END > $jobDir/end.flag", # end flag file
 						exit;
 					}
 					$runningJobs{$childPid}=$currentJob;
+					print ABUND_LOG " OK\n";
 				}
-				last MAIN_LOOP if $currentJob==$numJobs; # no more jobs to launch => break MAIN_LOOP
 				$newJobs++;
+				last if $currentJob==$numAbundJobs; # no more jobs to launch
 				sleep 2;
 			}
-			
+			close ABUND_LOG;
+
 			if ($newJobs) {
 				open(FILESTAT,">>$fileStat");
-				print FILESTAT "3/$numSteps Computing abundances ($currentJob/$numJobs tasks launched)\n";
+				print FILESTAT "3/$numSteps Computing abundances ($currentJob/$numAbundJobs tasks launched)\n";
 				close FILESTAT;
 			}
-	
+
 			###>Wait for potential ended job before next MAIN_LOOP
 			sleep 60; # $SIG{CHLD} is active during sleep
 	
@@ -3092,27 +3961,67 @@ sub runProteinAbundance {
 			sleep 60; # $SIG{CHLD} is active during sleep
 			if ($jobsLeft > $numJobToRun) { # job(s) have ended
 				open(FILESTAT,">>$fileStat");
-				print FILESTAT "3/$numSteps Computing abundances ($numJobToRun/$numJobs tasks remaining)\n";
+				print FILESTAT "3/$numSteps Computing abundances ($numJobToRun/$numAbundJobs tasks remaining)\n";
 				close FILESTAT;
 			}
 		}
 	}
-	
+
 	exit;
 }
 
 
 sub jobProteinAbundance {
-	my ($jobNumber)=@_;
-	my $jobDir="$resultDir/ABUND$jobNumber";
+	my ($job)=@_;
+	my $jobDir="$resultDir/ABUND$job";
+	system "echo RUN > $jobDir/run.flag"; # run flag file
+
+	my %measureUsed;
+	my ($minPepRatioLFQ,$stabilzeLargRatios)=(1,1); # default
+	foreach my $measType (@{$quantifParameters{'DB'}{'ABUND_MEASURES'}}) {
+		next if ($measType =~ /^aLFQ/);
+		if ($measType =~ /MY_LFQ,(\d),(\d)/) {
+			$measType='MY_LFQ';
+			($minPepRatioLFQ,$stabilzeLargRatios)=($1,$2);
+		}
+		$measureUsed{$measType}=1;
+	}
 	
 	###<Running LFQ>###
-	my $minPepRatioLFQ=($quantifParameters{'DB'}{'NUM_LFQ_RATIOS'})? $quantifParameters{'DB'}{'NUM_LFQ_RATIOS'}[0] : 1;
-	system "$pathPython/python3 $promsPath{python_scripts}/computeLFQ.py -i $jobDir/resultsPep.txt -o $jobDir/resultsLFQ.txt -m $minPepRatioLFQ -f 2> $jobDir/commentsLFQ.txt";
+	if ($measureUsed{'MY_LFQ'}) {
+		#my $minPepRatioLFQ=($quantifParameters{'DB'}{'NUM_LFQ_RATIOS'})? $quantifParameters{'DB'}{'NUM_LFQ_RATIOS'}[0] : 1;
+		my $SLRflag=($stabilzeLargRatios)? '-s' : '';
+		my $aggregRepFlag=($normalizeProteins)? '' : '-a';
+		my $LFQcommand="$pathPython3/python3 $promsPath{python_scripts}/computeLFQ.py -i $jobDir/resultsPep.txt -o $jobDir/resultsLFQ.txt -m $minPepRatioLFQ $SLRflag $aggregRepFlag -f 2> $jobDir/commentsLFQ.txt";
+		system $LFQcommand;
+
+		##<Check LFQ results (1 failure allowed)
+		my $killedLFQ;
+		if (-e "$jobDir/commentsLFQ.txt") {
+			$killedLFQ=`grep Killed $jobDir/commentsLFQ.txt`;
+			$killedLFQ=~s/\s//g;
+		}
+		if (!-e "$jobDir/resultsLFQ.txt" || -z "$jobDir/resultsLFQ.txt" || $killedLFQ) { # no/empty file or killed
+			unlink "$jobDir/resultsLFQ.txt" if -e "$jobDir/resultsLFQ.txt";
+			unlink "$jobDir/commentsLFQ.txt" if -e "$jobDir/commentsLFQ.txt"; 
+			system $LFQcommand;
+		}
+	}
+	
+	####<Loading list of ghost peptides>####
+	my %isGhostPeptide;
+	if ($countIdentifiedPep && -e "$dataDir/ghosts.txt") {
+		open(GHOST,"$dataDir/ghosts.txt");
+		while(<GHOST>) {
+			chomp;
+			$isGhostPeptide{$_}=1;
+		}
+		close GHOST;
+	}
 	
 	####<Parsing peptide results & computing peptide counts (NUM_PEP_TOTAL, NUM_PEP_USED & DIST_PEP_USED)>####
 	my (%allProteins,%peptideValues,%proteinData); # Set <=> num label channels (1 for Label-Free)
-
+my ($multiBioRep,$multiTechRep)=(0,0);
 	open(PEP,"$jobDir/resultsPep.txt");
 	my %pepHeader2Idx;
 	while(<PEP>) {
@@ -3130,11 +4039,13 @@ sub jobProteinAbundance {
 		####<Data------------------
 		my $protID0=$lineData[$pepHeader2Idx{'ProteinID'}];
 		my $numPeptides=0;
+		my $numTruePeptides=0;
 		foreach my $pepID (split(/[\.\+\=]/,$lineData[$pepHeader2Idx{'PeptideId'}])) {
-			$allProteins{$protID0}{$pepID}=1; # pepID recorded in case Labeling
+			$allProteins{$protID0}{$pepID}=1; # for NUM_PEP_TOTAL & in case Labeling
 			$numPeptides++;
+			$numTruePeptides++ if ($countIdentifiedPep && !$isGhostPeptide{$pepID});
 		}
-		next if $lineData[$pepHeader2Idx{'out'}] ne 'NA'; # skip outliers
+		next if ($lineData[$pepHeader2Idx{'out'}] ne 'NA' && $lineData[$pepHeader2Idx{'out'}] ne 'outBalanceStates'); # skip outliers but not those considered outliers for ratios
 		my $state=$lineData[$pepHeader2Idx{'Condition'}];
 		my ($statePos)=$state=~/State(\d+)/;
 		my $bioRep=$lineData[$pepHeader2Idx{'replicate'}];
@@ -3142,9 +4053,13 @@ sub jobProteinAbundance {
 		my $seqVarMod=(split(/_/,$lineData[$pepHeader2Idx{'Peptide'}]))[0];
 		$proteinData{'NUM_PEP_USED'}{$protID0}{$statePos}+=$numPeptides;
 		$proteinData{'DIST_PEP_USED'}{$protID0}{$statePos}{$seqVarMod}=1; # DIST_PEP_USED
+		$proteinData{'NUM_TRUE_USED'}{$protID0}{$statePos}+=$numTruePeptides if $countIdentifiedPep;
 
 		####<Normalized peptide values
 		push @{$peptideValues{$protID0}{$statePos}{$bioRep}{$techRep}},2**$lineData[$pepHeader2Idx{'log2Measure'}];
+
+		$multiTechRep=1 if scalar keys %{$peptideValues{$protID0}{$statePos}{$bioRep}} > 1;
+		$multiBioRep=1 if scalar keys %{$peptideValues{$protID0}{$statePos}} > 1;
 	}
 	close PEP;
 	
@@ -3155,12 +4070,13 @@ sub jobProteinAbundance {
 		print PROT "\n",$protID0,"\t",scalar keys %{$allProteins{$protID0}};
 	}
 	close PROT;
-	
-	####<Computing protein abundance (mean, median & sum)>####
-	my @quantTypes=('SUM_INT','MEAN_INT','MEDIAN_INT');
+
+	####<Computing protein abundance (mean, geo mean, median & sum)>####
+	my $replicType=(!$normalizeProteins)? '' : ($multiBioRep || !$multiTechRep)? 'bio' : 'tech'; # in last case: only 1 bio rep anyway
+	my @quantTypes=('SUM_INT','MEAN_INT','GEO_MEAN_INT','MEDIAN_INT');
 	foreach my $protID0 (keys %peptideValues) {
 		foreach my $statePos (keys %{$peptideValues{$protID0}}) {
-			my %bioRepAbundance;
+			my %replicAbundance;
 			foreach my $bioRep (keys %{$peptideValues{$protID0}{$statePos}}) {
 				my %techAbundance;
 				foreach my $techRep (keys %{$peptideValues{$protID0}{$statePos}{$bioRep}}) {
@@ -3169,10 +4085,12 @@ sub jobProteinAbundance {
 					my $midPos1=$midPos+1;
 					my $mustAverage=($numValues % 2)? 0 : 1;
 					my $sumValue=0;
-					my $count=0;
+					my $sumLogValue=0;
 					my $medianValue=0;
-					foreach my $pepValue (sort{$a<=>$b} @{$peptideValues{$protID0}{$statePos}{$bioRep}{$techRep}}) {
+					my $count=0;
+					foreach my $pepValue (sort{$a<=>$b} @{$peptideValues{$protID0}{$statePos}{$bioRep}{$techRep}}) { # aggregate all ions in this tech rep
 						$sumValue+=$pepValue;
+						$sumLogValue+=log($pepValue);
 						$count++;
 						if ($count > $midPos1) {next;}
 						elsif ($count==$midPos) {$medianValue=$pepValue;}
@@ -3181,133 +4099,416 @@ sub jobProteinAbundance {
 						}
 					}
 					%{$techAbundance{$techRep}}=(
-						SUM_INT		=>	$sumValue,
-						MEAN_INT	=>	$sumValue/$numValues,
-						MEDIAN_INT	=>	$medianValue
+						SUM_INT			=>	$sumValue,
+						MEAN_INT		=>	$sumValue/$numValues,
+						GEO_MEAN_INT	=>	exp($sumLogValue/$numValues),
+						MEDIAN_INT		=>	$medianValue
 					);
 				}
-				##>Take mean of tech reps
-				my $numTechReps=scalar keys %techAbundance;
-				#foreach my $quantType (@quantTypes) {$bioRepAbundance{$bioRep}{$quantType}=0;}
-				foreach my $techRep (keys %techAbundance) {
-					foreach my $quantType (@quantTypes) {$bioRepAbundance{$bioRep}{$quantType}+=$techAbundance{$techRep}{$quantType};}
+				if ($replicType eq 'tech') { # $normalizeProteins & no bio rep & multiple tech reps => replicates are tech reps
+					%replicAbundance=%techAbundance;
 				}
-				foreach my $quantType (@quantTypes) {$bioRepAbundance{$bioRep}{$quantType}/=$numTechReps;}
+				else { # No protein norm OR multiple bio reps OR no tech rep => replicate(s) are bio rep(s)
+					##>Take MEAN of tech reps
+					my $numTechReps=scalar keys %techAbundance;
+					foreach my $techRep (keys %techAbundance) {
+						foreach my $quantType (@quantTypes) {$replicAbundance{$bioRep}{$quantType}+=$techAbundance{$techRep}{$quantType};}
+					}
+					foreach my $quantType (@quantTypes) {$replicAbundance{$bioRep}{$quantType}/=$numTechReps;}
+				}	
 			}
-			##>Take mean of bio reps
-			my $numBioReps=scalar keys %bioRepAbundance;
-			#foreach my $quantType (@quantTypes) {$bioRepAbundance{$bioRep}{$quantType}=0;}
-			foreach my $bioRep (keys %bioRepAbundance) {
-				foreach my $quantType (@quantTypes) {$proteinData{$quantType}{$protID0}{$statePos}+=$bioRepAbundance{$bioRep}{$quantType};}
+			if ($replicType eq 'tech') { # Normalize prot & no bio rep & multiple tech reps
+				foreach my $techRep (keys %replicAbundance) {
+					foreach my $quantType (@quantTypes) {$proteinData{$quantType}{$protID0}{$statePos}{$techRep}=$replicAbundance{$techRep}{$quantType};}
+				}
 			}
-			foreach my $quantType (@quantTypes) {$proteinData{$quantType}{$protID0}{$statePos}=int(0.5 + ($proteinData{$quantType}{$protID0}{$statePos}/$numBioReps));}
+			elsif ($replicType eq 'bio') { # Normalize prot & multiple bio reps (tech reps already averaged if multiple)
+				foreach my $bioRep (keys %replicAbundance) {
+					foreach my $quantType (@quantTypes) {$proteinData{$quantType}{$protID0}{$statePos}{$bioRep}=int(0.5 + $replicAbundance{$bioRep}{$quantType});} # round potential mean or tech reps
+				}
+			}
+			else { # agragate both
+				##>Take mean of bio reps
+				my $numBioReps=scalar keys %replicAbundance;
+				foreach my $bioRep (keys %replicAbundance) {
+					foreach my $quantType (@quantTypes) {$proteinData{$quantType}{$protID0}{$statePos}+=$replicAbundance{$bioRep}{$quantType};}
+				}
+				foreach my $quantType (@quantTypes) {$proteinData{$quantType}{$protID0}{$statePos}=int(0.5 + ($proteinData{$quantType}{$protID0}{$statePos}/$numBioReps));}
+			}
 		}
 	}
 	
 	####<Printing Abundance to file>####
-	my %dataFiles=(	SUM_INT			=> 'resultsSUM.txt',
-					MEAN_INT		=> 'resultsMEAN.txt',
-					MEDIAN_INT		=> 'resultsMEDIAN.txt',
-					NUM_PEP_USED 	=> 'peptidesUSED.txt',
-					DIST_PEP_USED	=> 'peptidesDIST.txt',
-					NUM_PEP_TOTAL	=> 'peptidesALL.txt',
-					);
-	my $numStates=scalar @{$quantifParameters{'DB'}{'STATES'}};
-	my $headerStrg="ProteinID\tState".join("\tState",1..$numStates)."\n";
+	# my %optDataFiles=(	SUM_INT			=> 'resultsSUM.txt',
+	# 					MEAN_INT		=> 'resultsMEAN.txt',
+	# 					GEO_MEAN_INT	=> 'resultsGEO.txt',
+	# 					MEDIAN_INT		=> 'resultsMEDIAN.txt',
+	# 					NUM_TRUE_USED	=> 'peptidesTRUE.txt'
+	# 				);
+	# my %dataFiles=(	NUM_PEP_USED 	=> 'peptidesUSED.txt',
+	# 				DIST_PEP_USED	=> 'peptidesDIST.txt'
+	# 				); # NUM_PEP_TOTAL in allProteins.txt
+	foreach my $measType (@quantTypes) {
+		$dataFiles{$measType}=$optDataFiles{$measType} if $measureUsed{$measType};
+	}
+	# $dataFiles{'NUM_TRUE_USED'}=$optDataFiles{'NUM_TRUE_USED'} if $countIdentifiedPep;
+	
+	##>>>>> Old (large) file format
+	# my $headerStrg="ProteinID\tState".join("\tState",1..$numStates)."\n";
+	# foreach my $measType (keys %dataFiles) {
+	# 	open (OUT,">$jobDir/$dataFiles{$measType}") || die $!;
+	# 	print OUT $headerStrg;
+	# 	foreach my $protID0 (keys %{$proteinData{$measType}}) {
+	# 		print OUT $protID0;
+	# 		foreach my $statePos (1..$numStates) {
+	# 			print OUT "\t";
+	# 			if ($proteinData{$measType}{$protID0}{$statePos}) {
+	# 				print OUT ($measType eq 'DIST_PEP_USED')? scalar keys %{$proteinData{$measType}{$protID0}{$statePos}} : $proteinData{$measType}{$protID0}{$statePos};
+	# 			}
+	# 			else {
+	# 				print OUT 'NA';
+	# 			}
+	# 		}
+	# 		print OUT "\n";
+	# 	}
+	# 	close OUT;
+	# }
+	##>>>>> New (long) file format
+	my $headerStrg=($replicType)? "ProteinID\tCondition\tReplicate\tValue\n" : "ProteinID\tCondition\tValue\n";
 	foreach my $measType (keys %dataFiles) {
 		open (OUT,">$jobDir/$dataFiles{$measType}") || die $!;
-		print OUT $headerStrg;
+		my ($isPeptide,$header)=($measType=~/_PEP_|_TRUE_/)? (1,"ProteinID\tCondition\tValue\n") : (0,$headerStrg);
+		print OUT $header;
 		foreach my $protID0 (keys %{$proteinData{$measType}}) {
-			print OUT $protID0;
-			foreach my $statePos (1..$numStates) {
-				print OUT "\t";
-				if ($proteinData{$measType}{$protID0}{$statePos}) {
-					print OUT ($measType eq 'DIST_PEP_USED')? scalar keys %{$proteinData{$measType}{$protID0}{$statePos}} : $proteinData{$measType}{$protID0}{$statePos};
+			foreach my $statePos (sort {$a<=>$b} keys %{$proteinData{$measType}{$protID0}}) {
+				if ($replicType && !$isPeptide) { # 4 column format
+					foreach my $replic (keys %{$proteinData{$measType}{$protID0}{$statePos}}) {
+						print OUT "$protID0\tState$statePos\t$replic\t$proteinData{$measType}{$protID0}{$statePos}{$replic}\n";
+					}
 				}
-				else {
-					print OUT 'NA';
+				else { # 3 columns format (peptide counts are fully aggregated for final import)
+					my $value=($measType eq 'DIST_PEP_USED')? scalar keys %{$proteinData{$measType}{$protID0}{$statePos}} : $proteinData{$measType}{$protID0}{$statePos};
+					print OUT "$protID0\tState$statePos\t$value\n";
 				}
 			}
-			print OUT "\n";
 		}
 		close OUT;
 	}
-	
+
+	system "echo END > $jobDir/end.flag"; # end flag file
 	exit;
 }
 
-sub importProteinAbundance {
-	my ($numJobs)=@_;
-	
-	####<Parsing results>####
+sub runSecondaryNormalizations {
+	my ($numAbundJobs,$refPrimaryAbundance,$refProteinAbundance,$refAllPeptides,$refLostProteins)=@_;
+
+	####<Printing data table.txt for normalization>####
+	my %fileHandle;
+	mkdir "$resultDir/resultsNorm" unless -e "$resultDir/resultsNorm";
+	foreach my $measType (keys %dataFiles) {
+		next if $measType=~/_PEP_|_TRUE_/; # skip peptide count measures
+		my $measDir="$resultDir/resultsNorm/$measType";
+		next if (-e $measDir && -e "$measDir/endR.flag");  # already computed
+		rmtree $measDir if -e $measDir; # clean up in case resuming
+		mkdir $measDir;
+		mkdir "$measDir/results";
+		mkdir "$measDir/results/graph";
+		my $measDataDir="$measDir/data";
+		mkdir $measDataDir;
+		#copy("$dataDir/param_char.txt","$measDataDir/param_char.txt"); <- done by ABUND_RSCRIPT
+		#system "ln -s $dataDir/normProtein.txt $measDataDir/normProtein.txt" if -e "$dataDir/normProtein.txt"; # protein normalization file
+		system "cd $measDataDir && ln -s ../../../../data/normProtein.txt $measDataDir/normProtein.txt" if -e "$dataDir/normProtein.txt"; # protein normalization file
+		open($fileHandle{$measType},">$measDataDir/table.txt");
+		print {$fileHandle{$measType}} "Protein_ID\tPeptide\tSample\tTreatment\tReplicate\tTechnical_Replicate\tExperiment\tQuantif_Set\tPeptide_IDs\tProtein_Name\tProtein_Validity\tValue";
+	}
+
+	my $allRowCount=0;
+	my %measRowCount;	
+	foreach my $protID0 (keys %{$refPrimaryAbundance}) {
+		foreach my $statePos (sort{$a<=>$b} keys %{$refPrimaryAbundance->{$protID0}}) {
+			foreach my $replic (keys %{$refPrimaryAbundance->{$protID0}{$statePos}}) { # repX or techRepX
+				my ($bioRep,$techRep)=($replic=~/^tech/)? ('rep1',$replic) : ($replic,'techRep1');
+				foreach my $measType (keys %{$refPrimaryAbundance->{$protID0}{$statePos}{$replic}}) {
+					$allRowCount++;
+					$measRowCount{$measType}++;
+					next unless $fileHandle{$measType}; # in case resuming
+					print {$fileHandle{$measType}} "\n$protID0\tPEP#$protID0\tState$statePos\tNA\t$bioRep\t$techRep\tA\tA0_Q0\t$allRowCount\tProt_$protID0\t1\t$refPrimaryAbundance->{$protID0}{$statePos}{$replic}{$measType}";
+				}
+			}
+		}
+	}
+
+	foreach my $measType (keys %fileHandle) {
+		close $fileHandle{$measType};
+		if ($measRowCount{$measType} && $measRowCount{$measType} > 3) {
+			system "echo END > $resultDir/resultsNorm/$measType/data/endData.flag"; # Data table generated without error
+		}
+		else {
+			warn "ERROR: Not enough entries in $measType starting data file!";
+			sleep 3;
+			&checkForErrors;
+		}
+	}
+
+	####<Launching R normalization for each measure>####
 	open(FILESTAT,">>$fileStat");
-	print FILESTAT "4/$numSteps Parsing results\n";
+	print FILESTAT "4/$numSteps Running protein-level normalization (2/2 Correcting biases)\n";
 	close FILESTAT;
 
-	my %dataFiles=(	MY_LFQ			=> 'resultsLFQ.txt',
-					SUM_INT			=> 'resultsSUM.txt',
-					MEAN_INT		=> 'resultsMEAN.txt',
-					MEDIAN_INT		=> 'resultsMEDIAN.txt',
-					NUM_PEP_USED 	=> 'peptidesUSED.txt',
-					DIST_PEP_USED	=> 'peptidesDIST.txt'
-					);
-	my (%proteinAbundance,%allPeptides,%lostProteins);
-	JOB:foreach my $job (1..$numJobs) {
-		my $jobDir="$resultDir/ABUND$job";
-		
-		###<Combining data after outlier filtering>###
-		foreach my $measType (keys %dataFiles) {
-			unless (-e "$jobDir/$dataFiles{$measType}") {
-				warn "File $dataFiles{$measType} not found for job #$job";
-				last JOB;
-			}
-			open(RES,"$jobDir/$dataFiles{$measType}") || die $! ;
-			my @statePos;
-			while(<RES>) {
-				chomp;
-				my @lineData=split(/\t/,$_);
-				####>Header------------------
-				if ($.==1) { # 1st line of the file
-					$statePos[0]=0; # not used
-					foreach my $idx (1..$#lineData) {
-						my ($statePos)=$lineData[$idx]=~/State(\d+)/;
-						$statePos[$idx]=$statePos; # 1..n
+	if ($cluster{'on'}) { # Cluster
+		my $cgiUnixDir=`pwd`;
+		$cgiUnixDir=~s/\/*\s*$//; # cd is required for script to find myproms .pm files!!!!
+		my $normMaxMem=int(1.5 + 5E-6 * (scalar keys %{$refPrimaryAbundance}) * (scalar @{$quantifParameters{'DB'}{'STATES'}}));
+		my %allJobsParameters=(
+			numCPUs=>1,
+			maxMem=>$normMaxMem.'Gb',
+			maxHours=>48,
+			pbsRunDir=>$cgiUnixDir,
+			noWatch=>1 # Do not auto watch job
+		);
+		#<Launching all norm jobs
+		my %runningJobs;
+		foreach my $measType (keys %fileHandle) {
+			my $measDir="$resultDir/resultsNorm/$measType";
+			system "echo LAUNCH > $measDir/launch.flag"; # launch flag file
+			my %jobParameters=%allJobsParameters;
+			# $jobParameters{'commandBefore'}="echo RUN > $measDir/runR.flag", # run flag file
+			# $jobParameters{'commandAfter'}="rm -f $measDir/runR.flag; echo END > $measDir/endR.flag", # end flag file
+			$jobParameters{'jobName'}="myProMS_protQuant_ABUND_$quantifID.NORM.$measType";
+			my $commandString="export LC_ALL=\"C\"; cd $cgiUnixDir; $cluster{path}{perl}/perl runXICProtQuantification.pl $quantifID $quantifDate ABUND_RSCRIPT:$measType 2>> $errorFile"; # 2> $measDir/errorJob.txt
+			
+			my ($pbsError,$pbsErrorFile,$jobClusterID)=$cluster{'runJob'}->($measDir,$commandString,\%jobParameters);
+			@{$runningJobs{$measType}}=($measDir,$pbsErrorFile,$jobClusterID);
+			sleep 10;
+		}
+
+		###<Watching running jobs
+		sleep 30;
+		my $numJobToRun=scalar keys %runningJobs;
+		while ($numJobToRun) {
+			foreach my $measType (keys %runningJobs) {
+				my ($measDir,$pbsErrorFile,$jobClusterID)=@{$runningJobs{$measType}};
+
+				#<Check for cluster error
+				if (-e $pbsErrorFile) {
+					my $pbsError=$cluster{'checkError'}->($pbsErrorFile);
+					if ($pbsError) {
+						system "echo FAILED > $measDir/failed.flag";
+						unlink "$measDir/endR.flag" if -e "$measDir/endR.flag";
+						die "Normalization job for $measType ($jobClusterID) has failed"; #error will be handled by parent process (MASTER)
 					}
-					next;
 				}
-				####>Data------------------
-				my $protID0=$lineData[0];
-				foreach my $idx (1..$#lineData) {
-					next if ($lineData[$idx] eq 'NA' || abs($lineData[$idx]) < 1);
-					$proteinAbundance{$protID0}{$statePos[$idx]}{$measType}=$lineData[$idx];
+				if (-e "$measDir/endR.flag") { #  new job has ended without error (ABUND_RSCRIPT already checks for R success)
+					delete $runningJobs{$measType};
+					$numJobToRun--;
 				}
 			}
-			close RES;
+			sleep 30;
+		}
+	}
+	else { # Local
+		my $MAX_PARALLEL_QUANTIFS=&promsConfig::getMaxParallelJobs;		
+		my %runningJobs;
+		my $numJobToRun = my $numNorms = scalar keys %fileHandle;
+		$SIG{CHLD} = sub { # sub called when child communicates with parent (occur during parent sleep)
+			local $!; # good practice. avoids changing errno.
+			while (1) { # while because multiple children could finish at same time
+				my $childPid = waitpid(-1,WNOHANG); # WNOHANG: parent doesn't hang during waitpid
+				#my $childPid = waitpid(-1,POSIX->WNOHANG); # WNOHANG: parent doesn't hang during waitpid
+				last unless ($childPid > 0); # No more to reap.
+				delete $runningJobs{$childPid}; # untrack child.
+				$numJobToRun--;
+			}
+		};
+
+		####<Looping through norm jobs
+		my %measLaunched;
+		my $currentJob=0;
+		MAIN_LOOP:while ($currentJob < $numNorms) {
+	
+			##<Launching all norm jobs up to $MAX_PARALLEL_QUANTIFS jobs
+			foreach my $measType (keys %fileHandle) {
+				next if $measLaunched{$measType}; # already launched
+
+				##>Also check other user/launches jobs
+				my $numProc=`ps -edf | grep ABUND_RSCRIPT | grep -v grep | wc -l`;
+				chomp($numProc);
+				last if $numProc >= $MAX_PARALLEL_QUANTIFS;
+	
+				##>Ok to go
+				$currentJob++;
+				# my $measDir="$resultDir/resultsNorm/$measType";
+				# if (-e "$measDir/endR.flag") { # in case using data from previous incomplete quantif
+				# 	$numJobToRun--;
+				# }
+				# else {
+					my $childPid = fork;
+					unless ($childPid) { # child here
+						system "./runXICProtQuantification.pl $quantifID $quantifDate ABUND_RSCRIPT:$measType";					
+						exit;
+					}
+					$runningJobs{$childPid}=$currentJob;
+					$measLaunched{$measType}=1;
+				# }
+				sleep 2;
+			}
+	
+			###>Wait for potential ended job before next MAIN_LOOP
+			sleep 60; # $SIG{CHLD} is active during sleep
+	
 		}
 		
-		###<Combining data before outlier filtering & lost proteins>###
-		open (PROT,"$jobDir/allProteins.txt");
-		while (<PROT>) {
-			next if $.==1;
-			chomp;
-			my ($protID0,$numPep)=split(/\t/,$_);
-			$allPeptides{$protID0}=$numPep;
-			unless ($proteinAbundance{$protID0}) {
-				$lostProteins{$protID0}=1;
-			}
+		###>Wait for all child processes to end
+		while (scalar (keys %runningJobs) > 0) {
+			sleep 60; # $SIG{CHLD} is active during sleep
 		}
-		close PROT;
-	}	
-	
+
+	}
+
+	&checkForErrors();
+
+	system "echo END > $resultDir/end2ndNorm.flag"; # Protein normalization generated without error
+}
+
+sub processFinalAbundanceResults {
+	my ($stepNumber,$numAbundJobs,$computeAbsolute,$computeNonAbsolute,$refProteinAbundance,$refAllPeptides,$refLostProteins)=@_;
+	#my %absMeasures;  # To store the absolute measures if needed
+
+	####<Parsing abundance results>####
+	open(FILESTAT,">>$fileStat");
+	print FILESTAT "$stepNumber/$numSteps Processing results (1/2 Parsing files)\n";
+	close FILESTAT;
+
+	#####################>>>
+	# if ($computeAbsolute) {
+	# 	&parseAbsoluteQuantif($refProteinAbundance) unless $normalizeProteins; # otherwise will be done after prot normalization
+	# }
+	if ($computeNonAbsolute) {  # Abundance measures other than absolute amounts were computed
+		if ($normalizeProteins) {
+			&parseSecondaryAbundanceResults($refProteinAbundance);
+		}
+		else {
+			&parsePrimaryAbundanceResults($numAbundJobs,$refProteinAbundance,$refAllPeptides,$refLostProteins);
+		}
+	}
+	if ($computeAbsolute) {  # Peptides data and lost proteins not yet computed in that case, so do it
+		&parseAbsoluteQuantif($refProteinAbundance);
+
+		unless ($computeNonAbsolute) { # Tasks below not yet done if only absolute quantif
+			###<Parsing peptide counts for each State>###
+			foreach my $measType (keys %dataFiles) {
+				unless (-e "$absDir/$dataFiles{$measType}") {
+					warn "File $dataFiles{$measType} not found in $absDir";
+					last;
+				}
+				&parseMeasureFile("$absDir/$dataFiles{$measType}", $measType, $refProteinAbundance);
+			}
+			###<Parsing peptide counts for whole dataset before outlier filtering & lost proteins>###
+			&getAllProtInfo("$absDir/allProteins.txt", $refProteinAbundance, $refAllPeptides, $refLostProteins);
+		}
+	}
+	if (!$computeNonAbsolute && !$computeAbsolute) {
+		warn "No abundance measure selected. How did it get this far ?";
+		exit;
+	}
+	#####################<<<
+	# # my %optDataFiles=(	SUM_INT			=> 'resultsSUM.txt',
+	# # 					MEAN_INT		=> 'resultsMEAN.txt',
+	# # 					GEO_MEAN_INT	=> 'resultsGEO.txt',
+	# # 					MEDIAN_INT		=> 'resultsMEDIAN.txt',
+	# # 					NUM_TRUE_USED	=> 'peptidesTRUE.txt',
+	# # 					MY_LFQ			=> 'resultsLFQ.txt'
+	# # 				 );
+	# # my %dataFiles=(	NUM_PEP_USED 	=> 'peptidesUSED.txt',
+	# # 				DIST_PEP_USED	=> 'peptidesDIST.txt'
+	# # 				);
+	# foreach my $measType (@{$quantifParameters{'DB'}{'ABUND_MEASURES'}}) {
+	# 	if ($measType =~ /^aLFQ_/) {  # aLFQ_iBAQ or aLFQ_TOP
+	# 		# foreach my $absMeas (split(';', $measType)) {  # aLFQ_iBAQ,abs_model,normalization;MOL_PERCENT;MOL_CONC;...
+	# 		# 	if ($absMeas =~  /^(aLFQ_[^,]+),/) {
+	# 		# 		$absMeasures{$1} = 1;
+	# 		# 	} else {
+	# 		# 		$absMeasures{$absMeas} = 1;
+	# 		# 	}
+	# 		# }
+	# 	} else {
+	# 		$measType =~ s/,.+//; # MY_LFQ,x,x
+	# 		$dataFiles{$measType} = $optDataFiles{$measType};
+	# 	}
+	# }
+	# # $dataFiles{'NUM_TRUE_USED'}=$optDataFiles{'NUM_TRUE_USED'} if $countIdentifiedPep;
+
+	# my (%proteinAbundance,%allPeptides,%lostProteins);
+
+	# if ($computeAbsolute) {
+	# 	&parseAbsoluteQuantif(\%proteinAbundance);
+	# }
+
+	# if ($computeNonAbsolute) {  # Abundance measures other than absolute amounts are computed
+	# 	JOB:foreach my $job (1..$numAbundJobs) {
+	# 		my $jobDir="$resultDir/ABUND$job";
+
+	# 		###<Combining data after outlier filtering>###
+	# 		foreach my $measType (keys %dataFiles) {
+	# 			unless (-e "$jobDir/$dataFiles{$measType}") {
+	# 				if ($measType eq 'MY_LFQ') { # Do not fail if no LFQ data
+	# 					open(BAD_LFQ,">>$resultDir/errorLFQ.txt");
+	# 					print BAD_LFQ "File $dataFiles{$measType} not found for job #$job\n";
+	# 					close BAD_LFQ;
+	# 					copy("$jobDir/resultsPep.txt","$resultDir/resultsPep_$job.txt");
+	# 					next;
+	# 				}
+	# 				warn "File $dataFiles{$measType} not found for job #$job";
+	# 				last JOB;
+	# 			}
+	# 			&parseMeasureFile("$jobDir/$dataFiles{$measType}", $measType, \%proteinAbundance);
+	# 		}
+	# 		###<Combining data before outlier filtering & lost proteins>###
+	# 		&getAllProtInfo("$jobDir/allProteins.txt", \%proteinAbundance, \%allPeptides, \%lostProteins);
+	# 	}
+	# } elsif ($computeAbsolute) {  # Peptides data and lost proteins not yet computed in that case, so do it
+	# 	###<Combining data after outlier filtering>###
+	# 		foreach my $measType (keys %dataFiles) {
+	# 			unless (-e "$absDir/$dataFiles{$measType}") {
+	# 				warn "File $dataFiles{$measType} not found in $absDir";
+	# 				last;
+	# 			}
+	# 			&parseMeasureFile("$absDir/$dataFiles{$measType}", $measType, \%proteinAbundance);
+	# 		}
+	# 		###<Combining data before outlier filtering & lost proteins>###
+	# 		&getAllProtInfo("$absDir/allProteins.txt", \%proteinAbundance, \%allPeptides, \%lostProteins);
+	# } else {
+	# 	warn "No abundance measure selected. How did it get this far ?";
+	# 	exit;
+	# }
+	#################################<<<
+
+}
+
+sub importAbundanceInDB {
+	my ($stepNumber,$numAbundJobs, $computeAbsolute, $refProteinAbundance,$refAllPeptides,$refLostProteins)=@_;
+
+	my @allMeasures;  # Store all measures from dataFiles AND absolute measures
+	push @allMeasures, (keys %dataFiles);
+	push @allMeasures, (keys %absMeasures);
+
 	####<Recording data in DB>####
 	my $dbh=&promsConfig::dbConnect('no_user');
-
+	&checkForErrors($dbh);
+	open(FILESTAT,">>$fileStat");
+	print FILESTAT "$stepNumber/$numSteps Processing results (2/2 Storing results)\n";
+	close FILESTAT;
+	
 	my ($quantifiedModifID,$quantifModStrg)=$dbh->selectrow_array("SELECT Q.ID_MODIFICATION,GROUP_CONCAT(MQ.ID_MODIFICATION ORDER BY MQ.MODIF_RANK SEPARATOR ',')
 																					 FROM QUANTIFICATION Q
 																					 LEFT JOIN MULTIMODIF_QUANTIFICATION MQ ON Q.ID_QUANTIFICATION=MQ.ID_QUANTIFICATION
 																					 WHERE Q.ID_QUANTIFICATION=$quantifID
 																					 GROUP BY Q.ID_QUANTIFICATION");
-	my $isModifQuantif=($quantifiedModifID || $quantifModStrg)? 1 : 0;
+	my $isModifQuantif=0;
+	if ($quantifiedModifID || $quantifModStrg) {
+		$isModifQuantif=1;
+		$quantifiedModifID=$quantifModStrg if (!$quantifiedModifID && $quantifModStrg !~ /,/); # single PTM: back compatibility in case QUANTIFICATION.ID_MODIFICATION no longer used
+	}
 	
 	####<Fetching list of quantification parameters>####
 	my %quantifParamIDs;
@@ -3318,83 +4519,121 @@ sub importProteinAbundance {
 	}
 	$sthQP->finish;
 	
-	
-	my $sthInsProt=$dbh->prepare("INSERT INTO PROTEIN_QUANTIFICATION (ID_QUANTIFICATION,ID_PROTEIN,ID_QUANTIF_PARAMETER,QUANTIF_VALUE,TARGET_POS) VALUES ($quantifID,?,?,?,?)"); # PK autoincrement
-	my ($sthInsModRes,$sthInsProtRes);
-	if ($isModifQuantif) {
-		$sthInsModRes=($quantifiedModifID)? $dbh->prepare("INSERT INTO MODIFIED_RESIDUE (ID_QUANTIFICATION,RESIDUE,POSITION) VALUES ($quantifID,?,?)")
-										  : $dbh->prepare("INSERT INTO MODIFIED_RESIDUE (ID_QUANTIFICATION,RESIDUE,POSITION,MODIF_RANK) VALUES ($quantifID,?,?,?)");
-		$sthInsProtRes=$dbh->prepare("INSERT INTO PROTQUANTIF_MODRES (ID_MODIF_RES,ID_PROT_QUANTIF) VALUES (?,?)");
-	}
+	my $dbhLite=&promsQuantif::dbCreateProteinQuantification($quantifID,$runDir); # SQLite
+	my $sthInsProt=$dbhLite->prepare("INSERT INTO PROTEIN_QUANTIFICATION (ID_PROTEIN,SITE_CODE,ID_QUANTIF_PARAMETER,QUANTIF_VALUE,TARGET_POS) VALUES (?,?,?,?,?)"); # PK autoincrement
 
-	foreach my $protID0 (keys %proteinAbundance) {
-		my $protID=$protID0; # default
-		my @allModResidues;
-		if ($isModifQuantif) { # modif quantification
-			next if $protID0 !~ /-/; # must be a mod prot
-			($protID,my @modQuantifs)=split(/[-&]/,$protID0);
-			foreach my $modQuantif (@modQuantifs) {
-				my @modResidues;
-				if ($quantifiedModifID) {@modResidues=split('\.',$modQuantif);}
-				else {
-					(my $modifRank,@modResidues)=split(/[#.]/,$modQuantif);
-					foreach my $i (0..$#modResidues) {$modResidues[$i]=$modifRank.'#'.$modResidues[$i];} # Convert '1#V32.K44' into ['1#V32','1#K44']
+	my $numEntities=scalar keys %{$refProteinAbundance};
+	my (%numMissingValues,%protLostLFQ);
+	foreach my $paramCode (@allMeasures) {
+		next if ($paramCode=~/_(USED|PEP)/  || $paramCode=~/^CI_(INF|SUP)/ || $paramCode=~/^GEO_(SD|CV)/); # skip peptide and variability measures
+		foreach my $statePos (1..$numStates) {
+			$numMissingValues{$paramCode}{$statePos}=0;
+		}
+	}
+	my $pcCount=int($numEntities/20); # 5%
+	my $pcEnt=0;
+	my $countEnt=0;
+	foreach my $protID0 (keys %{$refProteinAbundance}) {
+		$countEnt++;
+		if ($numEntities >= 200 && $countEnt==$pcCount) {
+			$pcEnt+=5; # 5%
+			$countEnt=0;
+			open(FILESTAT,">>$fileStat");
+			print FILESTAT "4/$numSteps Processing results (2/2 Storing results [$pcEnt%])\n";
+			close FILESTAT;
+		}
+		my $numMissingLFQ=0;
+		my ($protID,$modStrg)=split(/-/,$protID0);
+		#foreach my $statePos (sort{$a<=>$b} keys %{$refProteinAbundance->{$protID0}}) { # }
+		foreach my $statePos (1..$numStates) {
+			#foreach my $paramCode (keys %{$refProteinAbundance->{$protID0}{$statePos}}) { # also includes (NUM/DIST)_(PEP/TRUE)_USED
+			foreach my $paramCode (@allMeasures) {
+				if (defined $refProteinAbundance->{$protID0}{$statePos}{$paramCode}) {
+					$sthInsProt->execute($protID,$modStrg,$quantifParamIDs{$paramCode},$refProteinAbundance->{$protID0}{$statePos}{$paramCode},$statePos);
 				}
-				&promsQuantif::insertModifiedResidues($protID,\@modResidues,\%modResiduesID,$dbh,$sthInsModRes); # <-- %modResiduesID should be full at <PROT1>
-				push @allModResidues,@modResidues;
+				elsif ($paramCode !~ /_(USED|PEP)/  && $paramCode !~ /^CI_(INF|SUP)/ && $paramCode !~ /^GEO_(SD|CV)/) {
+					$numMissingValues{$paramCode}{$statePos}++;
+					$numMissingLFQ++ if $paramCode eq 'MY_LFQ'; # For LFQ, prot can be missing in all states -> do not count as missing values but as missing prot
+				}
 			}
 		}
-		foreach my $statePos (sort{$a<=>$b} keys %{$proteinAbundance{$protID0}}) {
-			foreach my $paramCode (keys %{$proteinAbundance{$protID0}{$statePos}}) { # includes (NUM/DIST)_PEP_USED
-				$sthInsProt->execute($protID,$quantifParamIDs{$paramCode},$proteinAbundance{$protID0}{$statePos}{$paramCode},$statePos);
-				&promsQuantif::insertProteinModResidues(\@allModResidues,$sthInsProtRes,$modResiduesID{$protID},$dbh->last_insert_id(undef,undef,'PROTEIN_QUANTIFICATION','ID_PROT_QUANTIF')) if $isModifQuantif;
-			}
+		if ($numMissingLFQ==$numStates) { # fully missing in LFQ
+			$protLostLFQ{$protID0}=1;
+			foreach my $statePos (keys %{$numMissingValues{'MY_LFQ'}}) {$numMissingValues{'MY_LFQ'}{$statePos}--;}
 		}
 		#>All peptides
-		$sthInsProt->execute($protID,$quantifParamIDs{'NUM_PEP_TOTAL'},$allPeptides{$protID0},undef);
-		&promsQuantif::insertProteinModResidues(\@allModResidues,$sthInsProtRes,$modResiduesID{$protID},$dbh->last_insert_id(undef,undef,'PROTEIN_QUANTIFICATION','ID_PROT_QUANTIF')) if $isModifQuantif;
+		$sthInsProt->execute($protID,$modStrg,$quantifParamIDs{'NUM_PEP_TOTAL'},$refAllPeptides->{$protID0},undef);
+	}
+	$dbhLite->commit;
+	$dbhLite->disconnect;
+	
+	###<% NA protein/site-level
+	my $numProteins=scalar keys %{$refProteinAbundance};
+	foreach my $paramCode (keys %numMissingValues) {
+		my ($numTotProteins,$fileName)=($paramCode eq 'MY_LFQ')? ($numProteins - (scalar keys %protLostLFQ),'percentageNAProtLFQ.txt') : (defined($dataFiles{$paramCode}))? ($numProteins,'percentageNAProt.txt') : ($paramCode =~ /^MOL/)? ($numProteins,'percentageNAProtMol.txt') : ($numProteins,'percentageNAProtMass.txt');
+		unless (-s "$resultDir/$fileName") {
+			open (MISS,">$resultDir/$fileName");
+			print MISS "State\tPC_NA\n";
+			foreach my $statePos (1..$numStates) {
+				print MISS "State$statePos\t",100*$numMissingValues{$paramCode}{$statePos}/$numTotProteins,"\n";
+			}
+			close MISS;
+		}
+	}
+
+	###<LFQ lost proteins
+	if (scalar keys %protLostLFQ) {
+		my %proteinAliasLFQ;
+		&getProteinAlias($dbh,\%protLostLFQ,\%proteinAliasLFQ);
+		open (LOST,">$resultDir/lostProteinsLFQ.txt");
+		print LOST "Protein_ID\tProtein_Name";
+		foreach my $modProtID (sort{&promsMod::sortSmart($a,$b)} keys %protLostLFQ) {
+			my ($protID)=$modProtID=~/^(\d+)/;
+			print LOST "\n$modProtID\t$proteinAliasLFQ{$protID}";
+		}
+		close LOST;
 	}
 	
-	###>Lost proteins
+	###<Lost proteins (All)
 	my %proteinAlias;
-	if (scalar keys %lostProteins) {
-		foreach my $protID0 (keys %lostProteins) {
-			my ($protID)=($isModifQuantif)? $protID0=~/^(\d+)/ : ($protID0);
-			$proteinAlias{$protID}='-'; # default
-		}
-		
-		my $sthAlias=$dbh->prepare("SELECT ID_PROTEIN,ALIAS FROM PROTEIN WHERE ID_PROTEIN IN (".join(',',keys %lostProteins).")");
-		$sthAlias->execute;
-		while (my ($protID,$alias)=$sthAlias->fetchrow_array) {
-			$proteinAlias{$protID}=$alias;
-		}
-		$sthAlias->finish;
-	}
+	&getProteinAlias($dbh,$refLostProteins,\%proteinAlias);
+
+
+
 	
-	####<Remove temp job directories>####
-	#foreach my $job (1..$numJobs) {
-	#	rmtree "$resultDir/ABUND$job";
-	#}
+	####<Remove temp data>####
+	foreach my $job (1..$numAbundJobs) {
+		rmtree "$resultDir/ABUND$job";
+	}
+	dirmove($absDir, "$resultDir/absolute") if ($computeAbsolute && -e $absDir);
+	unlink "$dataDir/ghosts.txt" if -e "$dataDir/ghosts.txt";
 	
 	####<End quantification process>####
 	my $projectID=&promsMod::getProjectID($dbh,$quantifID,'QUANTIFICATION');
-	&endQuantification($dbh,$projectID,\%lostProteins,\%proteinAlias);
+	&endQuantification($dbh,$projectID,$refLostProteins,\%proteinAlias);
 	
 	exit;
 }
 
 
 
-sub checkInfiniteRatios { # globals: $labeling,$ratioType, @ratioTarget, %infiniteRatioProteins, %noSuperRatioProteins
-# RULES:
-# +Case 1:
-#		-FREE: Compute ratio if at least 1 peptide is shared
-# +Case 2 (Other labelings + FREE if case 1 failed)
-#		-Compute ratio if at least 3 peptides are shared
-# +Case 3: (cases 1 & 2 failed)
-#		-Compute total XIC for unique to test cond, unique to ref cond and shared by ref & test conds (sum of ref+test)
-#		-The highest XIC assigns the ratio type: XICref:-inf, XICtest:+inf, XICshared:normal ratio
+sub checkInfiniteRatios { # globals: $labeling,$ratioType, @ratioTarget, %infiniteRatioProteins, %noSuperRatioProteins, $isModifQuantif
+	# RULES:
+	# 1. Compute normal ratio if num distinct peptides (seq+vmod) shared >= min. count (1 for PTM quantif, 3 otherwise).
+	# 2. Compute normal ratio if num distinct peptides (seq+vmod) shared >= num. distinct in Test or in Ref
+	# 3. If not:
+	#	-Compute sum of xics ponderated by num. distinct peptides for the 3 options: Unique Test / Shared (sum of 2 states) / Unique Ref
+	# 	-Assign ratio type to option with highest xic: +Inf / ratio / -Inf
+	# OLD RULES below are obsolete (PP 09/04/21)
+	## +Case 1:
+	##		-FREE: Compute ratio if at least 1 peptide is shared
+	## +Case 2 (Other labelings + FREE if case 1 failed)
+	##		-Compute ratio if at least 3 peptides are shared
+	## +Case 3: (cases 1 & 2 failed)
+	##		-Compute total XIC for unique to test cond, unique to ref cond and shared by ref & test conds (sum of ref+test)
+	##		-The highest XIC assigns the ratio type: XICref:-inf, XICtest:+inf, XICshared:normal ratio
 	my ($protID,$refNumPepInCond)=@_; # can be a modProtID
+	my $minNumDistinctShared=($isModifQuantif)? 1 : 3; # min num peptides (seq:vmod) to compute normal ratio without considering state-specific ones
 	my %noProteinStates; # needed for SuperRatio +/-inf
 	my $ratioPos=0;
 	foreach my $ratio (@ratioTarget) {
@@ -3415,45 +4654,62 @@ sub checkInfiniteRatios { # globals: $labeling,$ratioType, @ratioTarget, %infini
 		else {
 			$noProteinStates{$ratioPos}{$testCondID}=0; # default
 		#my $expCode=($ratioType eq 'SuperRatio')? chr(64+$ratioPos) : 'NA';
-my $context=($algoType eq 'PEP_RATIO')? $ratio : 'NA'; # Experiment != context (ratio can use multiple experiments)
-			my ($numShared,$xicShared,$xicMinusInf,$xicPlusInf)=(0,0,0,0);
-			my (%usedPepCode,%sharedDistinct);
+			my $context=($algoType eq 'PEP_RATIO')? $ratio : 'NA'; # Experiment != context (ratio can use multiple experiments)
+			my ($xicShared,$xicMinusInf,$xicPlusInf)=(0,0,0,0); #$numShared,
+			my (%usedPepCode,%sharedDistinct,%plusInfDistinct,%minusInfDistinct);
 			foreach my $pepCode (keys %{$refNumPepInCond->{$context}{$testCondID}}) {
-				my ($pepSeq,$vMod,$charge,$dataSrc)=split(':',$pepCode);
+				my ($pepSeq,$vMod,$charge,$infRatioDataSrc)=split(':',$pepCode); # $infRatioDataSrc='-' for label-free
 				
 				foreach my $feature (keys %{$refNumPepInCond->{$context}{$testCondID}{$pepCode}}) {
 					if ($refNumPepInCond->{$context}{$refCondID} && $refNumPepInCond->{$context}{$refCondID}{$pepCode} && $refNumPepInCond->{$context}{$refCondID}{$pepCode}{$feature}) { # shared
 						#$xicShared+=($refNumPepInCond->{$context}{$testCondID}{$pepCode} >= $refNumPepInCond->{$context}{$refCondID}{$pepCode})? $refNumPepInCond->{$context}{$testCondID}{$pepCode} : $refNumPepInCond->{$context}{$refCondID}{$pepCode};
 
 						$xicShared+=($refNumPepInCond->{$context}{$testCondID}{$pepCode}{$feature}[0] + $refNumPepInCond->{$context}{$refCondID}{$pepCode}{$feature}[0]); # Sum of both channels!! (PP 27/10/15)
-##$numShared++;
-$numShared=1;
-						$sharedDistinct{"$pepSeq:$vMod:$feature"}=1;
+	##$numShared++;
+	#$numShared=1;
+						# $sharedDistinct{"$pepSeq:$vMod:$feature"}=1;
+						$sharedDistinct{"$pepSeq:$vMod"}=1; # feature is no longer considered
 						$usedPepCode{"$pepCode:$feature"}=1;
 					}
 					else { # only in testCond
 						$xicPlusInf+=$refNumPepInCond->{$context}{$testCondID}{$pepCode}{$feature}[0];
+						#$plusInfDistinct{"$pepSeq:$vMod:$feature"}=1;
+						$plusInfDistinct{"$pepSeq:$vMod"}=1; # feature is no longer considered
 					}
 				}
 			}
 			foreach my $pepCode (keys %{$refNumPepInCond->{$context}{$refCondID}}) {
+				my ($pepSeq,$vMod,$charge,$infRatioDataSrc)=split(':',$pepCode); # $infRatioDataSrc='-' for label-free
 				foreach my $feature (keys %{$refNumPepInCond->{$context}{$refCondID}{$pepCode}}) {
 					next if $usedPepCode{"$pepCode:$feature"};
 					$xicMinusInf+=$refNumPepInCond->{$context}{$refCondID}{$pepCode}{$feature}[0];
+					#$minusInfDistinct{"$pepSeq:$vMod:$feature"}=1;
+					$minusInfDistinct{"$pepSeq:$vMod"}=1; # feature is no longer considered
 				}
 			}
 			##<Assigning ratio type
-			if ($algoType=~/^(TDA|DIA)$/) { # MS2
-##next if $numShared >= 6; # compute state mean with at least 6 frag
-next if $numShared;
-				next if scalar keys %sharedDistinct >= 6; # normal ratio <===================================================== OVERWRITE THRESHOLD
-			}
-			else { # DDA MS1
-				next if ($labeling eq 'FREE' && $numShared); # compute state mean with any available peptide
-				next if scalar keys %sharedDistinct >= 3; # normal ratio <===================================================== OVERWRITE THRESHOLD
-			}
+			# if ($algoType=~/^(TDA|DIA|MStats)$/) { # MS2 counts
+			# 	##next if $numShared >= 6; # compute state mean with at least 6 frag
+			# 	next if $numShared;
+			# 	next if scalar keys %sharedDistinct >= 6; # normal ratio <===================================================== OVERWRITE THRESHOLD
+			# }
+			# else { # DDA MS1
+			# 	next if ($algoType ne 'PEP_RATIO' && $numShared); # compute state mean with any available peptide former $labeling eq 'FREE' 27/04/20
+			# 	next if scalar keys %sharedDistinct >= 3; # normal ratio <===================================================== OVERWRITE THRESHOLD
+			# }
+			my $numDistinctShared=scalar keys %sharedDistinct;
+			next if $numDistinctShared >= $minNumDistinctShared; # Rule 1
 			
-			next if ($xicShared >= $xicMinusInf && $xicShared >= $xicPlusInf); # normal ratio
+			my $numDistinctPlusInf=scalar keys %plusInfDistinct;
+			my $numDistinctMinusInf=scalar keys %minusInfDistinct;
+			next if ($numDistinctShared >= $numDistinctPlusInf && $numDistinctShared >= $numDistinctMinusInf); # Rule 2
+			
+			#<Ponderate xic by num. distincts peptides
+			$xicShared *= $numDistinctShared;
+			$xicPlusInf *= $numDistinctPlusInf;
+			$xicMinusInf *= $numDistinctMinusInf;
+
+			next if ($xicShared >= $xicMinusInf && $xicShared >= $xicPlusInf); # Rule 3
 			if ($xicPlusInf >= $xicMinusInf) { # +inf
 				$infiniteRatioProteins{$protID}{$ratioPos}=1000;
 				$noProteinStates{$ratioPos}{$refCondID}=1;
@@ -3466,315 +4722,23 @@ next if $numShared;
 	}
 }
 
-#sub checkInfiniteRatios_bad { # globals: $labeling,$ratioType, @ratioTarget, %infiniteRatioProteins, %noSuperRatioProteins
-## RULES:
-## +Case 1:
-##		-FREE: Compute ratio if at least 1 peptide is shared
-## +Case 2 (Other labelings + FREE if case 1 failed)
-##		-Compute ratio if at least 3 peptides are shared
-## +Case 3: (cases 1 & 2 failed)
-##		-Compute total XIC for unique to test cond, unique to ref cond and shared by ref & test conds (sum of ref+test)
-##		-The highest XIC assigns the ratio type: XICref:-inf, XICtest:+inf, XICshared:normal ratio
-#	my ($protID,$refNumPepInCond)=@_; # can be a modProtID
-#	#<Build missing primary ratios for SuperRatio
-#	my (@primaryRatios,%primInfRatioProt,%noProteinStates); # needed for SuperRatio +/-inf
-#	if ($ratioType eq 'SuperRatio') {
-#		my $primRatioPos=0;
-#		foreach my $i (1..$#conditionList) {
-#			push @primaryRatios,$conditionList[$i].'/'.$conditionList[0];
-#		}
-#	}
-#
-#	my ($refRatioList,$refInfRatio)=($ratioType eq 'SuperRatio')? (\@primaryRatios,\%primInfRatioProt) : (\@ratioTarget,\%infiniteRatioProteins);
-#	my $ratioPos=0;
-#	##>Normal/Primary ratios
-#	foreach my $ratio (@{$refRatioList}) {
-#		$ratioPos++;
-#		$ratio=~s/#//g;
-#		my ($testCondID,$refCondID)=split(/\//,$ratio);
-#		$noProteinStates{$ratioPos}{$testCondID}=0; # default
-#		#my $expCode=($ratioType eq 'SuperRatio')? chr(64+$ratioPos) : 'NA';
-#my $context=($ratioType eq 'SuperRatio')? $ratio : 'NA'; # Experiment != context (ratio can use multiple experiments)
-#		my ($numShared,$xicShared,$xicMinusInf,$xicPlusInf)=(0,0,0,0);
-#		my (%usedPepCode,%sharedDistinct);
-#		foreach my $pepCode (keys %{$refNumPepInCond->{$context}{$testCondID}}) {
-#			if ($refNumPepInCond->{$context}{$refCondID} && $refNumPepInCond->{$context}{$refCondID}{$pepCode}) { # shared
-#				#$xicShared+=($refNumPepInCond->{$context}{$testCondID}{$pepCode} >= $refNumPepInCond->{$context}{$refCondID}{$pepCode})? $refNumPepInCond->{$context}{$testCondID}{$pepCode} : $refNumPepInCond->{$context}{$refCondID}{$pepCode};
-#				$xicShared+=($refNumPepInCond->{$context}{$testCondID}{$pepCode} + $refNumPepInCond->{$context}{$refCondID}{$pepCode}); # Sum of both channels!! (PP 27/10/15)
-#				$numShared++;
-#				my ($pepSeq,$vMod,$charge,$dataSrc)=split(':',$pepCode);
-#				$sharedDistinct{"$pepSeq:$vMod"}=1;
-#				$usedPepCode{$pepCode}=1;
-#			}
-#			else { # only in testCond
-#				$xicPlusInf+=$refNumPepInCond->{$context}{$testCondID}{$pepCode};
-#			}
-#		}
-#		foreach my $pepCode (keys %{$refNumPepInCond->{$context}{$refCondID}}) {
-#			next if $usedPepCode{$pepCode};
-#			$xicMinusInf+=$refNumPepInCond->{$context}{$refCondID}{$pepCode};
-#		}
-#		##<Assigning ratio type
-#		next if ($labeling eq 'FREE' && $numShared); # compute state mean with any available peptide
-#		next if scalar keys %sharedDistinct >= 3; # normal ratio <===================================================== OVERWRITE THRESHOLD
-#		next if ($xicShared >= $xicMinusInf && $xicShared >= $xicPlusInf); # normal ratio
-#		if ($xicPlusInf >= $xicMinusInf) { # +inf
-#			$refInfRatio->{$protID}{$ratioPos}=1000;
-#			$noProteinStates{$ratioPos}{$refCondID}=1;
-#		}
-#		else { # -inf
-#			$refInfRatio->{$protID}{$ratioPos}=0.001;
-#			$noProteinStates{$ratioPos}{$testCondID}=-1;
-#		}
-#	}
-#	if ($ratioType eq 'SuperRatio' && scalar keys %noProteinStates) { # inf primary ratios exist => extend to 2ndary ratios
-#		$ratioPos=0; # real ratioPos
-#		foreach my $ratio (@ratioTarget) {
-#			$ratioPos++;
-#			$ratio=~s/#//g;
-#			my ($testCondID,$refCondID)=split(/\//,$ratio);
-#			($testCondID,my $testRatioPos)=($testCondID=~/(\d+)%(\d+)/);
-#			($refCondID,my $refRatioPos)=($refCondID=~/(\d+)%(\d+)/);
-#			if ($noProteinStates{$testRatioPos}{$testCondID} && $noProteinStates{$refRatioPos}{$refCondID}) {$noSuperRatioProteins{$protID}{$ratioPos}=1;} # special case -> do not record any quantif data
-#			elsif ($noProteinStates{$testRatioPos}{$testCondID}==1 || $noProteinStates{$refRatioPos}{$refCondID}==-1) {$infiniteRatioProteins{$protID}{$ratioPos}=1000;}
-#			elsif ($noProteinStates{$testRatioPos}{$testCondID}==-1 || $noProteinStates{$refRatioPos}{$refCondID}==1) {$infiniteRatioProteins{$protID}{$ratioPos}=0.001;}
-#		}
-#	}
-#}
-#
-#sub checkInfiniteRatios_0 { # globals: $labeling,$ratioType, @ratioTarget, %infiniteRatioProteins, %noSuperRatioProteins
-## RULES:
-## +Case 1:
-##		-FREE: Compute ratio if at least 1 peptide is shared
-## +Case 2 (Other labelings + FREE if case 1 failed)
-##		-Compute ratio if at least 3 peptides are shared
-## +Case 3: (cases 1 & 2 failed)
-##		-Compute total XIC for unique to test cond, unique to ref cond and shared by ref & test conds (sum of ref+test)
-##		-The highest XIC assigns the ratio type: XICref:-inf, XICtest:+inf, XICshared:normal ratio
-#	my ($protID,$refNumPepInCond)=@_; # can be a modProtID
-#	my %noProteinStates; # needed for SuperRatio +/-inf
-#	my $ratioPos=0;
-#	foreach my $ratio (@ratioTarget) {
-#		$ratioPos++;
-#		$ratio=~s/#//g;
-#		my ($testCondID,$refCondID)=split(/\//,$ratio);
-#		if ($ratioType eq 'SuperRatio' && $ratio =~ /%/) { # ratios of ratios if super SILAC (tested AFTER primary ratios in ratios loop!)
-#			last unless scalar keys %noProteinStates; # inf primary ratios exist
-#			#$testCondID=~s/%\d+//;
-#			#$refCondID=~s/%\d+//;
-#			($testCondID,my $testRatioPos)=($testCondID=~/^(\d+)%(\d+)/);
-#			($refCondID,my $refRatioPos)=($refCondID=~/^(\d+)%(\d+)/);
-#			if ($noProteinStates{$testRatioPos}{$testCondID} && $noProteinStates{$refRatioPos}{$refCondID}) {$noSuperRatioProteins{$protID}{$ratioPos}=1;} # special case -> do not record any quantif data
-#			elsif ($noProteinStates{$testRatioPos}{$testCondID}==1 || $noProteinStates{$refRatioPos}{$refCondID}==-1) {$infiniteRatioProteins{$protID}{$ratioPos}=1000;}
-#			elsif ($noProteinStates{$testRatioPos}{$testCondID}==-1 || $noProteinStates{$refRatioPos}{$refCondID}==1) {$infiniteRatioProteins{$protID}{$ratioPos}=0.001;}
-#		}
-#		##>Primary ratios
-#		else {
-#			$noProteinStates{$ratioPos}{$testCondID}=0; # default
-#			my $expCode=($ratioType eq 'SuperRatio')? chr(64+$ratioPos) : 'NA';
-#			my ($numShared,$xicShared,$xicMinusInf,$xicPlusInf)=(0,0,0,0);
-#			my (%usedPepCode,%sharedDistinct);
-#			foreach my $pepCode (keys %{$refNumPepInCond->{$expCode}{$testCondID}}) {
-#				if ($refNumPepInCond->{$expCode}{$refCondID} && $refNumPepInCond->{$expCode}{$refCondID}{$pepCode}) { # shared
-#					#$xicShared+=($refNumPepInCond->{$expCode}{$testCondID}{$pepCode} >= $refNumPepInCond->{$expCode}{$refCondID}{$pepCode})? $refNumPepInCond->{$expCode}{$testCondID}{$pepCode} : $refNumPepInCond->{$expCode}{$refCondID}{$pepCode};
-#					$xicShared+=($refNumPepInCond->{$expCode}{$testCondID}{$pepCode} + $refNumPepInCond->{$expCode}{$refCondID}{$pepCode}); # Sum of both channels!! (PP 27/10/15)
-#					$numShared++;
-#					my ($pepSeq,$vMod,$charge,$dataSrc)=split(':',$pepCode);
-#					$sharedDistinct{"$pepSeq:$vMod"}=1;
-#					$usedPepCode{$pepCode}=1;
-#				}
-#				else { # only in testCond
-#					$xicPlusInf+=$refNumPepInCond->{$expCode}{$testCondID}{$pepCode};
-#				}
-#			}
-#			foreach my $pepCode (keys %{$refNumPepInCond->{$expCode}{$refCondID}}) {
-#				next if $usedPepCode{$pepCode};
-#				$xicMinusInf+=$refNumPepInCond->{$expCode}{$refCondID}{$pepCode};
-#			}
-#			##<Assigning ratio type
-#			next if ($labeling eq 'FREE' && $numShared); # compute state mean with any available peptide
-#			next if scalar keys %sharedDistinct >= 3; # normal ratio <===================================================== OVERWRITE THRESHOLD
-#			next if ($xicShared >= $xicMinusInf && $xicShared >= $xicPlusInf); # normal ratio
-#			if ($xicPlusInf >= $xicMinusInf) { # +inf
-#				$infiniteRatioProteins{$protID}{$ratioPos}=1000;
-#				$noProteinStates{$ratioPos}{$refCondID}=1;
-#			}
-#			else { # -inf
-#				$infiniteRatioProteins{$protID}{$ratioPos}=0.001;
-#				$noProteinStates{$ratioPos}{$testCondID}=-1;
-#			}
-#		}
-#	}
-#}
-#
-#
-#sub insertModifiedResidues {
-#	my ($protID,$refModResList,$refModResiduesID,$dbh,$sthInsModRes)=@_;
-#	my @newList;
-#	if ($refModResList->[0]=~/~/) {&encodeModifPosAmbiguity($refModResList,\@newList)} else {@newList=@{$refModResList};} # $refModResList must not be overwritten!
-##print DEBUG "\tMODRES_ID='@newList'\n"; # unless $refModResiduesID->{$modRes};
-#	foreach my $modRes (@newList) {
-#		if (!$refModResiduesID->{$protID} || !$refModResiduesID->{$protID}{$modRes}) {
-#			my ($res,$pos)=($modRes=~/^(.)(.+)/); # Y180 -> (Y,180)
-#			$sthInsModRes->execute($res,$pos);
-#			$refModResiduesID->{$protID}{$modRes}=$dbh->last_insert_id(undef,undef,'MODIFIED_RESIDUE','ID_MODIF_RES');
-#		}
-#	}
-#}
-#sub insertProteinModResidues {
-#	my ($refModResList,$sthInsProtRes,$refModResiduesID,$protQuantifID)=@_;
-#	my @newList;
-#	if ($refModResList->[0]=~/~/) {&encodeModifPosAmbiguity($refModResList,\@newList)} else {@newList=@{$refModResList};} # $refModResList must not be overwritten!
-##print DEBUG "\tLIST='@newList'\n"; # unless $refModResiduesID->{$modRes};
-#	foreach my $modRes (@newList) {
-#		$sthInsProtRes->execute($refModResiduesID->{$modRes},$protQuantifID);
-#	}
-#}
-#sub encodeModifPosAmbiguity { # (PP 2017/06/22)
-#	# ex1 (res~res): 123~135:2/3@<rt> --> (-123,+135,@<rt>,23) WARNING: in x/y x,y must be between [1..9]
-#	# ex2 (Nter~res): n0~7:2/3 --> (=0,+7,23)  "-" becomes "=" to indicate N-term (n0: 0 indicates Protein N-term)
-#	# ex3 (res~Cter): 251~c0:2/3 --> (-251,*0,23)  "+" becomes "*" to indicate C-term (c0: 0 indicates Protein C-term)
-#	# ex4 (Nter~Cter): n78~c85:2/3 --> (=78,*85,23)
-#	my ($refModResList,$refCodedModResList)=@_;
-#	my @modRes=split('[~:@/]',$refModResList->[0]);
-#	#@{$refCodedModResList}=('-'.$modRes[0],'+'.$modRes[1]);
-#	#push @{$refCodedModResList},'@'.$modRes[2] if $modRes[4]; # has RT data (optional)
-#	#push @{$refCodedModResList},$modRes[-2].$modRes[-1];
-#	# Starting pos
-#	if ($modRes[0]=~/^n(\d+)/) {@{$refCodedModResList}=('='.$1);} # N-ter
-#	else {@{$refCodedModResList}=('-'.$modRes[0]);} # res
-#	# Ending pos
-#	if ($modRes[1]=~/^c(\d+)/) {push @{$refCodedModResList},'*'.$1;} # C-ter
-#	else {push @{$refCodedModResList},'+'.$modRes[1];} # res
-#	# RT
-#	push @{$refCodedModResList},'@'.$modRes[2] if $modRes[4]; # has RT data (optional)
-#	# Matched & Available pos
-#	push @{$refCodedModResList},$modRes[-2].$modRes[-1];
-#}
-
-
-sub recreateModifSites { ## NEW (25/01/19)
-	my ($pepSeq,$varModStrg,$pepBeg,$protLength,$refQuantifiedModifRes,$refRecreatedVarMods)=@_;
-	#$varModStrg='' unless $varModStrg;
-	$protLength=0 unless $protLength;
-	unless ($refRecreatedVarMods->{"$pepSeq:$varModStrg"}) { # never seen before => compute new var mod
-		#<Look for already modified res (cannot be used as target)
-		my %modifiedResPos;
-		if ($varModStrg) {
-			foreach my $modStrg (split('&',$varModStrg)) {
-				$modStrg=~s/^\d+://;
-				foreach my $pos (split(/\./,$modStrg)) {
-					$modifiedResPos{$pos}=1;
-				}
-			}
-		}
-		#<Loop through all modif to be recreated
-		foreach my $modID (sort{$a<=>$b} keys %{$refQuantifiedModifRes}) {
-			#<Look for targetable res in pepSeq
-			my (@numResPos,@termResPos);
-			foreach my $refRes (@{$refQuantifiedModifRes->{$modID}}) {
-				my ($res,$context)=@{$refRes};
-				if ($res=~/\w/) { # QUESTION: Should we also restrict to non-modified termini (res='=-*+')???????
-					if ($context) {
-						if ($context eq '=') { # Any N-term
-							if ($pepSeq=~/^$res/ && !$modifiedResPos{1}) {
-								push @termResPos,1;
-								$modifiedResPos{1}=1;
-							}
-						}
-						elsif ($context eq '-') { # Protein N-term
-							if ($pepSeq=~/^$res/ && ($pepBeg==1 || $pepBeg==2) && !$modifiedResPos{1}) { # 1 or 2: N-term Methione 
-								push @termResPos,$pepBeg;
-								$modifiedResPos{1}=1;
-							}
-						}
-						elsif ($context eq '*') { # Any C-term
-							my $lastPos=length($pepSeq);
-							if ($pepSeq=~/$res$/ && !$modifiedResPos{$lastPos}) {
-								push @termResPos,$lastPos;
-								$modifiedResPos{$lastPos}=1;
-							}
-						}
-						else { # '+' Protein C-term
-							my $lastPos=length($pepSeq);
-							if ($pepBeg+$lastPos-1==$protLength && !$modifiedResPos{$lastPos} && $pepSeq=~/$res$/) {
-								push @termResPos,$lastPos;
-								$modifiedResPos{$lastPos}=1;
-							}
-						}
-					}
-					else { # Anywhere
-						while ($pepSeq=~/$res/g) {
-							my $pos=$+[0];
-							unless ($modifiedResPos{$pos}) {
-								push @numResPos,$pos;
-								$modifiedResPos{$pos}=1;
-							}
-						}
-					}
-				}
-				else { # N/Cterm
-					unless ($modifiedResPos{$res}) {
-						push @termResPos,$res;
-						$modifiedResPos{$res}=1;
-					}
-				}
-			}
-			if ($termResPos[0] || $numResPos[0]) {
-				$varModStrg.='&' if $varModStrg;
-				$varModStrg.=$modID.':'.join('.',@termResPos);
-				if ($numResPos[0]) {
-					$varModStrg.='.' if $termResPos[0];
-					$varModStrg.=join('.',sort{$a<=>$b} @numResPos);
-				}
-			}
-		}
-		$refRecreatedVarMods->{"$pepSeq:$varModStrg"}=$varModStrg;
-	}
-	return $refRecreatedVarMods->{"$pepSeq:$varModStrg"};
-}
-
-sub extractPtmPosProbability {
-	my ($refModList,$varModCode,$varProbStrg)=@_;
-	
-	my $worsePtmPosProb=1;
-	foreach my $modID (keys %{$refModList}) {
-		next unless $varModCode =~ /(^|&)$modID:/; # this mod is not in varMod
-		my ($a,$posStrg)=($varModCode =~ /(^|&)$modID:([^&]+)/);
-	return -1 unless $posStrg; # in case missing MQ data
-		my ($b,$probStrg)=($varProbStrg =~ /(^|&)$modID.*##PRB_([^&]+)/); # (...&)9%##PRB_MQ=1:0.998,3:0.966,10:0.036(&...)
-		my $ptmPosProb=1;
-		if ($probStrg) {
-			if ($probStrg=~/=-1$/) { # no prob data available during search import
-				$ptmPosProb=-1;
-			}
-			else {
-				$ptmPosProb=1; # max by default
-				foreach my $pos (split(/\./,$posStrg)) {
-					my ($prob)=($varProbStrg =~ /\D$pos:([\d\.]+)/);
-					$ptmPosProb=$prob if ($prob && $ptmPosProb > $prob); # record worse prob if multiple PTMs
-				}
-			}
-		}
-		else {$ptmPosProb=1;} # no prob data => 100% (no recording of 100% prob at import)
-		$worsePtmPosProb=$ptmPosProb if $worsePtmPosProb > $ptmPosProb;
-	}
-	return $worsePtmPosProb;
-}
-
 sub checkForErrors {
-	my ($dbh)=@_;
-	#my ($errorFile) = glob "$promsPath{tmp}/quantification/current/*_$quantifDate\_error.txt";
-	my $errorFile = "$promsPath{tmp}/quantification/current/$quantifID\_$quantifDate\_error.txt";
-	if ($errorFile && -s $errorFile) {
-#system "sed -i '/Permanently/ d' $errorFile"; # remove warning from ssh key addition
-#		if (-s $errorFile) {
-			$dbh->rollback;
-			$dbh->do("UPDATE QUANTIFICATION SET STATUS=-2 WHERE ID_QUANTIFICATION=$quantifID"); # failed
-			$dbh->commit;
+	my ($mainDbh)=@_; # can be undef
+	if (-e $errorFile && -s $errorFile) {
+		#system "sed -i '/Permanently/ d' $errorFile"; # remove warning from ssh key addition
+		my $dbh=$mainDbh || &promsConfig::dbConnect('no_user');
+		$dbh->rollback;
+		#<Check if error already handled (by parent/child/other) process)
+		my ($handled)=$dbh->selectrow_array("SELECT 1 FROM QUANTIFICATION WHERE ID_QUANTIFICATION=$quantifID AND STATUS=-2");
+		if ($handled) { # already handled: end quietly
 			$dbh->disconnect;
-			die "Aborting quantification due to errors.";
-		#}
+			exit;
+		}
+		#<Handle error
+		$dbh->do("UPDATE QUANTIFICATION SET STATUS=-2 WHERE ID_QUANTIFICATION=$quantifID"); # failed
+		$dbh->commit;
+		$dbh->disconnect;
+		die "Aborting quantification due to errors.";
 	}
 }
 
@@ -3840,9 +4804,597 @@ sub generateReferenceProtFromQuantif { # globals: %promsPath,%quantifParameters,
 }
 
 
+sub formatQtyFile {
+	my ($quantifID, $userFile, $aLFQFile, $refProtIDs, $refProtMW) = @_;  # Uses also global $dbh
+
+	my %mapAnaChan2StateRep;  # To match pairs analysis/channel to the state/bioRep/techRep combination
+	my %obs2StateRep;  # We need to match observations to the state/rep combinations
+	my %obs2AnaChannel;  # And the observations to the analysis/channel pairs
+	my $hasFractions = 0;
+	my $isMassCalib = 0;  # Calibration model with mass given as anchor protein quantity
+	my $qtyMultiplier = 1;  # To accomodate the qty units order of magnitude
+	my $sthQuantifAnnot = $dbh->prepare("SELECT QUANTIF_ANNOT FROM QUANTIFICATION WHERE ID_QUANTIFICATION = ?");
+	$sthQuantifAnnot->execute($quantifID);
+	my ($quantifAnnot) = $sthQuantifAnnot->fetchrow_array;
+
+	foreach my $annotStrg (split('::', $quantifAnnot)) {
+		if ($annotStrg =~ /^STATES=(.*)/) {
+		# 'state1;state2;---;stateN'
+		# stateX = 'nbBioRep,bioRep1.bioRep2.---.bioRepN,#condID'
+		# bioRepX = 'techRep1=techRep2=---=techRepN'
+		# techRepX = 'frac1+frac2+---+fracN'
+			my $statePos = 0;
+			foreach my $state (split(/;/, $1)) {
+				$statePos++;
+				$hasFractions = 1 if ($state =~ /\+/);
+				$state =~ s/#//g;  # remove all id tags
+				my ($numBioRep, $quantiObsIDs, $condID) = split(/,/, $state);
+				my $bioRepCount = 0;
+				foreach my $bioReplicate (split(/\./, $quantiObsIDs)) {
+					$bioRepCount++;
+					my $techRepCount = 0;
+					foreach my $techReplicate (split(/&/, $bioReplicate)) {
+						$techRepCount++;
+						my $fracCount = 0;
+						foreach my $fraction (split(/\+/, $techReplicate)) {
+							$fracCount++;
+							my $channel;
+							my ($obsID, $parQuantifID, $anaID, $targetPos) = split(/:/, $fraction);
+
+							$sthQuantifAnnot->execute($parQuantifID);
+							my ($parQuantifAnnot) = $sthQuantifAnnot->fetchrow_array;
+							my ($xicLabeling) = ($parQuantifAnnot=~/LABEL=([^:]+)/);
+							$xicLabeling = uc($xicLabeling);
+
+							if ($xicLabeling =~ /SILAC|TMT|ITRAQ/) {
+								foreach my $feature (split('::', $parQuantifAnnot)) {
+									if ($feature !~ /=/) {
+										# Matching between targetPos and channel
+										my ($annotTargetPos, $channelName, $modif) = split(';', $feature);
+										if ($annotTargetPos == $targetPos) {
+											$channel = $channelName;
+											last;
+										} else {
+											next;
+										}
+									}
+								}
+							}
+							$obs2AnaChannel{$obsID}{'Analysis'} = $anaID;
+							$obs2AnaChannel{$obsID}{'Channel'} = ($channel) ? $channel : 'NA';
+							$obs2AnaChannel{$obsID}{'ChannelPos'} = ($targetPos) ? $targetPos : 0;
+
+							$obs2StateRep{$obsID}{'StateID'}  = $condID;
+							$obs2StateRep{$obsID}{'StatePos'} = $statePos;
+							$obs2StateRep{$obsID}{'bioRep'}   = $bioRepCount;
+							$obs2StateRep{$obsID}{'techRep'}  = $techRepCount;
+							$obs2StateRep{$obsID}{'fraction'} = $fracCount;
+						} # end of fraction
+					} # end of tech replicate (sample)
+				} # end of bio-replicate
+			} # end of cond/state
+		} elsif ($annotStrg =~ /^ABUND_MEASURES=(.*)/) {
+			foreach my $meas (split(/;/, $1)) {
+				if ($meas =~ /^aLFQ_(iBAQ|TOP)/) {
+					my $pqi = $1;
+					my  ($absMeas, $absModel, $pqiNorm, $outType, $topX, $topStrictness, $qtyUnit);
+					if ($pqi eq 'TOP') {
+						($absMeas, $absModel, $pqiNorm, $outType, $topX, $topStrictness, $qtyUnit) = split(',', $meas);
+					} else {
+						($absMeas, $absModel, $pqiNorm, $outType, $qtyUnit) = split(',', $meas);
+					}
+					if ($qtyUnit) {
+						$isMassCalib = 1 if ($absModel eq 'calibration' && $qtyUnit =~ /mass/);
+						$qtyMultiplier = ($qtyUnit =~ /^mmol|^conc_mmol_l|^mass_mg|^mass_conc_mg_l/)? 1e-03 :
+										 ($qtyUnit =~ /^mass_ug|^mass_conc_ug_l/)? 1e-06 :
+										 ($qtyUnit =~ /^copy_number/) ? 1 / 6.02e+23 :
+										 1;  # default is 1 for /^mol|^conc_mol_l|^mass_g|^mass_conc_g_l/
+					}
+					last;
+				}
+			}
+		}
+	}
+	$sthQuantifAnnot->finish;
+
+	# Get analysis name from DB and map to state/rep/techRep
+	my $sthGetAnaName = $dbh->prepare("SELECT NAME, DATA_FILE, WIFF_FILE FROM ANALYSIS WHERE ID_ANALYSIS = ?");
+	foreach my $obsID (keys %obs2AnaChannel) {
+		$sthGetAnaName->execute($obs2AnaChannel{$obsID}{'Analysis'});
+		my ($anaName, $anaDataFile, $wiffFile) = $sthGetAnaName->fetchrow_array;
+		$anaDataFile =~ s/\..*$//;
+		$wiffFile =~ s/\..*$//;
+		my $channelName = $obs2AnaChannel{$obsID}{'Channel'};
+		my $channelPos = $obs2AnaChannel{$obsID}{'ChannelPos'};
+
+		my $stateRepStrg = "State".$obs2StateRep{$obsID}{'StatePos'};
+		$stateRepStrg   .= "_rep".$obs2StateRep{$obsID}{'bioRep'};
+		$stateRepStrg   .= "_techRep".$obs2StateRep{$obsID}{'techRep'};
+
+		# Multiple possibilities of analysis names and channel name/pos
+		$mapAnaChan2StateRep{$anaName}{$channelName} = $stateRepStrg;
+		$mapAnaChan2StateRep{$anaDataFile}{$channelName} = $stateRepStrg;
+		$mapAnaChan2StateRep{$wiffFile}{$channelName} = $stateRepStrg;
+		$mapAnaChan2StateRep{$anaName}{$channelPos} = $stateRepStrg;
+		$mapAnaChan2StateRep{$anaDataFile}{$channelPos} = $stateRepStrg;
+		$mapAnaChan2StateRep{$wiffFile}{$channelPos} = $stateRepStrg;
+	}
+	$sthGetAnaName->finish;
+
+	# Now do the actual matching on the user-provided file
+	my %colName2Idx;
+	my $hasProteins = 0;
+	my $hasChannels = 0;
+	my %outLines;  # What will be written to build aLFQ input
+	my %protNotFound;  # In case some proteins in the user-provided file are not found in the experiment
+
+	open(USER_FILE, $userFile);
+	while (<USER_FILE>) {
+		chomp($_);
+		if ($. == 1) {  # Check headers
+			my $anaPattern 		= qr/[Aa]nalys[ie]s|[Ss]amples?/;
+			my $channelPattern 	= qr/[Cc]hannels?/;
+			my $protPattern 	= qr/[Pp]roteins?|[Gg]enes?/;
+			my $qtyPattern 		= qr/[Qq]uantit(?:y|ies)|[Vv]alues?|[Aa]mouts?|[Mm]ass(?:es)?|[Cc]oncentrations?/;
+
+			$hasProteins = 1 if ($_ =~ /$protPattern/);  # Quantity given by protein ? -> calibration model
+			$hasChannels = 1 if ($_ =~ /$channelPattern/);  # SILAC, TMT or ITRAQ quantifs
+			my @columns = split(',', $_);
+
+			# Get index of each column
+			$colName2Idx{'Analysis'} = (grep { $columns[$_] =~ /$anaPattern/ } 0..$#columns)[0];
+			$colName2Idx{'Channel'}  = (grep { $columns[$_] =~ /$channelPattern/ } 0..$#columns)[0] if ($hasChannels);
+			$colName2Idx{'Protein'}  = (grep { $columns[$_] =~ /$protPattern/ } 0..$#columns)[0] if ($hasProteins);
+			$colName2Idx{'Quantity'} = (grep { $columns[$_] =~ /$qtyPattern/ } 0..$#columns)[0];
+		} else {
+			my @line = split(',', $_);
+			my $analysis = $line[$colName2Idx{'Analysis'}];
+			my $quantity = $line[$colName2Idx{'Quantity'}] * $qtyMultiplier;  # Convert quantity to mol, mol/L, g or g/L
+			my $channel  = ($hasChannels) ? $line[$colName2Idx{'Channel'}] : 'NA';
+			my $protein  = ($hasProteins) ? $line[$colName2Idx{'Protein'}] : '';
+
+			if ($hasProteins) {  # Calibration model
+				if (!$mapAnaChan2StateRep{$analysis}{$channel}) {  # Check if we can find the analysis and channel in the design
+					die "Impossible to match the names provided in the user file to the experimental design. Be sure to follow the guidelines for the file containing the protein quantities.";
+				} elsif (!$refProtIDs->{$protein}) {
+					$protNotFound{$protein} = 1;  # TODO : report calibration proteins not quantified
+				} else {
+					my $stateRepStrg = $mapAnaChan2StateRep{$analysis}{$channel};
+					my $proteinID = $refProtIDs->{$protein};
+					if ($refProtMW->{$proteinID}) {
+						if ($isMassCalib) {  # Convert mass to mol for calibration proteins
+							$quantity = $quantity / $refProtMW->{$proteinID};  # MW in Da = g/mol in database
+						}
+						if ($hasFractions && $outLines{$stateRepStrg}{$proteinID}) {
+							$outLines{$stateRepStrg}{$proteinID} += $quantity;  # In case quantity was given per fraction
+						} else {
+							$outLines{$stateRepStrg}{$proteinID} = $quantity;
+						}
+					} else {
+						$protNotFound{$protein} = 1;  # Calibration protein does not have MW in DB
+					}
+				}
+			} else {
+				if (!$mapAnaChan2StateRep{$analysis}{$channel}) {  # Check if we can find the analysis and channel in the design
+					die "Impossible to match the names provided in the user file to the experimental design. Be sure to follow the guidelines for the file containing the protein quantities.";
+				} else {
+					my $stateRepStrg = $mapAnaChan2StateRep{$analysis}{$channel};
+					if ($outLines{$stateRepStrg}) {
+						$outLines{$stateRepStrg} += $quantity;  # In case quantity was given per fraction
+					} else {
+						$outLines{$stateRepStrg} = $quantity;
+					}
+				}
+			}
+		}
+	}
+	close USER_FILE;
+
+	open(aLFQ_FILE, ">$aLFQFile");
+	if ($hasProteins) {  # Calibration model with anchor proteins
+		print aLFQ_FILE "run_id,protein_id,concentration\n";
+		foreach my $sample (keys %outLines) {
+			foreach my $protID (keys %{$outLines{$sample}}) {
+				print aLFQ_FILE "$sample,\"$protID\",$outLines{$sample}{$protID}\n";
+			}
+		}
+	} else {  # Proportionality model
+		print aLFQ_FILE "run_id,concentration\n";
+		foreach my $sample (keys %outLines) {
+			print aLFQ_FILE "$sample,$outLines{$sample}\n";
+		}
+	}
+	close aLFQ_FILE;
+}
+
+
+sub runAbsoluteQuantif {  # Uses global $promsPath, $pathR, $fileStat, $numSteps, $absDir
+
+	open(FILESTAT,">>$fileStat");
+	print FILESTAT "3/$numSteps Computing protein quantification indices and absolute quantities\n";
+	close FILESTAT;
+
+	# Launching absolute quantification with aLFQ
+	if (-d $absDir && -f "$absDir/aLFQ_info.txt") {
+		# R package "aLFQ" needed
+		system "cd $absDir; $pathR/R CMD BATCH --no-save --no-restore '--args $absDir $promsPath{R_scripts}' $promsPath{R_scripts}/aLFQ.R 2> $absDir/errors_aLFQ.txt";  # R CMD BATCH does not redirect errors, it stays in .Rout file. Should probably swith to Rscript call
+	} else {
+		die "$absDir/aLFQ_info.txt was not written, impossible to launch absolute quantification without the required information !";
+	}
+	exit;
+}
+
+
+sub parseAbsoluteQuantif {  # Globals : $absDir, %absMeasures
+
+	my ($refProteinAbundance) = @_;
+
+	my %absFiles=(	INFO		=> "$absDir/aLFQ_info.txt",
+					PQI_VALUES	=> "$absDir/aLFQ_pqi.txt",
+					ABS_VALUES	=> "$absDir/aLFQ_abs.txt"
+	);
+
+	my %measPatterns = (
+		'MOL_PERCENT'		=> qr/\bMol_percent\b/,
+		'CI_INF_MOL_PCT'	=> qr/\bMol_percent_CI_inf\b/,
+		'CI_SUP_MOL_PCT'	=> qr/\bMol_percent_CI_sup\b/,
+		'MOL'				=> qr/\bMol_amount\b/,
+		'MOL_CONC'			=> qr/\bMol_concentration\b/,
+		'CI_INF_MOL'		=> qr/\bMol_CI_inf\b/,
+		'CI_SUP_MOL'		=> qr/\bMol_CI_sup\b/,
+		'MASS_PERCENT'		=> qr/\bMass_percent\b/,
+		'CI_INF_MASS_PCT'	=> qr/\bMass_percent_CI_inf\b/,
+		'CI_SUP_MASS_PCT'	=> qr/\bMass_percent_CI_sup\b/,
+		'MASS'				=> qr/\bMass_amount\b/,
+		'MASS_CONC'			=> qr/\bMass_concentration\b/,
+		'CI_INF_MASS'		=> qr/\bMass_CI_inf\b/,
+		'CI_SUP_MASS'		=> qr/\bMass_CI_sup\b/,
+		'GEO_SD'			=> qr/\bM_geo_sd\b/,
+		'GEO_CV'			=> qr/\bM_geo_cv\b/
+	);
+
+	# Parse results of absolute values
+	my %colName2Idx;
+	open(ABS, "$absFiles{ABS_VALUES}") || die $!;
+	while(<ABS>) {
+		my $line = $_;
+		chomp $line;
+		my @lineData = split(/\t/, $line);
+		if ($. == 1) { # Header : e.g. Condition ProteinID Mol_percent Quantity Mass_percent Mass
+			# Check which measure has been computed and get index of each column for these measures
+			foreach my $absMeas (keys %measPatterns) {
+				if ($line =~ $measPatterns{$absMeas}) {
+					$colName2Idx{$absMeas} = (grep { $lineData[$_] =~ /$measPatterns{$absMeas}/ } 0..$#lineData)[0];
+					$absMeasures{$absMeas} = 1;  # Fill hash with abs measures recorded
+				}
+			}
+		} else {
+			my $state      = $lineData[0];
+			my ($statePos) = $state =~ /State(\d+)/;
+			my $protID0    = $lineData[1];
+			foreach my $absMeas (keys %colName2Idx) {
+				unless ($lineData[$colName2Idx{$absMeas}] eq 'NA') {
+					$refProteinAbundance->{$protID0}{$statePos}{$absMeas} = $lineData[$colName2Idx{$absMeas}];
+				}
+			}
+		}
+	}
+	close ABS;
+}
+
+
+sub getAllProtPepNb {  # Globals : $resultDir, %quantifParameters, %dataFiles, $countIdentifiedPep, %isGhostPeptide ?
+	# In case only absolute quantif (aLFQ) was computed, otherwise, already done in jobProteinAbundance
+	# Parse peptide results and
+	# Compute peptide counts (NUM_PEP_TOTAL, NUM_PEP_USED & DIST_PEP_USED)
+
+	# TODO : remove repetition of this part of code in &jobProteinAbundance
+	# Something like &writeDataFiles($folder) should be ok
+
+	my ($outDir) = @_;
+	my (%allProteins, %proteinData);
+
+	####<Loading list of ghost peptides>####
+	my %isGhostPeptide;
+	if ($countIdentifiedPep && -e "$dataDir/ghosts.txt") {
+		open(GHOST,"$dataDir/ghosts.txt");
+		while(<GHOST>) {
+			chomp;
+			$isGhostPeptide{$_}=1;
+		}
+		close GHOST;
+	}
+
+	open(PEP, "$resultDir/resultsPep.txt");
+	my %pepHeader2Idx;
+	while(<PEP>) {
+		chomp;
+		my @lineData = split(/\t/, $_);
+
+		if ($.==1) { # 1st line of the file
+			# Header
+			my $colIdx=0;
+			foreach my $colName (@lineData) {
+				$pepHeader2Idx{$colName} = $colIdx;
+				$colIdx++;
+			}
+		}
+		else {
+			# Data
+			my $protID0 = $lineData[$pepHeader2Idx{'ProteinID'}];
+			my $numPeptides = 0;
+			my $numTruePeptides = 0;
+			foreach my $pepID (split(/[\.\+\=]/, $lineData[$pepHeader2Idx{'PeptideId'}])) {
+				$allProteins{$protID0}{$pepID} = 1; # for NUM_PEP_TOTAL & in case Labeling
+				$numPeptides++;
+				$numTruePeptides++ if ($countIdentifiedPep && !$isGhostPeptide{$pepID});
+			}
+			next if ($lineData[$pepHeader2Idx{'out'}] ne 'NA' && $lineData[$pepHeader2Idx{'out'}] ne 'outBalanceStates'); # skip outliers but not those considered outliers for ratios
+			my $state 		= $lineData[$pepHeader2Idx{'Condition'}];
+			my ($statePos) 	= $state =~ /State(\d+)/;
+			my $bioRep 		= $lineData[$pepHeader2Idx{'replicate'}];
+			my $techRep 	= $lineData[$pepHeader2Idx{'repTech'}];
+			my $seqVarMod 	= (split(/_/, $lineData[$pepHeader2Idx{'Peptide'}]))[0];
+			$proteinData{'NUM_PEP_USED'}{$protID0}{$statePos}  += $numPeptides;
+			$proteinData{'NUM_TRUE_USED'}{$protID0}{$statePos} += $numTruePeptides if $countIdentifiedPep;
+			$proteinData{'DIST_PEP_USED'}{$protID0}{$statePos}{$seqVarMod} = 1;
+		}
+	}
+	close PEP;
+
+	####<Saving all proteins & number of peptides>####
+	open(PROT, ">$outDir/allProteins.txt") || die $!; # contains list of all proteins (before outlier filter) to compute lost proteins later
+	print PROT "ProteinID\tnumPep";
+	foreach my $protID0 (keys %allProteins) {
+		print PROT "\n",$protID0,"\t",scalar keys %{$allProteins{$protID0}};
+	}
+	close PROT;
+
+	my $headerStrg="ProteinID\tCondition\tValue\n";
+	foreach my $measType (keys %dataFiles) {
+		open (OUT,">$outDir/$dataFiles{$measType}") || die $!;
+		print OUT $headerStrg;
+		foreach my $protID0 (keys %{$proteinData{$measType}}) {
+			foreach my $statePos (1..$numStates) {
+				if ($proteinData{$measType}{$protID0}{$statePos}) {
+					my $value = ($measType eq 'DIST_PEP_USED')? scalar keys %{$proteinData{$measType}{$protID0}{$statePos}} : $proteinData{$measType}{$protID0}{$statePos};
+					print OUT "$protID0\tState$statePos\t$value\n";
+				}
+			}
+		}
+		close OUT;
+	}
+}
+
+
+sub parsePrimaryAbundanceResults { # Globals: %dataFiles, %optDataFiles, %quantifParameters, $resultDir
+	my ($numAbundJobs,$refProteinAbundance,$refAllPeptides,$refLostProteins,$refPeptideCount)=@_; # $refPeptideCount (true %proteinAbundance) is defined only in protein normalization context. Collects only peptide counts 
+
+	if ($refPeptideCount) { # Protein normalization context
+		open(FILESTAT,">>$fileStat");
+		print FILESTAT "4/$numSteps Running protein-level normalization (1/2 Preparing data)\n";
+		close FILESTAT;
+	}
+
+	foreach my $measType (@{$quantifParameters{'DB'}{'ABUND_MEASURES'}}) {
+		if ($measType =~ /^aLFQ_/) {  # aLFQ_iBAQ or aLFQ_TOP
+			# foreach my $absMeas (split(';', $measType)) {  # aLFQ_iBAQ,abs_model,normalization;MOL_PERCENT;MOL_CONC;...
+			# 	if ($absMeas =~  /^(aLFQ_[^,]+),/) {
+			# 		$absMeasures{$1} = 1;
+			# 	} else {
+			# 		$absMeasures{$absMeas} = 1;
+			# 	}
+			# }
+		} else {
+			$measType =~ s/,.+//; # MY_LFQ,x,x
+			$dataFiles{$measType} = $optDataFiles{$measType};
+		}
+	}
+
+	JOB:foreach my $job (1..$numAbundJobs) {
+		my $jobDir="$resultDir/ABUND$job";
+
+		###<Combining data after outlier filtering>###
+		foreach my $measType (keys %dataFiles) {
+			unless (-e "$jobDir/$dataFiles{$measType}") {
+				if ($measType eq 'MY_LFQ') { # Do not fail if no LFQ data
+					open(BAD_LFQ,">>$resultDir/errorLFQ.txt");
+					print BAD_LFQ "File $dataFiles{$measType} not found for job #$job\n";
+					close BAD_LFQ;
+					copy("$jobDir/resultsPep.txt","$resultDir/resultsPep_$job.txt");
+					next;
+				}
+				warn "File $dataFiles{$measType} not found for job #$job";
+				last JOB;
+			}
+			my $usedRefAbundance=($refPeptideCount && $measType=~/_PEP_|_TRUE_/)? $refPeptideCount : $refProteinAbundance; # if defined, $refPeptideCount (true %proteinAbundance) collects only peptide counts
+			&parseMeasureFile("$jobDir/$dataFiles{$measType}",$measType,$usedRefAbundance);
+		}
+
+		###<Combining data before outlier filtering & lost proteins>###
+		&getAllProtInfo("$jobDir/allProteins.txt", $refProteinAbundance, $refAllPeptides, $refLostProteins);
+	}
+	
+}
+
+sub parseSecondaryAbundanceResults {
+	my ($refProteinAbundance)=@_;
+
+	####<Parsing R resultsPep.txt for each measure>####
+	open(FILESTAT,">>$fileStat");
+	print FILESTAT "6/$numSteps Processing results (1/2 Parsing files)\n";
+	close FILESTAT;
+
+	foreach my $measType (keys %dataFiles) {
+		next if $measType=~/_PEP_|_TRUE_/;
+		open(NORM,"$resultDir/resultsNorm/$measType/results/resultsPep.txt");
+		my %pepHeader2Idx;
+		my %normalizedValues;
+		while(<NORM>) {
+			chomp;
+			my @lineData=split(/\t/,$_);
+			####<Header------------------
+			if ($.==1) { # 1st line of the file
+				my $colIdx=0;
+				foreach my $colName (@lineData) {
+					$pepHeader2Idx{$colName}=$colIdx;
+					$colIdx++;
+				}
+				next;
+			}
+			####<Data------------------
+			my $protID0=$lineData[$pepHeader2Idx{'ProteinID'}];
+			my $state=$lineData[$pepHeader2Idx{'Condition'}];
+			my ($statePos)=$state=~/(\d+)$/;
+			my $bioRep=$lineData[$pepHeader2Idx{'replicate'}];
+			my $techRep=$lineData[$pepHeader2Idx{'repTech'}];
+			#<Normalized values
+			$normalizedValues{$protID0}{$statePos}{$bioRep}{$techRep}=2**$lineData[$pepHeader2Idx{'log2Measure'}];
+		}
+		close NORM;
+
+		##<Combined replicates (mean of replicates)
+		foreach my $protID0 (keys %normalizedValues) {
+			foreach my $statePos (keys %{$normalizedValues{$protID0}}) {
+				my %bioRepAbundance;
+				foreach my $bioRep (keys %{$normalizedValues{$protID0}{$statePos}}) {
+					##<Take mean of tech reps
+					my $numTechRep=0;
+					foreach my $techRep (keys %{$normalizedValues{$protID0}{$statePos}{$bioRep}}) {
+						$bioRepAbundance{$bioRep}+=$normalizedValues{$protID0}{$statePos}{$bioRep}{$techRep};
+						$numTechRep++;
+					}
+					$bioRepAbundance{$bioRep}/=$numTechRep;
+				}
+				##<Take mean of bio reps
+				my $numBioReps=scalar keys %bioRepAbundance;
+				foreach my $bioRep (keys %bioRepAbundance) {
+					$refProteinAbundance->{$protID0}{$statePos}{$measType}+=$bioRepAbundance{$bioRep};
+				}
+				$refProteinAbundance->{$protID0}{$statePos}{$measType}=int(0.5 + ($refProteinAbundance->{$protID0}{$statePos}{$measType}/$numBioReps));
+			}
+		}
+	}
+}
+
+# sub parseMeasureFile { # Old (large) file format
+# 	my ($dataFile, $measType, $refProteinAbundance) = @_;
+
+# 	open(RES, "$dataFile") || die $!;
+# 	my @statePos;
+# 	while(<RES>) {
+# 		chomp;
+# 		my @lineData = split(/\t/, $_);
+# 		if ($. == 1) {  # Header
+# 			$statePos[0] = 0;  # not used
+# 			foreach my $idx (1..$#lineData) {
+# 				my ($statePos) = $lineData[$idx] =~ /State(\d+)/;
+# 				$statePos[$idx]=$statePos;  # 1..n
+# 			}
+# 		}
+# 		else {  # Data
+# 			my $protID0 = $lineData[0];
+# 			foreach my $idx (1..$#lineData) {
+# 				next if ($lineData[$idx] eq 'NA' || abs($lineData[$idx]) < 1);
+# 				$refProteinAbundance->{$protID0}{$statePos[$idx]}{$measType} = $lineData[$idx];
+# 			}
+# 		}
+# 	}
+# 	close RES;
+# }
+sub parseMeasureFile { # New (long) file format
+	my ($dataFile,$measType,$refProteinAbundance) = @_;
+
+	open(RES, "$dataFile") || die $!;
+	my %header2Idx;
+	my $hasReplicates=0;
+	while(<RES>) {
+		chomp;
+		my @lineData = split(/\t/, $_);
+		if ($.==1) {  # Header
+			my $colIdx=0;
+			foreach my $colName (@lineData) {
+				$header2Idx{$colName}=$colIdx;
+				$colIdx++;
+			}
+			$hasReplicates=1 if defined $header2Idx{'Replicate'};
+			next;
+		}
+		# Data
+		next if ($lineData[$header2Idx{'Value'}] eq 'NA' || abs($lineData[$header2Idx{'Value'}]) < 1);
+		my ($statePos)=$lineData[$header2Idx{'Condition'}]=~/(\d+)/; # keep only pos
+		if ($hasReplicates) {
+			$refProteinAbundance->{$lineData[$header2Idx{'ProteinID'}]}{$statePos}{$lineData[$header2Idx{'Replicate'}]}{$measType} = $lineData[$header2Idx{'Value'}];
+		}
+		else {
+			$refProteinAbundance->{$lineData[$header2Idx{'ProteinID'}]}{$statePos}{$measType} = $lineData[$header2Idx{'Value'}];
+		}
+	}
+	close RES;
+}
+
+sub getAllProtInfo {
+	my ($allProtFile, $refProteinAbundance, $refAllPeptides, $refLostProteins) = @_;
+	open (PROT,"$allProtFile");
+	while (<PROT>) {
+		next if ($. == 1);
+		chomp;
+		my ($protID0, $numPep)=split(/\t/, $_);
+		if ($refProteinAbundance->{$protID0}) {
+			$refAllPeptides->{$protID0} = $numPep;
+		}
+		else {
+			$refLostProteins->{$protID0} = 1;
+		}
+	}
+	close PROT;
+}
+
+
 # TODO: Make clear choice for labeled quantif done with PEP_INTENSITY algo: treat as 100% Label-Free or mixed LF/Label ?????
 # TODO: Move label-free peptide matching check further downstream for compatibility with PTM quantif
 ####>Revision history<####
+# 2.19.7 [BUGFIX] Fix no retry limit for abundance sub job taking too long (PP 03/06/21)
+# 2.19.6 [BUGFIX] Fix +/-INF peptide count for SILAC with multi-replicate reference state in non-Super Ratio context (PP 26/04/21)
+# 2.19.5 [UPDATE] Modified +/-INF decision rules & quantif code version management moved here (PP 13/04/21) 
+# 2.19.4 [BUGFIX] Fix wrong data structure for Abundance with tech replicates and protein-level normalization (PP 13/04/21)
+# 2.19.3 [BUGFIX] Fix misspelled quantiSwath.R script name (PP 25/03/21)
+# 2.19.2 [BUGFIX] Fix no data in PTM-enriched proteins when all PTMs are excluded (PP 15/03/21)
+# 2.19.1 [BUGFIX] Fix import and pep nb files for absolute measures (VL 02/03/21)
+# 2.19.0 [FEATURE] Context/motif-based PTM filtering for PTM-enriched proteins (PP 09/03/21)
+# 2.18.3 [FEATURE] Record % missing values at protein/site-level for abundance (PP 12/02/21)
+# 2.18.2 [BUGFIX] Add forgotten aggregation option flag for LFQ command (PP 02/02/21) 
+# 2.18.1 [MERGE] master into ppoullet (PP 02/02/21)
+# 2.18.0 [UPDATE] Multi-level normalization for Abundance & MG shared peptides rule & contaminant exlusion (PP 01/02/21)
+# 2.17.2b [MINOR] Minor update in recovery of previously failed abundance quantification (PP 08/01/21)
+# 2.17.2 [ENHANCEMENT] Add variability and uncertainty parameters for absolute quantification (VL 07/12/20)
+# 2.17.1 [UPDATE] Improved run based on data from another quantification that has failed (PP 11/12/20)
+# 2.17.0 [CHANGE] Compatible with Free residues quantification & &modifyFreeResidues added to promsQuantif.pm (PP 26/11/20)
+# 2.16.12 [CHANGE] Ghost peptides detection now based on negative PEP_BEG (PP 26/11/20)
+# 2.16.11 [BUGFIX] Broken bias correction with manually selected peptides works again (PP 17/11/20)
+# 2.16.10 [BUGFIX] Ignore sequence context in reference mode (PP 14/11/20)
+# 2.16.9b [ENHANCEMENT] Handle LFQ jobs on deficient cluster nodes & x3 more cluster memory for Site LFQ (PP 04/11/20)
+# 2.16.9 [ENHANCEMENT] Add absolute quantification with aLFQ package (VL 13/10/20)
+# 2.16.8b [CHANGE] Moved &recreateModifSites to promsQuantif.pm (PP 12/10/20)
+# 2.16.8 [BUGFIX] Fix count of peptides for each prot before attribution of protein for shared peptides (VL 30/09/20)
+# 2.16.7 [ENHANCEMENT] Use of systematic negative targetPos for state/replicate-peptide count of +/-INF ratio (PP 21/09/20)
+# 2.16.6 [BUGFIX] Use of sortSmart to order DIA fragments in table.txt to avoid warnings on classical sort (PP 02/09/20)
+# 2.16.5 [FEATURE] Compatible with PTMRS & Spectronaut site probability (PP 26/08/20)
+# 2.16.4 [BUGFIX] Major fix in data processing due to dataset-wide attribution of "best" protein for shared peptides (PP 19/08/20)
+# 2.16.3 [UPDATE] Change in "shared peptides" parameter handling & remove "shared proteins" (PP 17/08/20)
+# 2.16.2 [UPDATE] Compatiblie with 'sharedPep' normalization filter (PP 14/08/20)
+# 2.16.1 [BUGFIX] Fix bug in peptide count for MSstats (PP 12/08/20)
+# 2.16.0 [FEATURE] Uses SQLite database to store quantification data & compatibility with site sequence context & python3 path (PP 30/07/20)
+# 2.15.3 [BUGFIX] Restricts use of %pepID2QuantifSetSILAC to SILAC in PEP_RATIO mode (PP 30/07/20)
+# 2.15.2 [FEATURE] Compatibility with Bias correction using shared proteins and LFQ stabilize large ratios options (PP 18/06/20)
+# 2.15.1 [BUGFIX] Peptides with no PTM position score are no longer excluded if score threshold=0 (PP 05/06/20)
+# 2.15.0 [FEATURE] Records number of non-ghost (true) peptides used (0 up to 5) in each state & abundance measures are optional (PP 20/05/20)
+# 2.14.7 [BUGFIX] Force Experiment as 'A' for Labeled quantif if non-ratio algo is used (PP 06/04/20)
+# 2.14.6 [ENHANCEMENT] Added % progression for data import in DB (PP 01/04/20)
+# 2.14.5 [ENHANCEMENT] Checks for valid data.txt in Abundance context (PP 22/03/20)
+# 2.14.4 [BUGFIX] Fix forgotten $dbh->disconnect in Abundance (PP 17/03/20)
+# 2.14.3 [BUGFIX] in Abundance with technical replicates (PP 09/03/20)
+# 2.14.2 [BUGFIX] Abundance now works properly with PTMs (PP 03/03/20)
 # 2.14.1 [BUGFIX] Added forgotten newlines in progress status output (PP 16/02/20) 
 # 2.14.0 [FEATURE] Job split and parallel launch for Abundance (PP 07/02/20)
 # 2.13.1 [BUGFIX] in python command for LFQ (PP 28/01/20)

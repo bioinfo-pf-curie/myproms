@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# runemPAIQuantification.pl   1.1.9                                            #
+# runemPAIQuantification.pl   1.1.11                                           #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Allows quantification of proteins by retrieving the emPAI of the proteins    #
@@ -44,6 +44,7 @@
 $| = 1;
 use promsConfig;
 use promsMod;
+use promsQuantif;
 use POSIX qw(strftime);
 use strict;
 use LWP::UserAgent;
@@ -77,125 +78,140 @@ my (%emPAI,%protIDs,%mr);
 my $dbh=&promsConfig::dbConnect('no_user');
 my ($fileFormat,$datafile)=$dbh->selectrow_array("SELECT FILE_FORMAT,DATA_FILE FROM ANALYSIS WHERE ID_ANALYSIS=$analysisID");
 my ($projectID)=&promsMod::getProjectID($dbh,$analysisID,'analysis');
+
+if ($fileFormat !~ /MASCOT/) {
+	$dbh=&promsConfig::dbConnect('no_user');
+	$dbh->do("UPDATE QUANTIFICATION SET STATUS=-2 WHERE ID_QUANTIFICATION=$quantiID") || die $dbh->errstr();
+	$dbh->commit;
+	$dbh->disconnect;
+	
+    die "ERROR: emPAI quantification is only possible for searches performed with Mascot...";
+}
+
+###> Quantification is 'in-process' state
+$dbh->do("UPDATE QUANTIFICATION SET STATUS=0 WHERE ID_QUANTIFICATION=$quantiID") || die $dbh->errstr();
+$dbh->commit;
+	
 $dbh->disconnect;
 
-if ($fileFormat =~ /MASCOT/) {
-    my ($datFile,$oldName)=("$promsPath{'valid'}/ana_$analysisID/$datafile",'');
-    if (!-e "$promsPath{'valid'}/ana_$analysisID/$datafile") {# Validation has been finished and the dat file has been removed... (anterior version)
-		my $pepFileExt=($fileFormat=~/\.PDM/)? 'pdm' : 'dat';
-		my $oldPepFileName=sprintf "P%06d.$pepFileExt",$analysisID;
-		$datFile="$promsPath{peptide}/proj_$projectID/$oldPepFileName";
-    }
-    open (FILE, $datFile) || (print FILESTAT "Unable to open $datFile file\n");
-    my ($section,$dateCode)=('','');
-    while (my $line=<FILE>) {
-        $section=$1 if $line=~/name="(\w+)"/;
-        last if ($section eq 'summary');
-        next if ($section && $section ne 'parameters' && $section ne 'header');
-        $line=~s/\s*\Z//; # delete \n and trailing spaces
-        if ($fileFormat =~ /\.PDM/ && $line =~ /^COM=(.+)/) {
-			$oldName=$datafile;
-			$datafile=$1;#the name of the original DATFILE is put at this point
-        }
-		elsif ($line=~ /^date=(\d+)/ && $fileFormat !~ /\.PDM/){
-			###> Only for mascot dat. Conversion from seconds to a datecode!
-			###> localtime vs gmtime : should be the same af mascot server so if mascot is gmtime, you should use gmtime 
-			#$dateCode=strftime("%Y%m%d",localtime($1));
-			$dateCode=strftime("%Y%m%d",gmtime($1));
-        }
-    }
-    print FILESTAT "oldname=$oldName datafile=$datafile datecode$dateCode datFile=$datFile $fileFormat\n";
-    close FILE;
-    ###>Need to get the proper dateCode
-    if($fileFormat=~ /\.PDM/){
-		$oldName =~ s/\_[0-9]*\.pdm/\.ana/g;
-		(my $msfFile = $oldName) =~ s/\.ana/\.msf/;
-		my $dbsqlite = DBI->connect( "dbi:SQLite:$promsPath{valid}/multi_ana/proj_$projectID/$msfFile", "", "", {PrintError => 1,RaiseError => 1});
-		###> Be careful, the commented code won't work for DAT files generated overnight (the MSF was created before the production of the DAT therefore the datecode is incorrect)
-		#my ($proteomeDiscovererVersion)=$dbsqlite->selectrow_array("SELECT SoftwareVersion FROM SchemaInfo ORDER BY rowid ASC LIMIT 1"); # last record
-		#$proteomeDiscovererVersion=~s/^(\d\.\d+).*/$1/; # x.x.x.xx -> x.x (numerical value)
-		#my ($wftable)=($proteomeDiscovererVersion < 2.0)?'WorkflowInfo':'Workflows';
-		#my ($date)=$dbsqlite->selectrow_array("SELECT WorkflowStartDate FROM $wftable");
-		#my ($dateMSF,$startTime)=split(/\s/,$date);
-		#($dateCode=$dateMSF) =~ s/-//g;
-		my ($message)=$dbsqlite->selectrow_array("SELECT Message FROM WorkflowMessages WHERE Message LIKE 'Received Mascot result file %'");
-		$dbsqlite->disconnect;
-		if ($message =~ /filename=..\/data\/(\d+)\//) {	$dateCode=$1; }
-    }
-
-    ###>Get the identifiers of the validated proteins:
-    print FILESTAT "1/3 Getting protein data from myProMS database\n";
-    close FILESTAT;
-    $dbh=&promsConfig::dbConnect('no_user');
-    my ($numDatabanks)=$dbh->selectrow_array("SELECT COUNT(*) FROM ANALYSIS_DATABANK WHERE ID_ANALYSIS=$analysisID");
-    #my $sthProtValid=$dbh->prepare("SELECT PROTEIN.ID_PROTEIN,IDENTIFIER FROM PROTEIN,ANALYSIS_PROTEIN WHERE ANALYSIS_PROTEIN.ID_PROTEIN=PROTEIN.ID_PROTEIN AND ID_ANALYSIS=$analysisID");
-    #my $sthProtValid=$dbh->prepare("SELECT PROTEIN.ID_PROTEIN,IDENTIFIER,DB_RANK FROM PROTEIN,ANALYSIS_PROTEIN WHERE ANALYSIS_PROTEIN.ID_PROTEIN=PROTEIN.ID_PROTEIN AND ID_ANALYSIS=$analysisID");
-    my $sthProtValid=$dbh->prepare("SELECT PROTEIN.ID_PROTEIN,ID_MASTER_PROTEIN,IDENTIFIER,DB_RANK,MW FROM PROTEIN,ANALYSIS_PROTEIN WHERE ANALYSIS_PROTEIN.ID_PROTEIN=PROTEIN.ID_PROTEIN AND ID_ANALYSIS=$analysisID");
-    my $sthGetWeight=$dbh->prepare("SELECT MW FROM MASTER_PROTEIN WHERE ID_MASTER_PROTEIN=?");
-    $sthProtValid->execute;
-    while (my ($idProtein,$masterProtID,$identifier,$dbRank,$mw) = $sthProtValid->fetchrow_array) {
-	    my $identifierStrg=($numDatabanks>1)? $dbRank.'::'.$identifier : $identifier;
-	    $protIDs{$identifierStrg}=$idProtein;
-	    if ($mw) {
-		    $mr{$identifierStrg}=$mw;
-	    }elsif($masterProtID){
-		    $sthGetWeight->execute($masterProtID);
-		    ($mr{$identifierStrg})=$sthGetWeight->fetchrow_array;
-	    }else{
-		    $mr{$identifierStrg}=0;
-	    }
-    }
-    $sthProtValid->finish;
-	$sthGetWeight->finish;
-    $dbh->disconnect;
-
-    open(FILESTAT,">>$fileStat");
-    #print FILESTAT "2/3 Getting emPAI from Mascot web-server ($nbRetProts emPAI retrieved among $nbProts)\n";
-    print FILESTAT "2/3 Getting emPAI from Mascot web-server\n";
-    close FILESTAT;
-    my ($sumemPAI,$sumemPAImr)=&getMascotemPAI($datafile,$dateCode,$analysisID,\%emPAI,\%mr);
-
-    ###>Create new Quantitation in myProMS database.
-    open(FILESTAT,">>$fileStat");
-    print FILESTAT "3/3 Storing emPAI into myProMS database\n";
-    close FILESTAT;
-
-    $dbh=&promsConfig::dbConnect('no_user');
-
-    my %empaiPARAMS;
-    my $sthGetParamIDs=$dbh->prepare("SELECT CODE,ID_QUANTIF_PARAMETER FROM QUANTIFICATION_PARAMETER WHERE CODE LIKE 'EMPAI%'");#In QUANTIFICATION_PARAMETER table -> emPAI value
-    $sthGetParamIDs->execute();
-    while (my ($code,$idQP) = $sthGetParamIDs->fetchrow_array) {
-	    $empaiPARAMS{$code}=$idQP;
-    }
-    
-    my $sthProtQuantif=$dbh->prepare("INSERT INTO PROTEIN_QUANTIFICATION (ID_PROTEIN,ID_QUANTIFICATION,ID_QUANTIF_PARAMETER,QUANTIF_VALUE) VALUES (?,$quantiID,?,?)");
-    foreach my $protID (keys(%emPAI)){
-	    if ($protIDs{$protID} && $emPAI{$protID}{$analysisID}){ #Check if the protein was validated for this Analysis
-		    $sthProtQuantif->execute($protIDs{$protID},$empaiPARAMS{'EMPAI'},$emPAI{$protID}{$analysisID});
-		    $sthProtQuantif->execute($protIDs{$protID},$empaiPARAMS{'EMPAI_MOL'},$emPAI{$protID}{$analysisID}*100.00/$sumemPAI) unless !$empaiPARAMS{'EMPAI_MOL'} or $sumemPAI == 0;
-		    $sthProtQuantif->execute($protIDs{$protID},$empaiPARAMS{'EMPAI_MR'},$emPAI{$protID}{$analysisID}*$mr{$protID}*100.00/$sumemPAImr) unless !$empaiPARAMS{'EMPAI_MR'} or $sumemPAImr == 0;
-	    }
-    }
-    $sthProtQuantif->finish;
-
-    $dbh->do("UPDATE QUANTIFICATION SET STATUS=1 WHERE ID_QUANTIFICATION=$quantiID") || die $dbh->errstr();
-
-    $dbh->commit;
-    $dbh->disconnect;
-
-    open(FILESTAT,">>$fileStat");
-    print FILESTAT "Quantification Ended";
-    close(FILESTAT);
-
-    sleep 2;
+my ($datFile,$oldName)=("$promsPath{'valid'}/ana_$analysisID/$datafile",'');
+if (!-e "$promsPath{'valid'}/ana_$analysisID/$datafile") {# Validation has been finished and the dat file has been removed... (anterior version)
+	my $pepFileExt=($fileFormat=~/\.PDM/)? 'pdm' : 'dat';
+	my $oldPepFileName=sprintf "P%06d.$pepFileExt",$analysisID;
+	$datFile="$promsPath{peptide}/proj_$projectID/$oldPepFileName";
 }
-else {
-    open(FILESTAT,">>$fileStat");
-    print FILESTAT "Quantification Ended\n";
-    print FILESTAT "WARNING : emPAI quantification is only possible to searches performed on Mascot...";
-    close(FILESTAT);
+open (FILE, $datFile) || (print FILESTAT "Unable to open $datFile file\n");
+my ($section,$dateCode)=('','');
+while (my $line=<FILE>) {
+	$section=$1 if $line=~/name="(\w+)"/;
+	last if ($section eq 'summary');
+	next if ($section && $section ne 'parameters' && $section ne 'header');
+	$line=~s/\s*\Z//; # delete \n and trailing spaces
+	if ($fileFormat =~ /\.PDM/ && $line =~ /^COM=(.+)/) {
+		$oldName=$datafile;
+		$datafile=$1;#the name of the original DATFILE is put at this point
+	}
+	elsif ($line=~ /^date=(\d+)/ && $fileFormat !~ /\.PDM/){
+		###> Only for mascot dat. Conversion from seconds to a datecode!
+		###> localtime vs gmtime : should be the same af mascot server so if mascot is gmtime, you should use gmtime 
+		#$dateCode=strftime("%Y%m%d",localtime($1));
+		$dateCode=strftime("%Y%m%d",gmtime($1));
+	}
 }
+print FILESTAT "oldname=$oldName datafile=$datafile datecode$dateCode datFile=$datFile $fileFormat\n";
+close FILE;
+###>Need to get the proper dateCode
+if ($fileFormat=~ /\.PDM/) {
+	$oldName =~ s/\_[0-9]*\.pdm/\.ana/g;
+	(my $msfFile = $oldName) =~ s/\.ana/\.msf/;
+	my $dbsqlite = DBI->connect( "dbi:SQLite:$promsPath{valid}/multi_ana/proj_$projectID/$msfFile", "", "", {PrintError => 1,RaiseError => 1});
+	###> Be careful, the commented code won't work for DAT files generated overnight (the MSF was created before the production of the DAT therefore the datecode is incorrect)
+	#my ($proteomeDiscovererVersion)=$dbsqlite->selectrow_array("SELECT SoftwareVersion FROM SchemaInfo ORDER BY rowid ASC LIMIT 1"); # last record
+	#$proteomeDiscovererVersion=~s/^(\d\.\d+).*/$1/; # x.x.x.xx -> x.x (numerical value)
+	#my ($wftable)=($proteomeDiscovererVersion < 2.0)?'WorkflowInfo':'Workflows';
+	#my ($date)=$dbsqlite->selectrow_array("SELECT WorkflowStartDate FROM $wftable");
+	#my ($dateMSF,$startTime)=split(/\s/,$date);
+	#($dateCode=$dateMSF) =~ s/-//g;
+	my ($message)=$dbsqlite->selectrow_array("SELECT Message FROM WorkflowMessages WHERE Message LIKE 'Received Mascot result file %'");
+	$dbsqlite->disconnect;
+	if ($message =~ /filename=..\/data\/(\d+)\//) {	$dateCode=$1; }
+}
+
+###>Get the identifiers of the validated proteins:
+print FILESTAT "1/3 Getting protein data from myProMS database\n";
+close FILESTAT;
+$dbh=&promsConfig::dbConnect('no_user');
+my ($numDatabanks)=$dbh->selectrow_array("SELECT COUNT(*) FROM ANALYSIS_DATABANK WHERE ID_ANALYSIS=$analysisID");
+#my $sthProtValid=$dbh->prepare("SELECT PROTEIN.ID_PROTEIN,IDENTIFIER FROM PROTEIN,ANALYSIS_PROTEIN WHERE ANALYSIS_PROTEIN.ID_PROTEIN=PROTEIN.ID_PROTEIN AND ID_ANALYSIS=$analysisID");
+#my $sthProtValid=$dbh->prepare("SELECT PROTEIN.ID_PROTEIN,IDENTIFIER,DB_RANK FROM PROTEIN,ANALYSIS_PROTEIN WHERE ANALYSIS_PROTEIN.ID_PROTEIN=PROTEIN.ID_PROTEIN AND ID_ANALYSIS=$analysisID");
+my $sthProtValid=$dbh->prepare("SELECT PROTEIN.ID_PROTEIN,ID_MASTER_PROTEIN,IDENTIFIER,DB_RANK,MW FROM PROTEIN,ANALYSIS_PROTEIN WHERE ANALYSIS_PROTEIN.ID_PROTEIN=PROTEIN.ID_PROTEIN AND ID_ANALYSIS=$analysisID");
+my $sthGetWeight=$dbh->prepare("SELECT MW FROM MASTER_PROTEIN WHERE ID_MASTER_PROTEIN=?");
+$sthProtValid->execute;
+while (my ($idProtein,$masterProtID,$identifier,$dbRank,$mw) = $sthProtValid->fetchrow_array) {
+	my $identifierStrg=($numDatabanks>1)? $dbRank.'::'.$identifier : $identifier;
+	$protIDs{$identifierStrg}=$idProtein;
+	if ($mw) {
+		$mr{$identifierStrg}=$mw;
+	}elsif($masterProtID){
+		$sthGetWeight->execute($masterProtID);
+		($mr{$identifierStrg})=$sthGetWeight->fetchrow_array;
+	}else{
+		$mr{$identifierStrg}=0;
+	}
+}
+$sthProtValid->finish;
+$sthGetWeight->finish;
+$dbh->disconnect;
+
+open(FILESTAT,">>$fileStat");
+#print FILESTAT "2/3 Getting emPAI from Mascot web-server ($nbRetProts emPAI retrieved among $nbProts)\n";
+print FILESTAT "2/3 Getting emPAI from Mascot web-server\n";
+close FILESTAT;
+my ($sumemPAI,$sumemPAImr)=&getMascotemPAI($datafile,$dateCode,$analysisID,\%emPAI,\%mr);
+
+unless ($sumemPAI) {
+	die "ERROR: No data could be retrieved from Mascot server";
+}
+
+###>Create new Quantitation in myProMS database.
+open(FILESTAT,">>$fileStat");
+print FILESTAT "3/3 Storing emPAI into myProMS database\n";
+close FILESTAT;
+
+$dbh=&promsConfig::dbConnect('no_user');
+
+my %empaiPARAMS;
+my $sthGetParamIDs=$dbh->prepare("SELECT CODE,ID_QUANTIF_PARAMETER FROM QUANTIFICATION_PARAMETER WHERE CODE LIKE 'EMPAI%'");#In QUANTIFICATION_PARAMETER table -> emPAI value
+$sthGetParamIDs->execute;
+while (my ($code,$idQP) = $sthGetParamIDs->fetchrow_array) {
+	$empaiPARAMS{$code}=$idQP;
+}
+
+#my $sthProtQuantif=$dbh->prepare("INSERT INTO PROTEIN_QUANTIFICATION (ID_PROTEIN,ID_QUANTIFICATION,ID_QUANTIF_PARAMETER,QUANTIF_VALUE) VALUES (?,$quantiID,?,?)");
+my $finalQuantifDir="$promsPath{quantification}/project_$projectID/quanti_$quantiID";
+system "mkdir -p $finalQuantifDir";
+my $dbhLite=&promsQuantif::dbCreateProteinQuantification($quantiID,$finalQuantifDir); # SQLite
+my $sthProtQuantif=$dbhLite->prepare("INSERT INTO PROTEIN_QUANTIFICATION (ID_PROTEIN,ID_QUANTIF_PARAMETER,QUANTIF_VALUE) VALUES (?,?,?)");
+foreach my $protID (keys(%emPAI)) {
+	if ($protIDs{$protID} && $emPAI{$protID}{$analysisID}) { #Check if the protein was validated for this Analysis
+		$sthProtQuantif->execute($protIDs{$protID},$empaiPARAMS{'EMPAI'},$emPAI{$protID}{$analysisID});
+		$sthProtQuantif->execute($protIDs{$protID},$empaiPARAMS{'EMPAI_MOL'},$emPAI{$protID}{$analysisID}*100.00/$sumemPAI) unless !$empaiPARAMS{'EMPAI_MOL'} or $sumemPAI == 0;
+		$sthProtQuantif->execute($protIDs{$protID},$empaiPARAMS{'EMPAI_MR'},$emPAI{$protID}{$analysisID}*$mr{$protID}*100.00/$sumemPAImr) unless !$empaiPARAMS{'EMPAI_MR'} or $sumemPAImr == 0;
+	}
+}
+$sthProtQuantif->finish;
+$dbhLite->commit;
+
+$dbh->do("UPDATE QUANTIFICATION SET STATUS=1 WHERE ID_QUANTIFICATION=$quantiID") || die $dbh->errstr();
+$dbh->commit;
+$dbh->disconnect;
+
+open(FILESTAT,">>$fileStat");
+print FILESTAT "Quantification Ended";
+close(FILESTAT);
+
+sleep 2;
+
 
 ##############################################################################################
 ######> Get Mascot emPAI using the myproms4emPAI.pl script in cgi <########################
@@ -203,7 +219,7 @@ else {
 sub getMascotemPAI {
 
 	my($datFile,$datCalendar,$analysisID,$refemPAI,$refmr)=@_;
-	my ($sumemPAI,$sumemPAImr)=(0.00,0.00);
+	my ($sumemPAI,$sumemPAImr)=(0,0);
     
 	### > Before 2.5.1
 	#my $params = {
@@ -268,6 +284,7 @@ sub getMascotemPAI {
 	###> 3rd: read the response of the request (if success)
 	if ($response->is_success) {
 		#print $response->content;
+		my $okData=0;
 		my @lines=split(/\n/,$response->content);
 		foreach my $line ( @lines ) {
 			next unless $line =~ /emPAI/;
@@ -278,95 +295,22 @@ sub getMascotemPAI {
 			if ($refmr->{$info[2]}) { # Some proteins found in DAT file could have been removed in validation-step. They should not be used for normalization
 				$sumemPAI+=$info[9];
 				$sumemPAImr+=$info[9]*$refmr->{$info[2]};
+				$okData=1;
 			}
 		}
+		unless ($okData) {
+			warn $response->content;
+		}
 	}
-	else{
-		print $response->status_line, "<BR>\n";
+	else {
+		warn $response->status_line;
 	}
 	return ($sumemPAI,$sumemPAImr);
 }
 
-###> Obsolete -> 24/12/2012
-##############################################################################################
-######> Alternative to the precedent thing                                                <###
-######> It gets the emPAI (when it is available) from the valid list of proteins directly <###
-##############################################################################################
-###sub getMascotemPAI {
-###
-###    my($datFile,$datCalendar,$identifier,$analysisID,$maxNbProt,$refemPAI)=@_;
-###
-###    ###> 1st : writing the information sent for wget
-###    my $postData="..%2Fdata%2F$datCalendar%2F$datFile;";
-###    $postData.="_ignoreionsscorebelow=0;_proteinfamilyswitch=0;_sigthreshold=0.05;_sortunassigned=scoredown;";
-###    $postData.="mimetype=application%2Fvnd.matrixscience.reportnode%2Bxml;";
-###    if ($identifier eq 'getAll'){
-###	### pr.show=quantitation option allows to show in Protein Family mode the quantitation tab with all the proteins
-###	$postData.="pr.show=quantitation;pr.ftype=accession;pr.per_page=0;report=$maxNbProt;sub=tc%3Arf";
-###    }else{
-###	$identifier =~ s/\|/%7C/g;
-###	$postData.="pr.find=$identifier;pr.ftype=accession;pr.per_page=0;report=$maxNbProt;sub=tc%3Arf";
-###    }
-###
-###    ###> 2nd : send the request to the agent
-###    my $ua = LWP::UserAgent->new;
-###    $ua->timeout(360);
-###    my $res = $ua->get("$mascotServer/cgi/master_results_2.pl?file=$postData");
-###
-###    ###> Block to prevent from problems with the server
-###    while (my $wait = $res->header('Retry-After')) {
-###            #print "Waiting ($wait)...\n";
-###            sleep $wait;
-###            $res = $ua->request($res->base);
-###    }
-###
-###    ###> 3rd: read the response of the request (if success)
-###    if ($res->is_success) {
-###	#print $res->content;
-###	my ($onGi,$onForm,$myId)=(0,0);
-###	my ($prot);
-###	my @lines=split(/\n/,$res->content);
-###	foreach my $line ( @lines ) {
-###	    if ($identifier eq 'getAll') {# For merge raw files, the second part did not work (no emPAI information given)
-###		if($onForm==1){
-###		    if ($line =~/<td class="empai">([^<]+)<\/td>/) {
-###			$refemPAI->{$prot}{$analysisID}=$1;
-###		    }elsif($line =~/<\/tr>/){
-###			$onForm=0;
-###		    }
-###		}elsif($line =~ /<td class="accession"/){
-###		    $onForm=1;
-###		    if($line=~/>([^>]+)<\/a><\/td>/){# Works for SwissProt and NCBI accession number
-###			$prot=$1;
-###		    }
-###		}
-###	    }else {
-###		if($onForm==1){
-###		    if($line =~/title="Detailed view of ([^>]+)">/){# Works for SwissProt and NCBI accession number
-###			$onGi=1;
-###			$prot= $1;#TODO: Consider other accession formats!!!
-###			#print " $prot";
-###		    }elsif($onGi=1 && $line =~/<td class="empai">([^<]+)<\/td>/){
-###			$refemPAI->{$prot}{$analysisID}=$1;
-###			#print " empai=$1 <BR>\n";
-###		    }elsif($line =~/<\/tr>/){
-###			$onGi=0;
-###		    }elsif($line=~/<\/form>/){
-###			last;
-###		    }
-###		}else{
-###		    if($line =~/<th class="empai" scope="col"/ || $line =~/<th scope="col" class="empai"/){
-###			$onForm=1;#the emPAI value is supposed to be on this form of the file
-###		    }
-###		}
-###	    }
-###	}
-###    }else{
-###	print $res->status_line, "<BR>\n";
-###    }
-###}
-
 ####>Revision history<####
+# 1.1.11 [BUGFIX] Minor bug fix (PP 29/07/20)
+# 1.1.10 [UPDATE] Uses SQLite database to store quantification data (PP 06/07/20)
 # 1.1.9 [MODIFICATION] Small modifs on log printing (VS 09/10/19) 
 # 1.1.8 Uses new &promsConfig::getMascotServers function (PP 25/06/19)
 # 1.1.7 Minor fix to prevent DBI warning (PP 30/10/18)

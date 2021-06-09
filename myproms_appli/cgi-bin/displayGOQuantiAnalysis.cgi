@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 #############################################################################
-# displayGOQuantiAnalysis.cgi    1.2.3                                      #
+# displayGOQuantiAnalysis.cgi    1.2.4                                      #
 # Authors: P. Poullet, G. Arras ,F. Yvon & S. Liva (Institut Curie)         #
 # Contact: myproms@curie.fr                                                 #
 # Display heatmap of quantitative GO analyses                               #
@@ -49,6 +49,8 @@ use promsQuantif;
 use strict;
 use goAnalysis;
 use File::Path qw(rmtree); # remove_tree
+use POSIX qw(strftime); # to get the time
+use Spreadsheet::WriteExcel;
 
 #print header(-charset=>'UTF-8'); warningsToBrowser(1); # DEBUG
 
@@ -77,8 +79,17 @@ $sthQG->finish;
 my @userInfo=&promsMod::getUserInfo($dbh,$userID,$projectID);
 my $projectAccess=${$userInfo[2]}{$projectID};
 
-if (param('AJAX')) {
-    &getProtList;
+my $filterProtIDs=(param('filterProtIDs')) ? param('filterProtIDs') : '';
+my $numPepCode='NUM_PEP_USED';
+my $goID = (param('ROW')) ? param('ROW') : (param('goID')) ? param('goID') : '';
+my $binID = (param('BIN')) ? param('BIN') : '';
+if($goID && $binID) {
+    if (param('AJAX')) {
+        &printBinQuantiData($goID, $binID);
+    } elsif(param('ACT') && param('ACT') eq 'export') {
+        &exportProteinList($goID, $binID);
+    }
+    $dbh->disconnect;
     exit;
 }
 
@@ -310,6 +321,38 @@ function checkAllProteins(chkStatus) {
 	}
 	else {checkBoxList.checked=chkStatus;}
 }
+
+function checkProtToExport(required=false) {
+	var protChkBox=document.getElementsByName('chkProt');
+	if (!protChkBox.length) {protChkBox=[protChkBox];} // force to array if single element
+	var filterProtIDs = [];
+	protChkBox.forEach(function(chkBox) {
+		if(chkBox.checked) {
+			filterProtIDs.push(chkBox.value);
+		}
+	});
+	
+	if (filterProtIDs.length) {
+		exportProteins(filterProtIDs);
+	} else if(required) {
+		alert('You must select the proteins/sites to export.');
+	} else {
+		exportProteins();
+	}
+}
+
+function exportProteins(filterProtIDs=[]) {
+	document.protForm.filterProtIDs.value = '';
+	if (filterProtIDs.length) {
+		document.protForm.filterProtIDs.value = filterProtIDs.join(',');
+	}
+
+	var defAction=document.protForm.ACT.value;
+	document.protForm.ACT.value='export';
+	document.protForm.submit();
+	document.protForm.ACT.value=defAction;
+}
+
 function openGODescription(rowID){
     window.open('http://amigo.geneontology.org/amigo/term/'+rowID);
 }
@@ -449,10 +492,13 @@ sub cleanFiles{
 
 
 sub getProtList{
-    my $goID=param('ROW');
-	my $binID=param('BIN');
-
-	my ($anaString)=$dbh->selectrow_array("SELECT GROUP_CONCAT(ID_ANALYSIS SEPARATOR ',') FROM ANA_QUANTIFICATION WHERE ID_QUANTIFICATION=$quantiID GROUP BY ID_QUANTIFICATION");
+    my ($goID, $binID) = @_;
+    
+    my %goBinInfos;
+    $goBinInfos{'enrichFactor'} = '';
+    $goBinInfos{'pvalue'} = '';
+    $goBinInfos{'isoformName'} ='';
+    
     my $sthBin = $dbh->prepare("SELECT PARAM_STRG FROM GO_ANALYSIS WHERE ID_GOANALYSIS=?");
     $sthBin->execute($binID);
     my ($binParamStrg) = $sthBin->fetchrow_array;
@@ -460,18 +506,20 @@ sub getProtList{
 
     my ($bin) = ($binParamStrg =~ /bin=([^;]+)/);
     $bin++;
-    my ($binSize) = ($binParamStrg =~ /size=([^;]+)/);
-    my $goName;
+     $goBinInfos{'binNb'} = $bin;
+    $goBinInfos{'binSize'} = ($binParamStrg =~ /size=([^;]+)/);
 
     # Fetching proteins IDs of corresponding GO ID in result file
     my $resultDirUnix = "$promsPath{go_unix}/project_$projectID/$binID";
     my ($enrichFactor,$pvalue,$countBinProt,$countPopProt,$countGOProt);
+    
     open(RES,"$resultDirUnix/results_$aspect.txt") || die "Could not open result file";
 	my %proteinsMatched;
+    my $goName;
     while(<RES>){
 	    if(/^### (\d+)\s(\d+)/){ # 1st line in file
 		    $countBinProt = $1;
-		    $countPopProt = $2;
+		    $goBinInfos{'countPopProt'} = $2;
 		    next;
 	    }
 	    my @info = split(/\t/, $_);
@@ -482,19 +530,20 @@ sub getProtList{
 			    $goName = 'Discarded proteins';
 		    } else {
 			    $goName = &goAnalysis::formatGOName($info[1]);
-			    $enrichFactor = sprintf("%.2f",($info[3]/$countBinProt)/($info[4]/$countPopProt));
-			    $pvalue = sprintf("%1.2e",$info[2]);
+			    $goBinInfos{'enrichFactor'} = sprintf("%.2f",($info[3]/$countBinProt)/($info[4]/$goBinInfos{'countPopProt'}));
+			    $goBinInfos{'pvalue'} = sprintf("%1.2e",$info[2]);
 		    }
 		    foreach my $protID (split(';',$info[5])){
 				$proteinsMatched{$protID}=1;
-			    $countGOProt++;
+			    $goBinInfos{'countGOProt'}++;
 		    }
+            $goBinInfos{'goName'} = $goName;
 		    last;
 	    }
     }
     close RES;
     
-	my $isoformName='';
+	
     #my  @quantifModifs;
 	if ($modifQuantifStrg) {
 		my @quantifModifs=split(',',$modifQuantifStrg);
@@ -509,17 +558,16 @@ sub getProtList{
             #    $modifName=~s/^##//; $modifName=~s/##.*$//;
             #    $modificationInfo{$modID}=[$modID,$displayCode,$displayColor,$modifName];
             #}
-            $isoformName.='/' if $isoformName;
-            $isoformName.="<FONT color='#$displayColor'>$displayCode</FONT>";
+            $goBinInfos{'isoformName'} .= '/' if $goBinInfos{'isoformName'};
+            $goBinInfos{'isoformName'} .= "<FONT color='#$displayColor'>$displayCode</FONT>";
         }
         #$isoformName=$modifName.'-sites';
-		$isoformName.='-sites';
+		$goBinInfos{'isoformName'}.='-sites';
 	}
     
-	my $numPepCode='NUM_PEP_USED';
 	my $quantif=$quantiID.'_'.$ratioPos;
 	my (%quantifValues,%quantifInfo,%proteinInfo,%dispModifSites);
-	if ($countGOProt) {
+	if ($goBinInfos{'countGOProt'}) {
 		my %parameters=(QUANTIF_FAMILY=>'RATIO',VIEW=>'list',NUM_PEP_CODE=>$numPepCode,QUANTIF_LIST=>[$quantif]);
 		my ($numPepThr) = ($paramStrg =~ /minPep=([^;]+)/);
 		$parameters{STRICT_FILTER}{$numPepCode}=$numPepThr if ($numPepThr && $numPepThr > 1);
@@ -527,8 +575,6 @@ sub getProtList{
 		$parameters{STRICT_FILTER}{P_VALUE}=$pValueThr if ($pValueThr && $pValueThr > 1);
 		&promsQuantif::fetchQuantificationData($dbh,\%parameters,\%quantifInfo,\%quantifValues,\%dispModifSites,\%proteinInfo,\%proteinsMatched);
 	}
-
-	$dbh->disconnect;
 
 	##>Remove PTM-ratios outside bin range:  ]bin ratio range]
 	if ($modifQuantifStrg) {
@@ -549,16 +595,29 @@ sub getProtList{
 			}
 		}
 	}
+    
+    return (\%goBinInfos, \%quantifValues, \%dispModifSites, \%proteinInfo);
+}
 
-
+sub printBinQuantiData {
+    my ($goID, $binID) = @_;
+    
     ####>HTML<####
     print header(-type=>'text/plain',-charset => 'utf-8');
     warningsToBrowser(1);
 
+    my ($goBinInfosRef, $quantifValuesRef, $dispModifSitesRef, $proteinInfoRef) = getProtList($goID, $binID);
+    my ($goName, $countGOProt, $countPopProt, $binSize, $binNb, $enrichFactor, $pvalue, $isoformName) = ($goBinInfosRef->{'goName'}, $goBinInfosRef->{'countGOProt'}, $goBinInfosRef->{'countPopProt'}, $goBinInfosRef->{'binSize'}, $goBinInfosRef->{'binNb'}, $goBinInfosRef->{'enrichFactor'}, $goBinInfosRef->{'pvalue'}, $goBinInfosRef->{'isoformName'});
+    my %quantifValues = %{$quantifValuesRef};
+    my %dispModifSites = %{$dispModifSitesRef};
+    my %proteinInfo = %{$proteinInfoRef};
+    my $quantif=$quantiID.'_'.$ratioPos;
+    my ($anaString) = $dbh->selectrow_array("SELECT GROUP_CONCAT(ID_ANALYSIS SEPARATOR ',') FROM ANA_QUANTIFICATION WHERE ID_QUANTIFICATION=$quantiID GROUP BY ID_QUANTIFICATION");
+
     unless ($countGOProt) {
 		print qq
 |<BR>
-<FONT class="title1">No protein from this term in bin $bin</FONT>
+<FONT class="title1">No protein from this term in bin $binID</FONT>
 <BR><BR>
 |;
 		exit;
@@ -567,13 +626,21 @@ sub getProtList{
     print qq
 |<BR>
 <FONT class="title"><a href="http://amigo.geneontology.org/amigo/term/$goID" target=_blank>$goName</a></FONT><BR>
-<FONT class="title3">Bin $bin ($binSize%)</FONT><BR>
+<FONT class="title3">Bin $binNb ($binSize%)</FONT><BR>
 |;
 	print qq|<FONT class="title3">Enrichment Factor: $enrichFactor, p-value=$pvalue</FONT>| unless ($goID eq 'unannotated') or ($goID eq 'discarded');
 	my $disabSave=($projectAccess eq 'guest')? ' disabled' : '';
 	print qq
 |<BR><BR>
 <FORM name="protForm" method="POST">
+<INPUT type="hidden" name="ACT" value="">
+<INPUT type="hidden" name="ID" value="$goAnaID">
+<INPUT type="hidden" name="goName" value="$goName" />
+<INPUT type="hidden" name="goID" value="$goID" />
+<INPUT type="hidden" name="BIN" value="$binID" />
+<INPUT type="hidden" name="goEnrichmentFactor" value="$enrichFactor" />
+<INPUT type="hidden" name="goPValue" value="$pvalue" />
+<INPUT type="hidden" name="filterProtIDs" value="">
 <TABLE border=0 cellspacing=0 cellpadding=2>
 <TR><TD colspan=8><DIV id="saveProtDIV" style="display:none;"></DIV></TD></TR>
 <TR><TD colspan=8>
@@ -582,8 +649,9 @@ sub getProtList{
 <INPUT type="button" id="saveFormBUTTON" value="Save proteins..." onclick="ajaxManageSaveProteins('getThemes','PROT')"$disabSave/>
 |;
 	print "<INPUT type=\"button\" id=\"saveSiteFormBUTTON\" value=\"Save sites...\" onclick=\"ajaxManageSaveProteins('getThemes','SITE','$modifQuantifStrg')\"$disabSave/>\n" if $modifQuantifStrg;
-	print qq
-|</TD></TR>
+	print qq |
+<INPUT type="button" id="exportProteins" value="Export data" onclick="checkProtToExport()\"/>
+</TD></TR>
 |;
 	my $itemHeaderStrg='';
 	if ($modifQuantifStrg) {
@@ -644,10 +712,116 @@ sub getProtList{
     print qq
 |</TABLE></FORM><BR><BR>
 |;
+}
 
+sub exportProteinList {
+    my ($goID, $binID) = @_;
+    
+    # Set export parameters
+    my $timeStamp1=strftime("%Y%m%d %H-%M",localtime);
+    my $workbook=Spreadsheet::WriteExcel->new("-");
+    $workbook->set_properties(title=>"Quantitative Gene Ontology analysis results",
+                              author=>'myProMS server',
+                              comments=>'Automatically generated with Perl and Spreadsheet::WriteExcel');
+    $workbook->set_custom_color(40,189,215,255); # content light blue color  #BDD7FF
+    $workbook->set_custom_color(41,128,179,255); # content dark blue color  #80B3FF
+    $workbook->set_custom_color(42,87,128,201,255); # header dark blue color
+    
+    my %itemFormat = (
+        header =>			   $workbook->add_format(align=>'center', valign=>'vcenter', size=>10, text_wrap=>1, border=>1, bg_color=>42, bold=>1),
+        headerMerge =>  	   $workbook->add_format(align=>'center', valign=>'vcenter', size=>12, text_wrap=>1, border=>1, bg_color=>42, bold=>1),
+        textWrapLight =>	   $workbook->add_format(align=>'left', valign=>'vcenter', size=>10, text_wrap=>1, border=>1, bg_color=>40),
+        textWrapDark =>		   $workbook->add_format(align=>'left', valign=>'vcenter', size=>10, text_wrap=>1, border=>1, bg_color=>41),
+        textWrapCenterLight => $workbook->add_format(align=>'center', valign=>'vcenter', size=>10, text_wrap=>1, border=>1, bg_color=>40),
+        textWrapCenterDark =>  $workbook->add_format(align=>'center', valign=>'vcenter', size=>10, text_wrap=>1, border=>1, bg_color=>41),
+    );
+    
+    print header(-type=>"application/vnd.ms-excel",-attachment=>"QGO_Protein_quantification_$timeStamp1.xls");
+    
+    # Gather data to export
+    my ($goBinInfosRef, $quantifValuesRef, $dispModifSitesRef, $proteinInfoRef) = getProtList($goID, $binID);
+    my ($goName, $countGOProt, $countPopProt, $binSize, $binNb, $enrichFactor, $pvalue, $isoformName) = ($goBinInfosRef->{'goName'}, $goBinInfosRef->{'countGOProt'}, $goBinInfosRef->{'countPopProt'}, $goBinInfosRef->{'binSize'}, $goBinInfosRef->{'binNb'}, $goBinInfosRef->{'enrichFactor'}, $goBinInfosRef->{'pvalue'}, $goBinInfosRef->{'isoformName'});
+    my %quantifValues = %{$quantifValuesRef};
+    my %dispModifSites = %{$dispModifSitesRef};
+    my %proteinInfo = %{$proteinInfoRef};
+    my $quantif=$quantiID.'_'.$ratioPos;
+    
+    my $nbProtHeader = '';
+    if ($modifQuantifStrg) {
+		my ($totIsoforms) = ($paramStrg =~ /numSiteSel=([^;]+)/);
+		$nbProtHeader= (scalar keys %quantifValues)."/$totIsoforms $isoformName ";
+	}
+	$nbProtHeader.="$countGOProt/$countPopProt proteins";
+    
+    # Start printing excel file
+	my $worksheet=$workbook->add_worksheet('Results');
+	my $xlsRow=2;
+	my $xlsCol=0;
+
+	# Write headers
+    $worksheet->merge_range(0, 0, 1, 0, "$nbProtHeader", $itemFormat{'headerMerge'});
+    $worksheet->merge_range(0, 1, 1, 1, "Gene", $itemFormat{'headerMerge'});
+    $worksheet->merge_range(0, 2, 0, 4, "Quantification data", $itemFormat{'headerMerge'});
+    $worksheet->write(1, 2, "ratio", $itemFormat{'header'});
+    $worksheet->write(1, 3, "p-value", $itemFormat{'header'});
+    $worksheet->write(1, 4, "pep. used", $itemFormat{'header'});
+    $worksheet->merge_range(0, 5, 1, 5, "MW (KDa)", $itemFormat{'headerMerge'});
+    $worksheet->merge_range(0, 6, 1, 6, "Description - Species", $itemFormat{'headerMerge'});
+    
+    my ($minFoldChange,$maxFoldChange,$maxPvalue)=(0.5,2,0.05);
+    my $numDispItems=0;
+    foreach my $modProtID (sort{$quantifValues{$b}{$quantif}{$numPepCode} <=> $quantifValues{$a}{$quantif}{$numPepCode}} keys %quantifValues) {
+		my ($protID, $modStrg) = ($modProtID =~ /^(\d+)(.*)/);
+        my $rowFormatBGColor = ($xlsRow%2==0) ? "Light" : "Dark";
+        $modStrg = ($modStrg) ? '-'.$dispModifSites{$modProtID} : '';
+        $xlsCol=0;
+
+		# Protein/Isoform
+        $worksheet->write($xlsRow, $xlsCol++, "$proteinInfo{$protID}[0]$modStrg", $itemFormat{"textWrapCenter$rowFormatBGColor"});
+	    
+        # Gene
+        my $geneStr = '-';
+        if (scalar @{$proteinInfo{$protID}[5]} > 1) { # gene
+            $geneStr = join("\n", @{$proteinInfo{$protID}[5]});
+		} elsif ($proteinInfo{$protID}[5][0]) {
+            $geneStr = $proteinInfo{$protID}[5][0];
+        }
+        $worksheet->write($xlsRow, $xlsCol++, $geneStr, $itemFormat{"textWrap$rowFormatBGColor"});
+
+		# ratio
+	    my $ratio=$quantifValues{$modProtID}{$quantif}{RATIO};
+	    my $absRatio = ($ratio >= 1) ? $ratio : 1/$ratio;
+	    my $ratioStrg = sprintf("%.2f", $absRatio);
+        $ratioStrg *= 1;
+		$ratioStrg = ($ratio>=1000) ? "1000" : ($ratio<=0.001) ? "1/1000" : ($ratio < 1) ? "1/$ratioStrg" : $ratioStrg;
+        $worksheet->write($xlsRow, $xlsCol++, $ratioStrg, $itemFormat{"textWrapCenter$rowFormatBGColor"});
+        
+	    # p-value
+	    my $pValueStrg = (!defined $quantifValues{$modProtID}{$quantif}{P_VALUE})? '-' : ($quantifValues{$modProtID}{$quantif}{P_VALUE} >= 0.01) ? sprintf("%.2f",$quantifValues{$modProtID}{$quantif}{P_VALUE}) : sprintf("%.1e",$quantifValues{$modProtID}{$quantif}{P_VALUE});
+        $worksheet->write($xlsRow, $xlsCol++, $pValueStrg, $itemFormat{"textWrapCenter$rowFormatBGColor"});
+
+		# peptides
+        $worksheet->write($xlsRow, $xlsCol++, $quantifValues{$modProtID}{$quantif}{$numPepCode}, $itemFormat{"textWrapCenter$rowFormatBGColor"});
+
+		# mass
+		my $mass = ($proteinInfo{$protID}[1]) ? $proteinInfo{$protID}[1]: '-';
+        $worksheet->write($xlsRow, $xlsCol++, $mass, $itemFormat{"textWrapCenter$rowFormatBGColor"});
+        
+        # description, species
+        $worksheet->write($xlsRow, $xlsCol++, "$proteinInfo{$protID}[2] - $proteinInfo{$protID}[3]", $itemFormat{"textWrap$rowFormatBGColor"});
+        
+        $xlsRow++;
+    }
+    
+    $worksheet->set_column(0, 0, 18);
+    $worksheet->set_column(1, 1, 11);
+    $worksheet->set_column(6, 6, 68);
+    
+    $workbook->close();
 }
 
 ####>Revision history
+# 1.2.4 [ENHANCEMENT] Added data export for selected GO Term and bin (VS 14/04/20)
 # 1.2.3 [BUGFIX] Fixed incomplete compatibility with multi-modif quantifications (PP 30/11/19)
 # 1.2.2 [FEATURE] Compatible with multi-modif quantifications (PP 15/07/19)
 # 1.2.1 [Fix] undef bin values when no term found for a bin (PP 11/12/18)

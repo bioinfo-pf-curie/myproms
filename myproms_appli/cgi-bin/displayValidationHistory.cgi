@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 #############################################################################
-# displayValidationHistory.cgi       1.1.5                                  #
+# displayValidationHistory.cgi       1.1.6                                  #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                   #
 # Contact: myproms@curie.fr                                                 #
 #############################################################################
@@ -222,7 +222,9 @@ ID :foreach my $id (sort{ $history{$a}{'step'} <=> $history{$b}{'step'} } keys %
 			my ($flaggedUp) = ($history{$id}{'paramStrg'} =~ /flaggedUp:check:(\d*);/); if($flaggedUp){ push @strgList, "&nbsp&nbsp&nbsp - Interpretation was <IMG src=\"$promsPath{images}/lightYellow1.gif\" hspace=0 border=0 height=11 width=11> flagged."};
 			my ($flaggedDown) = ($history{$id}{'paramStrg'} =~ /flaggedDown:check:(\d*);/); if($flaggedDown){ push @strgList, "&nbsp&nbsp&nbsp - Interpretation was not <IMG src=\"$promsPath{images}/lightOrange1.gif\" hspace=0 border=0 height=11 width=11> flagged."};
 		}
-		my ($oneInt) = ($history{$id}{'paramStrg'} =~ /oneInt:check:(\d*);/); if($oneInt){ push @strgList, "<B>Select</B> only 1 (best) interpretation/query."};
+		my ($oneInt) = ($history{$id}{'paramStrg'} =~ /oneInt:check:(\d*);/); if($oneInt){ push @strgList, "<B>Select</B> only one interpretation per query (best matching rank)"};
+		my ($oneSeqType) = ($history{$id}{'paramStrg'} =~ /oneSeqType:text:(\w*);/);
+		my ($oneSeq) = ($history{$id}{'paramStrg'} =~ /oneSeq:check:(\d*);/); if($oneSeq) { push @strgList, "<B>Select</B> only one query per $oneSeqType (best score)"};
 		my ($overPep) = ($history{$id}{'paramStrg'} =~ /overPep:check:(\d*);/); if($overPep){ push @strgList, "<B>Overwrite</B> previous selections/rejections."};
 		my ($selProt) = ($history{$id}{'paramStrg'} =~ /selProt:check:(\d*);/); if($selProt){ push @strgList, "<B>Select</B> only proteins meeting these criteria:"};
 		my ($minPep) = ($history{$id}{'paramStrg'} =~ /minPep:text:(\w*);/); if($selProt && $minPep){ push @strgList, "&nbsp&nbsp&nbsp - containing at least $minPep peptides."};
@@ -844,6 +846,7 @@ sub cleanString{
 
 
 ####>Revision history<####
+# 1.1.6 [ENHANCEMENT] Added displaying of best query per ion selection parameter (VS 30/03/20)
 # 1.1.5 Compatible with "##PRB_MQ=xxx" in PEPTIDE_MODIFICATION.REF_POS_STRING for MaxQuant (PP 14/02/17)
 # 1.1.4 Minor bug correction in Manual selection display and -charset=>'utf-8' (GA 02/09/14)
 # 1.1.3 Handles precomputed FDR by Percolator in PD (PP 14/05/14)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# importMaxquant.cgi       2.1.7                                               #
+# importMaxquant.cgi       2.1.12                                              #
 # Component of site myProMS Web Server                                         #
 # Authors: P. Poullet, G. Arras, S. Liva (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
@@ -46,7 +46,7 @@ $| = 1;
 use strict;
 use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI ':standard';
-use POSIX qw(strftime);  # Core module
+use POSIX qw(strftime :sys_wait_h);  # Core module
 #use IO::Uncompress::Gunzip qw(gunzip);
 use Cwd; #?
 #use XML::Simple;
@@ -183,6 +183,9 @@ function checkFileForm(importForm) {
 		document.getElementById('formSubmit').disabled=true;
 		document.getElementById('waitDIV').style.display='block';
 	}
+	if (importForm.sharedDirFiles.length) {
+		document.getElementById('formSubmit').disabled=true;
+	}
 	return true;
 }
 </SCRIPT>
@@ -312,11 +315,12 @@ while (-e "$promsPath{tmp}/quantification/$jobID") { # to prevent multi-user lau
 my $tmpFilesDir="$promsPath{tmp}/quantification/$jobID";
 mkdir $tmpFilesDir;
 
-
+$dbh->disconnect;  # Must disconnect before copying files and reconnect after, otherwise loose connection
 my $importPepQuantif=1;
 my $importProtQuantif=param('protQuantif');
 
 print "<BR><FONT class=\"title3\">Retrieving File(s)...";
+print "\0" x 1024, "<BR>";  # Fill buffer for the first print
 my $newFile;
 my $numFiles=0;
 my $archiveFile;
@@ -331,8 +335,7 @@ else { # from shared directory
 	foreach my $sharedFile (param('sharedDirFiles')) {
 		my (undef,$path,$fileName)=splitpath($sharedFile);
 		$newFile="$tmpFilesDir/$fileName";
-		move("$promsPath{shared}/$sharedFile",$newFile);
-		print '.';
+		&copyAndPrint("$promsPath{shared}/$sharedFile", "$newFile");
 		if ($fileName =~/\.(gz|zip)\Z/) { # keep only archive if extra files
 			$numFiles=1;
 			$archiveFile=$fileName;
@@ -346,7 +349,7 @@ if ($numFiles==1 && $newFile !~ /\.(gz|zip)\Z/) {
 	rmtree $tmpFilesDir;
 	exit;
 }
-print " Done.</FONT><BR>";
+print "<BR> Done.</FONT><BR>";
 
 ###>Writing parameter file
 my @databankIDs;
@@ -383,7 +386,8 @@ open(FLAG,">$currentQuantifDir/$experimentID\_$jobID\_wait.flag"); # flag file u
 print FLAG "#";
 close FLAG;
 
-$dbh->do("INSERT INTO JOB_HISTORY (ID_JOB, ID_USER, ID_PROJECT, TYPE, STATUS, FEATURES, SRC_PATH, LOG_PATH, ERROR_PATH, STARTED) VALUES('$jobID', '$userID', $projectID, 'Import [MaxQuant]', 'Queued', 'ID_EXPERIMENT=$experimentID', '$tmpFilesDir', '$tmpFilesDir/status_$experimentID.out', '$currentQuantifDir/$experimentID\_$jobID\_error.txt', NOW())");
+$dbh=&promsConfig::dbConnect;
+$dbh->do("INSERT INTO JOB_HISTORY (ID_JOB, ID_USER, ID_PROJECT, TYPE, JOB_STATUS, FEATURES, SRC_PATH, LOG_PATH, ERROR_PATH, STARTED) VALUES('$jobID', '$userID', $projectID, 'Import [MaxQuant]', 'Queued', 'ID_EXPERIMENT=$experimentID', '$tmpFilesDir', '$tmpFilesDir/status_$experimentID.out', '$currentQuantifDir/$experimentID\_$jobID\_error.txt', NOW())");
 $dbh->commit;
 $dbh->disconnect;
 
@@ -401,11 +405,13 @@ unless ($childPid) { # child here
 	my %cluster=&promsConfig::getClusterInfo;
 #$cluster{'on'}=0; # TEMP >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 	my $eviSize=("$tmpFilesDir/$evidenceFile")? -s "$tmpFilesDir/$evidenceFile" : 5 * (-s $archiveFile);
+	my $onCluster=0;
 	if ($cluster{'on'} && $eviSize > 50000000) { # 50 Mb
+		$onCluster=1;
 		my $cgiUnixDir=`pwd`;
 		$cgiUnixDir=~s/\/*\s*$//;
 		# cd is required for script to find myproms .pm files!!!!
-		my $commandString="export LC_ALL=\"C\"; cd $cgiUnixDir; $cluster{path}{perl}/perl runMaxquantImport.pl $experimentID $jobID 2> $currentQuantifDir/$experimentID\_$jobID\_error.txt";
+		my $commandString="export LC_ALL=\"C\"; cd $cgiUnixDir; $cluster{path}{perl}/perl runMaxquantImport.pl $experimentID $jobID $onCluster 2> $currentQuantifDir/$experimentID\_$jobID\_error.txt";
 		my $maxMem=int(2 + (15 * $eviSize / 1024**3)); # 2 + 15 * size in Gb
 		my %jobParameters=(
 			maxMem=>$maxMem.'Gb',
@@ -433,7 +439,7 @@ unless ($childPid) { # child here
 		$dbh->do("UPDATE JOB_HISTORY SET ID_JOB_CLUSTER='L$$' WHERE ID_JOB='$jobID'");
 		$dbh->commit;
 		
-		system "./runMaxquantImport.pl $experimentID $jobID 2> $currentQuantifDir/$experimentID\_$jobID\_error.txt";
+		system "./runMaxquantImport.pl $experimentID $jobID $onCluster 2> $currentQuantifDir/$experimentID\_$jobID\_error.txt";
 
 		if (-s "$currentQuantifDir/$experimentID\_$jobID\_error.txt") {
 			$error=1;
@@ -473,19 +479,18 @@ unless ($childPid) { # child here
 
 
 print qq
-|<BR><FONT class=\"title3\">Launching MaxQuant import in background.<BR>
+|<BR><FONT class="title3">Launching MaxQuant import in background.<BR>
 Progress can be tracked in "Monitor Quantifications" window.<BR><BR>
 This page will refresh itself in a few seconds.</FONT>
 <SCRIPT type="text/javascript">
-var monitorJobsWin=window.open("$promsPath{cgi}/monitorJobs.cgi?filterType=Import [MaxQuant]&filterDateNumber=1&filterDateType=DAY&filterStatus=Queued&filterStatus=Running",'monitorJobsWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
+var monitorJobsWin=window.open("$promsPath{cgi}/monitorJobs.cgi?filterType=Import [MaxQuant]&filterDateNumber=1&filterDateType=DAY&filterStatus=Queued&filterStatus=Running&filterProject=$projectID",'monitorJobsWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
 monitorJobsWin.focus();
 </SCRIPT>
 |;
-#exit; # DEBUG!!!!!
 sleep 5;
 print qq
 |<SCRIPT type="text/javascript">
-//top.promsFrame.selectedAction='summary';
+// top.promsFrame.selectedAction='summary';
 parent.optionFrame.selectOption(parent.optionFrame.document.getElementById('summary')); // refresh optionFrame with summary option
 </SCRIPT>
 </BODY>
@@ -493,7 +498,66 @@ parent.optionFrame.selectOption(parent.optionFrame.document.getElementById('summ
 |;
 
 
+sub copyAndPrint {
+	my ($sourceFile, $targetFile) = @_;
+	my (undef, $path, $fileName) = splitpath($sourceFile);
+
+	my $sourceFileSize = (stat $sourceFile)[7];
+	my $sourceSizeGo = $sourceFileSize / (1024 ** 3);
+	
+	if ($sourceSizeGo < 0.1) {
+		copy($sourceFile, $targetFile);
+	}
+	else { # fork and wait
+		my $maxCopyTime = ($sourceSizeGo > 1)? $sourceSizeGo * 20 : 20;  # max 20min or 20min per Go
+		my $targetFileSize = 0;
+		my $loopNb = 0;  # To avoid infinite loop
+	
+		# Fork to copy files (makes it possible to keep the page active and avoid timeout for big files)
+		my $childPid = fork;
+		unless ($childPid) { # child here
+			#>Disconnecting from server
+			open STDOUT, '>/dev/null' or die "Can't open /dev/null: $!";
+			open STDIN, '</dev/null' or die "Can't open /dev/null: $!";
+			open STDERR, ">>$promsPath{logs}/importMaxQuant.log";
+			copy($sourceFile, $targetFile);
+			exit;
+		}
+		print "<BR>&nbsp;&nbsp;&nbsp;&nbsp;- Storing $fileName.";
+		sleep 1;  # To avoid sleeping 10 sec after in most cases
+	
+		# Start tracking target file and check if the copy is actually being done
+		while ($loopNb < 6 * $maxCopyTime) {  # 10sec loops -> loopNb = 6 * nb of minutes passed
+			my $res = waitpid($childPid, WNOHANG); # WNOHANG (from POSIX ":sys_wait_h"): parent doesn't hang during waitpid
+			last if $res; # child has ended
+	
+			sleep 10;
+			print ".";
+			print "<BR>" if ($loopNb > 30);  # End line every 5 minutes
+			$loopNb++;
+		}
+		if ($loopNb >= 6 * $maxCopyTime) {
+			print "Killing child process $childPid" if ($childPid);
+			kill "SIGKILL", $childPid if ($childPid);
+			die "Retrieving file is taking too long or process died silently before completion";
+		} else {
+			$targetFileSize = (-e "$targetFile") ? (stat $targetFile)[7] : 0;
+			if ($targetFileSize == $sourceFileSize) {
+				print("<BR>&nbsp;&nbsp;&nbsp;&nbsp;Done.");
+			} else {
+				die "Copy of file was not done properly. Exiting...";
+			}
+		}
+	}
+}
+
+
 ####>Revision history<####
+# 2.1.12 [ENHANCEMENT] Minor change to &amp;copyAndPrint to prevent fork on small files (PP 07/06/21)
+# 2.1.11 [BUGFIX] Print on web page during copy from scratch to avoid timeout for large size files (VL 19/05/21)
+# 2.1.10 [BUGFIX] Pass cluster parameter to runMaxquantImport for proper management in &getProtInfo (VL 19/05/21)
+# 2.1.9 [UPDATE] Changed JOB_HISTORY.STATUS to JOB_HISTORY.JOB_STATUS (PP 28/08/20)
+# 2.1.8 [MINOR] Added project selection when opening monitor jobs windows (VS 02/09/20)
 # 2.1.7 [CHANGES] Use new job monitoring window opening parameters (VS 18/11/19)
 # 2.1.6 [ENHANCEMENT] Handles new job monitoring system (VS 16/10/19)
 # 2.1.5 [FEATURE] Improved cluster memory calculation & removed 'PARAM_GR=0' in quantif_info.txt (PP 23/08/19)

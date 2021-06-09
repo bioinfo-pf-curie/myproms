@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# importSkyline.cgi         1.0.5                                              #
+# importSkyline.cgi         1.0.11                                              #
 # Authors: V. Sabatet, M. Le Picard, V. Laigle (Institut Curie)                #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -138,14 +138,14 @@ if ($submit eq "") {
         my $dbh = &promsConfig::dbConnect;
         
         # Create new job to monitor
-        $dbh->do("INSERT INTO JOB_HISTORY (ID_JOB, ID_USER, ID_PROJECT, ID_JOB_CLUSTER, TYPE, STATUS, FEATURES, SRC_PATH, LOG_PATH, ERROR_PATH, STARTED) VALUES('$time', '$userID', $projectID, 'L$$', 'Import [PRM]', 'Queued', 'SOFTWARE=Skyline', '$workDir', '$fileStat', '$fileError', NOW())");
+        $dbh->do("INSERT INTO JOB_HISTORY (ID_JOB, ID_USER, ID_PROJECT, ID_JOB_CLUSTER, TYPE, JOB_STATUS, FEATURES, SRC_PATH, LOG_PATH, ERROR_PATH, STARTED) VALUES('$time', '$userID', $projectID, 'L$$', 'Import [PRM]', 'Queued', 'SOFTWARE=Skyline', '$workDir', '$fileStat', '$fileError', NOW())");
         $dbh->commit;
 
         ###############################
         ###> Parsing uploaded file <###
         ###############################
         printToFile($fileStat, "Extracting information from Skyline file", 1);
-        parseSkylineFile($dbh, $newFileDir, \%peptideInfo, \%peptideProt, \%peptideModif, \%peptidePosition, \%fragmentsInfos, \%analysisFileNames, \%sampleFileNames, \%peptideList, \%dbRankProt, \%assosProtPeptide, \%modifIDs);
+        parseSkylineFile($dbh, $newFileDir, \%peptideInfo, \%peptideProt, \%peptideModif, \%peptidePosition, \%fragmentsInfos, \%analysisFileNames, \%sampleFileNames, \%peptideList, \%dbRankProt, \%assosProtPeptide, \%modifIDs, $dbID);
         
         ################################
         ###> Initialize data import <###
@@ -182,9 +182,20 @@ if ($submit eq "") {
             $analysisID=$analysisID{$analysis};
             
             my $anaDir="$promsPath{peptide}/proj_$projectID/ana_$analysisID";
+            my $expDir = "$promsPath{peptide}/proj_$projectID/exp_$experimentID";
             mkdir $promsPath{'peptide'} unless -e $promsPath{'peptide'};
             mkdir "$promsPath{peptide}/proj_$projectID" unless -e "$promsPath{peptide}/proj_$projectID";
             mkdir $anaDir unless -e $anaDir;
+            mkdir $expDir unless -e $expDir;
+
+            ## Store .sky file for all analysis
+            if(-s "$workDir/$file" || -s "$expDir/$file") {
+                if(!-e "$expDir/$file") {
+                    move("$workDir/$file", "$expDir/$file");
+                }
+                
+                symlink("$expDir/$file", "$anaDir/$file") if(-e "$expDir/$file");
+            }
 
             # Link analysis to fragments quantification
             if($isMS2 && $fragmentsInfos{$analysis}) {
@@ -260,7 +271,7 @@ if ($submit eq "") {
     
     print qq 
     |       <SCRIPT>
-                var monitorJobsWin=window.open("$promsPath{cgi}/monitorJobs.cgi?filterType=Import [PRM]&filterDateNumber=1&filterDateType=DAY&filterStatus=Queued&filterStatus=Running",'monitorJobsWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
+                var monitorJobsWin=window.open("$promsPath{cgi}/monitorJobs.cgi?filterType=Import [PRM]&filterDateNumber=1&filterDateType=DAY&filterStatus=Queued&filterStatus=Running&filterProject=$projectID",'monitorJobsWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
                 monitorJobsWin.focus();
                 setTimeout(function() { parent.navFrame.location="$promsPath{cgi}/openProject.cgi?ID=$projectID&branchID=experiment:$experimentID&ACT=nav"; },7000);
             </SCRIPT>
@@ -530,7 +541,7 @@ function cancelAction() {
 
 
 sub parseSkylineFile {
-    my ($dbh, $skylineFile, $refPeptideInfo, $refPeptideProt, $refPeptideModif, $refPeptidePosition, $refFragmentsInfos, $refAnalysisFileNames, $refSampleFileNames, $refPeptideList, $refDbRankProt, $refAssosProtPeptide, $refModifIDs) = @_;
+    my ($dbh, $skylineFile, $refPeptideInfo, $refPeptideProt, $refPeptideModif, $refPeptidePosition, $refFragmentsInfos, $refAnalysisFileNames, $refSampleFileNames, $refPeptideList, $refDbRankProt, $refAssosProtPeptide, $refModifIDs, $dbID) = @_;
 
     # Parameters from form
     my $skylineQuantif = param('skylineQuantif') || 'ms1';
@@ -540,6 +551,8 @@ sub parseSkylineFile {
     if ($skylineQuantif eq 'prm') {
         $isMS2 = 1;
     }
+
+    my $dbType = $dbh->selectrow_array("SELECT DT.DEF_IDENT_TYPE FROM DATABANK D INNER JOIN DATABANK_TYPE DT ON D.ID_DBTYPE=DT.ID_DBTYPE WHERE D.ID_DATABANK=$dbID");  # Get db identifier type to match the relevant protein names
 
     # Settings variables
     my ($softwareVersion);
@@ -651,7 +664,20 @@ sub parseSkylineFile {
     my $proteinSub = sub {
         my ($innerTwig, $protein) = @_;  # twig handlers params
 
-        my $prot = $protein->{'att'}->{'name'};
+        my $fullName   = $protein->{'att'}->{'name'};
+        my $protAcc    = $protein->{'att'}->{'accession'};
+        my $prefName   = $protein->{'att'}->{'preferred_name'};
+        my $prot       = ($dbType =~ /\_ACCESSION$/ && $protAcc) ? $protAcc : 
+                         ($dbType =~ /\_ID$/ && $prefName) ? $prefName : 
+                         $fullName;  # Get relevant name according to db identifier type
+        # Depending on how Skyline handles names, it might work better with :
+        # my $prot       = ($dbType =~ /\_ACCESSION$/ && $protAcc) ? $protAcc : 
+        #                  ($dbType =~ /\_ALL$/ && $fullName) ? $fullName : 
+        #                  ($prefName) ? $prefName : $fullName;  # Get relevant name according to db identifier type
+        # my $protDes    = $protein->{'att'}->{'description'};
+        # my $protSeq    = $protein->first_child('sequence')->text;
+        # my $protLength = length($protSeq);
+
         if ($prot) {
             $refDbRankProt->{$prot}=1;
         } else {
@@ -710,17 +736,9 @@ sub parseSkylineFile {
                 }
             }
 
-            my %peptideRTs;
-            my @peptideResults = $pep->get_xpath('peptide_results/peptide_result');
-            foreach my $pepResult (@peptideResults) {
-                my $rep = $pepResult->{'att'}->{'replicate'};
-                my $rt  = $pepResult->{'att'}->{'retention_time'};
-                $rt  = (!$rt || $rt eq '#N/A') ? '0.00' : sprintf("%.2f", $rt);
-                $peptideRTs{$rep} = $rt;
-            }
 
             my @precursors = $pep->children('precursor');
-            foreach my $precursor (@precursors) {   
+            foreach my $precursor (@precursors) {
                 my $precursorAttrs = $precursor->atts;  
             
                 my $pepMZ     = $precursorAttrs->{'precursor_mz'};
@@ -729,6 +747,7 @@ sub parseSkylineFile {
                 my $peptide = $modifSeq.'_'.$pepCharge;
                 $refPeptideInfo->{$peptide}[1] = $missCleav;
 
+                my %precursorRTs;
                 my @precursorPeaks = $precursor->get_xpath('precursor_results/precursor_peak');
                 foreach my $precursorPeak (@precursorPeaks) {
                     my $peakAttrs = $precursorPeak->atts;
@@ -740,6 +759,7 @@ sub parseSkylineFile {
                     my $isotope_dotp = $peakAttrs->{'isotope_dotp'};
 
                     $pepRT = (!$pepRT || $pepRT eq '#N/A') ? '0.00' : sprintf("%.2f", $pepRT);
+                    $precursorRTs{$anaName} = $pepRT;
                     next if (!$totalArea || $totalArea eq '#N/A');
                     if ($totalArea && !$hasMS1) {
                         $hasMS1 = 1;
@@ -784,10 +804,10 @@ sub parseSkylineFile {
                             my $anaName      = $transPeak->{'att'}->{'replicate'};
                             #my $fragmentRT   = $transPeak->{'att'}->{'retention_time'};
                             my $fragmentArea = $transPeak->{'att'}->{'area'};
-                            next if ($peptideRTs{$anaName} eq '0.00' || !$fragmentArea || $fragmentArea eq '#N/A');
+                            next if ($precursorRTs{$anaName} eq '0.00' || !$fragmentArea || $fragmentArea eq '#N/A');
 
                             $fragmentArea = sprintf("%.0f", $fragmentArea);
-                            @{$refFragmentsInfos->{$anaName}{$peptide}{$peptideRTs{$anaName}}{$fragment}} = ($peptideRTs{$anaName},$fragmentArea,$fragmentMZ,$fragmentNeutralMass,$fragmentName);
+                            @{$refFragmentsInfos->{$anaName}{$peptide}{$precursorRTs{$anaName}}{$fragment}} = ($precursorRTs{$anaName},$fragmentArea,$fragmentMZ,$fragmentNeutralMass,$fragmentName);  # Precursor RT for all corresponding fragments to match them together (may not find the peptide corresponding to the fragments otherwise)
                         }
                     }
                 }
@@ -806,7 +826,7 @@ sub parseSkylineFile {
     
     my $root = $twig->root;
     $softwareVersion = $root->{'att'}{'software_version'};
-    $softwareVersion =~ s/^.*\s(.+)$/$1/;
+    $softwareVersion =~ s/^.*\s((?:\d+\.)+\d+).*$/$1/;
     
     my %annotSettings = (
         'softversion'           => $softwareVersion,
@@ -834,6 +854,12 @@ sub parseSkylineFile {
 }
 
 ####>Revision history<####
+# 1.0.11 [CHANGE] Persist .sky input file in peptide_data and all individual analysis folder (VS 02/02/21)
+# 1.0.10 [UPDATE] Changed JOB_HISTORY.STATUS to JOB_HISTORY.JOB_STATUS (PP 28/08/20)
+# 1.0.9 [MINOR] Added project selection when opening monitor jobs windows (VS 02/09/20)
+# 1.0.8 [BUGFIX] Fix protein name matching according to the identifier type of the selected databank (VL 25/08/20)
+# 1.0.7 [BUGFIX] Overwrite fragments RT with precursor RT while parsing .sky file to match them together (VL 21/08/20)
+# 1.0.6 [BUGFIX] Fix matching of software version with more adapted regex (VL 20/08/20)
 # 1.0.5 [BUGFIX] Minor correction on quantifAnnot (VL 29/11/19)
 # 1.0.4 [CHANGES] Use new job monitoring window opening parameters (VS 18/11/19)
 # 1.0.3 Fits the new job monitoring system behavior (VS 09/10/19)

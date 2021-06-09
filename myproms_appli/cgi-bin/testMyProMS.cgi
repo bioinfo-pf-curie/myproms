@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# testMyProMS.cgi         2.5.4                                                #
+# testMyProMS.cgi         2.5.6                                                #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -54,6 +54,8 @@ my @execPath=qw(
 	openms
 	pyprophet
 	python
+	python2
+	python3
 	qvality
 	R
 	tpp
@@ -62,6 +64,7 @@ my @execPath=qw(
 
 ###>List of R packages<###
 my @Rpackages=qw(
+	aLFQ
 	bit
 	bit64
 	broom
@@ -73,6 +76,7 @@ my @Rpackages=qw(
 	ggseqlogo
 	gplots
 	gridExtra
+	gtools
 	igraph
 	limma
 	missMDA
@@ -86,7 +90,10 @@ my @Rpackages=qw(
 	qvalue
 	readr
 	reshape2
+	scales
+	seqinr
 	stringr
+	tictoc
 	tidyr
 	tidyverse
 );
@@ -183,7 +190,10 @@ sink()
 				print "START#==========#$timeStamp#==========#";
 			}
 			else {
-				if (-e "$runDir/end.txt") {
+				if (!-e $runDir) {
+					print "END#==========#<B>ERROR:</B> Job was aborted!";
+				}
+				elsif (-e "$runDir/end.txt") {
 					my $sessionInfo="$runDir/RsessionInfo.txt";
 					my $RoutScript=$Rscript.'out';
 					if (-e $sessionInfo) {
@@ -206,7 +216,7 @@ sink()
 					}
 					elsif (-e $RoutScript) {
 						my $errorStrg=`tail -20 $RoutScript`;
-						print "END#==========#<B>ERROR: Server responded:<BR>\n<PRE>$errorStrg</PRE>";
+						print "END#==========#<B>ERROR:</B> Server responded:<BR>\n<PRE>$errorStrg</PRE>";
 					}
 					File::Path->remove_tree($runDir);
 				}
@@ -243,14 +253,12 @@ sink()
 					elsif ($pathName eq 'openms') {
 						print COMM "$refClusInfo->{path}{$pathName}/OpenMSInfo 2>&1\n";
 					}
-
 					elsif ($pathName eq 'pyprophet') {
 						#print COMM "pip show pyprophet 2>&1 | grep -P \"Version:\"\n";
 						print COMM "$refClusInfo->{path}{$pathName}/pyprophet --version 2>&1\n";
 					}
-
-					elsif ($pathName eq 'python') {
-						print COMM "$refClusInfo->{path}{$pathName}/python -V 2>&1\n";
+					elsif ($pathName =~ /python/) {
+						print COMM "$refClusInfo->{path}{$pathName}/$pathName -V 2>&1\n";
 					}
 					elsif ($pathName eq 'qvality') {
 						print COMM "$refClusInfo->{path}{$pathName}/qvality -h 2>&1\n";
@@ -277,47 +285,17 @@ sink()
 				close COMM;
 				my $modBash=0775;
 				chmod $modBash,$commandFile;
-
-###				my $clusterCommand=$refClusInfo->{'buildCommand'}->($runDir,$commandFile);
-###
-###				#>qsub file
-###				my $bashFile="$runDir/test_myproms.sh";
-###				open (BASH,">$bashFile");
-###				print BASH qq
-###|#!/bin/bash
-#####resources
-####PBS -l mem=1Gb
-####PBS -l nodes=1:ppn=1
-####PBS -l walltime=1:00:00
-####PBS -q batch
-#####Information
-####PBS -N myProMS_test_$timeStamp
-#####PBS -M patrick.poullet\@curie.fr
-####PBS -m abe
-####PBS -o $runDir/PBS.txt
-####PBS -e $runDir/PBSerror.txt
-###
-##### Command
-###$clusterCommand
-###
-###echo _END_$timeStamp
-###|;
-###				close BASH;
-###				#my $modBash=0775;
-###				chmod $modBash, $bashFile;
-###				$refClusInfo->{'sendToCluster'}->($bashFile);
-
-my %jobParams=(
-	maxMem=>'1Gb',
-	numCPUs=>1,
-	maxHours=>1,
-	jobName=>"myProMS_test_$timeStamp",
-	outFile=>'PBS.txt',
-	errorFile=>'PBSerror.txt',
-	jobEndFlag=>"_END_$timeStamp",
-	noWatch=>1
-);
-$refClusInfo->{'runJob'}->($runDir,$commandFile,\%jobParams);
+				my %jobParams=(
+					maxMem=>'1Gb',
+					numCPUs=>1,
+					maxHours=>1,
+					jobName=>"myProMS_test_$timeStamp",
+					outFile=>'PBS.txt',
+					errorFile=>'PBSerror.txt',
+					jobEndFlag=>"_END_$timeStamp",
+					noWatch=>1
+				);
+				$refClusInfo->{'runJob'}->($runDir,$commandFile,\%jobParams);
 
 				print "START#==========#$timeStamp";
 			}
@@ -325,8 +303,11 @@ $refClusInfo->{'runJob'}->($runDir,$commandFile,\%jobParams);
 				#my $pbsError=(-e "$runDir/PBSerror.txt")? `less $runDir/PBSerror.txt` : '';
 				my $pbsError=$refClusInfo->{'checkError'}->("$runDir/PBSerror.txt");
 				if ($pbsError) {
-					print "END#==========#<B>ERROR: Cluster responded:<BR>\n<PRE>$pbsError</PRE>";
+					print "END#==========#<B>ERROR:</B> Cluster responded:<BR>\n<PRE>$pbsError</PRE>";
 					File::Path->remove_tree($runDir);
+				}
+				elsif (!-e $runDir) {
+					print "END#==========#<B>ERROR:</B> Job was aborted!";
 				}
 				elsif (-e "$runDir/PBS.txt" && `tail -3 $runDir/PBS.txt | grep _END_$timeStamp`) {
 					print "END#==========#";
@@ -375,7 +356,7 @@ $refClusInfo->{'runJob'}->($runDir,$commandFile,\%jobParams);
 						elsif ($pathName eq 'tpp') {
 							($version)=($response[0] && $response[0]=~/\(TPP ([^,]+)/);
 						}
-						elsif ($pathName eq 'python') {
+						elsif ($pathName =~ /python/) {
 							($version)=($response[0] && $response[0]=~/Python (.+)/);
 						}
 						elsif ($pathName eq 'msproteomicstools') {
@@ -826,16 +807,16 @@ foreach my $pathName (sort{lc($a) cmp lc($b)} @execPath) {
 		my ($version)=($response[0] && $response[0]=~/\(TPP ([^,]+)/);
 		&printVersionResponse($pathName,$promsPath{$pathName},$version,\@response);
 	}
-	elsif ($pathName eq 'python') {
+	elsif ($pathName =~ /python/) {
 		my ($pythonCommand,$pythonPath);
-		if ($promsPath{'python'}) {
-			$pythonPath=$promsPath{'python'};
-			$pythonCommand="$pythonPath/python";
+		if ($promsPath{$pathName}) {
+			$pythonPath=$promsPath{$pathName};
+			$pythonCommand="$pythonPath/$pathName";
 		}
 		else {
-			$pythonCommand='python';
-			$pythonPath=`which python`;
-			$pythonPath=~s/\/python\s*\Z//;
+			$pythonCommand=$pathName;
+			$pythonPath=`which $pathName`;
+			$pythonPath=~s/\/$pathName\s*\Z//;
 		}
 		my @response=`$pythonCommand -V 2>&1`;
 		my ($version)=($response[0] && $response[0]=~/Python (.+)/);
@@ -1266,7 +1247,9 @@ sub checkInternetConnection {
 
 
 ####>Revision history<####
-# 2.5.4 [UPDATE] Added R packages 'bit' and 'bit64' (PP 20/11/19)
+# 2.5.6 [UPDATE] Added 5 R packages used by aLFQ and MassChroQ RT outliers filtering (PP 08/02/21)
+# 2.5.5 [ENHANCEMENT] Tests all python version & AJAX job detects job directory deletion and aborts job (PP 28/07/20)
+# 2.5.4 [UPDATE] Added R packages bit and bit64 (PP 20/11/19)
 # 2.5.3 Uses new &promsConfig::getMascotServers function (PP 25/06/19)
 # 2.5.2 [FIX] Bugs in version detection of local java & pyprophet (PP 24/06/19)
 # 2.5.1 Added Singularity image info for cluster (PP 19/06/19)

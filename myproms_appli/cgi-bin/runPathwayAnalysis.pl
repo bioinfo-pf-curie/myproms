@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# runPathwayAnalysis.pl       1.0.1                                            #
+# runPathwayAnalysis.pl       1.0.2                                            #
 # Authors: P. Poullet, S.Liva (Institut Curie)                                 #
 # Contact: myproms@curie.fr                                                    #
 # Launches Pathway Analysisis                                                  #
@@ -73,7 +73,7 @@ my $sthProt=$dbh->prepare("SELECT P.ID_PROTEIN, MI.VALUE  FROM $strgFromSQL PROT
 			  where $strgWhereSQL
 			  P.ID_MASTER_PROTEIN = MP.ID_MASTER_PROTEIN and
 			  MP.ID_MASTER_PROTEIN = MI.ID_MASTER_PROTEIN and
-			  MI.ID_IDENTIFIER=? and MI.RANK=1 $strgCondSQL");
+			  MI.ID_IDENTIFIER=? and MI.IDENT_RANK=1 $strgCondSQL");
 ($catID)? $sthProt->execute($catID, $identifierID) : $sthProt->execute($identifierID, $pathwayID);
 while(my ($protID, $uniprot) = $sthProt->fetchrow_array){
 	$protIDs{$uniprot}{$protID}=1;
@@ -139,5 +139,6 @@ else {
 $dbh->disconnect;
 
 ####>Revision history<####
+# 1.0.2 [UPDATE] Changed RANK field to IDENT_RANK for compatibility with MySQL 8 (PP 04/03/20) 
 # 1.0.1 Uses dirmove instead of move (PP 12/10/18)
 # 1.0.0  new script, run reactome web service, replace runAndDisplayPathwayAnalysis (SL 19/11/14)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# editDatabank.cgi         2.5.1                                               #
+# editDatabank.cgi         2.5.5                                               #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -127,7 +127,7 @@ while (my ($species)=$sthSp->fetchrow_array) {
 $sthSp->finish;
 
 ####>Fetching databank info
-@nameText=('Name','Version Name','Version Date','Description','Type','Identifier type','Internal decoy','Species','Is contaminant DB','Sequence file');
+@nameText=('Name','Version Name','Version Date','Description','Type','Identifier type','Internal decoy','Species','Contaminant DB','Sequence file');
 my (%parseString,%defaultIdentType);
 #my $mascotDisabStrg='';
 #my $serverDisabStrg='';
@@ -184,8 +184,8 @@ if ($action eq 'edit') {
 	push @valueText,$spString;
 
 	#>Contaminant
-	my $crapInfo=($values[8])? 'Yes' : 'No';
-	push @valueText,$crapInfo;
+	my $selCrap=($values[8])? ' selected' : '';
+	push @valueText,"<SELECT name=\"contaminant\"><OPTION value=\"0\">No</OPTION><OPTION value=\"1\"$selCrap>Yes</OPTION></SELECT>";
 
 	#>Checking fasta file
 	my $fileInfo;
@@ -256,7 +256,8 @@ else { # add
 	$spString.="&nbsp;<B>New species:</B><INPUT type='text' name='new_species' value='' size='25' disabled>";
 	push @valueText,$spString;
 	# contaminants
-	push @valueText, "<INPUT type=\"checkbox\" name='contaminant' id='contaminant' value=\"1\"/>(check only if this databank is used in MaxQuant as contaminants database)";
+	#push @valueText, "<INPUT type=\"checkbox\" name='contaminant' id='contaminant' value=\"1\"/>";
+	push @valueText,"<SELECT name=\"contaminant\"><OPTION value=\"0\">No</OPTION><OPTION value=\"1\">Yes</OPTION></SELECT>";
 
 	my $mascotDisabStatus=' disabled';
 	my $mascotOptionsStrg="<OPTION value=\"\">-= Select =- </OPTION>\n";
@@ -326,7 +327,7 @@ print qq
 <HEAD>
 <TITLE>Managing Databanks</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
-<SCRIPT LANGUAGE="JavaScript">
+<SCRIPT type="text/javascript">
 var action='$action';
 var popupWin=null;
 |;
@@ -526,7 +527,7 @@ function getXMLHTTP(){
 <BR><BR>
 |;
 ####>FORM<####
-print '<FORM name="dbForm" method="post" onsubmit="return checkForm(this);" action="./editDatabank.cgi" enctype="multipart/form-data">';
+print '<FORM name="dbForm" method="post" onsubmit="return checkForm(this);" enctype="multipart/form-data">';
 print hidden(-name=>'ACT',-default=>"$action"),"\n";
 print hidden(-name=>'ID',-default=>"$databankID"),"\n" if $action eq 'edit';
 
@@ -580,18 +581,18 @@ sub processForm {
 |;
 
 	####<Processing form parameters>####
-	my $name=param('name'); $name=&promsMod::resize($name,50);
-	my $versionName=param('versionName'); $versionName=&promsMod::resize($versionName,20);
+	my $name=param('name'); # $name=&promsMod::resize($name,50);
+	my $versionName=param('versionName'); # $versionName=&promsMod::resize($versionName,20);
 	my $versionDate=param('versionDate');
-	my $des=param('des'); $des=&promsMod::resize($des,100);
+	my $des=param('des'); # $des=&promsMod::resize($des,100);
 	my $identType=param('identifierType');
 	my $decoyTag=param('decoyTag');
 	my $species=(param('species') eq 'new')? param('new_species') : param('species');
-	my $isContaminant=(param('contaminant'))? param('contaminant') : 0;
+	my $isContaminant=param('contaminant') || 0;
 	my $fileOption=param('fileOption');
-	my $comments=param('comments'); $comments=&promsMod::resize($comments,250);
-	my @colName=('NAME','VERSION_NAME','VERSION_DATE','DES','IDENTIFIER_TYPE','DECOY_TAG','ORGANISM','COMMENTS');
-	my @colValue=($dbh->quote($name),$dbh->quote($versionName),$dbh->quote($versionDate),$dbh->quote($des),$dbh->quote($identType),$dbh->quote($decoyTag),$dbh->quote($species),$dbh->quote($comments));
+	my $comments=param('comments'); # $comments=&promsMod::resize($comments,250);
+	my @colName=('NAME','VERSION_NAME','VERSION_DATE','DES','IDENTIFIER_TYPE','DECOY_TAG','ORGANISM','COMMENTS','IS_CRAP');
+	my @colValue=($dbh->quote($name),$dbh->quote($versionName),$dbh->quote($versionDate),$dbh->quote($des),$dbh->quote($identType),$dbh->quote($decoyTag),$dbh->quote($species),$dbh->quote($comments),$isContaminant);
 
 	####<Add>####
 	if ($action eq 'add') {
@@ -604,7 +605,7 @@ sub processForm {
 		push @colValue,$dbTypeID;
 		my $colNameString=join(",",@colName);
 		my $colValueString=join(",",@colValue);
-		$dbh->do("INSERT INTO DATABANK (ID_DATABANK,IS_CRAP,$colNameString,NUM_ENTRY,USE_STATUS) VALUES ($databankID,$isContaminant,$colValueString,0,'yes')") || die $dbh->errstr;
+		$dbh->do("INSERT INTO DATABANK (ID_DATABANK,$colNameString,NUM_ENTRY,USE_STATUS) VALUES ($databankID,$colValueString,0,'yes')") || die $dbh->errstr;
 		$dbh->commit;
 
 		###<Copying file to dbPath/db_ID>###
@@ -631,7 +632,7 @@ sub processForm {
 				my $sharedFile=param('sharedFile');
 				$fileName=(split(/[\\\/]/,$sharedFile))[-1];
 				$fullDbankfile="$dbDir/$fileName";
-				move("$promsPath{shared}/$sharedFile",$fullDbankfile);
+				copy("$promsPath{shared}/$sharedFile",$fullDbankfile);
 			}
 
 			#<local file
@@ -641,14 +642,14 @@ sub processForm {
 				$fullDbankfile="$dbDir/$fileName";
 				my $tmpfile = tmpFileName(upload('localFile')); # name of temp file being uploaded
 				move($tmpfile,$fullDbankfile);
-# 			print "<FONT class=\"title2\">Writing $fileName to ProMS Server... ";
-# 			my $uploadFile=param('localFile');	# also works  =upload('localFile');
-# 			open (DB, ">$fullDbankfile");
-# 			while (<$uploadFile>) {
-# 				print DB $_;
-# 			}
-# 			close DB;
-# 			print "Done.<BR>\n";
+			# print "<FONT class=\"title2\">Writing $fileName to ProMS Server... ";
+			# my $uploadFile=param('localFile');	# also works  =upload('localFile');
+			# open (DB, ">$fullDbankfile");
+			# while (<$uploadFile>) {
+			# 	print DB $_;
+			# }
+			# close DB;
+			# print "Done.<BR>\n";
 			}
 
 			#<internet file
@@ -859,7 +860,7 @@ sub processForm {
 			}
 		}
 		else {
-			$totNumEntry=`grep -c '>' $fullDbankfile`;
+			$totNumEntry=`grep -c '>' '$fullDbankfile'`;
 			chomp $totNumEntry;
 		}
 		$totNumEntry=0 unless $totNumEntry; # just to be safe
@@ -1142,6 +1143,10 @@ sub getParseRules {
 }
 
 ####>Revision history<####
+# 2.5.5 [CHANGE] copy fasta instead of move from shared directory (PP 07/06/21)
+# 2.5.4 [BUGFIX] Handles db path that contain spaces (02/04/21) 
+# 2.5.3 [BUGFIX] $isContaminant was added twice in the insert query of a new databank (VS 06/11/20)
+# 2.5.2 [FEATURE] Allows edition of contaminant status (PP 02/10/20)
 # 2.5.1 Uses new &promsConfig::getMascotServers function (PP 25/06/19)
 # 2.5.0 Uses Net::FTP for FTP connection (PP 24/05/19)
 # 2.4.2 [Fix] bug in shared file path resolution (PP 11/10/18)

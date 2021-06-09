@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# manageTemplates.cgi       1.0.7                                              #
+# manageTemplates.cgi       1.0.8                                              #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -250,6 +250,8 @@ elsif ($action eq 'edit'){
 		my ($flaggedUp) = ($paramStrg =~ /flaggedUp:check:(\d*);/); $flaggedUp = ($flaggedUp)? 'checked' : '';
 		my ($flaggedDown) = ($paramStrg =~ /flaggedDown:check:(\d*);/); $flaggedDown = ($flaggedDown)? 'checked' : '';
 		my ($oneInt) = ($paramStrg =~ /oneInt:check:(\d*);/); $oneInt = ($oneInt)? 'checked' : '';
+		my ($oneSeq) = ($paramStrg =~ /oneSeq:check:(\d*);/); $oneSeq = ($oneSeq)? 'checked' : '';
+		my ($oneSeqType) = ($paramStrg =~ /oneSeqType:text:(\d*);/);
 		my ($overPep) = ($paramStrg =~ /overPep:check:(\d*);/); $overPep = ($overPep)? 'checked' : '';
 		my ($selProt) = ($paramStrg =~ /selProt:check:(\d*);/); $selProt = ($selProt)? 'checked' : '';
 		my ($minPep) = ($paramStrg =~ /minPep:text:(\w*);/);
@@ -356,9 +358,13 @@ function activatePepSel() {
 	myForm.flaggedUp.disabled=disab;
 	myForm.flaggedDown.disabled=disab;
 	myForm.oneInt.disabled=disab;
+	myForm.oneSeq.disabled=disab;
+	myForm.oneSeqType.disabled=disab;
 	myForm.overPep.disabled=disab;
 	if (myForm.selGoodInt.checked==false) {
 		myForm.oneInt.disabled=true;
+		myForm.oneSeq.disabled=true;
+		myForm.oneSeqType.disabled=true;
 	}
 }
 |;
@@ -395,9 +401,13 @@ function activatePepSel() {
 	myForm.flaggedUp.disabled=disab;
 	myForm.flaggedDown.disabled=disab;
 	myForm.oneInt.disabled=disab;
+	myForm.oneSeq.disabled=disab;
+	myForm.oneSeqType.disabled=disab;
 	myForm.overPep.disabled=disab;
 	if (myForm.selGoodInt.checked==false) {
 		myForm.oneInt.disabled=true;
+		myForm.oneSeq.disabled=true;
+		myForm.oneSeqType.disabled=true;
 	}
 }
 |;
@@ -432,7 +442,7 @@ function activatePepSel() {
 <TR bgcolor=$darkColor><TH colspan=3><FONT class="title2">&nbsp&nbsp;Interpretation Selection Rules</FONT></TH></TR>
 <TR bgcolor=$lightColor><TD width=30></TD><TH nowrap align=left colspan=2>
 <INPUT type="checkbox" name="selGoodInt" value=1 onclick="activatePepSel()" $selGoodInt > Select interpretations meeting the following criteria.<BR>
-<INPUT type="checkbox" name="rejBadInt" value=1 onclick="activatePepSel()" $rejBadInt > Reject interpretations that <U>do not</U> meet these criteria.<BR>
+<INPUT type="checkbox" name="rejBadInt" value=1 onclick="activatePepSel()" $rejBadInt > Reject interpretations that <U>do not</U> meet these criteria.<BR><br/>
 <FONT style="font-size:4px"><BR></FONT>+ Criteria:<BR>
 |;
 		if ($searchEngine=~/SEQUEST/) {
@@ -487,9 +497,7 @@ function activatePepSel() {
                         }
                         $optionString .= "</SELECT><BR>\n";
                 }
-		print qq
-|&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp;
-<INPUT type="checkbox" name="noReject" value=1 $noReject /> Exclude already rejected interpretations (if any) from count.</FONT><BR>
+		print qq |
 &nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp;- and size from <INPUT type="text" name="minSize" value="$minSize" size="1">aa to <INPUT type="text" name="maxSize" value="$maxSize" size="1">aa.<BR>
 &nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp;- and mass error <FONT class="title3">&#8804</FONT><INPUT type="text" name="minDelta" value="$minDelta" size="4"> Da.<BR>
 $optionString
@@ -497,13 +505,24 @@ $optionString
 &nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp;-<INPUT type="checkbox" name="flaggedDown" value=1  $flaggedDown > Interpretation was not <IMG src="$promsPath{images}/lightOrange1.gif" hspace=0 border=0 height=11 width=11> flagged.<BR>
 
 
-<FONT style="font-size:4px"><BR></FONT>
-<INPUT type="checkbox" name="oneInt" value=1 $oneInt /> Select only 1 (best) interpretation/query.<BR>
+<FONT style="font-size:4px"><BR><br/></FONT>
+<INPUT type="checkbox" name="oneInt" value=1 $oneInt /> Select only one interpretation per query (best matching rank)<BR>
+<INPUT type="checkbox" name="oneSeq" value=1 $oneSeq /> Select only one query per 
+<SELECT name="oneSeqType">
+	<OPTION value="ion"
+|;
+print "checked" if($oneSeqType eq 'ion');
+print qq | >ion</OPTION><OPTION value="peptide"|;
+print "checked" if($oneSeqType eq 'peptide');
+print qq |>peptide</OPTION>
+</SELECT>
+ (best score)</FONT><BR><br/>
+<INPUT type="checkbox" name="noReject" value=1 $noReject /> Exclude already rejected interpretations (if any) from count.</FONT><BR>
 <INPUT type="checkbox" name="overPep" value=1 $overPep /> Overwrite previous selections/rejections.<BR>
 <FONT style="font-size:4px"><BR></FONT>
 </TH></TR>
 <TR bgcolor=$lightColor><TH colspan=3>
-<FONT style="font-style:italic;">All proteins matched by selected peptides will be selected unless<BR>Protein Selection Rules are applied.</FONT>
+<FONT style=""display:inline-block;font-style:italic;padding-bottom:14px;"">All proteins matched by selected peptides will be selected unless<BR>Protein Selection Rules are applied.</FONT>
 </TH></TR>
 
 <TR bgcolor=$darkColor><TH colspan=3><FONT class="title2">&nbsp&nbsp;Protein Selection Rules</FONT></TH></TR>
@@ -726,10 +745,12 @@ sub processForm {
 		my $maxSize = param('maxSize');
 		my $minDelta = param('minDelta');
 		my $newMaxRankMS1 =param('newMaxRankMS1');
-                my $newMaxRankMS2 =param('newMaxRankMS2');
+        my $newMaxRankMS2 =param('newMaxRankMS2');
 		my $flaggedUp = param('flaggedUp');
 		my $flaggedDown =param('flaggedDown');
 		my $oneInt =param('oneInt');
+		my $oneSeq =param('oneSeq');
+		my $oneSeqType =param('oneSeqType');
 		my $overPep =param('overPep');
 		my $selProt = param('selProt');
 		my $minPep =param('minPep');
@@ -737,9 +758,9 @@ sub processForm {
 		my $minCov = param('minCov');
 		my $bestMatch = param('bestMatch');
 		my $overProt =param('overProt');
-		$paramStrg .= "noReject:check:$noReject;minSize:text:$minSize;maxSize:text:$maxSize;minDelta:text:$minDelta;flaggedUp:check:$flaggedUp;flaggedDown:check:$flaggedDown;oneInt:check:$oneInt;overPep:check:$overPep;selProt:check:$selProt;minPep:text:$minPep;minProtSc:text:$minProtSc;minCov:text:$minCov;bestMatch:check:$bestMatch;overProt:check:$overProt;";
-                $paramStrg .= "newMaxRankMS1:select:$newMaxRankMS1;" if($newMaxRankMS1);
-                $paramStrg .= "newMaxRankMS2:select:$newMaxRankMS2;" if($newMaxRankMS2);
+		$paramStrg .= "noReject:check:$noReject;minSize:text:$minSize;maxSize:text:$maxSize;minDelta:text:$minDelta;flaggedUp:check:$flaggedUp;flaggedDown:check:$flaggedDown;oneInt:check:$oneInt;oneSeq:check:$oneSeq;oneSeqType:text:$oneSeqType;overPep:check:$overPep;selProt:check:$selProt;minPep:text:$minPep;minProtSc:text:$minProtSc;minCov:text:$minCov;bestMatch:check:$bestMatch;overProt:check:$overProt;";
+		$paramStrg .= "newMaxRankMS1:select:$newMaxRankMS1;" if($newMaxRankMS1);
+		$paramStrg .= "newMaxRankMS2:select:$newMaxRankMS2;" if($newMaxRankMS2);
 	}
 	elsif($valType eq 'compa'){
 		my $selMaxRank = param('selMaxRank');
@@ -794,6 +815,7 @@ sub deleteTemplate{
 }
 
 ####>Revision history<####
+# 1.0.8 [ENHANCEMENT] Updated template with new best query per ion selection parameter (VS 30/03/20)
 # 1.0.7 Color on main "Go to" options (PP 25/03/16)
 # 1.0.6 GPL license (PP 23/09/13)
 # 1.0.5 Called by promsMain.cgi (PP 13/12/12)

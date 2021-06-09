@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# proteinMining.cgi       1.0.2	                                               #
+# proteinMining.cgi       1.0.4	                                               #
 # Authors: P. Poullet, S.Liva (Institut Curie)	                               #
 # Contact: myproms@curie.fr                                                    #
 # Search for identifier and provide informations and peptide coverage          #
@@ -377,6 +377,7 @@ sub ajaxSearchProteins {
 
 	my $searchString=param('searchString') || '';
 	$searchString=~s/['",\.\*;\(\)\[\]]//g; # ignoring these characters
+	$searchString = lc $searchString;
 	my $speciesName=param('species') || '';
 	my $includeHiddenProt=param('hidden') || 0;
     my ($partial)=@_;
@@ -388,8 +389,7 @@ sub ajaxSearchProteins {
 	$sthMap->execute;
 	while (my ($code,$identifier)=$sthMap->fetchrow_array) {$geneEntryCode{$code}=$identifier;}
 	$sthMap->finish;
-
-	my ($searchQuery1,$searchQuery2)=($partial eq 'true')? (" LIKE '%$searchString%'"," LIKE '%$searchString%'") : ("='$searchString'"," REGEXP '[[:<:]]$searchString\[[:>:]]'"); # [[:<:]]word[[:>:]] word boundaries
+	my ($searchQuery1,$searchQuery2)=($partial)? (" LIKE '%$searchString%'"," LIKE '%$searchString%'") : ("='$searchString'"," REGEXP '(^$searchString\[=\\s\\\\-_;,\]|\[=\\s\\\\-_;,\]$searchString\[=\\s\\\\-_;,\]|\[=\\s\\\\-_;,\]$searchString\$)'"); # [[:<:]]word[[:>:]] word boundaries -> Not compatible with mysql8
 	my $protVisQuery=($includeHiddenProt)? '' : 'AND VISIBILITY > 0';
 
     my (%protein,%masterIdent,%gene,%des,%date,%masterProtOrder);
@@ -399,8 +399,7 @@ sub ajaxSearchProteins {
 											WHERE M.ID_SPECIES=$speciesID
 											AND (MI.VALUE$searchQuery1 OR PROT_DES$searchQuery2)");
 		my $sthSelProt=$dbh->prepare("SELECT P.ID_PROTEIN,ALIAS,IDENTIFIER,PROT_LENGTH,MW,PROT_DES,MAX(VISIBILITY) FROM PROTEIN P,ANALYSIS_PROTEIN AP WHERE P.ID_PROTEIN=AP.ID_PROTEIN AND ID_MASTER_PROTEIN=? $protVisQuery GROUP BY P.ID_PROTEIN");
-		my $sthSelGene=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_MASTER_PROTEIN=? AND ID_IDENTIFIER=? ORDER BY RANK");
-
+		my $sthSelGene=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_MASTER_PROTEIN=? AND ID_IDENTIFIER=? ORDER BY IDENT_RANK");
 		$sthSelMasterID->execute;
 		while (my ($masterID,$masterDes,$updateDate)=$sthSelMasterID->fetchrow_array) {
 			$sthSelProt->execute($masterID);
@@ -763,7 +762,7 @@ sub ajaxDisplayMatchingProteins {
 								JOIN ANALYSIS_PROTEIN AP ON P.ID_PROTEIN=AP.ID_PROTEIN $protVisQuery
 								WHERE P.ID_PROTEIN=? GROUP BY P.ID_PROTEIN"
 							);
-	my $sthSelGene=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_MASTER_PROTEIN=? AND ID_IDENTIFIER=? ORDER BY RANK");
+	my $sthSelGene=$dbh->prepare("SELECT VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_MASTER_PROTEIN=? AND ID_IDENTIFIER=? ORDER BY IDENT_RANK");
 
 	foreach my $protID (keys %matchingProt) {
 		$sthProt->execute($protID);
@@ -866,6 +865,8 @@ sub ajaxDisplayMatchingProteins {
 }
 
 ####>Revision history<####
+# 1.0.4 [BUGFIX] Updated search query string (VS 02/04/2021)
+# 1.0.3 [UPDATE] Changed RANK field to IDENT_RANK for compatibility with MySQL 8 (PP 04/03/20) 
 # 1.0.2 Minor change (PP 12/01/17)
 # 1.0.1 More data mining and display improvement (PP 31/05/16)
 # 1.0.0 Created from SL proteinsMining (PP 04/01/16)

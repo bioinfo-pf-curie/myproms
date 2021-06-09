@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# compareQuantifications.cgi          1.8.0                                    #
+# compareQuantifications.cgi          1.8.8                                    #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Simple display of multiple quantifications                                   #
@@ -57,6 +57,7 @@ use File::Path qw(rmtree); # remove_tree
 #######################
 ####>Configuration<####
 #######################
+#print header(-'content-encoding'=>'no',-charset=>'utf-8'); warningsToBrowser(1); # DEBUG
 my %promsPath=&promsConfig::getServerInfo;
 my ($lightColor,$darkColor)=&promsConfig::getRowColors;
 my $userID=$ENV{'REMOTE_USER'};
@@ -93,7 +94,10 @@ my @selectedQuantifications; #param('usedQuantifs'); usedQuantifs requires selec
 if ($quantifList) { # compatible with "qID1_pos1:qID1_pos2" and "qID1_pos1_pos2"
 	foreach my $quantifStrg (split(':',$quantifList)) {
 		my ($quantifID,$posStrg)=$quantifStrg=~/^(\d+)_(.+)/;
-		foreach my $pos (split('_',$posStrg)) {push @selectedQuantifications,$quantifID.'_'.$pos;}
+		if ($quantifID) {
+			foreach my $pos (split('_',$posStrg)) {push @selectedQuantifications,$quantifID.'_'.$pos;}
+		}
+		else {push @selectedQuantifications,$quantifStrg;} # no targetPos (SIN,EMPAI)
 	}
 }
 my $numSelectedQuantifs=scalar @selectedQuantifications;
@@ -245,7 +249,105 @@ TABLE.correlation TH{font-size:$fontSize;}
 |;
 	&promsMod::popupInfo();
 	print qq
-|function sequenceView(id_protein,id_analyses){
+|
+
+/* BEGIN ajax calls after proteins selection */
+var existIsoforms = 0;
+var	numTotIsoforms = 0;
+var numTotProteins = 0;
+var proteinText = '';
+var numChecked = 0;
+
+function updateProteinList(set) {
+	updateProteinSiteList('data-protvenn',set);
+}
+
+function updateProteinSite(set) {
+	updateProteinSiteList('data-sitevenn',set);
+}
+
+function printCheckedSummary() {
+	var textToPrint = (existIsoforms>=1)? '&nbsp;'+numChecked+'/'+numTotIsoforms+' sites<BR>&nbsp;'+numChecked+'/'+numTotProteins+' '+proteinText.replace(/\\\\/g, "")+'&nbsp;' : '&nbsp;'+numChecked+'/'+numTotProteins+' '+proteinText+'&nbsp;';
+	textToPrint = textToPrint.replace(String.fromCharCode(92),String.fromCharCode(92,92,116));
+	document.getElementById('protCountDIV').innerHTML = textToPrint;
+}
+
+function updateProteinSiteList(dataVennFocus,set) {
+	var fullExpr,setCode;
+	if (set.match(':full')) { //full group content
+		var setInfo=set.split(':');
+		setCode=setInfo[0];
+		fullExpr=new RegExp(setCode);
+	}
+	var myForm=document.protForm;
+	var chkData=myForm.chkProt;
+	// Scanning all proteins
+	var protVenn={};
+	var numMatch=0;
+	var numProt=0;
+	numChecked = 0;
+	if (chkData.length) {
+		for (let i=0; i<chkData.length; i++) {
+			var chkSet=chkData[i].getAttribute(dataVennFocus);
+			var chkStatus,displayStatus;
+			if (!chkSet) {
+				chkStatus=false;
+				if (set=='none') {numMatch++; chkStatus=false; displayStatus='';} // called by "Clear all"
+				else if(set=='all') {numMatch++; chkStatus=true; displayStatus='';} // called by "Check all"
+				else {displayStatus='none';chkStatus=false;}
+			}
+			else {
+				if (set=='all') {numMatch++; chkStatus=true; displayStatus='';} // called by Venn.Total or "Check all"
+				else if (set=='none') {numMatch++; chkStatus=false; displayStatus='';} // called by "Clear all"
+				else if (set.match(':full')) { //full group content
+					if (chkSet.match(fullExpr)) {numMatch++; chkStatus=true; displayStatus='';}
+					else {chkStatus=false; displayStatus='none';}
+				}
+				else { //unique/shared
+					if (chkSet==set) {numMatch++; chkStatus=true; displayStatus='';}
+					else {chkStatus=false; displayStatus='none';}
+				}			
+				if (existIsoforms>=1) {
+					protIdData=chkData[i].value.split('-');	
+					if (!protVenn[protIdData[0]]) {protVenn[protIdData[0]]={};}
+					var chkSetGr=chkSet.split('');
+					for (let j=0; j<chkSetGr.length; j++) {protVenn[ protIdData[0] ][ chkSetGr[j] ]=1;}
+				}
+			}
+			chkData[i].checked=chkStatus;
+			if(chkData[i].checked) {
+				numChecked++;
+			}
+			var tr=document.getElementById('tr_'+chkData[i].value);
+			if (chkStatus \|\| set=='none') {
+				tr.className='list row_'+(numMatch % 2);
+			}
+			tr.style.display=displayStatus;
+		}
+		if (existIsoforms>=1) {			
+			for (let protID in protVenn) {
+				if (set=='all' \|\| set=='none') {numProt++;}
+				else if (set.match(':full')) {
+					if (protVenn[protID].hasOwnProperty(setCode)) {numProt++;}
+				}
+				else {
+					let code=((Object.keys(protVenn[protID])).sort()).join('');
+					if (code==set) {numProt++;}
+				}
+			}
+		}
+	}
+	else {
+		chkData.checked=(set=='none')? false : true;
+		numChecked=1;
+		numProt=1;
+	}
+	
+	printCheckedSummary();
+}
+/* END ajax calls after proteins selection */
+
+function sequenceView(id_protein,id_analyses){
 	var winLocation="$promsPath{cgi}/sequenceView.cgi?id_ana="+id_analyses+"&id_prot="+id_protein+"&msdata="+top.showMSdata;
 	top.openProtWindow(winLocation);
 }
@@ -409,7 +511,20 @@ function ajaxListSelectedProteins(selectedPoints,thresholds,sort) { // threshold
 	//XHR.setRequestHeader("Connection", "close");
 	XHR.onreadystatechange=function() {
 		if (XHR.readyState==4 && XHR.responseText) {
-			listDiv.innerHTML=XHR.responseText;
+			let codeParts = XHR.responseText.split('#==========#');
+			if(codeParts !== undefined) {
+				try {
+					window.eval(codeParts[1]);
+				} catch (e) {
+					if (e instanceof SyntaxError) {
+						alert(e.message);
+					} else {
+						alert(e);
+					}
+				}
+				
+				listDiv.innerHTML = codeParts[0];
+			}
 		}
 	}
 	XHR.send(paramStrg);
@@ -483,7 +598,7 @@ function ajaxProteinData(e,protID,refData,action,midX,botY,divNum) { // action=a
 				else {resCode=XHR.responseText;}
 				var codeParts=resCode.split('#==========#');
 				infoDiv.innerHTML=codeParts[0]; // HTML part
-				eval(codeParts[1]); // javascript part
+				window.eval(codeParts[1]); // execute JS
 				// 2nd pep ratio (called from correlation plot)
 				if (typeof(refData)=='object') {
 					ajaxProteinData(null,protID,refData[1],action,null,null,2);
@@ -1049,8 +1164,14 @@ window.onload=function() {
 						if (!$quantifValues{$quantif2}{$modProtID2} || !$quantifValues{$quantif2}{$modProtID2}{$dispMeasure}) {$proteinOK{$modProtID2}{$quantif2}=-2;}
 						else {$proteinOK{$modProtID2}{$quantif2}=($quantifValues{$quantif2}{$modProtID2}{$numPepCode} < $dispNumPep)? -1 : 1;}#>Num Peptides
 					}
-					$protVenn{$protID}{$quantifCode{$quantif1}}=1 if ($proteinOK{$modProtID1}{$quantif1} > 0 || (!$strictFilter && $proteinOK{$modProtID1}{$quantif1}>=-1 && $proteinOK{$modProtID2}{$quantif2} > 0));
-					$protVenn{$protID}{$quantifCode{$quantif2}}=1 if ($proteinOK{$modProtID2}{$quantif2} > 0 || (!$strictFilter && $proteinOK{$modProtID2}{$quantif2}>=-1 && $proteinOK{$modProtID1}{$quantif1} > 0));
+					if ($proteinOK{$modProtID1}{$quantif1} > 0 || (!$strictFilter && $proteinOK{$modProtID1}{$quantif1}>=-1 && $proteinOK{$modProtID2}{$quantif2} > 0)) {
+						$protVenn{$protID}{$quantifCode{$quantif1}}=1;
+						$siteVenn{$modProtID1}{$quantifCodeSite{$quantif1}}=1 if ($numModifQuantifs >= 2 && $quantifPTM{$quantif1} && $modProtID1 ne $protID);
+					}
+					if ($proteinOK{$modProtID2}{$quantif2} > 0 || (!$strictFilter && $proteinOK{$modProtID2}{$quantif2}>=-1 && $proteinOK{$modProtID1}{$quantif1} > 0)) {
+						$protVenn{$protID}{$quantifCode{$quantif2}}=1;
+						$siteVenn{$modProtID2}{$quantifCodeSite{$quantif2}}=1 if ($numModifQuantifs >= 2 && $quantifPTM{$quantif2} && $modProtID2 ne $protID);
+					}
 					next if ($proteinOK{$modProtID1}{$quantif1}==-2 || $proteinOK{$modProtID2}{$quantif2}==-2);
 					next if (($strictFilter && ($proteinOK{$modProtID1}{$quantif1} < 0 || $proteinOK{$modProtID2}{$quantif2} < 0)) || (!$strictFilter && $proteinOK{$modProtID1}{$quantif1} < 0 && $proteinOK{$modProtID2}{$quantif2} < 0));
 					my $numPepMin=($quantifValues{$quantif1}{$modProtID1}{$numPepCode} < $quantifValues{$quantif2}{$modProtID2}{$numPepCode})? $quantifValues{$quantif1}{$modProtID1}{$numPepCode} : $quantifValues{$quantif2}{$modProtID2}{$numPepCode};
@@ -1110,7 +1231,7 @@ window.onload=function() {
 					}
 					next if ($proteinOK{$protID}{$quantif1}==-2 || $proteinOK{$protID}{$quantif2}==-2);
 
-					my $numPepMin=($quantifValues{$quantif1}{$protID}{'PEPTIDES'} < $quantifValues{$quantif2}{$protID}{'PEPTIDES'})? $quantifValues{$quantif1}{$protID}{'PEPTIDES'} : $quantifValues{$quantif2}{$protID}{'PEPTIDES'};
+					my $numPepMin=($quantifValues{$quantif1}{$protID}{$numPepCode} < $quantifValues{$quantif2}{$protID}{$numPepCode})? $quantifValues{$quantif1}{$protID}{$numPepCode} : $quantifValues{$quantif2}{$protID}{$numPepCode};
 
 					####>Data
 					###next if (!$quantifValues{$protID}{$selectedQuantifications[$quantifIdx1]}{$empaiValue} || !$quantifValues{$protID}{$selectedQuantifications[$quantifIdx2]}{$empaiValue});
@@ -1243,7 +1364,7 @@ document.getElementById('waitSPAN').innerHTML='Computing correlations.';
 		$correlFiles{2}=$dataFile2;
 		$jobInfo{1}={TITLE=>'Fold change correlation',
 					 DETAILS=>qq
-|&bull;Based only on values from ${proteoform}s shared by both quantifications.<BR>
+|&bull;Based only on log2-values from ${proteoform}s shared by both quantifications.<BR>
 &bull;&plusmn;&infin; ratios are excluded.|
 					};
 		$jobInfo{3}{DETAILS}.="<BR>\n&bull;&plusmn;&infin; ratios are allowed.";
@@ -1266,7 +1387,7 @@ document.getElementById('waitSPAN').innerHTML='Computing correlations.';
 					if (!$strictFilter || $okFilters==2) {
 						#>Ratio (excluding +/-Inf)
 						if ($quantifValues{$modProtID}{$quantif}{'RATIO'} != 0.001 && $quantifValues{$modProtID}{$quantif}{'RATIO'} != 1000) {
-							$ratio=$quantifValues{$modProtID}{$quantif}{'RATIO'};
+							$ratio=log($quantifValues{$modProtID}{$quantif}{'RATIO'})/$log2;
 							$usedQuantifs++;
 							$goodQuantif=1 if $okFilters==2;
 						}
@@ -1299,7 +1420,7 @@ document.getElementById('waitSPAN').innerHTML='Computing correlations.';
 	}
 	elsif ($selQuantifFamily =~ /^(MQ|PROT_ABUNDANCE)$/) { # MaxQuant|myProMS States
 		$jobInfo{1}={TITLE=>"$protIntMeasures{$dispMeasure} correlation",
-					 DETAILS=>"&bull;Based only on values from ${proteoform}s shared by both quantifications."
+					 DETAILS=>"&bull;Based only on log10-values from ${proteoform}s shared by both quantifications."
 					};
 		PROT: foreach my $modProtID (keys %quantifValues) {
 			#>Filtering data
@@ -1334,7 +1455,7 @@ document.getElementById('waitSPAN').innerHTML='Computing correlations.';
 	elsif ($selQuantifFamily =~ /EMPAI|SIN/) {
 		my $qValueCode=($selQuantifFamily eq 'EMPAI')? $empaiValue : 'SIN_SIN';
 		$jobInfo{1}={TITLE=>"$emPAIMeasures{$empaiValue} correlation",
-					 DETAILS=>"&bull;Based only on values from ${proteoform}s shared by both quantifications."
+					 DETAILS=>"&bull;Based only on log10-values from ${proteoform}s shared by both quantifications."
 					 };
 		foreach my $modProtID (keys %quantifValues) {
 			#>Filtering data
@@ -1747,13 +1868,7 @@ sub printProteinList {
 
 <TABLE border=0 cellspacing=0 cellpadding=2 align=center>
 |;
-	my $proteinText=($sortOrder eq 'protein')? '<FONT color=#DD0000>proteins</FONT>' : 'proteins';
-	if ($ajax) {
-		$proteinText="<A href=\"javascript:selectSort(\'protein\',$ajax)\" onmouseover=\"popup(\'Click to sort proteins by <B>ascending name</B>.\')\" onmouseout=\"popout()\">$proteinText</A>";
-	}
-	else {
-		$proteinText="<A href=\"javascript:selectSort(\\'protein\\',$ajax)\" onmouseover=\"popup(\\'Click to sort proteins by <B>ascending name</B>.\\')\" onmouseout=\"popout()\">$proteinText</A>";
-	}
+	my $proteinText=($sortOrder eq 'protein')? '<FONT color=#DD0000>proteins</FONT>' : qq|<A href="javascript:selectSort(\'protein\',$ajax)" onmouseover="popup(\'Click to sort proteins by <B>ascending name</B>.\')" onmouseout="popout()">protein</A>|;
 	my $protString=($numModifQuantifs)? "&nbsp;$numTotIsoforms sites&nbsp;<BR>&nbsp;$numTotProteins $proteinText&nbsp;" : "&nbsp;$numTotProteins $proteinText&nbsp;";
 	my ($numDispItems,$numDispIsoforms)=(0,0);
 	my %dispProteins;
@@ -1904,7 +2019,7 @@ sub printProteinList {
 						}
 						else {$quantifDataStrg.="<TD class=\"$quantifClass\" align=right nowrap>&nbsp;$ratioStrg&nbsp;</TD>";}
 						$quantifDataStrg.="<TD>$arrowStrg&nbsp;</TD>";
-						$quantifDataStrg.="<TD class=\"$quantifClass\" align=\"center\">&nbsp;<A href=\"javascript:void(null)\" onclick=\"ajaxProteinData(event,'$usedProtID','$quantif','ajaxPepData')\"/>$refQuantifValues->{$usedProtID}{$quantif}{$numPepCode}</A>&nbsp;</TD>";
+						$quantifDataStrg.="<TD class=\"$quantifClass\" align=\"center\"><A href=\"javascript:void(null)\" onclick=\"ajaxProteinData(event,'$usedProtID','$quantif','ajaxPepData')\"/>$refQuantifValues->{$usedProtID}{$quantif}{$numPepCode}</A></TD>";
 						#$vennStrg.=$quantifCode{$quantif} if (!$ajax && $numSelectedQuantifs <= 5);
 #if (!$ajax && $numSelectedQuantifs <= 5) {
 #	#$protVenn{$protID}{$quantifCode{$quantif}}=1; # hash because same protID can be found in multiple rows
@@ -1923,7 +2038,7 @@ sub printProteinList {
 					else {
 						#$quantifDataStrg.="<TD colspan=2 class=\"$quantifClass\" align=right nowrap>&nbsp;$refQuantifValues->{$usedProtID}{$quantif}{$qValueCode}&nbsp;</TD><TD class=\"$quantifClass\" align=\"center\">&nbsp;<A href=\"javascript:void(null)\" onclick=\"ajaxProteinData(event,'$usedProtID','$quantif','ajaxPepData')\"/>$refQuantifValues->{$usedProtID}{$quantif}{$numPepCode}</A>&nbsp;</TD>";
 						my $value=sprintf '%.2e',$refQuantifValues->{$usedProtID}{$quantif}{$qValueCode};
-						$quantifDataStrg.="<TD colspan=2 class=\"$quantifClass\" align=center nowrap>&nbsp;$value&nbsp;</TD><TD class=\"$quantifClass\" align=\"center\">&nbsp;<A href=\"javascript:void(null)\" onclick=\"ajaxProteinData(event,'$usedProtID','$quantif','ajaxPepData')\"/>$refQuantifValues->{$usedProtID}{$quantif}{$numPepCode}</A>&nbsp;</TD>";
+						$quantifDataStrg.="<TD colspan=2 class=\"$quantifClass\" align=center nowrap>&nbsp;$value&nbsp;</TD><TD class=\"$quantifClass\" align=\"center\">$refQuantifValues->{$usedProtID}{$quantif}{$numPepCode}</TD>";
 					}
 					$okFilters=(!$okFilters && $quantifClass eq 'TH')? 1 : $okFilters;
 				}
@@ -1932,31 +2047,34 @@ sub printProteinList {
 			$numDispItems++;
 			$numDispIsoforms++ if $modStrg;
 			$dispProteins{$protID}=1;
-			my $vennDataStrg='';
-			if ($protVennGr[0]) { # <=> !$ajax && $numSelectedQuantifs <= 5
-				my $protVennStrg='';
-				foreach my $gr (@protVennGr) {
-					$protVennStrg.=$gr;
-					$protVenn{$protID}{$gr}=1;
-					#if ($modStrg) { # && $usedProtID eq $modProtID
-					#	$siteVenn{$modProtID}{$gr}=1; # compatibility with &printVennJS
-					#}
-				}
-				$vennDataStrg="data-protvenn=\"$protVennStrg\"";
-				if ($siteVennGr[0]) {
-					my $siteVennStrg='';
-					foreach my $gr (@siteVennGr) {
-						$siteVennStrg.=$gr;
-						$siteVenn{$modProtID}{$gr}=1; # compatibility with &printVennJS
+			my ($onclickStrg,$vennDataStrg)=('','');
+			if ($call eq 'COMPARE') {
+				$onclickStrg=($call eq 'COMPARE')? 'onclick="numChecked = (this.checked) ? numChecked+1 : numChecked-1; printCheckedSummary()"' : '';
+				if ($protVennGr[0]) { # <=> !$ajax && $numSelectedQuantifs <= 5
+					my $protVennStrg='';
+					foreach my $gr (@protVennGr) {
+						$protVennStrg.=$gr;
+						$protVenn{$protID}{$gr}=1;
+						#if ($modStrg) { # && $usedProtID eq $modProtID
+						#	$siteVenn{$modProtID}{$gr}=1; # compatibility with &printVennJS
+						#}
 					}
-					$vennDataStrg.=" data-sitevenn=\"$siteVennStrg\"";
+					$vennDataStrg="data-protvenn=\"$protVennStrg\"";
+					if ($siteVennGr[0]) {
+						my $siteVennStrg='';
+						foreach my $gr (@siteVennGr) {
+							$siteVennStrg.=$gr;
+							$siteVenn{$modProtID}{$gr}=1; # compatibility with &printVennJS
+						}
+						$vennDataStrg.=" data-sitevenn=\"$siteVennStrg\"";
+					}
 				}
 			}
 			##$anaIDstrg=join(',',keys %anaIDlist) unless $anaIDstrg;
 			my $trClass='list row_'.($numDispItems % 2);
 			my $mass=(!$refProteinInfo->{$protID}[1])? '-' : $refProteinInfo->{$protID}[1];
 			print qq
-|<TR class="$trClass" valign=top id="tr_$modProtID"><TD class="TH" nowrap><INPUT type="checkbox" name="chkProt" value="$modProtID" $vennDataStrg/><A href="javascript:sequenceView($protID,'$anaIDstrg')">$refProteinInfo->{$protID}[0]$modStrg</A>&nbsp;</TD>
+|<TR class="$trClass" valign=top id="tr_$modProtID"><TD class="TH" nowrap><INPUT type="checkbox" name="chkProt" value="$modProtID" $onclickStrg $vennDataStrg/><A href="javascript:sequenceView($protID,'$anaIDstrg')">$refProteinInfo->{$protID}[0]$modStrg</A>&nbsp;</TD>
 <TH>&nbsp;|;
 			if (scalar @{$refProteinInfo->{$protID}[5]} > 1) { # gene
 				print "<A href=\"javascript:void(null)\" onmouseover=\"popup('<B><U>Synonyms:</U><BR>&nbsp;&nbsp;-",join('<BR>&nbsp;&nbsp;-',@{$refProteinInfo->{$protID}[5]}[1..$#{$refProteinInfo->{$protID}[5]}]),"</B>')\" onmouseout=\"popout()\">",$refProteinInfo->{$protID}[5][0],"</A>";
@@ -1993,14 +2111,14 @@ $quantifDataStrg
 |;
 		my %quantifAnalyses;
 		foreach my $quantif (@{$refSelQuantifs}) {
-			#$quantifAnalyses{$quantif}=$refQuantifInfo->{$quantif}[4]; # anaID
-			$quantifAnalyses{$refQuantifInfo->{$quantif}[5]}=1; # anaID
+			my $quantifID=(split('_',$quantif))[0];
+			$quantifAnalyses{$refQuantifInfo->{$quantifID}[5]}=1; # anaID
 			my $parentItemStrg;
-			for (my $i=1; $i<$#{$refQuantifInfo->{$quantif}[3]}; $i++) { # skip project & quantif
+			for (my $i=1; $i<$#{$refQuantifInfo->{$quantifID}[3]}; $i++) { # skip project & quantif
 				$parentItemStrg.=' > ' if $parentItemStrg;
-				$parentItemStrg.=$refQuantifInfo->{$quantif}[3][$i]->{'NAME'};
+				$parentItemStrg.=$refQuantifInfo->{$quantifID}[3][$i]->{'NAME'};
 			}
-			my $quantifName=&promsMod::shortenName($refQuantifInfo->{$quantif}[0],22); # $quantifName
+			my $quantifName=&promsMod::shortenName($refQuantifInfo->{$quantifID}[0],22); # $quantifName
 			#print "<TH class=\"rbBorder\" colspan=$ratioColspan nowrap>&nbsp;<A href=\"javascript:void(null)\" onmouseover=\"popup('<B>$parentItemStrg<BR>$refQuantifAllNames->{FULL}{$quantif}</B>')\" onmouseout=\"popout()\">$quantifName</A>&nbsp;</TH>\n";
 			print "<TH class=\"rbBorder\" colspan=$specColspan nowrap>&nbsp;<A href=\"javascript:void(null)\" onmouseover=\"popup('<B>$parentItemStrg<BR>$quantifName</B>')\" onmouseout=\"popout()\">$quantifName</A>&nbsp;</TH>\n";
 		}
@@ -2043,7 +2161,7 @@ $quantifDataStrg
 					my $qVal=$refQuantifValues->{$protID}{$quantif}{$labelQVal};
 					$qVal=($qVal >= 0.1 && $qVal < 1000)? sprintf '%.2f',$qVal : ($qVal==0)? $qVal : sprintf '%.2e',$qVal;
 					#my $numPep=($selQuantifFamily eq 'EMPAI')? $pepInfo{$quantif}{$protID} : $refQuantifValues->{$protID}{$quantif}{'NUM_PEP_TOTAL'};
-					my $numPep=$refQuantifValues->{$protID}{$quantif}{'PEPTIDES'} || "-";
+					my $numPep=$refQuantifValues->{$protID}{$quantif}{$numPepCode} || "-";
 					$quantifDataStrg.="<TD class=\"$quantifClass\" align=right nowrap>&nbsp;$qVal&nbsp;</TD>";
 					$quantifDataStrg.="<TD class=\"$quantifClass\" align=\"center\">&nbsp;<A href=\"javascript:void(null)\" onclick=\"ajaxProteinData(event,'$protID','$quantif','ajaxPepData')\"/>$numPep</A>&nbsp;</TD>";
 					if (!$ajax && $numSelectedQuantifs <= 5) {
@@ -2080,8 +2198,16 @@ $quantifDataStrg
 	print qq
 |</TABLE>
 </FORM>
-<SCRIPT type="text/javascript">
 |;
+	if ($call eq 'COMPARE') {
+		print(($ajax) ? "#==========#" : "<script type='text/javascript'>");
+		print qq |
+			existIsoforms = $numModifQuantifs;
+			numTotIsoforms = $numTotIsoforms;
+			numTotProteins = $numTotProteins;
+			proteinText = '$proteinText';
+		|;
+	}
 	unless ($ajax) { # not possible if ajax call
 		#my $protTypeStrg=(scalar keys %{$refQuantifPTM})? ' sites' : '';
 		$protString=($numModifQuantifs)? "&nbsp;$numDispIsoforms/$numTotIsoforms sites<BR>&nbsp;".(scalar keys %dispProteins)."/$numTotProteins $proteinText&nbsp;" : "&nbsp;$numDispItems/$numTotProteins $proteinText&nbsp;";
@@ -2089,85 +2215,9 @@ $quantifDataStrg
 		if ($numSelectedQuantifs <= 5) {
 			&printVennJS(\@selectedQuantifications,\%quantifAllNames,\%quantifInfo,\%protVenn,\%siteVenn,'updateProteinList','updateProteinSite');
 			print "document.getElementById('resultDIV').style.visibility='visible';\n";
-		}
+		}	
+		print("</script>");
 	}
-	print qq
-|function updateProteinList(set) {
-	updateProteinSiteList('data-protvenn',set);
-}
-function updateProteinSite(set) {
-	updateProteinSiteList('data-sitevenn',set);
-}	
-function updateProteinSiteList(dataVennFocus,set) {
-	var fullExpr,setCode;
-	if (set.match(':full')) { //full group content
-		var setInfo=set.split(':');
-		setCode=setInfo[0];
-		fullExpr=new RegExp(setCode);
-	}
-	var myForm=document.protForm;
-	var chkData=myForm.chkProt;
-	// Scanning all proteins
-	var existIsoforms=$numModifQuantifs;
-	var protVenn={};
-	var numMatch=0;
-	var numProt=0;
-	if (chkData.length) {
-		for (let i=0; i<chkData.length; i++) {
-			var chkSet=chkData[i].getAttribute(dataVennFocus);
-			var chkStatus,displayStatus;
-			if (!chkSet) {
-				chkStatus=false;
-				if (set=='none') {numMatch++; displayStatus='';} // called by "Clear all"
-				else {displayStatus='none';}
-			}
-			else {
-				if (set=='all') {numMatch++; chkStatus=true; displayStatus='';} // called by Venn.Total or "Check all"
-				else if (set=='none') {numMatch++; chkStatus=false; displayStatus='';} // called by "Clear all"
-				else if (set.match(':full')) { //full group content
-					if (chkSet.match(fullExpr)) {numMatch++; chkStatus=true; displayStatus='';}
-					else {chkStatus=false; displayStatus='none';}
-				}
-				else { //unique/shared
-					if (chkSet==set) {numMatch++; chkStatus=true; displayStatus='';}
-					else {chkStatus=false; displayStatus='none';}
-				}			
-				if (existIsoforms>=1) {
-					protIdData=chkData[i].value.split('-');	
-					if (!protVenn[protIdData[0]]) {protVenn[protIdData[0]]={};}
-					var chkSetGr=chkSet.split('');
-					for (let j=0; j<chkSetGr.length; j++) {protVenn[ protIdData[0] ][ chkSetGr[j] ]=1;}
-				}
-			}
-			chkData[i].checked=chkStatus;
-			var tr=document.getElementById('tr_'+chkData[i].value);
-			if (chkStatus \|\| set=='none') {
-				tr.className='list row_'+(numMatch % 2);
-			}
-			tr.style.display=displayStatus;
-		}
-		if (existIsoforms>=1) {			
-			for (let protID in protVenn) {
-				if (set=='all' \|\| set=='none') {numProt++;}
-				else if (set.match(':full')) {
-					if (protVenn[protID].hasOwnProperty(setCode)) {numProt++;}
-				}
-				else {
-					let code=((Object.keys(protVenn[protID])).sort()).join('');
-					if (code==set) {numProt++;}
-				}
-			}
-		}
-	}
-	else {
-		chkData.checked=(set=='none')? false : true;
-		numMatch=1;
-		numProt=1;
-	}
-	document.getElementById('protCountDIV').innerHTML=(existIsoforms>=1)? '&nbsp;'+numMatch+'/$numTotIsoforms sites<BR>&nbsp;'+numProt+'/$numTotProteins $proteinText&nbsp;' : '&nbsp;'+numMatch+'/$numTotProteins $proteinText&nbsp;';
-}
-</SCRIPT>
-|;
 } # end of &printProteinList
 
 #########################################################################
@@ -2370,7 +2420,7 @@ sub exportProteinList { # Only for design or no-design labeled quantifs
 				}
 				# emPAI / MaxQuant (iBAQ, Intensity,etc)
 				#my $numPep=($selQuantifFamily eq 'EMPAI')? $pepInfo{$quantif}{$protID} : $refQuantifValues->{$protID}{$quantif}{'NUM_PEP_TOTAL'};
-				my $numPep=($selQuantifFamily =~ /EMPAI|SIN/)? $refQuantifValues->{$protID}{$quantif}{'PEPTIDES'} : $refQuantifValues->{$protID}{$quantif}{'NUM_PEP_TOTAL'};
+				my $numPep=($selQuantifFamily =~ /EMPAI|SIN/)? $refQuantifValues->{$protID}{$quantif}{$numPepCode} : $refQuantifValues->{$protID}{$quantif}{'NUM_PEP_TOTAL'};
 				$worksheet2->write_number($xlsRow,++$xlsCol,$refQuantifValues->{$protID}{$quantif}{$paramValue},$itemFormat{'number'});
 				# Peptide number
 				$worksheet2->write_number($xlsRow,++$xlsCol,$numPep,$itemFormat{'number'});
@@ -2431,7 +2481,7 @@ sub generateFrames {
 #######################<Items selection Form>#############################
 ##########################################################################
 sub selectQuantifications {
-#print header(-'content-encoding'=>'no',-charset=>'utf-8'); warningsToBrowser(1); # DEBUG
+# print header(-'content-encoding'=>'no',-charset=>'utf-8'); warningsToBrowser(1); # DEBUG
 	####<Connecting to the database>####
 	my $dbh=&promsConfig::dbConnect;
 
@@ -2453,7 +2503,7 @@ sub selectQuantifications {
 
 	my @queryList;
 	#<Design quantifs
-	push @queryList,qq |SELECT Q.ID_QUANTIFICATION,Q.ID_QUANTIFICATION_METHOD,CONCAT(COALESCE(Q.ID_MODIFICATION,'0'),',',COALESCE(GROUP_CONCAT(DISTINCT MQ.ID_MODIFICATION ORDER BY MQ.MODIF_RANK SEPARATOR ','),'0')) AS MOD_STRG,CONCAT('EXPERIMENT:',E.ID_EXPERIMENT),E.NAME,CONCAT('DESIGN:',D.ID_DESIGN),D.NAME
+	push @queryList,qq |SELECT Q.ID_QUANTIFICATION,Q.ID_QUANTIFICATION_METHOD,CONCAT(COALESCE(Q.ID_MODIFICATION,'0'),',',COALESCE(GROUP_CONCAT(DISTINCT MQ.ID_MODIFICATION ORDER BY MQ.MODIF_RANK SEPARATOR ','),'0')) AS MOD_STRG,E.DISPLAY_POS,0,0,0,CONCAT('EXPERIMENT:',E.ID_EXPERIMENT),E.NAME,CONCAT('DESIGN:',D.ID_DESIGN),D.NAME
 						FROM QUANTIFICATION Q
 						LEFT JOIN MULTIMODIF_QUANTIFICATION MQ ON Q.ID_QUANTIFICATION=MQ.ID_QUANTIFICATION
 						INNER JOIN DESIGN D ON Q.ID_DESIGN=D.ID_DESIGN
@@ -2468,14 +2518,14 @@ sub selectQuantifications {
 	#					ORDER BY Q.ID_QUANTIFICATION_METHOD ASC,E.DISPLAY_POS ASC,D.NAME ASC|;
 	#if ($selModifID <= 0) {
 		#<Internal quantifs with Samples (No PTM-quantif)
-		push @queryList,qq |SELECT DISTINCT Q.ID_QUANTIFICATION,Q.ID_QUANTIFICATION_METHOD,'0,0',CONCAT('EXPERIMENT:',E.ID_EXPERIMENT),E.NAME,CONCAT('SAMPLE:',S.ID_SAMPLE),S.NAME,CONCAT('ANALYSIS:',A.ID_ANALYSIS),A.NAME
+		push @queryList,qq |SELECT DISTINCT Q.ID_QUANTIFICATION,Q.ID_QUANTIFICATION_METHOD,'0,0',E.DISPLAY_POS,S.DISPLAY_POS,A.DISPLAY_POS,0,CONCAT('EXPERIMENT:',E.ID_EXPERIMENT),E.NAME,CONCAT('SAMPLE:',S.ID_SAMPLE),S.NAME,CONCAT('ANALYSIS:',A.ID_ANALYSIS),A.NAME
 							FROM EXPERIMENT E,SAMPLE S,ANALYSIS A,ANA_QUANTIFICATION AQ,QUANTIFICATION Q
 							WHERE E.ID_PROJECT=$projectID AND E.ID_EXPERIMENT=S.ID_EXPERIMENT AND S.ID_SAMPLE=A.ID_SAMPLE AND S.ID_SPOT IS NULL
 								AND A.ID_ANALYSIS=AQ.ID_ANALYSIS AND AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND Q.FOCUS='protein' AND Q.STATUS $maxStatusStrg AND ID_DESIGN IS NULL
 							ORDER BY Q.ID_QUANTIFICATION_METHOD ASC,E.DISPLAY_POS ASC,S.DISPLAY_POS ASC,A.DISPLAY_POS ASC|; # AND $singleModifFilterStrg
 		#<Internal quantifs with Gels
 		#,CONCAT('SPOT:',SP.ID_SPOT),SP.NAME,CONCAT('ANALYSIS:',A.ID_ANALYSIS),A.NAME
-		push @queryList,qq |SELECT DISTINCT Q.ID_QUANTIFICATION,Q.ID_QUANTIFICATION_METHOD,'0,0',CONCAT('EXPERIMENT:',E.ID_EXPERIMENT),E.NAME,CONCAT('GEL2D:',G.ID_GEL2D),G.NAME
+		push @queryList,qq |SELECT DISTINCT Q.ID_QUANTIFICATION,Q.ID_QUANTIFICATION_METHOD,'0,0',E.DISPLAY_POS,G.DISPLAY_POS,SP.NAME,A.DISPLAY_POS,CONCAT('EXPERIMENT:',E.ID_EXPERIMENT),E.NAME,CONCAT('GEL2D:',G.ID_GEL2D),G.NAME
 							FROM EXPERIMENT E,GEL2D G,SPOT SP,SAMPLE S,ANALYSIS A,ANA_QUANTIFICATION AQ,QUANTIFICATION Q
 							WHERE E.ID_PROJECT=$projectID AND E.ID_EXPERIMENT=G.ID_EXPERIMENT AND G.ID_GEL2D=SP.ID_GEL2D AND SP.ID_SPOT=S.ID_SPOT AND S.ID_SAMPLE=A.ID_SAMPLE
 								AND A.ID_ANALYSIS=AQ.ID_ANALYSIS AND AQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION AND Q.FOCUS='protein' AND Q.STATUS $maxStatusStrg AND ID_DESIGN IS NULL
@@ -2486,10 +2536,13 @@ sub selectQuantifications {
 	foreach my $query (@queryList) {
 		my $sthItem=$dbh->prepare($query);
 		$sthItem->execute;
-		while (my ($quantifID,$qmethID,$modStrg,@itemInfo)=$sthItem->fetchrow_array) {
+		while (my ($quantifID,$qmethID,$modStrg,$dp1,$dp2,$dp3,$dp4,@itemInfo)=$sthItem->fetchrow_array) { # dpX: for compatibility with MySQL8
 			next if $seenQuantifs{$quantifID};
 			$seenQuantifs{$quantifID}=1;
-			foreach my $modID (split(',',$modStrg)) {$usedModifs{$modID}=1;} # includes modID=0 (protein)
+			if ($modStrg eq '0,0'){$usedModifs{0}=1;}
+			else {
+				foreach my $modID (split(',',$modStrg)) {$usedModifs{$modID}=1 if $modID*1;} # skip 0 if other modID
+			}
 			$sthQM->execute($qmethID);
 			my ($quantifCode)=$sthQM->fetchrow_array;
 next if $quantifCode eq 'SSPA'; # skip SSPA... for now
@@ -2511,13 +2564,18 @@ next if $quantifCode eq 'SSPA'; # skip SSPA... for now
 			for (my $i=0; $i<$#itemInfo; $i+=2) {
 				next if $usedItems{$itemInfo[$i]};
 				my $labelString='';
+				my $fullLabelString='';
 				for (my $j=0; $j<=$i-2; $j+=2) {
 					$labelString.=' > ' if $labelString;
 					$labelString.=&promsMod::shortenName($itemInfo[$j+1],15);
+					$fullLabelString.=' > ' if $fullLabelString;
+					$fullLabelString.=$itemInfo[$j+1];
 				}
 				$labelString.=' > ' if $labelString;
 				$labelString.=$itemInfo[$i+1];
-				push @itemList,[$itemInfo[$i],$labelString];
+				$fullLabelString.=' > ' if $fullLabelString;
+				$fullLabelString.=$itemInfo[$i+1];
+				push @itemList,[$itemInfo[$i],$labelString,$fullLabelString];
 				$usedItems{$itemInfo[$i]}=1;
 			}
 		}
@@ -2551,7 +2609,8 @@ next if $quantifCode eq 'SSPA'; # skip SSPA... for now
 	warningsToBrowser(1); # writes PERL warnings as HTML comments <!-- --> must be activated after header
 	my $ITEM=uc($item);
 	print qq
-|<HEAD>
+|<HTML>
+<HEAD>
 <TITLE>Compare Multiple Quantifications</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
 <STYLE>
@@ -2559,13 +2618,17 @@ next if $quantifCode eq 'SSPA'; # skip SSPA... for now
 .noFilter{font-weight:bold;}
 .noUpdate {height:25px;width:100px;}
 .update {height:25px;width:100px;color:#DD0000;}
+.quantSelect {
+	width:600px;
+	font-weight:bold;font-size:12px;
+}
 </STYLE>
 <SCRIPT type="text/javascript">
 |;
 	&promsMod::popupInfo();
 	print qq
 |function changeQuantifFamily(newFamily) {
-	//top.promsFrame.selectedComparison='items'; //openProject.cgi
+	//top.promsFrame.selectedComparison='items'; // openProject.cgi
 	parent.listFrame.location="$promsPath{html}/nothing.html";
 	window.location="$promsPath{cgi}/compareQuantifications.cgi?ACT=selQuantifs&id_project=$projectID&parentItem=$item:$itemID&quantifFamily="+newFamily+"&view=$view&quantifFocus=$selQuantifFocus";
 }
@@ -2579,12 +2642,12 @@ function updateQuantifSelection(action) {
 	var selected=false;
 	if (action=='add') {
 		for (let i=0; i<usedSelect.length; i++) {usedSelect.options[i].selected=false;}
-		//Processing & adding parent label
+		//Processing & adding parent label//
 		var selQuantifParent=document.compForm.quantifParent;
 		var parentLabel=selQuantifParent.options[selQuantifParent.options.selectedIndex].text;
 		var labelList=parentLabel.split(' > ');
 		var lastLabel=labelList[labelList.length-1];
-		if (lastLabel.length>11) {
+		if (lastLabel.length > 11) {
 			var begStrg=lastLabel.substr(0,4);
 			var endStrg=lastLabel.substr(lastLabel.length-4,4);
 			labelList[labelList.length-1]=begStrg+'...'+endStrg;
@@ -2594,39 +2657,52 @@ function updateQuantifSelection(action) {
 		ALL:for (let i=0; i<allSelect.length; i++) {
 			if (allSelect.options[i].selected) {
 				selected=true;
-				//Check if not already used
+				//Check if not already used//
 				for (let j=0; j<usedSelect.length; j++) {
 					if (usedSelect.options[j].value==allSelect.options[i].value) continue ALL;
 				}
 				usedSelect.options[usedSelect.length]=new Option(parentLabel+' > '+allSelect.options[i].text,allSelect.options[i].value);
 				usedSelect.options[usedSelect.length-1].setAttribute('data-focus',allSelect.options[i].getAttribute('data-focus'));
 				usedSelect.options[usedSelect.length-1].selected=true;
+				//Format popup text//
+				var popupElems=(selQuantifParent.options[selQuantifParent.options.selectedIndex].dataset.truelabel+' > '+allSelect.options[i].text).split(' > ');
+				var popupStrg=popupElems[0];
+				let padding='&nbsp;&nbsp;&nbsp;&nbsp;';
+				for (let j=1; j<popupElems.length; j++) {
+					popupStrg+='&nbsp;><BR>';
+					padding+='&nbsp;&nbsp;&nbsp;&nbsp;';
+					popupStrg+=(padding+popupElems[j]);
+				}
+				usedSelect.options[usedSelect.length-1].setAttribute('data-truelabel',popupStrg);
+				usedSelect.options[usedSelect.length-1].setAttribute('onmouseover',"popup('#"+usedSelect.length+" :'+this.dataset.truelabel)");
+				usedSelect.options[usedSelect.length-1].setAttribute('onmouseout','popout()');
 				allSelect.options[i].selected=false;
 			}
 		}
 		usedSelect.focus();
 	}
-	else { //remove
+	else { //remove//
 		var keepOptions=[];
 		for (let i=0; i<usedSelect.length; i++) {
 			if (!usedSelect.options[i].selected) {
-				keepOptions.push(usedSelect.options[i].text);
-				keepOptions.push(usedSelect.options[i].value);
-				keepOptions.push(usedSelect.options[i].getAttribute('data-focus'));
+				keepOptions.push([usedSelect.options[i].text, usedSelect.options[i].value, usedSelect.options[i].dataset.focus, usedSelect.options[i].dataset.truelabel]);
 			}
 			else {selected=true;}
 		}
 		usedSelect.length=0;
-		for (let i=0; i<keepOptions.length; i+=3) {
-			usedSelect.options[usedSelect.length]=new Option(keepOptions[i],keepOptions[i+1]);
-			usedSelect.options[usedSelect.length-1].setAttribute('data-focus',keepOptions[i+2]);
+		for (let i=0; i<keepOptions.length; i++) {
+			usedSelect.options[usedSelect.length]=new Option(keepOptions[i][0],keepOptions[i][1]);
+			usedSelect.options[usedSelect.length-1].setAttribute('data-focus',keepOptions[i][2]);
+			usedSelect.options[usedSelect.length-1].setAttribute('data-truelabel',keepOptions[i][3]);
+			usedSelect.options[usedSelect.length-1].setAttribute('onmouseover',"popup('#"+usedSelect.length+" :'+this.dataset.truelabel)");
+			usedSelect.options[usedSelect.length-1].setAttribute('onmouseout','popout()');
 		}
 	}
 	if (selected) {alterCompareButton();}
 	else {alert('No quantification selected');}
 }
 function moveQuantifications(direction) {
-	//setComparisonAsModified(2);
+	//setComparisonAsModified(2);//
 	var usedSelect=document.compForm.usedQuantifs;
 	var selectOK=false;
 	if (direction=='up') {
@@ -2643,7 +2719,7 @@ function moveQuantifications(direction) {
 	alterCompareButton();
 }
 function clearQuantifications() {
-	//setComparisonAsModified(2);
+	//setComparisonAsModified(2);//
 	document.compForm.usedQuantifs.length=0;
 	alterCompareButton();
 }
@@ -2653,24 +2729,33 @@ function switchQuantifications(usedSelect,i,delta,selectOK) {
 		if (i+delta<0 \|\| i+delta==usedSelect.length \|\| usedSelect.options[i+delta].selected) return selectOK;
 		var prevQuantifID=usedSelect.options[i+delta].value;
 		var prevText=usedSelect.options[i+delta].text;
-		var prevFocus=usedSelect.options[i+delta].getAttribute('data-focus');
+		var prevFocus=usedSelect.options[i+delta].dataset.focus;
+		var prevLabel=usedSelect.options[i+delta].dataset.truelabel;
 		usedSelect.options[i+delta]=new Option(usedSelect.options[i].text,usedSelect.options[i].value);
-		usedSelect.options[i+delta].setAttribute('data-focus',usedSelect.options[i].getAttribute('data-focus'));
+		usedSelect.options[i+delta].setAttribute('data-focus',usedSelect.options[i].dataset.focus);
+		usedSelect.options[i+delta].setAttribute('data-truelabel',usedSelect.options[i].dataset.truelabel);
+		usedSelect.options[i+delta].setAttribute('onmouseover',"popup('#"+(i+delta+1)+" :'+this.dataset.truelabel)");
+		usedSelect.options[i+delta].setAttribute('onmouseout','popout()');
+		
 		usedSelect.options[i]=new Option(prevText,prevQuantifID);
 		usedSelect.options[i].setAttribute('data-focus',prevFocus);
+		usedSelect.options[i].setAttribute('data-truelabel',prevLabel);
+		usedSelect.options[i].setAttribute('onmouseover',"popup('#"+(i+1)+" :'+this.dataset.truelabel)");
+		usedSelect.options[i].setAttribute('onmouseout','popout()');
+
 		usedSelect.options[i+delta].selected=true;
 	}
 	return selectOK;
 }
 var viewFilters={
 	list:['ratio','pValue'],
-	//heatmap:['ratio','pValue'],
+	//heatmap:['ratio','pValue'],//
 	volcano:[],
 	log2:['pValue'],
 	correlMatrix:['pValue']
 };
 function updateView(view) {
-	// Updating filters color
+	//Updating filters color//
 	var filters=['ratio','pValue'];
 	var tags=['TEXT','INPUT'];
 	for (var i=0; i<filters.length; i++) {
@@ -2683,27 +2768,27 @@ function updateView(view) {
 			if (document.getElementById(viewFilters[view][i]+tags[j])) {document.getElementById(viewFilters[view][i]+tags[j]).className='trueFilter';}
 		}
 	}
-	// Updating strict filtering
+	//Updating strict filtering//
 	var myForm=document.compForm;
 	if (myForm.strictFilter) {myForm.strictFilter.disabled=(view=='volcano')? true : false;}
 	
 	alterCompareButton();
 	
-	// Checking & submitting form
-	//var okSubmit=checkSelectedQuantifications(myForm);
-	//if (okSubmit) myForm.submit();
+	//Checking & submitting form//
+	//var okSubmit=checkSelectedQuantifications(myForm);//
+	//if (okSubmit) myForm.submit();//
 }
 var dispResults=false;
 function alterCompareButton(clear) {
 	document.getElementById('compareBUT').className=(dispResults && !clear)? 'title3 update' : 'title3 noUpdate';
 }
 function checkSelectedQuantifications(myForm) {
-	//Check 2+ quantif selected
+	//Check 2+ quantif selected//
 	if (myForm.usedQuantifs.length <= 1) {
 		alert('Select at least 2 Quantifications.');
 		return false;
 	}
-	//Quantif to string & check focuses
+	//Quantif to string & check focuses//
 	myForm.quantifList.value='';
 	var quantifFocus={protein:0,site:0}; 
 	for (let i=0; i<myForm.usedQuantifs.length; i++) {
@@ -2711,7 +2796,7 @@ function checkSelectedQuantifications(myForm) {
 		if (i<myForm.usedQuantifs.length-1) myForm.quantifList.value+=':';
 		quantifFocus[myForm.usedQuantifs[i].getAttribute('data-focus')]++;
 	}
-	if ($selQuantifFocus < 0) { //site vs protein
+	if ($selQuantifFocus < 0) { // site vs protein
 		if (quantifFocus.protein == 0) {alert('You must select 1 protein quantification.'); return false;}
 		if (quantifFocus.protein > 1 && myForm.view.value=='log2') {alert('You can select only 1 protein quantification in "Correlation plot".'); return false;}
 	}
@@ -2738,7 +2823,7 @@ function autoSelectQuantifications() {
 	for (var i=0;i<unsafe.length;++i) {
 		searchString=searchString.replace(new RegExp("\\\\"+unsafe.charAt(i),"g"),bs+unsafe.charAt(i));
 	}
-	//Searching option text
+	//Searching option text//
 	var selStatus=(myForm.autoAction.value=='select')? true : false;
 	for (var i=0; i<myForm.allQuantifs.length; i++) {
 		if (myForm.allQuantifs.options[i].text.match(searchString)) {
@@ -2754,7 +2839,7 @@ function clearSelection() {
 }
 // AJAX --->
 function ajaxUpdateRestrict() {
-	//Creation of the XMLHTTPRequest object
+	//Creation of the XMLHTTPRequest object//
 	var XHR = getXMLHTTP();
 	if (!XHR) {
 		return false;
@@ -2769,7 +2854,7 @@ function ajaxUpdateRestrict() {
 	XHR.send(null);
 }
 function ajaxGetQuantificationList(branchID) {
-	//Creation of the XMLHTTPRequest object
+	//Creation of the XMLHTTPRequest object//
 	var XHR = getXMLHTTP();
 	if (!XHR) {
 		return false;
@@ -2864,7 +2949,7 @@ function listAllQuantifications(quantifText) {
 #|</SELECT>&nbsp;<INPUT type="button" class="title3" value="View All" onclick="displayAllComparisons()"/>
 #</FONT>
 #|;
-	if (!$selQuantifFamily || $selQuantifFamily eq 'RATIO') { # empty string if no quantif in selected family
+	if (!$selQuantifFamily || $selQuantifFamily =~ /^(RATIO|PROT_ABUNDANCE)$/) { # empty string if no quantif in selected family
 		print qq
 |&nbsp;&nbsp;&nbsp;&nbsp;<FONT class="title">Focus:<SELECT name="quantifFocus" onchange="changeQuantifFocus(this.value)" style="font-weight:bold;font-size:20px;color:#DD0000">
 |;
@@ -2892,13 +2977,13 @@ function listAllQuantifications(quantifText) {
 <FONT style="font-size:7px"><BR></FONT>
 <TABLE bgcolor=$darkColor cellpadding=0 border=0><TR>
 <TR>
-<TH valign=top rowspan=2><FONT class="title2">Select :</FONT><SELECT name="quantifParent" class="title3" style="width:350px" onchange="ajaxGetQuantificationList(this.value)">
+<TH valign=top rowspan=2><FONT class="title2">Select :</FONT><SELECT name="quantifParent" class="title3" style="width:350px" onchange="ajaxGetQuantificationList(this.value)" onmouseover=\"popup(this.options[this.selectedIndex].dataset.truelabel)\" onmouseout=\"popout()\">
 |;
 	####<Looping through list of analyses>####
 	my $matchedItem=0;
 	if (scalar @itemList) {
 		foreach my $refItem (@itemList) {
-			print "\t<OPTION value=\"$refItem->[0]\"";
+			print "\t<OPTION value=\"$refItem->[0]\" data-truelabel=\"$refItem->[2]\"";
 			if ($refItem->[0] eq $usedParent) {
 				print ' selected';
 				$matchedItem=1;
@@ -2926,14 +3011,14 @@ function listAllQuantifications(quantifText) {
 	my $disabStrictFilter=($view eq 'volcano')? ' disabled' : '';
 	print qq
 |</SELECT><BR>
-<SELECT multiple name="allQuantifs" style="width:600px;height:105px;font-weight:bold;font-size:14px;"></SELECT><BR>
+<SELECT multiple name="allQuantifs" class="quantSelect" style="height:105px;"></SELECT><BR>
 <SELECT name="autoAction" style="font-weight:bold;"><OPTION value="select">Select</OPTION><OPTION value="unselect">Unselect</OPTION></SELECT> items containing
 <INPUT type="text" name="selectText" size=10 value=""/>&nbsp;<INPUT type="button" value="Go" onclick="autoSelectQuantifications()"/>&nbsp;&nbsp<INPUT type="button" value="Clear" onclick="clearSelection()"/></TH>
 
 <TH valign=middle><BR><INPUT type="button" name="add" value=">" style="width:30px" onclick="updateQuantifSelection('add')"/><BR><INPUT type="button" name="remove" value="<" style="width:30px" onclick="updateQuantifSelection('remove')"/></TH>
 
 <TH valign=top><FONT class="title2">Datasets to compare:</FONT><BR>
-<SELECT multiple name="usedQuantifs" style="width:600px;height:80px;font-weight:bold;font-size:14px;"></SELECT></TH>
+<SELECT multiple name="usedQuantifs" class="quantSelect" style="height:80px;"></SELECT></TH>
 <TD valign=middle><BR><INPUT type="button" name="up" value="Up" style="width:50px" onclick="moveQuantifications('up')"/><BR><INPUT type="button" name="down" value="Down" style="width:50px" onclick="moveQuantifications('down')"/><BR><INPUT type="button" value="Clear" style="width:50px" onclick="clearQuantifications()"/></TD>
 </TR>
 <TR><TH colspan=3><TABLE cellpadding=0 cellspacing=0 width=100% border=0>
@@ -2994,6 +3079,7 @@ function listAllQuantifications(quantifText) {
 <TH><INPUT type="submit" name="compare" id="compareBUT" value="Compare" class="title3 noUpdate"></TH></TR></TABLE></TH></TR>
 </TABLE>
 </FORM>
+</CENTER>
 |;
 	if ($selQuantifFamily) {
 		print qq
@@ -3054,7 +3140,7 @@ sub sortProteins {
 		my $quantif=$1;
 		my $qVal=($sort =~ /empai/)?$empaiValue:'SIN_SIN';
 		if ($refQuantifValues->{$a}{$quantif} && $refQuantifValues->{$b}{$quantif}) {
-			$refQuantifValues->{$b}{$quantif}{$qVal}<=>$refQuantifValues->{$a}{$quantif}{$qVal} || $refQuantifValues->{$b}{$quantif}{'PEPTIDES'}<=>$refQuantifValues->{$a}{$quantif}{'PEPTIDES'} || lc($refProteinInfo->{$pID_a}[0]) cmp lc($refProteinInfo->{$pID_b}[0]) || &promsMod::sortSmart(&promsMod::preparePtmString($mStrg_a),&promsMod::preparePtmString($mStrg_b))
+			$refQuantifValues->{$b}{$quantif}{$qVal}<=>$refQuantifValues->{$a}{$quantif}{$qVal} || $refQuantifValues->{$b}{$quantif}{$numPepCode}<=>$refQuantifValues->{$a}{$quantif}{$numPepCode} || lc($refProteinInfo->{$pID_a}[0]) cmp lc($refProteinInfo->{$pID_b}[0]) || &promsMod::sortSmart(&promsMod::preparePtmString($mStrg_a),&promsMod::preparePtmString($mStrg_b))
 		}
 		elsif ($refQuantifValues->{$a}{$quantif}) {-1}
 		elsif ($refQuantifValues->{$b}{$quantif}) {1}
@@ -3147,7 +3233,7 @@ sub ajaxGetQuantificationList {
 
 	my %quantifCodeIDs;
 	#my $sthQM=$dbh->prepare("SELECT CODE,ID_QUANTIFICATION_METHOD FROM QUANTIFICATION_METHOD");
-my $sthQM=$dbh->prepare("SELECT CODE,ID_QUANTIFICATION_METHOD FROM QUANTIFICATION_METHOD WHERE CODE != 'SSPA'"); # skip SSPA... for now
+	my $sthQM=$dbh->prepare("SELECT CODE,ID_QUANTIFICATION_METHOD FROM QUANTIFICATION_METHOD WHERE CODE != 'SSPA'"); # skip SSPA... for now
 	$sthQM->execute;
 	while (my ($qmCode,$qmID)=$sthQM->fetchrow_array) {$quantifCodeIDs{$qmCode}=$qmID;}
 	$sthQM->finish;
@@ -3205,7 +3291,7 @@ my $sthQM=$dbh->prepare("SELECT CODE,ID_QUANTIFICATION_METHOD FROM QUANTIFICATIO
 					}
 				}
 				else { # SIN, TNPQ emPAI
-					print $quantifFocus,"#:#$quantifID#:#$pathStrg\n";
+					print $quantifFocus,"#:#",$quantifID,"_0#:#$pathStrg\n";
 				}
 			}
 		}
@@ -3253,6 +3339,14 @@ sub ajaxListSelectedProteins { # also called by displayClustering.cgi & displayP
 
 
 ####>Revision history<####
+# 1.8.8 [BUGFIX] Fix extra JS text returned by &printProteinList in AJAX called from Exploratory analysis and Focus selection (PP 28/04/21)
+# 1.8.7 [UPDATE] Compatibility with MySQL8 (PP 22/01/21)
+# 1.8.6 [FEATURE] Support for Site abundance & improved visibility of quantifications names during selection (PP 05/11/20)
+# 1.8.5 [BUGFIX] Removes AJAX link to peptide info for non-ratio quantifications (PP 24/09/20) 
+# 1.8.4 [BUGFIX] Fix display of non-ajax queried proteins list (VS 27/04/20)
+# 1.8.3 [BUGFIX] Fix handling of SIN/EMPAI: now using <quantifID>_0 (PP 21/04/20)
+# 1.8.2 [BUGFIX] Fix forgotten log2 on ratios for correlation matrix view (PP 05/03/20)
+# 1.8.1 [BUGFIX] Fix Check all/Clear all functions in correlation plot/Volcano plot view (VS 24/02/20)
 # 1.8.0 [FEATURE] Handles myProMS Protein Abundance. TODO: export for PROT_ABUNDANCE and MQ (PP ../01/20)
 # 1.7.3 [ENHANCEMENT] Code update to match new behavior of &promsQuantif(v1.5.4)::extractQuantificationParameters for MaxQuant quantif (PP 21/11/19)
 # 1.7.2 [BUGFIX] Fixed undef $projectID on ajax call & [FEATURE] added extended search option also for correlation plot (PP 12/11/19)

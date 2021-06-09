@@ -1,15 +1,20 @@
 #!/bin/bash
 
 ### File management
-chmod +x ${APPLI_DIR}/cgi-bin/*
+chmod +x ${APPLI_DIR}/cgi-bin/*.{cgi,pl}
 mkdir -p ${DATA_DIR}/{exploratory_data,gels,go/goa,go/obo,go/results,logs,peptide_data,quantification_data,spectrum_data,swath_lib,tmp,validation,pathway_data}
 if [ ! -e ${APPLI_DIR}/html/data ]; then
     ln -s ${DATA_DIR} ${APPLI_DIR}/html/data
 fi
-chown -Rh www-data:root ${APPLI_DIR}
-chown -Rh www-data:root ${DATA_DIR}
+chown -Rh www-data:www-data ${APPLI_DIR}
+chown -Rh www-data:www-data ${DATA_DIR}
+chown -Rh www-data:www-data ${SHARED_DIR}
+chmod a+w ${SHARED_DIR}
 
 ### Update index.html file with ENV variable
+if [ ! -e ${APPLI_DIR}/html/index.bck ]; then
+    cp ${APPLI_DIR}/html/index.html ${APPLI_DIR}/html/index.bck
+fi
 sed -i "s/EMAIL_CONTACT/${EMAIL_CONTACT}/g" ${APPLI_DIR}/html/index.html
 
 ### Update promsConfig.pm file with ENV variables
@@ -30,6 +35,8 @@ sed -i "s@QVALITY_DIR@${QVALITY_DIR}@g" ${APPLI_DIR}/cgi-bin/promsConfig.pm
 sed -i "s@MASSCHROQ_DIR@${MASSCHROQ_DIR}@g" ${APPLI_DIR}/cgi-bin/promsConfig.pm
 sed -i "s@TPP_DIR@${TPP_DIR}@g" ${APPLI_DIR}/cgi-bin/promsConfig.pm
 sed -i "s@PYTHON_DIR@${PYTHON_DIR}@g" ${APPLI_DIR}/cgi-bin/promsConfig.pm
+sed -i "s@PYTHON2_DIR@${PYTHON2_DIR}@g" ${APPLI_DIR}/cgi-bin/promsConfig.pm
+sed -i "s@PYTHON3_DIR@${PYTHON3_DIR}@g" ${APPLI_DIR}/cgi-bin/promsConfig.pm
 sed -i "s@MSPROTEO_DIR@${MSPROTEO_DIR}@g" ${APPLI_DIR}/cgi-bin/promsConfig.pm
 sed -i "s@OPENMS_DIR@${OPENMS_DIR}@g" ${APPLI_DIR}/cgi-bin/promsConfig.pm
 sed -i "s@PYPROPHET_DIR@${PYPROPHET_DIR}@g" ${APPLI_DIR}/cgi-bin/promsConfig.pm
@@ -68,6 +75,7 @@ cat << EOF > /etc/apache2/sites-enabled/000-default.conf
         ScriptAlias /cgi-bin/ ${APPLI_DIR}/cgi-bin/
         <Directory "${APPLI_DIR}/cgi-bin">
                 Options ExecCGI FollowSymLinks SymLinksIfOwnerMatch
+                AddHandler cgi-script .cgi .pl
                 AllowOverride None
                 order allow,deny
                 allow from all
@@ -89,6 +97,16 @@ cat << EOF >> /etc/apache2/apache2.conf
 </Directory>
 EOF
 
+ ## Test PP
+ cat << EOF >> /etc/apache2/conf-available/cgi-bin.conf
+<Directory "${APPLI_DIR}/cgi-bin">
+    Options +ExecCGI
+    AddHandler cgi-script .cgi .pl
+</Directory>
+EOF
+
 ### Launch Apache
+# a2enmod cgid
+# a2enconf cgi-bin.conf
 source /etc/apache2/envvars
 /usr/sbin/apache2 -DFOREGROUND

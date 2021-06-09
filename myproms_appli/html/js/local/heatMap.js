@@ -1,6 +1,6 @@
 /*
 ################################################################################
-# heatMap.js        2.3.5                                                      #
+# heatMap.js        2.3.7                                                      #
 # Authors: P. Poullet                                                          #
 # Contact: patrick.poullet@curie.fr                                            #
 ################################################################################
@@ -97,7 +97,7 @@ function AnnotationSet(type,name) {
 	this.type=type; //row or column
 	this.name=name;
 	this.rank;
-	this.popupText=name;
+	this.popupText=name+'\nDouble-click to delete';
 	this.cells=[];
 	this.aspect; // graphical object
 }
@@ -2265,27 +2265,43 @@ dragContext=true; // ?
 
 		annotationSet.aspect=l;
 		var usedTargetIds={};
+        
+        //Color:Scan for matching previously used annot name => use same color   
+        var reservedColor={};
+        for (let s=0; s<setData.length; s++) {
+            var [annot,targetData,annotColor]=setData[s]; // name,targetStrg,color(optional)
+            if (!annotColor && annotNameToColor[type][annot]) { // already seen
+                reservedColor[annotNameToColor[type][annot]]=1;
+            }
+        }
 		var colorIdx=0; // 0++ -> 1: 0 not used for annotations. Index reset for each annot (PP 29/0516)
-		for (var annot in setData) {
-			var targetData=setData[annot].split('::'); // targetlist[::color] optional
-			var annotColor;
-			if (annotNameToColor[type][annot]) { // already seen
-				annotColor=annotNameToColor[type][annot];
-			}
-			else { // first time seen
-				if (targetData[1]) { // custom color
-					annotColor=targetData[1];
-				}
-				else { // Choose color from default list
-					//var colorIdx=chooseColorIndex(annotColorIndex[type]);
-					colorIdx++;
-					if (colorIdx>=colorList.length) colorIdx=1;
-					annotColor=colorList[colorIdx];
-				}
-				annotNameToColor[type][annot]=annotColor;
-			}
-			var targetLabels=targetData[0].split(',');
-			for (var i=0; i<targetLabels.length; i++) {
+        for (let s=0; s<setData.length; s++) {
+			var [annot,targetData,annotColor]=setData[s]; // name,targetStrg,color(optional)
+			//Color
+            if (!annotColor) { // Choose color from default list
+                if (annotNameToColor[type][annot]) { // already seen
+                    annotColor=annotNameToColor[type][annot];
+                }
+                else {
+                    var firstColorIdx;
+                    var firstLoop=true;
+                    while (true) { // loop through all colors to find a free one. If none: use next in list anyway
+                        colorIdx++;    
+                        if (colorIdx >= colorList.length) colorIdx=1; // starts at 1 (0: black!)
+                        if (firstLoop) {
+                            firstColorIdx=colorIdx;
+                            firstLoop=false;
+                        }
+                        else if (colorIdx == firstColorIdx) {break;}
+                        if (!reservedColor[colorList[colorIdx]]) break;
+                    }
+                    annotColor=colorList[colorIdx];
+                    annotNameToColor[type][annot]=annotColor;
+                }
+            }
+			//Data
+			var targetLabels=targetData.split(',');
+			for (let i=0; i<targetLabels.length; i++) {
 				//if (usedTargetIds[targetLabels[i]]) continue; // ID/label already used by this annotation
 				if (matchPattern) {
 					/* loose ID match => loop through all label Ids */
@@ -2951,6 +2967,8 @@ dragContext=true; // ?
 
 /*
 ####>Revision history<####
+# 2.3.7 [ENHANCEMENT] Improved annotation set color selection (PP 21/03/20) 
+# 2.3.6 [ENHANCEMENT] Improved handling of annotation values rank (PP 27/02/20)
 # 2.3.5 Displays both PNG and SVG image export options if format is not specified by user (PP 06/06/18)
 # 2.3.4 Updates main DIV size when adding/removing annotations legends (PP 11/11/17)
 # 2.3.3 Bug fix in translationStrg declaration during branch selection (PP 30/05/17)

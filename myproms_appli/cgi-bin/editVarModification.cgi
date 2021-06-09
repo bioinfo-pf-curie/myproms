@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# editVarModification.cgi      1.3.3                                           #
+# editVarModification.cgi      1.3.7                                           #
 # Authors: P. Poullet, G. Arras, F. Yvon, V. Sabatet (Institut Curie)          #
 # Contact: myproms@curie.fr                                                    #
 # Edits variable modifications position & peptide comments                     #
@@ -75,15 +75,17 @@ if (param('revert')) {
 	if ($call eq 'listRanks') {
 		my ($tag,$queryID,$qNum,$rank)=split('_',$varModID);
 		if ($selModID) {
-			my ($refPosString)= $dbh->selectrow_array("SELECT REF_POS_STRING FROM QUERY_MODIFICATION WHERE ID_MODIFICATION=$selModID AND ID_QUERY=$queryID AND PEP_RANK=$rank");
-			$dbh->do("UPDATE QUERY_MODIFICATION SET POS_STRING='$refPosString',REF_POS_STRING=NULL WHERE ID_MODIFICATION=$selModID AND ID_QUERY=$queryID AND PEP_RANK=$rank");
+			my ($refString)= $dbh->selectrow_array("SELECT REF_POS_STRING FROM QUERY_MODIFICATION WHERE ID_MODIFICATION=$selModID AND ID_QUERY=$queryID AND PEP_RANK=$rank");
+			my ($refPos, $refProba)=($refString=~/([^#]*)(##PRB_(?:MQ|SPC|PTMRS)=.+$)/); # Remove PTMs Proba to avoid parsing inconsistencies
+			$dbh->do("UPDATE QUERY_MODIFICATION SET POS_STRING='$refPos',REF_POS_STRING='$refProba' WHERE ID_MODIFICATION=$selModID AND ID_QUERY=$queryID AND PEP_RANK=$rank");
 		}
 		else { # revert all
 			my $sthPTMpos=$dbh->prepare("SELECT ID_MODIFICATION,REF_POS_STRING FROM QUERY_MODIFICATION WHERE ID_QUERY=$queryID AND PEP_RANK=$rank");
 			$sthPTMpos->execute;
-			while (my ($modID,$refPosString) = $sthPTMpos->fetchrow_array) {
-				next unless $refPosString;# Position(s) of this modification was never changed so no need to update it !
-				$dbh->do("UPDATE QUERY_MODIFICATION SET POS_STRING='$refPosString',REF_POS_STRING=NULL WHERE ID_MODIFICATION=$modID AND ID_QUERY=$queryID AND PEP_RANK=$rank");
+			while (my ($modID,$refString) = $sthPTMpos->fetchrow_array) {
+				next unless $refString;# Position(s) of this modification was never changed so no need to update it !
+				my ($refPos, $refProba)=($refString=~/([^#]*)(##PRB_(?:MQ|SPC|PTMRS)=.+$)/); # Remove PTMs Proba to avoid parsing inconsistencies
+				$dbh->do("UPDATE QUERY_MODIFICATION SET POS_STRING='$refPos',REF_POS_STRING='$refProba' WHERE ID_MODIFICATION=$modID AND ID_QUERY=$queryID AND PEP_RANK=$rank");
 			}
 			$sthPTMpos->finish;
 			#my ($rankInfo)=$dbh->selectrow_array("SELECT INFO_PEP$rank FROM QUERY_VALIDATION WHERE ID_QUERY=$queryID");
@@ -139,6 +141,7 @@ elsif (param('save')) {
 	my $seqLength=length(param('sequence'));
 	my $newComment=(param('editTextForm'))? param('editTextForm') : '';
 	$newComment =~ s/,/;/g;
+	$newComment =~ s/(['"])/\\$1/g;
 
 	#Sequence composition
 	my %seqComposition;
@@ -154,7 +157,6 @@ elsif (param('save')) {
 		($anaID,my $rankInfo)=$dbh->selectrow_array("SELECT ID_ANALYSIS,INFO_PEP$rank FROM QUERY_VALIDATION WHERE ID_QUERY=$queryID");
 		$rankInfo=~s/COM=[^,]*,?//; #remove old comments
 		$rankInfo.="COM=$newComment," if $newComment;
-		my $pepSequ=
 		$dbh->do("UPDATE QUERY_VALIDATION SET INFO_PEP$rank='$rankInfo' WHERE ID_QUERY=$queryID");
 	}
 	else {
@@ -235,38 +237,34 @@ elsif (param('save')) {
 		#print "$varModNames[$v]<BR>\n";
 
 		if ($call eq 'listRanks') {
-			my ($posString,$refPosString)=$dbh->selectrow_array("SELECT POS_STRING,REF_POS_STRING FROM QUERY_MODIFICATION WHERE ID_MODIFICATION=$modID AND ID_QUERY=$queryID AND PEP_RANK=$rank");
-			if ($posString ne $posStrg) {
-				$refPosString=$posString unless $refPosString;
-				
-				# Add "." to end up with the right number of required modifications when ambigous exists
-				my $nbCurrentModifs = () = $posStrg =~ /\./g;
-				my $nbRefModifs = () = $refPosString =~ /\./g;
-				for(my $i=0; $i<$nbRefModifs-$nbCurrentModifs; $i++) {
-					$posStrg .= '.';
-				}
-				
-				$dbh->do("UPDATE QUERY_MODIFICATION SET POS_STRING='$posStrg',REF_POS_STRING='$refPosString' WHERE ID_MODIFICATION=$modID AND ID_QUERY=$queryID AND PEP_RANK=$rank");
+			my ($posString,$refString)=$dbh->selectrow_array("SELECT POS_STRING,REF_POS_STRING FROM QUERY_MODIFICATION WHERE ID_MODIFICATION=$modID AND ID_QUERY=$queryID AND PEP_RANK=$rank");
+			my ($refPos, $refProba)=($refString=~/([^#]*)(##PRB_(?:MQ|SPC|PTMRS)=.+$)/); # Remove PTMs Proba to avoid parsing inconsistencies
+			$refPos = $posString if(!$refPos);
+			
+			# Add "." to end up with the right number of required modifications when ambigous exists
+			my $nbCurrentModifs = () = $posStrg =~ /\./g;
+			my $nbRefModifs = () = $refPos =~ /\./g;
+			for(my $i=0; $i<$nbRefModifs-$nbCurrentModifs; $i++) {
+				$posStrg .= '.';
 			}
+			
+			my $refPosString = ($refPos ne $posStrg) ? "$refPos$refProba" : $refProba;
+			$dbh->do("UPDATE QUERY_MODIFICATION SET POS_STRING='$posStrg',REF_POS_STRING='$refPosString' WHERE ID_MODIFICATION=$modID AND ID_QUERY=$queryID AND PEP_RANK=$rank");
 		}
 		elsif ($call eq 'sequenceView') {
-			my ($posString,$refPosData)=$dbh->selectrow_array("SELECT POS_STRING,REF_POS_STRING FROM PEPTIDE_MODIFICATION WHERE ID_MODIFICATION=$modID AND ID_PEPTIDE=$pepID");
-			if ($posString ne $posStrg) {
-				my ($refPosString)=$refPosData=~/^([^#]+)/; # ignore MaxQuant ##PRB_MQ=xxxx if any
-				$refPosString=$posString unless $refPosString;
-				
-				# Add "." to end up with the right number of required modifications when ambigous exists
-				my $nbCurrentModifs = () = $posStrg =~ /\./g;
-				my $nbRefModifs = () = $refPosString =~ /\./g;
-				for(my $i=0; $i<$nbRefModifs-$nbCurrentModifs; $i++) {
-					$posStrg .= '.';
-				}
-				
-				(my $probData=$refPosData)=~s/^[^#]+//;
-				$refPosString.=$probData;
-				
-				$dbh->do("UPDATE PEPTIDE_MODIFICATION SET POS_STRING='$posStrg',REF_POS_STRING='$refPosString' WHERE ID_MODIFICATION=$modID AND ID_PEPTIDE=$pepID");
+			my ($posString,$refString)=$dbh->selectrow_array("SELECT POS_STRING,REF_POS_STRING FROM PEPTIDE_MODIFICATION WHERE ID_MODIFICATION=$modID AND ID_PEPTIDE=$pepID");
+			my ($refPos, $refProba)=($refString=~/([^#]*)(##PRB_(?:MQ|SPC|PTMRS)=.+$)/); # Remove PTMs Proba to avoid parsing inconsistencies
+			$refPos = $posString if(!$refPos);
+			
+			# Add "." to end up with the right number of required modifications when ambigous exists
+			my $nbCurrentModifs = () = $posStrg =~ /\./g;
+			my $nbRefModifs = () = $refPos =~ /\./g;
+			for(my $i=0; $i<$nbRefModifs-$nbCurrentModifs; $i++) {
+				$posStrg .= '.';
 			}
+			
+			my $refPosString = ($refPos ne $posStrg) ? "$refPos$refProba" : $refProba;
+			$dbh->do("UPDATE PEPTIDE_MODIFICATION SET POS_STRING='$posStrg',REF_POS_STRING='$refPosString' WHERE ID_MODIFICATION=$modID AND ID_PEPTIDE=$pepID");
 		}
 	}
 	
@@ -310,7 +308,7 @@ if ($call eq 'listRanks') {
 	if($rankInfo =~ /PRS=(\d);[^;,]*;[^;,]*,/){
 		$prsStatus = $1;
 	}
-	$fileFormat='-'; # anything but MAXQUANT.DIR
+	$fileFormat='-'; # anything but MAXQUANT.DIR, SPECTRONAUT.XLS and SEQUEST.PDM
 	($anaID) = $dbh->selectrow_array("SELECT ID_ANALYSIS FROM QUERY_VALIDATION WHERE ID_QUERY=$queryID");
 }
 elsif ($call eq 'sequenceView') {
@@ -376,6 +374,7 @@ my $numVarMods=scalar keys %ptmInfo;
 my (@varModNames,@varModIDs,%varModPositions,%varModOccurences);
 foreach my $modID (keys %ptmInfo) {
 	my ($varModName,$specificity,$posStrg,$refPosData)=@{$ptmInfo{$modID}};
+	$refPosData=~s/##PRB_(?:MQ|SPC|PTMRS)=.+$//; # Remove PTMs Proba to avoid parsing inconsistencies
 	
 	push @varModNames,$varModName;
 	push @varModIDs,$modID;
@@ -403,7 +402,7 @@ foreach my $modID (keys %ptmInfo) {
 #      Starting HTML      #
 ###########################
 my ($color1,$color2)=&promsConfig::getRowColors;
-print header(-'content-encoding'=>'no');
+print header(-'charset' => 'UTF-8');
 warningsToBrowser(1);
 print qq
 |<HEAD>
@@ -412,7 +411,7 @@ print qq
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
 <SCRIPT type="text/javascript">
 |;
-&promsMod::popupInfo() if $fileFormat eq 'MAXQUANT.DIR';
+&promsMod::popupInfo() if($fileFormat =~ /MAXQUANT.DIR|SPECTRONAUT.XLS|SEQUEST.PDM|-/);
 print "var varModNameList=['",join("','",@varModNames),"'];\n";
 print "var varModIDList=['",join("','",@varModIDs),"'];\n";
 print qq
@@ -444,7 +443,7 @@ print qq
 				errorMsg = "ERROR: You have checked less '" + varModNameList[v] + "' than you should. (" + (numUnsureChecked + numSureChecked) + "/" + vmodOcc + " available)";
 			} else if(numSureChecked == vmodOcc && numUnsureChecked > 0) {
 				errorMsg = "ERROR: No need for ambigous sites at '" + varModNameList[v] + "' if all modifications are already sure.";
-			} 
+			}
 
 			if(errorMsg) {
 				alert(errorMsg);
@@ -468,7 +467,7 @@ print qq
 	<CENTER>
 	<FONT class="title">Edit Modification Positions</FONT>
 	<BR/><BR/>
-	<FORM id="editVarMod" name="editVarMod" onsubmit="return(checkForm(this));" method="POST">
+	<FORM id="editVarMod" name="editVarMod" onsubmit="return checkForm(this);" method="POST">
 		<INPUT type="hidden" name="CALL" value="$call">
 		<INPUT type="hidden" name="ID" value="$varModID">
 		<INPUT type="hidden" name="numVarMods" value="$numVarMods">
@@ -497,15 +496,17 @@ print "</TR>\n";
 my $bgColor=$color1;
 my $editableVarMods=0;
 my $numRevertable=0;
+
 foreach my $modID (sort{$ptmInfo{$a}[0] cmp $ptmInfo{$b}[0]} keys %ptmInfo) {
 	my ($varModName,$specificity,$posStrg,$refPosData)=@{$ptmInfo{$modID}};
 
-	my ($refPosStrg)=$refPosData=~/^([^#]+)/; # ignore MaxQuant ##PRB_MQ=xxxx if any
-	(my $probStrg=$refPosData)=~s/^[^#]*##PRB_MQ=//;
-	my %maxQuantProb;
+	my ($refPosStrg)=$refPosData=~/^([^#]+)/; # ignore MaxQuant/Spectronaut/PTMRS ##PRB_SOFTWARE=xxxx if any
+	(my $probStrg=$refPosData)=~s/^[^#]*##PRB_(?:MQ|SPC|PTMRS)=//;
+	my %ptmProb;
 	if ($probStrg) {
-		while ($probStrg =~ /([^,:]+):([^,]+)/g) {
-			$maxQuantProb{$1}=$2;
+		while ($probStrg =~ /([\d\.]+):([\d\.]+):?([\d\.]+)?(?:,|$)/g) {
+			$ptmProb{$1}="$2";
+			$ptmProb{$1}=":$3" if($3);
 		}
 	}
 
@@ -518,8 +519,8 @@ foreach my $modID (sort{$ptmInfo{$a}[0] cmp $ptmInfo{$b}[0]} keys %ptmInfo) {
 		my $posCode=($i==0)? '-|\=' : ($i==$#pepAAs)? '\+|\*' : $pepAAs[$i]; # N/C-term
 		if ($specificity=~/$posCode/) {
 			$checkablePos{$i}=1;
-			if ($fileFormat eq 'MAXQUANT.DIR' && !$maxQuantProb{$i}) {
-				$maxQuantProb{$i}=($probStrg || !$varModPositions{$varModName}{$i})? 0 : 1; # complete prob not recorded in REF_POS_STRING
+			if ($fileFormat =~ /MAXQUANT.DIR/ && !$ptmProb{$i}) {
+				$ptmProb{$i}=($probStrg || !$varModPositions{$varModName}{$i})? "0" : "1"; # complete prob not recorded in REF_POS_STRING
 			}
 		}
 		$checkedPos{$i}++ if $varModPositions{$varModName}{$i};
@@ -530,17 +531,24 @@ foreach my $modID (sort{$ptmInfo{$a}[0] cmp $ptmInfo{$b}[0]} keys %ptmInfo) {
 	$editableVarMods+=$editable;
 	my $revertable=($refPosStrg && $refPosStrg ne $posStrg)? 1 : 0;
 	$numRevertable+=$revertable;
-	my $rowSpan=($fileFormat eq 'MAXQUANT.DIR')? 2 : 1;
+	my $rowSpan=(scalar keys %ptmProb > 0) ? 2 : 1;
 	print qq
 |<TR bgcolor="$bgColor">
 <TH valign=top align=right rowspan=$rowSpan nowrap>&nbsp;$varModName [x$varModOccurences{$varModName}]:
 	<INPUT type="hidden" name="varModOccurences_$modID" id="varModOccurences_$modID" value="$varModOccurences{$varModName}"/></TH>
+	
 |;
-	if ($fileFormat eq 'MAXQUANT.DIR') {
-		print "<TD align=right>MaxQuant:</TD>"; # Confidence
+	if (scalar keys %ptmProb > 0) {
+		my $softwarePTM = ($fileFormat eq 'MAXQUANT.DIR') ? 'MaxQuant' : ($fileFormat eq 'SPECTRONAUT.XLS') ? 'Spectronaut' : 'PtmRS';
+		print "<TD align=right>$softwarePTM:</TD>"; # Confidence
 		foreach my $i (0..($#pepAAs)) {
+			my ($iPtmProb, $iPtmGrpProb) = split(/:/, $ptmProb{$i});
+			
+			my $ptmProbStr = '<B>Site Probability='.($iPtmProb*100).'%</B>';
+			$ptmProbStr .= '<br/><B>Query Group Site Probability='.($iPtmGrpProb*100).'%</B>' if($iPtmGrpProb);
+			
 			print '<TD>';
-			print &promsMod::MaxQuantProbIcon($maxQuantProb{$i},{text=>'&nbsp;&nbsp;&nbsp;&nbsp;',popupText=>'<B>Probability='.($maxQuantProb{$i}*100).'%</B>'}) if defined $maxQuantProb{$i};
+			print &promsMod::PTMProbIcon(($iPtmGrpProb) ? $iPtmGrpProb : $iPtmProb,{text=>'&nbsp;&nbsp;&nbsp;&nbsp;',popupText=>$ptmProbStr}) if defined $ptmProb{$i};
 			print '</TD>';
 		}
 		print "</TR>\n<TR bgcolor=\"$bgColor\">\n";
@@ -666,12 +674,16 @@ print qq
 <DIV id="divDescription" class="clDescriptionCont">
 <!--Empty div-->
 </DIV>
-<SCRIPT type="text/javascript">if ('$fileFormat'=='MAXQUANT.DIR') {setPopup();}</SCRIPT>
+<SCRIPT type="text/javascript">if ('$fileFormat'=='MAXQUANT.DIR' \|\| '$fileFormat' == 'SPECTRONAUT.XLS' \|\| '$fileFormat' == 'SEQUEST.PDM' \|\| '$fileFormat' == '-') {setPopup();}</SCRIPT>
 </BODY>
 </HTML>
 |;
 
 ####>Revision history<####
+# 1.3.7 [BUGFIX] Fixed manual edition of multisites positionning + comment having special chars (VS 15/02/21)
+# 1.3.6 [CHANGE] Do not set 100% PTM localization precision for Spectronaut/ptmRS if value does not exist (VS 25/08/20)
+# 1.3.5 [ENHANCEMENT] Handles PtmRS PTMs probabilites (VS 12/08/20)
+# 1.3.4 [ENHANCEMENT] Handles Spectronaut PTMs probabilities (VS 06/06/20)
 # 1.3.3 Minor modification (VS 13/12/2018)
 # 1.3.2 Fixed security and improved behavior (VS 18/10/2018)
 # 1.3.1 Minor modification (GA 31/01/18)

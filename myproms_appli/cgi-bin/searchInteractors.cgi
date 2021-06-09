@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# searchInteractors.cgi       1.1.1                                            #
+# searchInteractors.cgi       1.1.2                                            #
 # Authors: P. Poullet, S.Liva (Institut Curie)	                               #
 # Contact: myproms@curie.fr                                                    #
 # Fetch and provide proteins and parameters for GO enrichment analysis         #
@@ -84,6 +84,7 @@ if ($action eq 'ajaxSearchInteractors') {
 ####>Connecting to DB<####
 ##########################
 my $dbh=&promsConfig::dbConnect;
+
 my ($itemName)=$dbh->selectrow_array("SELECT NAME FROM $item WHERE ID_$item=$itemID");
 my $itemType=&promsMod::getItemType($item);
 my $listName; # if a list has been selected
@@ -394,35 +395,57 @@ sub ajaxSearchProteins {
 
 sub ajaxSearchInteractors {
     my (%concatInteract, %interactorsList, %responseList);
-    my $agent = LWP::UserAgent->new(agent=>'libwww-perl myproms@curie.fr');
+    my $agent = LWP::UserAgent->new(agent=>'libwww-perl myproms@curie.fr', ssl_opts=>{ verify_hostname => 0 });
     $agent->timeout(10);
     $agent->env_proxy;
 
+    
+    # PSICQUIC Web Services list: http://www.ebi.ac.uk/Tools/webservices/psicquic/registry/registry?action=STATUS
     $responseList{"imex"} = $agent->get('http://www.ebi.ac.uk/Tools/webservices/psicquic/imex/webservices/current/search/query/'.$uniAC);
     $responseList{"intact"} = $agent->get('http://www.ebi.ac.uk/Tools/webservices/psicquic/intact/webservices/current/search/query/'.$uniAC);
     $responseList{"innatedb-all"} = $agent->get('https://psicquic.all.innatedb.com/webservices/current/search/query/'.$uniAC);
-    #$responseList{"irefindex"} = $agent->get('http://irefindex.vib.be/webservices/current/search/query/'.$uniAC);
-    $responseList{"reactome-fi"} = $agent->get('http://www.ebi.ac.uk/Tools/webservices/psicquic/reactome-fi/webservices/current/search/query/'.$uniAC);
+    $responseList{"irefindex"} = $agent->get('http://irefindex.vib.be/webservices/current/search/query/'.$uniAC);
     $responseList{"uniprot"} = $agent->get('http://www.ebi.ac.uk/Tools/webservices/psicquic/uniprot/webservices/current/search/query/'.$uniAC);
+    
+    # New ones
+    $responseList{"virhostnet"} = $agent->get('http://virhostnet.prabi.fr:9090/psicquic/webservices/current/search/query/'.$uniAC);
+    $responseList{"mentha"} = $agent->get('http://mentha.uniroma2.it:9090/psicquic/webservices/current/search/query/'.$uniAC);
+    $responseList{"bhf-ucl"} = $agent->get('http://www.ebi.ac.uk/Tools/webservices/psicquic/bhf-ucl/webservices/current/search/query/'.$uniAC);
+    $responseList{"mb-info"} = $agent->get('http://www.ebi.ac.uk/Tools/webservices/psicquic/mbinfo/webservices/current/search/query/'.$uniAC);
+    $responseList{"mint"} = $agent->get('http://www.ebi.ac.uk/Tools/webservices/psicquic/mint/webservices/current/search/query/'.$uniAC);
+    $responseList{"matrix-db"} = $agent->get('http://matrixdb.univ-lyon1.fr:8080/psicquic/webservices/current/search/query/'.$uniAC);
+    $responseList{"mpidb"} = $agent->get('http://www.ebi.ac.uk/Tools/webservices/psicquic/mpidb/webservices/current/search/query/'.$uniAC);
+    $responseList{"hpidb"} = $agent->get('http://www.ebi.ac.uk/Tools/webservices/psicquic/hpidb/webservices/current/search/query/'.$uniAC);
+    $responseList{"ebi-goa-nonintact"} = $agent->get('https://www.ebi.ac.uk/QuickGO/psicquic/webservices/current/search/query/'.$uniAC);
+    $responseList{"ebi-goa-mirna"} = $agent->get('https://www.ebi.ac.uk/QuickGO/psicquic-rna/webservices/current/search/query/'.$uniAC);
+    $responseList{"biogrid"} = $agent->get('http://tyersrest.tyerslab.com:8805/psicquic/webservices/current/search/query/'.$uniAC);
+    $responseList{"bindingdb"} = $agent->get('http://bindingdb.org/psicquic-ws/webservices/psicquic/current/search/query/'.$uniAC);
+    $responseList{"reactome"} = $agent->get('http://www.ebi.ac.uk/Tools/webservices/psicquic/reactome/webservices/current/search/query/'.$uniAC); # Predicted
+    #$responseList{"chembl"} = $agent->get('http://www.ebi.ac.uk/Tools/webservices/psicquic/chembl/webservices/current/search/query/'.$uniAC); # Specific CHEMBL prot ID format (small molecules)
+    #$responseList{"reactome-fi"} = $agent->get('http://www.ebi.ac.uk/Tools/webservices/psicquic/reactome-fi/webservices/current/search/query/'.$uniAC); # Predicted
+    #$responseList{"bar"} = $agent->get('http://bar.utoronto.ca:9090/psicquic/webservices/current/search/query/'.$uniAC); # Predicted
+    #$responseList{"i2d"} = $agent->get('http://ophid.utoronto.ca/psicquic-ws/webservices/current/search/query/'.$uniAC); # Missing information
+    #$responseList{"dip"} = $agent->get('https://imex.mbi.ucla.edu/xpsq-dip-all/service/rest/current/search/query/'.$uniAC); # Missing information
+    #$responseList{"dip-imex"} = $agent->get('https://imex.mbi.ucla.edu/xpsq-dip-imex/service/rest/current/search/query/'.$uniAC); # Missing information
 
     print header; warningsToBrowser(1);
     
+    my @unreachableDBs = ();
     for my $responseDB (keys %responseList) {
         my $response = $responseList{$responseDB};
-        
         my @resultLines;
         if ($response->is_success) {
-            @resultLines = split("\n",$response->content);
+            @resultLines = split("\n",$response->content) unless($responseDB eq 'innatedb-all' && $response->content =~ /Thank you/); # do not parse innatedb-all if it is currently unavailable (under maintainance or updating its db)
             #print $response->decoded_content;  # or whatever
         }
         else {
-            die $response->status_line;
+            push(@unreachableDBs, $responseDB);
         }
         
         for (my $i=0; $i<scalar(@resultLines); $i++) {
             my ($uniqInteract_A, $uniqInteract_B, $alterInteract_A, $alterInteract_B, $aliasesA, $aliasesB, $interactMethod, $firstAuthor, $publi, $taxonA, $taxonB, $interactType, $databases, $interactIdent, $score) = (split("\t", $resultLines[$i]));
-            
-            next if($responseDB eq 'irefindex' && $uniqInteract_A =~ /complex:/);
+            last if(!$resultLines[$i]); # Means that an interactor DB is not accessible
+            next if((!$uniqInteract_A && !$uniqInteract_B) || ($responseDB eq 'irefindex' && $uniqInteract_A =~ /complex:/));
             
             my @interA=split(":", $uniqInteract_A);
             my @interB=split(":", $uniqInteract_B);
@@ -433,12 +456,12 @@ sub ajaxSearchInteractors {
             $interA=~s/"//g;
             $interB=~s/"//g;
             
-            my $geneAliasesA = ($responseDB eq 'reactome-fi') ? $alterInteract_A : $aliasesA; 
-            my $geneAliasesB = ($responseDB eq 'reactome-fi') ? $alterInteract_B : $aliasesB; 
+            my $geneAliasesA = ($responseDB =~ /reactome|reactome-fi/) ? $alterInteract_A : $aliasesA; 
+            my $geneAliasesB = ($responseDB =~ /reactome|reactome-fi/) ? $alterInteract_B : $aliasesB; 
             
-            my ($uniqInter, $uniqAliases) = ($interA ne $uniAC)? ($interA, $geneAliasesA) : ($interB, $geneAliasesB);
-            my ($strgMeth)=($interactMethod=~ /\((.+)\)/ );
-            my ($strgType)=($interactType=~ /\((.+)\)/ );
+            my ($uniqInter, $uniqAliases) = ($interA !~ $uniAC)? ($interA, $geneAliasesA) : ($interB, $geneAliasesB);
+            my ($strgMeth)=($interactMethod=~ /\("?(.+)"?\)/ );
+            my ($strgType)=($interactType=~ /\("?(.+)"?\)/ );
             $uniqAliases=~ s/"//g;
             
             # Compute uniProt aliases
@@ -455,18 +478,18 @@ sub ajaxSearchInteractors {
                 $firstAuthor = substr($firstAuthor, 0, -2);
                 $firstAuthor =~ s/ (\d+)/. \($1\)/g;
             }
-            $firstAuthor = "Article" if(!$firstAuthor);
+            $firstAuthor = "Article" if(!$firstAuthor || $firstAuthor eq '-');
             $firstAuthor = ucfirst($firstAuthor);
             my $pubmed=join(",", &getXrefByDbName($publi,"pubmed"));
             my $strgPubMed="<A href='http://www.ncbi.nlm.nih.gov/pubmed/?term=$pubmed' target='blank'>$firstAuthor</A>";#join(",",&getXrefByDbName($publi, "pubmed"));
 
             next if($concatInteract{$uniqInter} || $uniqInter eq $uniAC || $uniqInter eq '');
-            push @{$concatInteract{$uniqInter}}, [$strgAliase, $strgMeth, $firstAuthor, $strgPubMed, $strgType, $databases];
+            push @{$concatInteract{$uniqInter}}, [$strgAliase, $responseDB, $strgMeth, $firstAuthor, $strgPubMed, $strgType, $databases];
             $interactorsList{$uniqInter}=1;
         }
     }
     
-	my $referenceStrg='<FONT class="font11" style="font-weight:bold">Search performed with <A href="http://code.google.com/p/psicquic" target="_blank">PSICQUIC</A> (<A href="http://www.nature.com/nmeth/journal/v8/n7/full/nmeth.1637.html" target="_blank">Aranda, B. et al. Nature Methods 8, 2011</A>).</FONT>';
+	my $referenceStrg='<FONT class="font11" style="font-weight:bold">Search performed with <A href="http://www.ebi.ac.uk/Tools/webservices/psicquic/view/main.xhtml" target="_blank">PSICQUIC</A> (<A href="http://www.nature.com/nmeth/journal/v8/n7/full/nmeth.1637.html" target="_blank">Aranda, B. et al. Nature Methods 8, 2011</A>).</FONT>';
     if (!scalar keys %interactorsList) {
 		print qq
 |<BR><FONT class="title2">No interactors found!</FONT><BR>
@@ -529,12 +552,14 @@ $referenceStrg
         #print "uni:$uniAC##prot=$proteinID##alias=$alias<br>\n";
     }
 
+    #print("<br/><b>Warning: ".join(', ', @unreachableDBs)." could not be queried for interactors.</b><br/>") if(scalar @unreachableDBs > 0); # Uncomment for VERBOSE
     print qq
 |<BR style="font-size:5px">
 <TABLE  border="0" cellspacing="0">
 <TR bgcolor="$darkColor">
 	<TH class="rbBorder">&nbsp;Interactor&nbsp;</TH>
 	<TH class="rbBorder" nowrap>&nbsp;Gene name(s)&nbsp;</TH>
+	<!-- <TH class="rbBorder" nowrap>&nbsp;Source Database&nbsp;</TH> -->
 	<TH class="rbBorder" nowrap>&nbsp;Interaction type&nbsp;</TH>
 	<TH class="rbBorder" nowrap>&nbsp;Detection method&nbsp;</TH>
 	<TH class="bBorder">&nbsp;Reference&nbsp;</TH>
@@ -551,8 +576,7 @@ $referenceStrg
 					my $strgAnaID=($refItem eq 'ANALYSIS')? $itemID : $proteinList{$protID}[0];
 					$boldString="<A href=\"javascript:sequenceView('$strgAnaID',$protID,'valid',0)\">$uniprotInfo{$interact}{$protID}</A>";
 					$boldString="<B>$boldString</B>" if $proteinList{$protID}->[1] >= 1;
-				}
-				else {
+				} else {
 					$boldString="<strike>$interact</strike>";
 				}
 				push @matchedProtID,"&nbsp;$boldString&nbsp;";
@@ -564,19 +588,21 @@ $referenceStrg
 		}
 		print "</TD>";
 		my (%methVal, %typeVal, %aliasVal, %pubVal);
-		my (@interMethod,@interType, @interAlias, $strgAliase);
+		my (@interMethod,@interType, @interAlias, $strgAliase, $strSearchDB);
 		foreach my $refInfo (@{$concatInteract{$interact}}) {
-			my ($aliases, $method, $author, $publi, $type, $databases)=@{$refInfo};
-			$methVal{$method}="&nbsp;$method&nbsp;";
-			$typeVal{$type}="&nbsp;$type&nbsp;";
-			$pubVal{$publi}="&nbsp;$publi&nbsp;";
+			my ($aliases, $searchDB, $method, $author, $publi, $type, $databases, $db)=@{$refInfo};
+			$methVal{$method}="&nbsp;$method&nbsp;" if($method);
+			$typeVal{$type}="&nbsp;$type&nbsp;" if($type);
+			$pubVal{$publi}="&nbsp;$publi&nbsp;" if($publi);
 			$strgAliase = $aliases;
+            $strSearchDB = $searchDB;
 		}
 		my $strgMethod=join("<br>\n",values %methVal);
 		my $strgType=join("<br>\n",values %typeVal);
 		my $strgPubli=join("<br>\n",values %pubVal);
 		print qq
 |<TD nowrap>$strgAliase</TD>
+<!-- <TD nowrap>$strSearchDB</TD>  -->
 <TD nowrap valign="top">$strgType</TD>
 <TD nowrap valign="top">$strgMethod</TD>
 <TD nowrap valign="top">$strgPubli</TD>
@@ -595,20 +621,25 @@ print qq
 
 sub getXrefByDbName { ##from EBI
     my ($xrefs, $dbname)=@_;
-    my @listXref;
-    for my $xref (split(/\|/, $xrefs)) {
-	#print "1:$xref<br>\n";
-	my ($db, $id,$txt)=split/[:\(\)]/, $xref;
-	#print "2: $db, $id; $txt<br>\n";
-	if ($db =~ /$dbname/) {
-	    #print "3:$id<br>\n";
-	    push @listXref, "$id";
-	}
+    my @listXref = ();
+    for my $xref(split(/\|/, $xrefs)) {
+        my ($db, $geneAlias, $txt) = split(/[:\(\)]/, $xref);
+        #print "2: $db, $geneAlias, $txt<br>\n";
+        if ($db =~ /$dbname/) {
+            #print "3:$id<br>\n";
+            if($geneAlias =~ /_/) {
+                (my $uniId, $geneAlias) = split(/_/, $geneAlias);
+            }
+            
+            push(@listXref, $geneAlias) if(!$txt || $geneAlias =~ /^[a-zA-Z0-9\-_]+$/);
+        }
     }
     return @listXref;
 }
+
 ####>Revision history<####
-# 1.1.1 [BUGFIX] Temporary remove irefindex web service since it is down (VS 31/01/20)
+# 1.1.2 [BUGFIX] Fix interactors missing information displaying and avoid parsing interactors when they are under maintenance (VS 22/07/20)
+# 1.1.1 [ENHANCEMENT] Updated PSICQUIC webservices usage (VS 11/03/20)
 # 1.1.0 Add more services to retrieve Interactors (VS 04/06/19)
 # 1.0.1 Minor display changes (PP 29/10/14)
 # 1.0.0 new script to retrieve protein interactions through web services (SL 26/09/14)

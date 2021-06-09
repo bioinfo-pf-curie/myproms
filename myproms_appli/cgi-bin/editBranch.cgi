@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# editBranch.cgi                     2.4.1                                     #
+# editBranch.cgi                     2.4.2                                     #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Prepares deletion of any item and its contents -> deleteProjectItem.cgi      #
@@ -148,7 +148,7 @@ my $sthQuantif=$dbh->prepare("SELECT A.ID_QUANTIFICATION,Q.ID_DESIGN FROM ANA_QU
 my $sthBioSampObs=$dbh->prepare("SELECT 1 FROM OBSERVATION WHERE ID_ANALYSIS=? AND ID_BIOSAMPLE IS NOT NULL");
 
 my (%itemList,%movedValidAnalyses,%proteinList,%quantifList);
-my ($numNotImp,$numUnValid,$numPartValid,$numValid,$numGOAna,$existDesignQuantif,$numExplorAna,$numPathwayAna,$linkedBioSamp);
+my ($numNotImp,$numUnValid,$numPartValid,$numValid,$numGOAna,$existDesignQuantif,$numExplorAna,$numPathwayAna,$numGseaAna,$linkedBioSamp);
 if ($item eq 'EXPERIMENT') {
 	@{$itemList{'EXPERIMENT'}}=($itemID);
 	&getGel2dList($itemID);
@@ -156,7 +156,8 @@ if ($item eq 'EXPERIMENT') {
 	if (scalar keys %proteinList) {
 		($numGOAna)=$dbh->selectrow_array("SELECT COUNT(*) FROM GO_ANALYSIS WHERE ID_EXPERIMENT=$itemID");
 		($numExplorAna)=$dbh->selectrow_array("SELECT COUNT(*) FROM EXPLORANALYSIS WHERE ID_EXPERIMENT=$itemID");
-		($numPathwayAna)=$dbh->selectrow_array("SELECT COUNT(*) FROM PATHWAY_ANALYSIS WHERE ID_EXPERIMENT=$itemID");
+		($numPathwayAna)=$dbh->selectrow_array("SELECT COUNT(*) FROM PATHWAY_ANALYSIS WHERE ID_EXPERIMENT=$itemID AND ANALYSIS_TYPE='PATHWAY'");
+		($numGseaAna)=$dbh->selectrow_array("SELECT COUNT(*) FROM PATHWAY_ANALYSIS WHERE ID_EXPERIMENT=$itemID AND ANALYSIS_TYPE='GSEA'");
 	}
 }
 elsif ($item eq 'GEL2D') {
@@ -295,6 +296,10 @@ if ($numValProt) {
 		my $pathwayStrg=($numPathwayAna>1)? 'Analyses' : 'Analysis';
 		print "<TR><TD width=20></TD><TD class=\"title3\" align=right>$numPathwayAna</TD><TD class=\"title3\"> Pathway $pathwayStrg</TD></TR>\n";
 	}
+	if ($numGseaAna) {
+		my $gseaStrg=($numGseaAna>1)? 'Analyses' : 'Analysis';
+		print "<TR><TD width=20></TD><TD class=\"title3\" align=right>$numGseaAna</TD><TD class=\"title3\"> Gene Set Enrichment $gseaStrg</TD></TR>\n";
+	}
 }
 print "</TABLE><BR><BR>\n";
 
@@ -305,7 +310,7 @@ print "</TABLE><BR><BR>\n";
 if ($action eq 'delete') {
 
 	$dbh->disconnect;
-	my $disabStrg=($item ne 'EXPERIMENT' && ($numGOAna || $existDesignQuantif || $numExplorAna || $numPathwayAna || $linkedBioSamp))? 'disabled' : '';
+	my $disabStrg=($item ne 'EXPERIMENT' && ($numGOAna || $existDesignQuantif || $numExplorAna || $numPathwayAna || $numGseaAna || $linkedBioSamp))? 'disabled' : '';
 	print "<FORM name=\"selAnaForm\" action=\"./deleteProjectItem.cgi\" method=\"post\">\n";
 	print "<INPUT type=\"hidden\" name=\"ITEM\" value=\"$item\">\n";
 	print "<INPUT type=\"hidden\" name=\"ID\" value=\"$itemID\">\n";
@@ -326,7 +331,7 @@ if ($action eq 'delete') {
 </FORM>
 |;
 	if ($disabStrg) {
-		print "<BR><BR><FONT class=\"title3\" color=\"#DD0000\">Cannot delete $itemType involved in design-Quantification and/or GO/Exploratory/Pathway analyses";
+		print "<BR><BR><FONT class=\"title3\" color=\"#DD0000\">Cannot delete $itemType involved in design-Quantification and/or GO/Exploratory/Pathway/GSEA analyses";
 		#print " or linked to Biological Samples" if $item eq 'EXPERIMENT';
 		print "!</FONT>\n";
 	}
@@ -347,7 +352,7 @@ else { # 'move'
 	print "<INPUT type=\"hidden\" name=\"ITEM\" value=\"$item\" />\n";
 	print "<INPUT type=\"hidden\" name=\"ID\" value=\"$itemID\" />\n";
 	print "<INPUT type=\"hidden\" name=\"ACT\" value=\"$action\" />\n";
-	my $disabStrg=($item ne 'ANALYSIS' && ($numGOAna || $existDesignQuantif || $numExplorAna || $numPathwayAna || ($item ne 'EXPERIMENT' && $linkedBioSamp)))? 'disabled' : '';
+	my $disabStrg=($item ne 'ANALYSIS' && ($numGOAna || $existDesignQuantif || $numExplorAna || $numPathwayAna || $numGseaAna || ($item ne 'EXPERIMENT' && $linkedBioSamp)))? 'disabled' : '';
 	print "<FONT class=\"title2\">Move $itemType to :<SELECT name=\"newBranchID\" style=\"font-size:16px;font-weight:bold;\" $disabStrg>\n";
 	print "<OPTION value=\"\">-= Select a destination $parentType =-</OPTION>\n";
 
@@ -442,7 +447,7 @@ else { # 'move'
 |;
 
 	if ($disabStrg) {
-		print "<BR><BR><FONT class=\"title3\" color=\"#DD0000\">Cannot move $itemType involved in design-Quantification and/or GO/Exploratory/Pathway analyses";
+		print "<BR><BR><FONT class=\"title3\" color=\"#DD0000\">Cannot move $itemType involved in design-Quantification and/or GO/Exploratory/Pathway/GSEA analyses";
 		print " or linked to Biological Samples" if $item eq 'EXPERIMENT';
 		print "!</FONT>\n";
 	}
@@ -1050,6 +1055,11 @@ Operation aborted.</FONT>
 		&archiveDirectory("$promsPath{pathAna}","project_$itemID");
 		print " Done.</FONT><BR>\n";
 
+		###<GSEA Analyses>###
+		print "<FONT class=\"title3\">&nbsp;&nbsp;-GSEA analyses...";
+		&archiveDirectory("$promsPath{gsea}","project_$itemID");
+		print " Done.</FONT><BR>\n";
+
 	}
 
 	####<Updating Project Status>####
@@ -1134,6 +1144,11 @@ sub continueProject {
 		###<Pathway Analyses>###
 		print "<FONT class=\"title3\">&nbsp;&nbsp;-Pathway analyses...";
 		&unArchiveFile("$promsPath{pathAna}","project_$itemID.tar");
+		print " Done.</FONT><BR>\n";
+
+		###<GSEA Analyses>###
+		print "<FONT class=\"title3\">&nbsp;&nbsp;-GSEA analyses...";
+		&unArchiveFile("$promsPath{gsea}","project_$itemID.tar");
 		print " Done.</FONT><BR>\n";
 	}
 
@@ -1222,6 +1237,7 @@ sub writeError {
 }
 
 ####>Revision history<####
+# 2.4.2 Add consideration of GSEA analyses and adapt query on PATHWAY_ANALYSIS table (VL 18/11/20)
 # 2.4.1 Handles project status=-1 [no auto-end validation] & &setAutoEndValidation (PP 07/06/18)
 # 2.4.0 Only uses ITEM & ID parameters for deletion by deleteProjectItem.cgi (PP 02/03/18)
 # 2.3.3 Compatible with MODIFICATION_SITE table used for list of modification sites (PP 28/07/17)

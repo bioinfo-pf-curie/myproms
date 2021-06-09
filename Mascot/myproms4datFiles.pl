@@ -1,6 +1,6 @@
 #!/usr/local/bin/perl -w
 ################################################################################
-# myproms4datFiles.pl        1.0.7D                                             #
+# myproms4datFiles.pl        1.0.7                                             #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -48,8 +48,13 @@ print header(-type=>'text/plain'); warningsToBrowser(1);
 ##################
 ####>Security<####
 ##################
-my @remoteHostIPs=(
-	# '<IP address of myProMS web server>' (Add comma (,) after each entry but last
+my @remoteHostIPs=( # Uncomment (#) and add comma (,) after each server but last
+	'10.2.0.30', # pangaea
+	'10.2.200.39', # dev
+	'10.2.0.193', # new prod
+	'10.2.200.38', # dev/prod on bi-web02
+	'10.200.10.172', # BIWS ppoullet
+	'10.200.10.93' # BIWS fyvon
 );
 if (scalar @remoteHostIPs) {
 	my $okRequest=0;
@@ -179,17 +184,16 @@ elsif ($action eq 'get') {
 		close CACHEDIR;
 	}
 	else{
-	open(DAT,$selFile); # || die "Can't open file $selFile\n";
-	while (<DAT>) {
-		print $_;
-	}
-	close DAT;
+		open(DAT,$selFile); # || die "Can't open file $selFile\n";
+		while (<DAT>) {
+			print $_;
+		}
+		close DAT;
 	}
 	exit;
 }
 
 ####>Revision history<####
-# 1.0.7D Modified for distribution (PP 22/09/16)
 # 1.0.7 Send Mascot *.pop files created in the cache folder when Percolator is run (GA 22/09/16)
 # 1.0.6 Cleaner line ending during search log scan (PP 28/10/13)
 # 1.0.5 GPL license (PP 19/09/13)

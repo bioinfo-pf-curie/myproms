@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# editClassification.cgi    2.3.1                                              #
+# editClassification.cgi    2.4.0                                              #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -46,6 +46,7 @@ use POSIX qw(strftime); # to get the time
 use promsConfig;
 use promsMod;
 use strict;
+use LWP::UserAgent;  # To get proteins from fasta file on Mascot server
 
 #print header(-'content-encoding'=>'no',-charset=>'utf-8'); warningsToBrowser(1); #DEBUG
 #######################
@@ -90,14 +91,6 @@ elsif (param('saveList')) { # processing list form
 		$dbh->do("UPDATE CATEGORY SET NAME=$name,DES=$description,UPDATE_DATE='$date',UPDATE_USER='$userID' WHERE ID_CATEGORY=$listID");
 		$selectedList=$listID;
 	}
-	else { # add new list
-		my ($newListID)=$dbh->selectrow_array("SELECT MAX(ID_CATEGORY) FROM CATEGORY");
-		$newListID++;
-		my ($displayPos)=$dbh->selectrow_array("SELECT MAX(DISPLAY_POS) FROM CATEGORY WHERE ID_CLASSIFICATION=$themeID");
-		$displayPos++;
-		$dbh->do("INSERT INTO CATEGORY (ID_CATEGORY,ID_CLASSIFICATION,NAME,DES,DISPLAY_POS,UPDATE_DATE,UPDATE_USER) VALUES ($newListID,$themeID,$name,$description,$displayPos,'$date','$userID')");
-		$selectedList=$newListID;
-	}
 	$dbh->commit;
 
 }
@@ -141,7 +134,7 @@ elsif (param('deleteList')) { # deleting a list
 			}
 			elsif ($type eq "AN") {
 				my ($type,$item,$annotID,$rank)=split(/-/,$id);
-				my $sthSelAnnot=$dbh->prepare("SELECT ID_ANNOTATIONSET,RANK FROM ANNOTATIONSET WHERE ID_EXPLORANALYSIS=? and ANNOT_TYPE like 'PROT%' ORDER BY RANK");
+				my $sthSelAnnot=$dbh->prepare("SELECT ID_ANNOTATIONSET,ANNOT_RANK FROM ANNOTATIONSET WHERE ID_EXPLORANALYSIS=? and ANNOT_TYPE like 'PROT%' ORDER BY ANNOT_RANK");
 				my ($explorID)=$dbh->selectrow_array("SELECT ID_EXPLORANALYSIS FROM ANNOTATIONSET where ID_ANNOTATIONSET=$annotID");
 				$sthSelAnnot->execute($explorID);
 				if ($item eq 'LIST') {
@@ -150,7 +143,7 @@ elsif (param('deleteList')) { # deleting a list
 					while (my($annotSetID,$rank)=$sthSelAnnot->fetchrow_array) {
 						next if ($annotSetID == $annotID);
 						$i++;
-						$dbh->do("UPDATE ANNOTATIONSET SET RANK=$i WHERE ID_ANNOTATIONSET=$annotSetID");
+						$dbh->do("UPDATE ANNOTATIONSET SET ANNOT_RANK=$i WHERE ID_ANNOTATIONSET=$annotSetID");
 					}
 				}
 				else {
@@ -309,7 +302,7 @@ print qq
 |<HEAD>
 <TITLE> Theme : $nameTheme</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
-<SCRIPT LANGUAGE="JavaScript">
+<SCRIPT type="text/JavaScript">
 function editTheme(action) {
 	var vis1,vis2;
 	if (action==1) {vis1='none';vis2='';}
@@ -330,9 +323,12 @@ function checkThemeForm(){
 }
 function selectList(id_list,isDeletable) {
 	document.getElementById('displayList').style.display='none';
-	if (editListMode \|\| addListMode \|\| !id_list) {return;}
+	if (editListMode) {
+		alert('Cancel Edit mode first');
+		return;
+	}
 	
-	if(selList) {
+	if (selList) {
 		var oldObject=document.getElementById(selList);
 		oldObject.style.color='#000000';
 	}
@@ -358,11 +354,7 @@ function editList(action) {
 		if (document.getElementById(selList)){
 			document.getElementById(selList).style.color='#DD0000';
 		}
-		if (addListMode) { // new List
-			addListMode=0;
-			document.getElementById('list_0').style.display='none';
-		}
-		else { // editListMode
+		if (editListMode) { // editListMode
 			editListMode=0;
 			var rowID1='list1_'+selList;
 			var rowID2='list2_'+selList;
@@ -405,8 +397,8 @@ function deleteList(item){
 	}
 }
 function moveList(move){
-	if (editListMode \|\| addListMode) {
-		alert('Exit Edit Mode first.');
+	if (editListMode) {
+		alert('Exit Edit mode first.');
 		return;
 	}
 	var moveList=move*selList;
@@ -444,19 +436,19 @@ function usageList() {
 	usageDiv.innerHTML='';
 	document.editListForm.id_list.value=selList;
 	var paramStrg='id_project=$projectID&id_theme=$themeID&usageList='+selList;
-	//If XHR object already exists, the request is canceled & the object is deleted
+	// If XHR object already exists, the request is canceled & the object is deleted
 	if (XHR && XHR.readyState != 0) {
 	    XHR.abort();
 	    delete XHR;
 	}
-	    //Creation of the XMLHTTPRequest object
+	    // Creation of the XMLHTTPRequest object
 	XHR = getXMLHTTP();
 	if (!XHR) {
 	    return false;
 	}
 
 	XHR.open("POST","$promsPath{cgi}/editClassification.cgi",true);
-	//Send the proper header information along with the request
+	// Send the proper header information along with the request
 	XHR.setRequestHeader("Content-type", "application/x-www-form-urlencoded; charset=UTF-8");
 	XHR.setRequestHeader("Content-length", paramStrg.length);
 	XHR.setRequestHeader("Connection", "close");
@@ -470,19 +462,15 @@ function usageList() {
 	XHR.send(paramStrg);
 }
 function checkListForm(){
-	var modList;
-	if (addListMode) {modList=0;}
-	else {modList=selList;}
-	var listName='name_'+modList;
+	var listName='name_'+selList;
 	if (!document.getElementById(listName).value) {
 		alert("Provide a name for List.");
 		return false;
 	}
-	document.editListForm.id_list.value=modList;
+	document.editListForm.id_list.value=selList;
 }
 var selList=$selectedList;
 var editListMode=0;
-var addListMode=0;
 </SCRIPT>
 </HEAD>
 <BODY background='$promsPath{images}/bgProMS.gif' onload="selectList($selectedList,$selListIsDeletable);">
@@ -529,7 +517,7 @@ var addListMode=0;
 <INPUT type="hidden" name="id_theme" value="$themeID">
 <INPUT type="hidden" name="id_list">
 <TABLE border=0 cellspacing=0>
-<TR><TH colspan=2 class="title">Lists in Theme <FONT color="#DD0000">$nameTheme</FONT>&nbsp;&nbsp;<INPUT type="button" class="title3" value="Create List from file" onclick="importList();"></TH></TR>
+<TR><TH colspan=2 class="title">Lists in Theme <FONT color="#DD0000">$nameTheme</FONT>&nbsp;&nbsp;<INPUT type="button" class="title3" value="Import List(s)" onclick="importList();"></TH></TR>
 |;
 if (scalar keys %{$listList[0]{'LIST'}}==0) {
 	print qq
@@ -606,7 +594,7 @@ sub ajaxUsageList {
 	my $sthGOParam=$dbh->prepare("SELECT GA.ID_GOANALYSIS,GA.NAME,GA.PARAM_STRG,E.NAME FROM EXPERIMENT E
 				      INNER JOIN GO_ANALYSIS GA on E.ID_EXPERIMENT=GA.ID_EXPERIMENT
 			              where E.ID_PROJECT=$projectID and GOA_TYPE='graph'");
-	my $sthExploParam=$dbh->prepare("SELECT EA.NAME,EA.ANA_TYPE,A.ID_ANNOTATIONSET,A.NAME,A.ANNOT_TYPE,A.ANNOT_LIST,A.RANK,E.NAME FROM EXPERIMENT E
+	my $sthExploParam=$dbh->prepare("SELECT EA.NAME,EA.ANA_TYPE,A.ID_ANNOTATIONSET,A.NAME,A.ANNOT_TYPE,A.ANNOT_LIST,A.ANNOT_RANK,E.NAME FROM EXPERIMENT E
 				         INNER JOIN EXPLORANALYSIS EA ON E.ID_EXPERIMENT=EA.ID_EXPERIMENT
 				         INNER JOIN ANNOTATIONSET A ON EA.ID_EXPLORANALYSIS=A.ID_EXPLORANALYSIS
 				         WHERE E.ID_PROJECT=$projectID AND ANNOT_TYPE LIKE 'prot:%' ORDER BY A.ANNOT_LIST");
@@ -805,6 +793,7 @@ sub importList {
 			$identifierList{$identID}=$identName;
 		}
 		$sthID->finish;
+		
 		my %speciesList;
 		my $sthSp=$dbh->prepare("SELECT ID_SPECIES,SCIENTIFIC_NAME,COMMON_NAME FROM SPECIES WHERE IS_REFERENCE=1");
 		$sthSp->execute;
@@ -812,6 +801,63 @@ sub importList {
 			$speciesList{$speciesID}=$scientName." ($comName)";
 		}
 		$sthSp->finish;
+
+		my %ptmList;
+		my $sthPtm=$dbh->prepare("SELECT ID_MODIFICATION,PSI_MS_NAME FROM MODIFICATION WHERE ID_MODIFICATION >=1 AND DISPLAY_CODE IS NOT NULL AND IS_LABEL != 1");
+		$sthPtm->execute;
+		while (my($modID,$modName)=$sthPtm->fetchrow_array) {
+			next unless $modName;
+			$ptmList{$modID}=$modName;
+		}
+		$sthPtm->finish;
+
+		my $userStatus = $dbh->selectrow_array("SELECT USER_STATUS FROM USER_LIST WHERE ID_USER = \"$userID\"");
+		my $isMassBioinfo = ($userStatus =~ /mass|bioinfo/)? 1 : 0;
+		my $databaseString;
+		if ($isMassBioinfo) {  # Possibility to import list from databank for massists and bioinfo
+			my %DBlist;
+			my $sthDB = $dbh->prepare("SELECT D.ID_DATABANK,D.NAME,VERSION_NAME,FASTA_FILE,DT.NAME FROM DATABANK D,DATABANK_TYPE DT WHERE D.ID_DBTYPE=DT.ID_DBTYPE AND USE_STATUS='yes'");
+			$sthDB->execute;
+			while (my ($dbID,$name,$version,$fastaFile,$dbankType) = $sthDB->fetchrow_array) {
+				my $dbSource;
+				if ($fastaFile =~ /:/) {
+					my ($mascotServer, $dbankDir, $fileName) = split(':', $fastaFile);
+					$dbSource = $mascotServer;
+					$version = $dbankDir;
+				} else {
+					if (!-e "$promsPath{banks}/db_$dbID/$fastaFile") {next;}
+					$dbSource = 'Local';
+				}
+				$DBlist{$dbSource}{$dbID}  = $name;
+				$DBlist{$dbSource}{$dbID} .= " ($version)" if $version;
+				$DBlist{$dbSource}{$dbID} .= " [$dbankType]";
+			}
+			$sthDB->finish;
+
+			$databaseString = "<OPTION selected value=\"\">-=Choose from list=-</OPTION>\n";
+			foreach my $dbSource (sort{lc($a) cmp lc($b)} keys %DBlist) {
+				$databaseString.="<OPTGROUP label=\"$dbSource:\">\n";
+				foreach my $dbID (sort{lc($DBlist{$dbSource}{$a}) cmp lc($DBlist{$dbSource}{$b})} keys %{$DBlist{$dbSource}}) {
+					$databaseString .= "<OPTION value=\"$dbID\">$DBlist{$dbSource}{$dbID}</OPTION>\n";
+				}
+				$databaseString .= "</OPTGROUP>\n";
+			}
+		}
+
+		my %identifierTypes=&promsMod::getIdentifierTypes;
+		$identifierTypes{'Custom'} = "Everything until first whitespace";
+		my $selFastaIdType = "<OPTION value=\"\" selected>-=Choose from list=-</OPTION>\n";
+		$selFastaIdType .= "<OPTION value=\"-1\">Everything in header</OPTION>\n";
+		my $sthDbType = $dbh->prepare("SELECT ID_DBTYPE, NAME, DEF_IDENT_TYPE FROM DATABANK_TYPE");
+		$sthDbType->execute;
+		while (my ($dbTypeID, $dbTypeName, $identType) = $sthDbType->fetchrow_array) {
+			if ($identType && $identifierTypes{$identType}) {
+				$selFastaIdType .= "<OPTION value=\"$dbTypeID\">$dbTypeName --> $identifierTypes{$identType}</OPTION>\n";
+			} else {
+				$selFastaIdType .= "<OPTION value=\"$dbTypeID\">$dbTypeName --> $identifierTypes{'Custom'}</OPTION>\n";
+			}
+		}
+		$sthDbType->finish;
 
 		####<Starting HTML>####
 		my ($color1,$color2)=&promsConfig::getRowColors;
@@ -821,27 +867,45 @@ sub importList {
 |<HEAD>
 <TITLE>Theme : $nameTheme</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
-<SCRIPT LANGUAGE="JavaScript">
-var prevFileType='';
-function updateForm(fileType) {
-	var myForm=document.importListForm;
-	if (fileType=='gmt') {
-		myForm.listName.style.display='none';
-		document.getElementById('nameSpan').style.display='';
-		myForm.listDes.style.display='none';
-		document.getElementById('desSpan').style.display='';
-		document.getElementById('mergeSpan').style.display='';
+<SCRIPT type="text/javascript">
+|;
+		&promsMod::popupInfo();
+		print qq
+|function updateForm(fileType) {
+	let listNameVis='',
+		nameSpanVis='none',
+		listDesVis='',
+		desSpanVis='none',
+		mergeSpanVis='none',
+		fastaSpanVis='none',
+		dbTypeIDdis=true,
+		headerSpanVis='none';
+
+	if (fileType==='gmt') {
+		listNameVis='none';
+		nameSpanVis='';
+		listDesVis='none';
+		desSpanVis='';
+		mergeSpanVis='';
 	}
-	else if (prevFileType=='gmt') {
-		myForm.listName.style.display='';
-		document.getElementById('nameSpan').style.display='none';
-		myForm.listDes.style.display='';
-		document.getElementById('desSpan').style.display='none';
-		document.getElementById('mergeSpan').style.display='none';
+	else if (fileType==='fasta') {
+		fastaSpanVis='';
+		dbTypeIDdis=false;
 	}
-	prevFileType=fileType;
+	else if (fileType==='column') {
+		headerSpanVis='';
+	}
+	const myForm=document.importListForm;
+	myForm.listName.style.display=listNameVis;
+	document.getElementById('nameSpan').style.display=nameSpanVis;
+	myForm.listDes.style.display=listDesVis;
+	document.getElementById('desSpan').style.display=desSpanVis;
+	document.getElementById('mergeSpan').style.display=mergeSpanVis;
+	document.getElementById('fastaSpan').style.display=fastaSpanVis;
+	myForm.dbTypeID.disabled=dbTypeIDdis;
+	document.getElementById('headerSpan').style.display=headerSpanVis;
 }
-function checkListForm(myForm){
+function checkListForm(myForm) {
 	if (!myForm.species.value) {
 		alert("Select the species of origin.");
 		return false;
@@ -860,11 +924,27 @@ function checkListForm(myForm){
 				alert("Provide a name for the List.");
 				return false;
 			}
+			if (myForm.fileFormat.value == 'fasta') {
+				if (!myForm.dbTypeID.value) {
+					alert('Select the type of identifier corresponding to your fasta file.');
+					return false;
+				}
+			}
 		}
 		if (!myForm.importFile.value) {
 			alert("Provide a file to be imported.");
 			return false;
 		}
+	}
+	else if (myForm.importSource.value == 'databank') {
+		if (!myForm.listName.value) {
+			alert("Provide a name for the List.");
+			return false;
+		}
+		if(!myForm.selDatabank.value) {
+			alert("Select a databank to create your list from !");
+			return false;
+		}			
 	}
 	else if (!myForm.importText.value){ // pasted text
 		alert("Paste a list of identifiers in the text box.");
@@ -872,11 +952,15 @@ function checkListForm(myForm){
 	}
 	return true;
 }
+var sitePopupText='<B>Expected format:</B><BR>&bull;Modification defined by entries:<BR>&nbsp;&nbsp;&nbsp;&lt;Identifier&gt;-&lt;Modif1. name&gt;<B><SUP>*</SUP></B>:&lt;Res.&gt;&lt;Pos.&gt;.[&lt;Site2&gt;][+&lt;Modif2...&gt;]<BR>&nbsp;&nbsp;&nbsp;eg. DDX55_HUMAN-<B>Phospho:</B>S544, O43765-<B>Phospho:</B>S77.T81, P84228-<B>Acetyl:</B>K28+<B>Methyl:</B>V36';
+   sitePopupText+='<BR>&bull;Modification defined by user (Only 1 modification allowed):<BR>&nbsp;&nbsp;&nbsp;&lt;Identifier&gt;-&lt;Res.&gt;&lt;Pos.&gt;<BR>&nbsp;&nbsp;&nbsp;eg. DDX55_HUMAN-S544, O43765-S77.T81';
+   sitePopupText+='<BR><B><SUP>*</SUP>Modification name</B>:<B>Unimod</B> PSI-MS/Interim name, Description or myProMS name.';
 </SCRIPT>
 </HEAD>
 <BODY background='$promsPath{images}/bgProMS.gif'">
 <CENTER>
-<FONT class="title">Creating New List(s) in Theme <FONT color="#DD0000">$nameTheme</FONT> from File</FONT>
+<FONT class="title">Importing New List(s) in Theme <FONT color="#DD0000">$nameTheme</FONT></FONT>
+<FONT class="title2"><BR>(Compatible with modification sites)</FONT>
 <FORM method="post" name="importListForm" enctype="multipart/form-data" onsubmit="return(checkListForm(this));" >
 <INPUT type="hidden" name="id_project" value="$projectID"/>
 <INPUT type="hidden" name="id_theme" value="$themeID"/>
@@ -885,7 +969,7 @@ function checkListForm(myForm){
 <TABLE bgcolor="$color2">
 <TR><TH align="right">&nbsp;Name :</TH><TD bgcolor="$color1"><INPUT type="text" name="listName" size="50" maxlength="50"/><SPAN id="nameSpan" style="display:none">&nbsp;From file</SPAN></TD></TR>
 <TR><TH align="right" valign="top">&nbsp;Description :</TH><TD bgcolor="$color1"><TEXTAREA name="listDes" maxlength="100" cols="65" rows="2"></TEXTAREA><SPAN id="desSpan" style="display:none">&nbsp;From file</SPAN></TD></TR>
-<TR><TH align="right" valign="top" nowrap>&nbsp;Identifiers source:</TH><TD bgcolor="$color1" valign="top" nowrap>
+<TR><TH align="right" valign="top" nowrap>&nbsp;Data source :</TH><TD bgcolor="$color1" valign="top" nowrap>
 &bull;<B>Identifier type:</B><SELECT name="identifier"><OPTION value="">* Unspecified *</OPTION>
 |;
 		foreach my $identID (sort{lc($identifierList{$a}) cmp lc($identifierList{$b})} keys %identifierList) {
@@ -901,22 +985,84 @@ function checkListForm(myForm){
 			print "<OPTION value=\"$speciesID\">$speciesList{$speciesID}</OPTION>\n";
 		}
 		print qq
-|</SELECT><BR>
-<FIELDSET style="padding:2px;white-space:nowrap"><LEGEND><INPUT type="radio" name="importSource" value="file"><B>Text file:</B></LEGEND>
-&bull;<B>Format:</B><SELECT name="fileFormat" onchange="updateForm(this.value)"><OPTION value="">-= Select =-</OPTION><OPTION value="gmt">gmt</OPTION><OPTGROUP label="Custom:"><OPTION value="column">single column</OPTION><OPTION value="line">single line</OPTION></OPTGROUP></SELECT>
-<SPAN id="mergeSpan" style="display:none">&nbsp;&nbsp;&bull;<INPUT type="checkbox" name="mergeGmt" value="1"><B>Merge all signatures into a single List</B></SPAN><BR>
-&bull;<B>Choose file:</B><INPUT type="file" name="importFile" size="50">
+|</SELECT>
+<BR>
+&bull;<B>If site list, modification name is<SUP onmouseover="popup(sitePopupText)" onmouseout="popout()">?</SUP>:</B><SELECT name="siteModif"><OPTION value="0">-= Select =-</OPTION><OPTION value="-1">* defined by entries *</OPTION>
+|;
+		foreach my $modID (sort{lc($ptmList{$a}) cmp lc($ptmList{$b})} keys %ptmList) {
+			print "<OPTION value=\"$modID\">$ptmList{$modID}</OPTION>\n";
+		}
+		print qq
+|</SELECT>
+<BR>
+&bull;<B>Import from:</B>
+<BR>
+|;
+		if ($isMassBioinfo) {  # Possibility to import list from databank for massists and bioinfo
+			print qq
+|<FIELDSET style="padding:2px;white-space:nowrap">
+	<LEGEND>
+		<INPUT type="radio" name="importSource" value="databank"><B>Existing DataBank:</B>
+	</LEGEND>
+	&bull;<B>Databank:</B>
+	<SELECT name="selDatabank">
+		$databaseString
+	</SELECT>
 </FIELDSET>
-<B>Or</B><BR>
-<FIELDSET style="padding:2px;white-space:nowrap"><LEGEND><INPUT type="radio" name="importSource" value="text"><B>Paste text:</B></LEGEND>
-<TABLE cellpadding=0><TR>
-<TD valign="top"><TEXTAREA name="importText" cols="20" rows="10"></TEXTAREA></TD><TD valign="top" class="font11"><B>Separator accepted:</B><BR>&bull; colon ','<BR>&bull; semi-colon ';'<BR>&bull; space ' '<BR>&bull; tab '\\t'<BR>&bull; new line '\\n'</TD>
-</TR></TABLE>
+&nbsp;<B>Or</B><BR>
+|;
+		}
+		print qq
+|<FIELDSET style="padding:2px;white-space:nowrap">
+	<LEGEND><INPUT type="radio" name="importSource" value="file"><B>Text file:</B></LEGEND>
+	&bull;<B>Format:</B>
+	<SELECT name="fileFormat" onchange="updateForm(this.value)">
+			<OPTION value="">-= Select =-</OPTION>
+			<OPTION value="gmt">gmt</OPTION>
+			<OPTION value="fasta">fasta</OPTION>
+		<OPTGROUP label="Custom:">
+			<OPTION value="column">single column</OPTION>
+			<OPTION value="line">single line</OPTION>
+		</OPTGROUP>
+	</SELECT>
+	<BR>&bull;<B>Choose file:</B><INPUT type="file" name="importFile" size="50">
+	<SPAN id="headerSpan" style="display:none">
+		<BR>&bull;<LABEL><INPUT type="checkbox" name="hasHeader" value="1"><B>File with header</B></LABEL>
+	</SPAN>
+	<SPAN id="mergeSpan" style="display:none">
+		<BR>&bull;<LABEL><INPUT type="checkbox" name="mergeGmt" value="1"><B>Merge all signatures into a single List</B></LABEL>
+	</SPAN>
+	<SPAN id="fastaSpan" style="display:none">
+		<BR>&bull;<B>Identifier type in fasta</B>
+		<SELECT name="dbTypeID" disabled>
+			$selFastaIdType
+		</SELECT>
+	</SPAN>
+</FIELDSET>
+&nbsp;<B>Or</B><BR>
+<FIELDSET style="padding:2px;white-space:nowrap">
+	<LEGEND><INPUT type="radio" name="importSource" value="text"><B>Paste text:</B></LEGEND>
+	<TABLE cellpadding=0>
+	<TR>
+		<TD valign="top"><TEXTAREA name="importText" cols="20" rows="10"></TEXTAREA></TD>
+		<TD valign="top" class="font11">
+			<B>Separator accepted:</B>
+			<BR>&bull; comma ','
+			<BR>&bull; semi-colon ';'
+			<BR>&bull; space ' '
+			<BR>&bull; tab '\\t'
+			<BR>&bull; new line '\\n'
+		</TD>
+	</TR>
+	</TABLE>
 </FIELDSET>
 </TD></TR>
 <TR><TH colspan=2><INPUT type="submit" value="Proceed"></TH></TR>
 </TABLE>
 </FORM>
+</CENTER>
+<DIV id="divDescription" class="clDescriptionCont"></DIV>
+<SCRIPT type="text/javascript">setPopup();</SCRIPT>
 </BODY>
 <HTML>
 |;
@@ -928,12 +1074,17 @@ function checkListForm(myForm){
 	else {
 		my $listName=param('listName'); # ignored if file format is gmt
 		my $listDes=param('listDes'); # ignored if file format is gmt
-		my $identifierID=param('identifier');
-		my $specieID=param('species');
+		my ($identifierID,$specieID,$modificationID,$dbTypeID,$dbID)=&promsMod::cleanNumericalParameters(param('identifier'),param('species'),param('siteModif'),param('dbTypeID'),param('selDatabank'));
+		# my $identifierID=param('identifier');
+		# my $specieID=param('species');
+		# my $modificationID=param('siteModif');
 		my $importSource=param('importSource');
 		#>File import
 		my $fileFormat=param('fileFormat');
 		my $mergeList=param('mergeGmt') || 0;
+		# my $dbTypeID = param('dbTypeID');
+		# my $dbID = param('selDatabank');
+		my $hasHeader=param('hasHeader') || 0; # only for column file
 		my $fileName = tmpFileName(upload('importFile')) if upload('importFile');
 		#>Text import
 		my $importText=param('importText');
@@ -946,8 +1097,8 @@ function checkListForm(myForm){
 |<HEAD>
 <TITLE>Importing List(s) from File</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
-<SCRIPT LANGUAGE="JavaScript">
-function showIdentifiers(what,show) {
+<SCRIPT type="text/JavaScript">
+function showIdentifiers(divID,show) {
 	var showStatus,hideStatus='';
 	if (show) {
 		showStatus='';
@@ -957,32 +1108,28 @@ function showIdentifiers(what,show) {
 		showStatus='none';
 		hideStatus='';
 	}
-	if (what=='badVisDiv') {
-		document.getElementById('badVisDiv').style.display=showStatus;
-		document.getElementById('badVisBut1').style.display=hideStatus;
-		document.getElementById('badVisBut2').style.display=showStatus;
-	}
-	else if (what=='notMappedDiv') {
-		document.getElementById('notMappedDiv').style.display=showStatus;
-		document.getElementById('notMappedBut1').style.display=hideStatus;
-		document.getElementById('notMappedBut2').style.display=showStatus;
-	}
+	var buttonCode=divID.replace('Div','');
+	document.getElementById(divID).style.display=showStatus;
+	document.getElementById(buttonCode+'But1').style.display=hideStatus;
+	document.getElementById(buttonCode+'But2').style.display=showStatus;
 }
 </SCRIPT>
 </HEAD>
-<BODY background='$promsPath{images}/bgProMS.gif'">
+<BODY background="$promsPath{images}/bgProMS.gif">
 <CENTER>
 <FONT class="title">Importing List File</FONT>
 <BR>
-<IMG src="$promsPath{images}/engrenage.gif">
+<IMG id="progressImg" src="$promsPath{images}/engrenage.gif">
 </CENTER>
 <BR>
 <FONT class="title2">
-<BR>Reading file...
+<BR>
 |;
 		####<Reading file>####
 		my (%listInfo,%identifierList,%allIdentifiers);
+		my $hasSites=0;
 		if ($importSource eq 'file') {
+			print "Reading file...";
 			open(FILE,$fileName) or die $!;
 			if ($fileFormat eq 'gmt') {
 				my $listCount=0;
@@ -1008,6 +1155,7 @@ function showIdentifiers(what,show) {
 			elsif ($fileFormat eq 'column') {
 				@{$listInfo{0}}=($listName,$listDes);
 				while (<FILE>) {
+					next if ($.==1 && $hasHeader);
 					next if $_=~/^#/;
 					chomp;
 					$_=~s/"//g;
@@ -1016,7 +1164,12 @@ function showIdentifiers(what,show) {
 					my ($ident)=($_=~/^(\S+)/);
 					next unless $ident=~/\w/;
 					$identifierList{0}{$ident}=1;
-					$allIdentifiers{$ident}=1;
+					my $trueIdent=$ident; # default
+					if ($ident=~/(.+)-\D/) {
+						$trueIdent=$1;
+						$hasSites=1;
+					}
+					$allIdentifiers{$trueIdent}=1;
 				}
 			}
 			elsif ($fileFormat eq 'line') {
@@ -1031,13 +1184,116 @@ function showIdentifiers(what,show) {
 					foreach my $ident (split(/[\s+,;]/)) {
 						next unless $ident=~/\w/;
 						$identifierList{0}{$ident}=1;
-						$allIdentifiers{$ident}=1;
+						my $trueIdent=$ident; # default
+						if ($ident=~/(.+)-\D/) {
+							$trueIdent=$1;
+							$hasSites=1;
+						}
+						$allIdentifiers{$trueIdent}=1;
 					}
 				}
 			}
+			elsif ($fileFormat eq 'fasta') {
+				my $fastaParseRule;
+				if (!$dbTypeID) {
+					die "No identifier type for the fasta file !";
+				} elsif ($dbTypeID == -1) {
+					$fastaParseRule = "(.*)";
+				} else {
+					my $parseRules = $dbh->selectrow_array("SELECT PARSE_RULES FROM DATABANK_TYPE WHERE ID_DBTYPE = $dbTypeID");
+					$fastaParseRule = (split(',:,', $parseRules))[0];
+					$fastaParseRule =~ s/^ID=//;
+				}
+				unless ($fastaParseRule) {
+					die "No parsing rule for the fasta file !";
+				}
+				@{$listInfo{0}} = ($listName, $listDes);
+				while (my $line = <FILE>) {
+					next unless ($line =~ /^>/);
+					chomp $line;
+					$line =~ s/^>//;
+					$line =~ s/\s+\Z//g;
+					my ($ident) = ($line =~ qr/$fastaParseRule/);
+					next unless ($ident =~ /\w/);
+					$identifierList{0}{$ident} = 1;
+					$allIdentifiers{$ident} = 1;
+				}
+			}
 			close FILE;
-		}
-		else { # text import
+		} elsif ($importSource eq 'databank') {
+			unless ($dbID) {
+				die "**Error**: No databank selected !";
+			}
+			my ($dbName, $fastaFile, $parseRules) = $dbh->selectrow_array("SELECT DB.NAME, DB.FASTA_FILE, DT.PARSE_RULES FROM DATABANK DB LEFT JOIN DATABANK_TYPE DT ON DB.ID_DBTYPE = DT.ID_DBTYPE WHERE DB.ID_DATABANK = $dbID");
+			unless ($parseRules) {
+				die "No parsing rule for the databank !";
+			}
+			if ($fastaFile =~ /:/) {  # DB on Mascot server
+				my ($mascotServer, $dbankDir, $dbFileName) = split(/:/, $fastaFile);
+				my %mascotServers = &promsConfig::getMascotServers();
+				my $agent = LWP::UserAgent->new(agent=>'libwww-perl myproms@curie.fr');
+				$agent->timeout(360);
+				#<Proxy
+				if ($mascotServers{$mascotServer}{proxy}) {
+					if ($mascotServers{$mascotServer}{proxy} eq 'no') {
+						$agent->no_proxy($mascotServers{$mascotServer}{url});
+					} else {
+						$agent->proxy('http', $mascotServers{$mascotServer}{proxy});
+					}
+				} else {
+					$agent->env_proxy;
+				}
+				my $response = $agent->post("$mascotServers{$mascotServer}{url}/cgi/myproms4databanks.pl",
+											['ACT' 		 => 'prots',
+											'DB' 		 => $dbankDir,
+											'parseRules' => $parseRules
+											]
+				);
+				if ($response->is_success) {
+					if ($response->content =~ /^#Error/) {
+						(my $errorText = $response->content) =~ s/^#Error: //;
+						die "**ERROR**: Unexpected response from $mascotServer: \"$errorText\"\n";
+					} else {
+						my @entryList = split(/\n/, $response->content);
+						if (scalar @entryList) {
+							@{$listInfo{0}} = ($listName, $listDes);
+							foreach my $ident (@entryList) {
+								$identifierList{0}{$ident} = 1;
+								$allIdentifiers{$ident} = 1;
+							}
+						} else {
+							die "**ERROR**: No protein found in databank $dbName on $mascotServer (Mascot name : $dbankDir, Identifier parse rule : ". (split(',:,', $parseRules))[0] . ")\n";
+						}
+					}
+				} else { # Error
+					die "**ERROR**: Bad anwser from $mascotServer: \"$!\"\n";
+				}
+			} else {  # DB on local server : read fasta directly
+				$parseRules =~ s/�/\+/g; # back comptatibility with myProMS 2.7.2
+				my @rules = split(',:,', $parseRules);
+				my ($idParseRule) = ($rules[0] =~ /ID=(.+)/);
+				unless ($idParseRule) {
+					die "No parsing rule for the databank identifiers !";
+				}
+				if (-e "$promsPath{banks}/db_$dbID/$fastaFile") {
+					@{$listInfo{0}} = ($listName, $listDes);
+					open(FILE, "$promsPath{banks}/db_$dbID/$fastaFile");
+					while (my $line = <FILE>) {
+						next unless ($line =~ /^>/);
+						chomp $line;
+						$line =~ s/^>//;
+						$line =~ s/\s+\Z//g;
+						my ($ident) = ($line =~ qr/$idParseRule/);
+						next unless ($ident =~ /\w/);
+						$identifierList{0}{$ident} = 1;
+						$allIdentifiers{$ident} = 1;
+					}
+				} else {
+					die "Impossible to find the fasta file $fastaFile for databank $dbName";
+				}
+			}
+		} else { # text import
+			print "Reading input list...";
 			@{$listInfo{0}}=($listName,$listDes);
 			foreach my $line (split(/\n/,$importText)) {
 				$line=~s/"//g;
@@ -1046,22 +1302,84 @@ function showIdentifiers(what,show) {
 				foreach my $ident (split(/[\s+,;]/,$line)) {
 					next unless $ident=~/\w/;
 					$identifierList{0}{$ident}=1;
-					$allIdentifiers{$ident}=1;
+					my $trueIdent=$ident; # default
+					if ($ident=~/(.+)-\D/) {
+						$trueIdent=$1;
+						$hasSites=1;
+					}
+					$allIdentifiers{$trueIdent}=1;
 				}
 			}
 		}
 		my $numLists=scalar keys %identifierList;
 		my $numIdentifiers=scalar keys %allIdentifiers;
 		my $listStrg=($numLists > 1)? 'Lists' : 'List';
+		my $siteStrg=($hasSites)? ' and '.(scalar keys %{$identifierList{0}}).' sites' : ''; # Assumes no site in gmt
 		print qq
-| Done ($numIdentifiers identifiers found in $numLists $listStrg).<BR>
-<BR>Mapping identifiers: </FONT><B>0%|;
+| Done ($numIdentifiers identifiers$siteStrg found in $numLists $listStrg).<BR>
+<BR>Preparing data:...|;
 
+		####<Fetching stored values>####
+		##<Fetching list of Project's masterProteins and associated proteins
+		my (%masterProteinList,%orphanProteins);
+		my $sthProt=$dbh->prepare("SELECT P.ID_PROTEIN,P.ID_MASTER_PROTEIN,IDENTIFIER,ALIAS,MAX(AP.VISIBILITY) FROM PROTEIN P INNER JOIN ANALYSIS_PROTEIN AP ON P.ID_PROTEIN=AP.ID_PROTEIN WHERE P.ID_PROJECT=$projectID GROUP BY P.ID_PROTEIN");
+		$sthProt->execute;
+		while (my ($protID,$masterProtID,$identifier,$alias,$bestVis)=$sthProt->fetchrow_array) {
+			if ($masterProtID) {push @{$masterProteinList{$masterProtID}},[$protID,$bestVis];}
+			if (!$masterProtID || !$identifierID) { # fall back to protein data
+				foreach my $ident ($identifier,$alias) {
+					@{$orphanProteins{$ident}}=($protID,$bestVis);
+					if ($ident=~/\|/) {
+						foreach my $subIdent (split(/\|/,$ident)) {
+							$orphanProteins{$subIdent}=$orphanProteins{$ident} if length($subIdent) >= 4; # Assumes DB tag (sp,tr,..) is 3 letters max!
+						}
+					}
+					last if $alias eq $identifier;
+				}
+			}
+		}
+		$sthProt->finish;
+		print '.';
+		
+		##<Fetching list of identifier values for masterProteins
+		my $addProtQuery=($identifierID)? "AND ID_IDENTIFIER=$identifierID" : '';
+		my %identifierValues;
+		my @masterProteins=keys %masterProteinList;
+		while (my @subMasterProtIDs=splice(@masterProteins,0,1000)) {
+			if ($specieID > -1) { # Species filter
+				my @speciesFiltered;
+				my $sthSp=$dbh->prepare("SELECT ID_MASTER_PROTEIN FROM MASTER_PROTEIN WHERE ID_SPECIES=$specieID AND ID_MASTER_PROTEIN IN (".join(',',@subMasterProtIDs).")");
+				$sthSp->execute;
+				while (my ($masterProtID)=$sthSp->fetchrow_array) {
+					push @speciesFiltered,$masterProtID;
+				}
+				$sthSp->finish;
+				next unless scalar @speciesFiltered;
+				@subMasterProtIDs=@speciesFiltered;
+				print '.';
+			}
+			my $sthIdent=$dbh->prepare("SELECT ID_MASTER_PROTEIN,VALUE FROM MASTERPROT_IDENTIFIER WHERE ID_MASTER_PROTEIN IN (".join(',',@subMasterProtIDs).") $addProtQuery ORDER BY IDENT_RANK");
+			$sthIdent->execute;
+			while (my ($masterProtID,$value)=$sthIdent->fetchrow_array) {
+				$identifierValues{$value}=$masterProtID unless $identifierValues{$value}; # keep first match
+			}
+			$sthIdent->finish;
+			print '.';
+		}
+		print " Done.\n";
+		
 		####<Mapping identifiers>####
-		my (%mappedIdentifiers,%badVisIdentifiers,%proteinList,%allProteins,%notMappedIdentifiers,%usedIdentifiers);
-		my $addProtQuery=($identifierID)?" AND ID_IDENTIFIER=$identifierID":"";
-		my $addSpeciesQuery=($specieID > -1) ? " AND MP.ID_SPECIES=$specieID" : ""; 
-		my $sthProt=$dbh->prepare("SELECT P.ID_PROTEIN, MAX(AP.VISIBILITY) FROM PROTEIN P LEFT JOIN MASTER_PROTEIN MP ON P.ID_MASTER_PROTEIN = MP.ID_MASTER_PROTEIN$addSpeciesQuery LEFT JOIN MASTERPROT_IDENTIFIER MI ON MP.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN LEFT JOIN ANALYSIS_PROTEIN AP ON P.ID_PROTEIN=AP.ID_PROTEIN$addProtQuery WHERE P.ID_PROJECT=$projectID AND (MI.VALUE=? OR P.ALIAS=? OR P.IDENTIFIER=?) GROUP BY P.ID_PROTEIN");
+		print "<BR>Mapping identifiers:";
+		my (%mappedIdentifiers,%badVisIdentifiers,%hiddenProteins,%proteinList,%allProteins,%notMappedIdentifiers,%usedIdentifiers,%allSites,%notMatchedSites,%noMatchSiteSeq);
+		my (%modName2ID,%modifSpecif,%unmatchedModNames,%protSequence);
+		if ($modificationID > 0) {
+			my ($psiName,$interName,$desc,$modSpecif)=$dbh->selectrow_array("SELECT PSI_MS_NAME,INTERIM_NAME,DES,SPECIFICITY FROM MODIFICATION WHERE ID_MODIFICATION=$modificationID");
+			$modName2ID{$psiName}=$modificationID if $psiName;
+			$modName2ID{$interName}=$modificationID if $interName;
+			$modName2ID{$desc}=$modificationID if $desc;
+			$modSpecif=~s/,//g;
+			$modifSpecif{$modificationID}=($modSpecif=~/\*/)? '*' : $modSpecif;
+		}
 		my @percent=(10,20,30,40,50,60,70,80,90,100);
 		my @limitValue;
 		foreach my $pc (@percent) {push @limitValue,int(0.5+($numIdentifiers*$pc/100));}
@@ -1069,51 +1387,152 @@ function showIdentifiers(what,show) {
 		my $count1=0;
 		my $count2=0;
 		my $maxCount2=int(0.5+($numIdentifiers/100));
+		if ($numIdentifiers >= 1000) {print ' </FONT><B>0%';}
+		elsif ($numIdentifiers < 100) {print '...';}
+		my $sthMod=$dbh->prepare("SELECT ID_MODIFICATION,SPECIFICITY FROM MODIFICATION WHERE VALID_STATUS=1 AND DISPLAY_CODE IS NOT NULL AND (PSI_MS_NAME=? OR INTERIM_NAME=? OR DES=?) LIMIT 1");
+		my $sthPSeq=$dbh->prepare("SELECT PROT_SEQ FROM PROTEIN WHERE ID_PROTEIN=?");
+		my $sthMSeq=$dbh->prepare("SELECT M.PROT_SEQ FROM PROTEIN P INNER JOIN MASTER_PROTEIN M ON P.ID_MASTER_PROTEIN=M.ID_MASTER_PROTEIN WHERE ID_PROTEIN=?");
 		foreach my $listCount (keys %identifierList) {
-			foreach my $ident (keys %{$identifierList{$listCount}}) {
-				if ($usedIdentifiers{$ident}) { # already tested
-					if ($mappedIdentifiers{$ident}) { # already mapped => update list contents with premapped proteins
-						foreach my $protID (@{$mappedIdentifiers{$ident}}) {$proteinList{$listCount}{$protID}=1;}
+			IDENT:foreach my $ident (keys %{$identifierList{$listCount}}) {
+				my %protSites; # Records if prot seq is compatible with site
+				my ($trueIdent,$allFullModStrg)=$ident=~/(.+)-(\D.+)/;
+				my $allFullModCode='';
+				if ($allFullModStrg) {
+					$allSites{$ident}=1;
+					my ($allModStrg,$seqContext)=$allFullModStrg=~/^([^\[]+)(.*)/; # sequence context-compatible
+					foreach my $modStrg (split(/\+/,$allModStrg)) {
+						my ($modID,$siteStrg);
+						if ($modStrg !~ /:\D/) { # no modif defined in site, eg. protX-"C123"
+							$modID=($modificationID > 0)? $modificationID : 0; # defined in form OR 0=free residues (tmp) -> -1 at DB insertion
+							$siteStrg=$modStrg;
+						}
+						else {
+							(my $modName,$siteStrg)=$modStrg=~/^([^:]+):(.+)/; # not split because if ambiguous pos => mod:xx~yy:n/m
+							if ($modName2ID{$modName}) {$modID=$modName2ID{$modName};}
+							else {
+								$sthMod->execute($modName,$modName,$modName);
+								($modID,my $modSpecif)=$sthMod->fetchrow_array;
+								if ($modID) {
+									$modName2ID{$modName}=$modID;
+									$modSpecif=~s/,//g;
+									$modifSpecif{$modID}=($modSpecif=~/\*/)? '*' : $modSpecif;
+								}
+								elsif ($modificationID > 0) {$modID=$modificationID;} # no match => fall back on form-defined modif
+								else {
+									$unmatchedModNames{$modName}{$ident}=1;
+									next IDENT;
+								}
+							}
+						}
+						if ($siteStrg=~/(\d+)~(\d+)/) { # ambiguous pos eg. protX-Phospho:"123~127:1/2"
+							@{$protSites{$modID}}=([$1,'*'],[$2,'*']);
+						}
+						else { # normal site eg. protX-Phospho:"S123.T127"
+							foreach my $site (split(/\./,$siteStrg)) {
+								$site=~/(.)(\d+)/; # (res)(position)
+								push @{$protSites{$modID}},[$2,$1];
+							}
+						}
+						$allFullModCode.='+' if $allFullModCode;
+						$allFullModCode.=$modID.':'.$siteStrg;
 					}
+					$allFullModCode='-'.$allFullModCode;
+					$allFullModCode.=$seqContext if $seqContext;
+				}
+				else {
+					$trueIdent=$ident;
+				}
+				if ($usedIdentifiers{$trueIdent}) { # already tested
+					if ($mappedIdentifiers{$trueIdent}) { # already mapped => update list contents with premapped proteins
+						my $siteMatch=0;
+						foreach my $protID (@{$mappedIdentifiers{$trueIdent}}) {
+							next if ($allFullModCode && !&sequenceIsCompatible($protID,$sthPSeq,$sthMSeq,\%protSites,\%protSequence,\%modifSpecif));
+							$proteinList{$listCount}{"$protID$allFullModCode"}=1;
+							$siteMatch=1;
+						}
+						if ($allFullModCode && !$siteMatch) { # only for sites
+							$noMatchSiteSeq{$ident}=1;
+						}
+					}
+					else {$notMatchedSites{$ident}=1;}
 					next;
 				}
-				$sthProt->execute($ident, $ident, $ident);
-				my $mapped=0;
-				while (my ($protID,$bestVis)=$sthProt->fetchrow_array) {
-					$mapped=1;
-					#if ($bestVis >= 1) { !!! Commented to allow hidden proteins in List !!!
-						push @{$mappedIdentifiers{$ident}},$protID;
-						$proteinList{$listCount}{$protID}=1; # proteins found in current list
-						$allProteins{$protID}=1;
-					#}
-					#else {
-						$badVisIdentifiers{$ident}=1 if $bestVis==0;
-					#}
+				if ($identifierValues{$trueIdent}) { # matched using MASTER_PROTEIN!
+					my $masterProtID=$identifierValues{$trueIdent};
+					my $siteMatch=0;
+					foreach my $refProt (@{$masterProteinList{$masterProtID}}) {
+						my ($protID,$bestVis)=@{$refProt};
+						#if ($bestVis >= 1) { !!! Commented to allow hidden proteins in List !!!
+							push @{$mappedIdentifiers{$trueIdent}},$protID;
+							next if ($allFullModCode && !&sequenceIsCompatible($protID,$sthPSeq,$sthMSeq,\%protSites,\%protSequence,\%modifSpecif));
+							$siteMatch=1;
+							$proteinList{$listCount}{"$protID$allFullModCode"}=1; # proteins found in current list
+							$allProteins{$protID}=1;
+						#}
+						if ($bestVis==0) {
+							$badVisIdentifiers{$trueIdent}=1;
+							$hiddenProteins{$protID}=1;
+						}
+					}
+					if ($allFullModCode && !$siteMatch) { # only for sites
+						$noMatchSiteSeq{$ident}=1;
+					}
 				}
-				$notMappedIdentifiers{$ident}=1 unless $mapped;
-				$usedIdentifiers{$ident}=1;
+				elsif ($orphanProteins{$trueIdent}) { # matched using PROTEIN.IDENTIFIER!
+					my ($protID,$bestVis)=@{$orphanProteins{$trueIdent}};
+					push @{$mappedIdentifiers{$trueIdent}},$protID; #if $bestVis >= 1
+					if ($allFullModCode && !&sequenceIsCompatible($protID,$sthPSeq,$sthMSeq,\%protSites,\%protSequence,\%modifSpecif)) {
+						$noMatchSiteSeq{$ident}=1;
+					}
+					else {
+						#if ($bestVis >= 1) { !!! Commented to allow hidden proteins in List !!!
+							$proteinList{$listCount}{"$protID$allFullModCode"}=1; # proteins found in current list
+							$allProteins{$protID}=1;
+						#}
+						if ($bestVis==0) {
+							$badVisIdentifiers{$trueIdent}=1;
+							$hiddenProteins{$protID}=1;
+						}
+					}
+				}
+				else {
+					$notMappedIdentifiers{$trueIdent}=1;
+					$notMatchedSites{$ident}=1;
+				}
+				$usedIdentifiers{$trueIdent}=1;
+				
 				$count1++;
-				if ($count1>=$limitValue[$pcIdx]) {
-					print "$percent[$pcIdx]%";
-					$pcIdx++;
+				if ($numIdentifiers >= 1000) {
+					if ($count1>=$limitValue[$pcIdx]) {
+						print "$percent[$pcIdx]%";
+						$pcIdx++;
+					}
+					$count2++;
+					if ($count2==$maxCount2) {print '.'; $count2=0;}
 				}
-				$count2++;
-				if ($count2==$maxCount2) {print '.'; $count2=0;}
+				elsif (!$count1 % 100) {print '.';}
 			}
 		}
-		print '100%' if $pcIdx<10; # Just in case
-		$sthProt->finish;
+		if ($numIdentifiers >= 1000) {
+			print '100%' if $pcIdx<10; # Just in case
+			print '</B>';
+		}
+		$sthMod->finish;
+		$sthPSeq->finish;
+		$sthMSeq->finish;
+		
 		my $numGood=scalar keys %mappedIdentifiers;
 		my $numBadVis=scalar keys %badVisIdentifiers;
+		my $numHiddenProt=scalar keys %hiddenProteins;
 		my $numProt=scalar keys %allProteins;
 		my $notMapped=scalar keys %notMappedIdentifiers;
 		print qq
-|</B><FONT class="title2"> Done.
-<BR>&nbsp;&nbsp;&nbsp;-$numGood identifiers were mapped to $numProt proteins.
+|<FONT class="title2"> Done.
+<BR>&nbsp;&nbsp;&nbsp;-$numGood identifiers were mapped to $numProt proteins in myProMS.
 |;
 		if ($numBadVis) {
 			print qq
-|<BR>&nbsp;&nbsp;&nbsp;-$numBadVis identifiers mapped to hidden proteins. <INPUT type="button" id="badVisBut1" value=" Show " onclick="showIdentifiers('badVisDiv',true)"/><INPUT type="button" id="badVisBut2" value=" Hide " onclick="showIdentifiers('badVisDiv',false)" style="display:none"/>
+|<BR>&nbsp;&nbsp;&nbsp;-$numBadVis identifiers mapped to $numHiddenProt hidden proteins. <INPUT type="button" id="badVisBut1" value=" Show " onclick="showIdentifiers('badVisDiv',true)"/><INPUT type="button" id="badVisBut2" value=" Hide " onclick="showIdentifiers('badVisDiv',false)" style="display:none"/>
 <DIV id="badVisDiv" class="title3" style="display:none">
 |;
 			print join(', ',sort{lc($a) cmp lc($b)} keys %badVisIdentifiers);
@@ -1127,29 +1546,104 @@ function showIdentifiers(what,show) {
 			print join(', ',sort{lc($a) cmp lc($b)} keys %notMappedIdentifiers);
 			print "</DIV>\n";
 		}
+		### Sites info
+		if ($hasSites) {
+			my $numModif=scalar keys %modName2ID;
+			my $ptmS=($numModif > 1)? 's' : '';
+			my $modifListStrg=join(', ',sort{lc($a) cmp lc($b)} keys %modName2ID);
+			my $numSites=scalar keys %allSites;
+			my $numNotMatchedSites=scalar keys %notMatchedSites;
+			my $numMatchedSites=$numSites-$numNotMatchedSites;
+			my $numNotSeqCompatible=scalar keys %noMatchSiteSeq;
+			print qq
+|<BR>&nbsp;&nbsp;&nbsp;-$numModif PTM$ptmS identified: $modifListStrg
+<BR>&nbsp;&nbsp;&nbsp;-$numMatchedSites of $numSites sites validated.
+|;
+			if ($numNotMatchedSites) {
+				my $siteS=($numNotMatchedSites > 1)? 's' : '';
+				print qq
+|<BR>&nbsp;&nbsp;&nbsp;-$numNotMatchedSites site$siteS could not be matched to proteins in myProMS.<INPUT type="button" id="notMatchedSiteBut1" value=" Show " onclick="showIdentifiers('notMatchedSiteDiv',true)"/><INPUT type="button" id="notMatchedSiteBut2" value=" Hide " onclick="showIdentifiers('notMatchedSiteDiv',false)" style="display:none"/>
+<DIV id="notMatchedSiteDiv" class="title3" style="display:none">
+|;
+				print join(', ',sort{lc($a) cmp lc($b)} keys %notMatchedSites);
+				print "</DIV>\n";
+			}
+			if ($numNotSeqCompatible) {
+				my $siteS=($numNotSeqCompatible > 1)? 's' : '';
+				print qq
+|<BR>&nbsp;&nbsp;&nbsp;-$numNotSeqCompatible site$siteS could not be located on protein sequences.<INPUT type="button" id="notCompSiteBut1" value=" Show " onclick="showIdentifiers('notCompSiteDiv',true)"/><INPUT type="button" id="notCompSiteBut2" value=" Hide " onclick="showIdentifiers('notCompSiteDiv',false)" style="display:none"/>
+<DIV id="notCompSiteDiv" class="title3" style="display:none">
+|;
+				print join(', ',sort{lc($a) cmp lc($b)} keys %noMatchSiteSeq);
+				print "</DIV>\n";
+			}
+		}
+#$dbh->disconnect; exit; # DEBUG===============================
 
 		####<Storing results in DBs>####
 		print qq
 |<BR><BR>Storing results...|;
-		my ($catID)=$dbh->selectrow_array("SELECT MAX(ID_CATEGORY) FROM CATEGORY");
+		my ($listID)=$dbh->selectrow_array("SELECT MAX(ID_CATEGORY) FROM CATEGORY");
 		my ($displayPos)=$dbh->selectrow_array("SELECT MAX(DISPLAY_POS) FROM CATEGORY WHERE ID_CLASSIFICATION=$themeID");
-		my $sthInsCat=$dbh->prepare("INSERT INTO CATEGORY (ID_CATEGORY,ID_CLASSIFICATION,NAME,DES,DISPLAY_POS,LIST_TYPE,UPDATE_DATE,UPDATE_USER) VALUES (?,?,?,?,?,'PROT',NOW(),?)");
-		my $sthInsProt=$dbh->prepare("INSERT INTO CATEGORY_PROTEIN (ID_CATEGORY,ID_PROTEIN) VALUES (?,?)");
+		my $listType=($hasSites)? 'SITE' : 'PROT';
+		my $sthInsCat=$dbh->prepare("INSERT INTO CATEGORY (ID_CATEGORY,ID_CLASSIFICATION,NAME,DES,DISPLAY_POS,LIST_TYPE,UPDATE_DATE,UPDATE_USER) VALUES (?,?,?,?,?,'$listType',NOW(),?)");
+		my $sthInsProt=$dbh->prepare("INSERT INTO CATEGORY_PROTEIN (ID_CATEGORY,ID_PROTEIN,SEQ_BEG,SEQ_LENGTH) VALUES (?,?,?,?)");
+		my $sthInsMS=$dbh->prepare("INSERT INTO MODIFICATION_SITE (ID_CATEGORY,ID_CATEGORY_PROTEIN,ID_MODIFICATION,RESIDUE,POSITION) VALUES (?,?,?,?,?)");
 		foreach my $listCount (sort{$a<=>$b} keys %listInfo) {
-			$sthInsCat->execute(++$catID,$themeID,@{$listInfo{$listCount}},++$displayPos,$userID);
+			$sthInsCat->execute(++$listID,$themeID,@{$listInfo{$listCount}},++$displayPos,$userID);
 			#print "@{$listInfo{$listCount}}<BR>\n";
-			foreach my $protID (keys %{$proteinList{$listCount}}) {
-				$sthInsProt->execute($catID,$protID);
+			foreach my $modProtID (keys %{$proteinList{$listCount}}) {
+				my ($protID,$allFullModCode)=$modProtID=~/^(\d+)(.*)/;
+				if ($allFullModCode) {
+					$allFullModCode=~s/^-//;
+					my ($allModCode,$seqContext)=$allFullModCode=~/^([^\[]+)(.*)/; # sequence context-compatible
+					my ($seqBeg,$seqLength)=($seqContext && $seqContext=~/(\d+)\.(\d+)/)? ($1,$2) : (undef,undef);
+					$sthInsProt->execute($listID,$protID,$seqBeg,$seqLength);
+					my ($catProtID)=$dbh->last_insert_id(undef,undef,'CATEGORY_PROTEIN','ID_CATEGORY_PROTEIN');
+					
+					foreach my $modifCode (split(/\+/,$allModCode)) { # SAME CODE IN showProtQuantification.cgi for list storage ====>
+						my ($modID,$modCode)=$modifCode=~/^(\d+):(.+)/;
+						$modID=-1 if $modID==0; # Free residues
+						#<Encode modCode for DB storage
+						if ($modCode=~/~/) {
+							$modCode=~s/^ProtNt~/=0./; # position was absent
+							$modCode=~s/^PepNt(\d+)~/=$1./;
+							$modCode=~s/^(\d+)~/-$1./; # normal res
+							$modCode=~s/ProtCt:/\*99999./; # position was absent
+							$modCode=~s/PepCt(\d+):/\*$1./;
+							$modCode=~s/(\d+):/+$1./; # normal res
+							$modCode=~s/\///;
+						}
+						else {
+							$modCode=~s/ProtNt/n0/; # position was absent
+							$modCode=~s/ProtCt/c99999/; # position was absent
+							$modCode=~s/PepNt/n/;
+							$modCode=~s/PepCt/c/;
+						}
+						#<Separate individual site
+						foreach my $site (split(/\./,$modCode)) {
+							$site=~/(.)(\d+)/; # (res)(position)
+							$sthInsMS->execute($listID,$catProtID,$modID,$1,$2);
+						}
+					} # <====== SAME CODE
+				}
+				else {
+					$sthInsProt->execute($listID,$protID,undef,undef);
+				}
 				#print "$protID<BR>\n";
 			}
 		}
 		$sthInsCat->finish;
 		$sthInsProt->finish;
+		$sthInsMS->finish;
 		$dbh->commit;
 		print qq
 | Done.</FONT>
+<SCRIPT type="text/JavaScript">
+document.getElementById('progressImg').style.display='none';
+</SCRIPT>
 <BR><BR><INPUT type="button" class="title2" value=" Display Theme " onclick="window.location='./editClassification.cgi?id_project=$projectID&id_theme=$themeID'"/>
-<BR><BR>
+<BR><BR><BR><BR>
 </BODY>
 </HTML>
 |;
@@ -1159,7 +1653,40 @@ function showIdentifiers(what,show) {
 	exit;
 }
 
+sub sequenceIsCompatible {
+	my ($protID,$sthPSeq,$sthMSeq,$refProtSites,$refProtSequence,$refModifSpecif)=@_;
+	unless ($refProtSequence->{$protID}) {
+		$sthPSeq->execute($protID);
+		my ($seq)=$sthPSeq->fetchrow_array;
+		if ($seq eq '+') {
+			$sthMSeq->execute($protID);
+			($seq)=$sthMSeq->fetchrow_array;
+		}
+		$refProtSequence->{$protID}=$seq || '-';
+	}
+	return -1 if $refProtSequence->{$protID} eq '-'; # no sequence data => cannot check sites
+	my @sequence=split(//,$refProtSequence->{$protID});
+	my $badMatch=0;
+	MOD:foreach my $modID (keys %{$refProtSites}) {
+		foreach my $refSite (@{$refProtSites->{$modID}}) {
+			my ($pos,$res)=@{$refSite};
+			my $seqRes=$sequence[$pos-1];
+			if (!$seqRes || ($res eq '*' && $refModifSpecif->{$modID} ne '*' && $seqRes !~ /[$refModifSpecif->{$modID}]/) || $seqRes ne $res) {
+				$badMatch=1;
+				last MOD;
+			}
+		}
+	}
+	return ($badMatch)? 0 : 1;
+}
+
 ####>Revision history<####
+# 2.4.0 [UPDATE] Site-compatibility for list import (PP 03/05/21)
+# 2.3.6 [ENHANCEMENT] Change parsing rules retrieving for fasta import + correct string used as array ref (VL 18/11/20)
+# 2.3.5 [FEATURE] Add option to create protein list from existing databank for massists and bioinfo (VL 08/10/20)
+# 2.3.4 [FEATURE] Add option to create protein list from fasta file (VL 05/10/20)
+# 2.3.3 [ENHANCEMENT] Optimized identifier mapping code & Clean remaning useless code for handling List creation other than by import (PP 03/08/20)
+# 2.3.2 [UPDATE] Changed RANK field to ANNOT_RANK for compatibility with MySQL 8 (PP 04/03/20) 
 # 2.3.1 Add No/Multi species + Fix interactions with theme having no match (VS 14/02/2019)
 # 2.3.0 Compatible with MODIFICATION_SITE & code optimization (PP 01/08/17)
 # 2.2.2 Add unspecified identifier (GA 24/08/16)

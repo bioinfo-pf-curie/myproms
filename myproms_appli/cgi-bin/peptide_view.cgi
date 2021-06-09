@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# peptide_view.cgi              3.2.2                                          #
+# peptide_view.cgi              3.2.5                                          #
 # Authors: P. Poullet, G. Arras, F. Yvon, M. Le Picard (Institut Curie)        #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -89,6 +89,7 @@ unless (-e $DatFile) {
 my $sequence=param('SEQUENCE') || '';
 my $massObs=param('massObs') || 0;
 my $massExp=param('massExp') || 0;
+my ($spectrumMassExp, $spectrumMassObs, $spectrumCharge); # Information extracted from MSF file
 my $query_number=param('query') || 0;
 my $rank=param('hit') || 0;
 my $objectID=&promsMod::cleanNumericalParameters(param('ID')) || 0;
@@ -104,6 +105,8 @@ if ($fileType eq "REFSPEC") {
 	$fileType="MASCOT.DAT" if $DatFile =~ /\.dat/;
 	$fileType="PHENYX.XML" if $DatFile =~ /\.pgf/;
 	$fileType="sptxt" if $DatFile =~ /\.sptxt/;
+	$fileType="xls" if($DatFile =~ /\.xls/);
+	$fileType="tsv" if($DatFile =~ /\.tsv/);
 	if ($DatFile =~ /\.pdm/) {
 		$fileType="MASCOT.PDM";
 		my $onParameters=0;
@@ -139,7 +142,7 @@ my $frameWidth = (param('width') && param('width')=~/(\d+)/) ? $1 : "1050";#IE d
 my $spectrumWidth=(param('spWidth') && param('spWidth')=~/(\d+)/) ? $1 : $frameWidth-50;
 my $spectrumHeight=(param('spHeight') && param('spHeight')=~/(\d+)/) ? $1 : "220";
 #my ($spectrumID)=($fileType eq "MASCOT.DAT")? ($DatFile=~/.*S(\d+)\.dat/) : ($fileType eq "PHENYX.XML" || $fileType eq "MASCOT.XML")? ($DatFile=~/.*S(\d+)\.pgf/) : "" if $refSpectrum > 0;
-my ($spectrumID)=($fileType eq "MASCOT.DAT")? ($DatFile=~/.*S(\d+)\.dat/) : ($fileType eq "PHENYX.XML" || $fileType eq "MASCOT.XML" || $fileType eq "PARAGON.XML")? ($DatFile=~/.*S(\d+)\.pgf/) : ($fileType =~ /\.PDM/)? ($DatFile=~/.*S(\d+)\.pdm/)  : ($fileType =~ /sptxt/) ? ($DatFile=~/SwLib_(\d+)\/.*\.sptxt/) : "" if $refSpectrum > 0;
+my ($spectrumID)=($fileType eq "MASCOT.DAT")? ($DatFile=~/.*S(\d+)\.dat/) : ($fileType eq "PHENYX.XML" || $fileType eq "MASCOT.XML" || $fileType eq "PARAGON.XML")? ($DatFile=~/.*S(\d+)\.pgf/) : ($fileType =~ /\.PDM/)? ($DatFile=~/.*S(\d+)\.pdm/)  : ($fileType =~ /sptxt/) ? ($DatFile=~/SwLib_(\d+)\/.*\.sptxt/) : ($fileType =~ /tsv/) ? ($DatFile=~/SwLib_(\d+)\/.*\.tsv/) : "" if $refSpectrum > 0;
 
 my $useInternalFragment = 0;
 my $maxFragmentMass = 900;
@@ -160,8 +163,9 @@ my $libID;
 if ($call eq 'lib') {
 	$elutionTime=param('irt');
 	($peptideSequence,$charge,$varModsString)=split(/_/,$sequence);
-	($sequence=$peptideSequence)=~s/n*\[\w*\]//g;
+	($sequence=$peptideSequence)=~s/n*\[[+-]?\w*\]//g;
 	$titleSequence=$sequence;
+	
 	$libID=&promsMod::cleanNumericalParameters(param('libID'));
 	($instrument)=$dbh->selectrow_array ("SELECT INSTRUMENT FROM SWATH_LIB WHERE ID_SWATH_LIB=$libID");
 	$instrument='ESI-QUAD-TOF' unless $instrument;
@@ -172,7 +176,7 @@ if ($call eq 'lib') {
 	$sthVmodMass->execute;
 	while (my ($psiMsName,$interimName,$altNames,$specificity,$monomass) = $sthVmodMass->fetchrow_array ) {
 		$altNames=~ s/##/,/g if $altNames;
-		$altNames=~ s/^,//; $altNames=~ s/,\Z//; # remove starting & trailing "," if any
+		$altNames=~ s/^,// if $altNames; $altNames=~ s/,\Z// if $altNames; # remove starting & trailing "," if any
 		my $name=($psiMsName)? $psiMsName : ($interimName)? $interimName : ($altNames)? $altNames : '';
 		$massValueMods{$name}=$monomass;
 	}
@@ -211,7 +215,7 @@ else {
 		($validStatus,$instrument,$wiffFile)=$dbh->selectrow_array("SELECT VALID_STATUS,INSTRUMENT,WIFF_FILE FROM ANALYSIS WHERE ID_ANALYSIS=$analysisID");
 	}
 	else {      ####>reference spectrum<####
-		if ($fileType eq "sptxt"){
+		if ($fileType =~ /sptxt|tsv/){
 			($analysisID,$charge,$sequence,$sub,$comments)=$dbh->selectrow_array("SELECT ID_ANALYSIS,CHARGE,PEP_SEQ,SUBST,COMMENTS FROM PEPTIDE WHERE ID_PEPTIDE=$query_number");
 			$varModsString=&promsMod::toStringVariableModifications($dbh,'PEPTIDE',$query_number,$analysisID,$sequence);
 			$titleSequence=$sequence;
@@ -299,7 +303,7 @@ else {
 	else {$elutionTime='?';}
 
 }
-$massExp=($massObs-1.007825032)*$charge unless $massExp || $fileType eq "sptxt";
+$massExp=($massObs-1.007825032)*$charge unless $massExp || $fileType =~ /sptxt|tsv/;
 my $isRef = ($refSpectrum <= 0)? "false" : "true";
 
 
@@ -363,7 +367,7 @@ if ($fileType=~/\.(DAT|PDM)/) { #use .dat type file for params
 		#$query_desc.=" Elution: $retTimeSec sec";
 		#$query_desc.=sprintf "(%.2f min).",$xmlData->{'Header'}{'SpectrumIdentifiers'}{'SpectrumIdentifier'}{'RetentionTime'};
 		my $msfFullFile=($validStatus==2)? "$promsPath{peptide}/proj_$projectID/ana_$analysisID/$msfFile" : "$promsPath{valid}/multi_ana/proj_$projectID/$msfFile";
-		($parentFile,my ($refIons,$retTimeMin,$spectrumIDXML,$scanNumber))=&promsMod::extractSpectrumMSF($msfFullFile,$extSpectrumID);
+		($parentFile,(my $refIons,my $retTimeMin,my $spectrumIDXML,my $scanNumber, my $charge, $spectrumMassExp, $spectrumCharge, $spectrumMassObs))=&promsMod::extractSpectrumMSF($msfFullFile,$extSpectrumID);
 		foreach my $value (@{$refIons}) { # copy all the ions for this specific query
 			my ($mz,$intens)=($value->{'X'},$value->{'Y'});
 			$expIonTable{$mz}[0]=sprintf "%.4f",$intens;
@@ -614,7 +618,7 @@ elsif ($fileType eq 'MAXQUANT.DIR') {
 }
 
 
-elsif ($fileType eq 'sptxt') { # SWATH library
+elsif ($fileType =~ /sptxt|tsv/) { # SWATH library
 	open (FILE, $DatFile) || die "Unable to open $DatFile";
 	my $onSeq=0;
 	my @file=split('/',$DatFile);
@@ -627,8 +631,15 @@ elsif ($fileType eq 'sptxt') { # SWATH library
 			my @aaSeqPep=split(//,$sequence);
 			while (my ($modID,$pos,$mass)=$sthModification->fetchrow_array){
 				my @modPos=split(/\./,$pos);
-				foreach my $position (@modPos){
-					$aaSeqPep[$position-1].='['.sprintf("%0.f",$massValueAA{$aaSeqPep[$position-1]}+$mass).']';
+				foreach my $position (@modPos) {
+					my $sign = ($mass > 0) ? '+' : '';
+					my $vModStr = ($fileType eq 'tsv') ? '['.sprintf("$sign%0.f",$mass).']' : '['.sprintf("%0.f",$massValueAA{$aaSeqPep[$position-1]}+$mass).']';
+					
+					if($position =~ /[-=]/) {
+						$aaSeqPep[0] = "$vModStr$aaSeqPep[0]";
+					} else {
+						$aaSeqPep[$position-1] .= $vModStr;
+					}
 				}
 			}
 			my $pepSeq=join('',@aaSeqPep);
@@ -641,35 +652,53 @@ elsif ($fileType eq 'sptxt') { # SWATH library
 	}
 	my $peptideSequenceQuote=quotemeta($peptideSequence);
 	if ($peptideSequenceQuote){
+		my %colName2Index;
+		
 		while (my $line=<FILE>) {
-			if ($line=~/^Name:/ && $line=~/$peptideSequenceQuote\/$charge/) {
-				$onSeq=1;
-			}
-			elsif ($line=~/^Name:/ && $line!~/$peptideSequenceQuote\/$charge/) {
-				$onSeq=0;
-			}
-			if ($onSeq && $line=~/PrecursorMZ: (\d+\.?\d*)/){
-				$massObs=$1;
-			}
-			if ($onSeq && $line=~/iRT=\d+\.?\d*,(\d+\.?\d*),\d+\.?\d*/) {
-				$elutionTime=sprintf("%0.2f",$1);
-			}
-			if (substr($line,0,2)=~/\d+/ && $onSeq==1) {
-				my @massValues=split(/\t/,$line);
-				my $mz=$massValues[0];
-				my $intens=$massValues[1];
-				$expIonTable{$mz}[0] = sprintf("%.4f",$intens);
+			if($fileType eq 'sptxt') {
+				if ($line=~/^Name:/ && $line=~/$peptideSequenceQuote\/$charge/) {
+					$onSeq=1;
+				}
+				elsif ($line=~/^Name:/ && $line!~/$peptideSequenceQuote\/$charge/) {
+					$onSeq=0;
+				}
+				if ($onSeq && $line=~/PrecursorMZ: (\d+\.?\d*)/){
+					$massObs=$1;
+				}
+				if ($onSeq && $line=~/iRT=\d+\.?\d*,(\d+\.?\d*),\d+\.?\d*/) {
+					$elutionTime=sprintf("%0.2f",$1);
+				}
+				if (substr($line,0,2)=~/\d+/ && $onSeq==1) {
+					my @massValues=split(/\t/,$line);
+					my $mz=$massValues[0];
+					my $intens=$massValues[1];
+					$expIonTable{$mz}[0] = sprintf("%.4f",$intens);
+				}
+			} elsif($fileType eq 'tsv') {
+				if($. == 1) {
+					my @headers = split(/[\t]/, $line);
+					foreach my $i (0 .. $#headers) {
+						$colName2Index{$headers[$i]} = $i;
+					}
+				} else {
+					next unless(index($line, $peptideSequence) != -1); # Not mandatory, but used to speed up file parsing (no fields separation nor regex)
+					
+					my @lineFields = split(/[\t]/, $line);
+					if($lineFields[$colName2Index{'IntModifiedPeptide'}] =~ /\_$peptideSequenceQuote\_/ && $lineFields[$colName2Index{'PrecursorCharge'}] == $charge) {
+						$elutionTime = sprintf("%0.2f",$lineFields[$colName2Index{'iRT'}]);
+						$massObs = sprintf("%0.2f",$lineFields[$colName2Index{'PrecursorMz'}]);
+						my $fragmentMZ = sprintf("%0.2f",$lineFields[$colName2Index{'FragmentMz'}]);
+						my $intens = sprintf("%0.4f",$lineFields[$colName2Index{'RelativeIntensity'}]);
+						$expIonTable{$fragmentMZ}[0] = $intens;
+					} elsif(%expIonTable) {
+						last;
+					}
+				}
 			}
 		}
 		$massExp=($massObs-1.007825032)*$charge unless $massExp;
-
-		unless (%expIonTable){
-			$checkRefSpectrum=0;
-			my $matchColor=$colorB;
-			print header(-charset=>'utf-8'); warningsToBrowser(1);
-			print "<BR><CENTER><FONT class=\"title3\">No reference MS/MS fragmentation of <FONT color=\"$matchColor\">$peptideSequence</FONT> $varModsString found.</FONT><BR></CENTER>";
-		}
 	}
+	close(FILE);
 }
 elsif ($fileType eq 'SWATH.PKV' || $fileType =~ /SKYLINE\.(?:CSV|SKY)/ || $fileType eq 'OPENSWATH.TSV' || $fileType eq 'SPECTRONAUT.XLS') {  # for skyline, SKYLINE.CSV (old) or SKYLINE.SKY (new)  (VL 20/11/19)
 	open (FILE, $DatFile) || die "Unable to open $DatFile";
@@ -820,14 +849,9 @@ if (defined ($varModsString)) {
 	}
 }
 
-####################
-####>processing<####
-####################
-
 ################################
 ####>fragmentation settings<####
 ################################
-
 my %ionSerieN_term;
 foreach my $fragment (@{$fragmentClassif{"N_term"}}) {
 	if ($fragmentationRules{$fragment} && $fragmentationRules{$fragment}>0) {
@@ -1162,10 +1186,10 @@ my $file;
 
 if ($useSpecApp==0) {
 	if ($call eq 'lib'){
-        unlink glob "$promsPath{tmp}/lib_$userID*.pgf" if glob "$promsPath{tmp}/lib_$userID*.pgf"; # cleaning previous files
+		unlink glob "$promsPath{tmp}/lib_$userID*.pgf" if glob "$promsPath{tmp}/lib_$userID*.pgf"; # cleaning previous files
 		$file="$promsPath{tmp}/lib_$userID"."_$query_number"."_$rank.pgf";
-    }
-    else{
+	}
+	else{
 		if (defined($objectID)) { #analytic spectrum
 			unlink glob "$promsPath{tmp}/qry_$userID*.pgf" if glob "$promsPath{tmp}/qry_$userID*.pgf"; # cleaning previous files
 			$file="$promsPath{tmp}/qry_$userID"."_$query_number"."_$rank.pgf";
@@ -1408,11 +1432,19 @@ elsif ($checkRefSpectrum) { # Drawing a Reference Spectrum
 	print "<B> (Spectrum recorded by '$upUser')</B>\n" if $upUser;
 	print "<BR><B>Comments:</B> ". &promsMod::HTMLcompatible($comments) ."\n" if $comments;
 	print "<BR>";
-	print qq
+}
+
+unless (%expIonTable){
+	my $matchColor= ($checkRefSpectrum) ? $colorB : $colorA;
+	my @file = split('/',$DatFile);
+	print "<BR><CENTER><FONT class=\"title3\">Peptide not found in reference file <FONT color=\"$matchColor\">$file[-1]</FONT>.</FONT><BR></CENTER>";
+	exit;
+}
+
+print qq
 |<TABLE border=0 cellpadding=0><TD nowrap><INPUT type="button" value="Delete reference" onclick="deleteReference()" $disableStore/>
 <INPUT type="button" value="Edit Comments" onclick="editComments()" $disableStore/></TD>
-| unless $fileType eq 'sptxt';
-}
+| if($fileType !~ /sptxt|tsv/ && %expIonTable);
 print qq
 |<TD>&nbsp;&nbsp;</TD>
 <TH align="left" nowrap>Display:<SELECT onchange="SP.toBlackAndWhite(this.value*1)"><OPTION value="0">Colored</OPTION><OPTION value="1">Black & White</OPTION></SELECT>
@@ -1450,7 +1482,11 @@ elsif ($checkRefSpectrum) { # codebase="$promsPath{'html'}/java"
 if($checkRefSpectrum){
 	print "$query_desc\n<BR>";
 	print "Elution: $elutionTime min.&nbsp;&nbsp;&nbsp;&nbsp;\n" unless $query_desc=~/Elution/;
-	printf "Mr(calc): %.5f; Mr(exp): %.5f; Mr(obs): %.5f; charge %1D+<BR>\n",$peptideMass,$massExp,$massObs,$charge;
+	if($spectrumMassObs && $spectrumMassObs ne $massObs) {
+		printf "Mr(calc): %.5f<br/>Spectra: Mr(exp): %.5f; Mr(obs): %.5f; Charge: %1D+<BR>PSM: Mr(exp): %.5f; Mr(obs): %.5f; Charge: %1D+<BR><BR>\n",$peptideMass,$spectrumMassExp,$spectrumMassObs,$spectrumCharge,$massExp,$massObs,$charge;
+	} else {
+		printf "Mr(calc): %.5f; Mr(exp): %.5f; Mr(obs): %.5f; charge %1D+<BR><BR>\n",$peptideMass,$massExp,$massObs,$charge;
+	}
 	####>Instrument<####
 	print "Acquired on <B>$instrument<B><BR>\n" if $instrument; #$refSpectrum>0
 
@@ -1757,6 +1793,9 @@ package TDMHandler; {
 }1;
 
 ####>Revision history<####
+# 3.2.5 [MODIF] Display differences between spectrum and PSM mass/charge (VS 10/12/2020)
+# 3.2.4 [BUGFIX] Fix issues with spectronaut spectral library peptide spectrum visualization (VS 22/10/20)
+# 3.2.3 [FEATURE] Handles Spectronaut library spectrum visualization (VS 06/06/20)
 # 3.2.2 [MODIF] Minor modif on skyline fileType to be consistent with handling of .sky files (VL 20/11/19)
 # 3.2.1 Cleaner exit on missing spectrum data file (PP 23/03/18)
 # 3.2.0 Minor modif to allow Spectronaut spectrum drawing (MLP 23/01/18)

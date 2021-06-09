@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# launchProtRulerQuantif.pl        1.0.4                                       #
+# launchProtRulerQuantif.pl        1.0.8                                       #
 # Authors: V. Laigle (Institut Curie)                                          #
 # Contact: myproms@curie.fr                                                    #
 # called by startDesignProtRulerQuantif.cgi                                    #
@@ -80,7 +80,7 @@ my $quantifAnnotStrg="LABEL=$labelType";
 if ($quantifParams{'DB'}{'ALGO_TYPE'}) {
 	my $quantifMethod=$quantifParams{'DB'}{'ALGO_TYPE'}[0];  # PROT_RULER
 	if ($quantifMethod=~/PROT_RULER/) {
-		$quantifAnnotStrg.="::SOFTWARE=myProMS;3.1::ALGO_TYPE=$quantifMethod"; # name;version::PROT_RULER
+		$quantifAnnotStrg.="::SOFTWARE=myProMS::ALGO_TYPE=$quantifMethod"; # version added later by runProtRuler script
 	} else {
 		print STDERR "Error, the ALGO_TYPE was set to something else than PROT_RULER";
 		$dbh->disconnect;
@@ -123,7 +123,7 @@ if ($quantifParams{'DB'}{'ALGO_TYPE'}) {
 ####>Launching quantification process<####
 ##########################################
 my $projectID=&promsMod::getProjectID($dbh,$quantifID,'QUANTIFICATION');
-$dbh->do("INSERT INTO JOB_HISTORY (ID_JOB, ID_USER, ID_PROJECT, TYPE, STATUS, FEATURES, SRC_PATH, LOG_PATH, ERROR_PATH, STARTED) VALUES('$jobDir', '$userID', $projectID, 'Quantification [DESIGN:PROT_RULER]', 'Queued', 'ID_QUANTIFICATION=$quantifID;TYPE=DESIGN:PROT_RULER;QUANTIFICATION_NAME=$quantifName', '$quantifDir', '$quantifDir/status\_$quantifID.out', '$currentQuantifDir/$quantifID\_$jobDir\_error.txt', NOW())");
+$dbh->do("INSERT INTO JOB_HISTORY (ID_JOB, ID_USER, ID_PROJECT, TYPE, JOB_STATUS, FEATURES, SRC_PATH, LOG_PATH, ERROR_PATH, STARTED) VALUES('$jobDir', '$userID', $projectID, 'Quantification [DESIGN:PROT_RULER]', 'Queued', 'ID_QUANTIFICATION=$quantifID;TYPE=DESIGN:PROT_RULER', '$quantifDir', '$quantifDir/status\_$quantifID.out', '$currentQuantifDir/$quantifID\_$jobDir\_error.txt', NOW())");
 $dbh->commit;
 
 if ($cluster{'on'}) {
@@ -134,13 +134,18 @@ if ($cluster{'on'}) {
 	
 	# Counting number of proteins quantified for memory usage
 	my @selectedQuantifs=split(';', $quantifParams{'DB'}{'QUANTIF_IDS'}[0]);
-	my @selectedQuantifIDs;
+	#my @selectedQuantifIDs;
+	my $nbProts=0;
 	foreach my $quantif (@selectedQuantifs) {
 		my ($selQuantifID, $tarPos)=split('_', $quantif);
-		push @selectedQuantifIDs, $selQuantifID;
+		#push @selectedQuantifIDs, $selQuantifID;
+		my $dbhLite=&promsQuantif::dbConnectProteinQuantification($selQuantifID,$projectID);
+		my ($nb)=$dbhLite->selectrow_array("SELECT COUNT(*) FROM PROTEIN_QUANTIFICATION WHERE ID_QUANTIF_PARAMETER=$quantifParams{'R'}{'int_metric'}[0] AND TARGET_POS=$tarPos");
+		$dbhLite->disconnect;
+		$nbProts+=$nb;
 	}
-	my $selectedQuantifStrg=join(',', @selectedQuantifIDs);
-	my $nbProts=$dbh->selectrow_array("SELECT COUNT(1) FROM PROTEIN_QUANTIFICATION WHERE ID_QUANTIFICATION IN ($selectedQuantifStrg) AND ID_QUANTIF_PARAMETER=$quantifParams{'R'}{'int_metric'}[0]");
+	#my $selectedQuantifStrg=join(',', @selectedQuantifIDs);
+	#my $nbProts=$dbh->selectrow_array("SELECT COUNT(1) FROM PROTEIN_QUANTIFICATION WHERE ID_QUANTIFICATION IN ($selectedQuantifStrg) AND ID_QUANTIF_PARAMETER=$quantifParams{'R'}{'int_metric'}[0]");
 
 	my ($maxHours,$maxMem,$numCPU,$jobName);
 	if ($quantifType eq 'DESIGN:PROT_RULER') {
@@ -210,6 +215,10 @@ unless (-s "$currentQuantifDir/$quantifID\_$jobDir\_error.txt") {
 }
 
 #####>Revision history<#####
+# 1.0.8 [CHANGE] Removed hard-coded quantif version (PP 18/05/21)
+# 1.0.7 [MINOR] Remove QUANTIFICATION_NAME from JOB_HISTORY table (VS 09/02/21)
+# 1.0.6 [UPDATE] Changed JOB_HISTORY.STATUS to JOB_HISTORY.JOB_STATUS (PP 28/08/20)
+# 1.0.5 [ENHANCEMENT] Uses quantification data from SQLite file (PP 14/08/20)
 # 1.0.4 [CHANGES] Add quantification name in job information (VS 19/11/19)
 # 1.0.3 Compatibility with the new job monitoring system (VS 09/10/19)
 # 1.0.2 Adapt code to new intensity metric + minor bug correction (VL 25/09/19)

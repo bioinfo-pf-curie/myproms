@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# startDesignProtRulerQuantif.cgi      1.0.8                                   #
+# startDesignProtRulerQuantif.cgi      1.0.12                                  #
 # Authors: V. Laigle (Institut Curie)                                          #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -850,7 +850,6 @@ sub launchQuantifications {
 	
 	# Compute target_pos for all available states
 	my $sthQuantifAnnot = $dbh->prepare("SELECT QUANTIF_ANNOT FROM QUANTIFICATION WHERE ID_QUANTIFICATION=?");
-	my $sthTargetPos=$dbh->prepare("SELECT TARGET_POS FROM PROTEIN_QUANTIFICATION WHERE ID_QUANTIFICATION=? AND ID_QUANTIF_PARAMETER=$intMetric GROUP BY TARGET_POS ORDER BY TARGET_POS ASC");
 
 	foreach my $parentQuantifID (sort {$a <=> $b} keys %availableStates) {
 		$sthQuantifAnnot->execute($parentQuantifID);
@@ -869,15 +868,19 @@ sub launchQuantifications {
 			die "Could not get the STATES information from quantif annot for quantification $parentQuantifID : $!";
 		}
 
-		$sthTargetPos->execute($parentQuantifID);
+		my $dbhLite = &promsQuantif::dbConnectProteinQuantification($parentQuantifID, $projectID);
+		my $sthTargetPos = $dbhLite->prepare("SELECT DISTINCT TARGET_POS FROM PROTEIN_QUANTIFICATION WHERE ID_QUANTIF_PARAMETER = $intMetric");
+		$sthTargetPos->execute;
 
 		foreach my $parentStateID (@{$statesPos{$parentQuantifID}}) {
 			my ($targetPos) = $sthTargetPos->fetchrow_array;  # Consider multiple targetPos
 			$availableStates{$parentQuantifID}->{'states'}{$parentStateID}{'targetPos'} = $targetPos;
 		}
+		$sthTargetPos->finish;
+		$dbhLite->disconnect;
 	}
 	$sthQuantifAnnot->finish;
-	$sthTargetPos->finish;
+	
 	
 	my @selectedStates;
 	foreach my $parentQuantifID (sort {$a <=> $b} keys %availableStates) {
@@ -934,7 +937,7 @@ sub launchQuantifications {
 	my @custProtArr;
 
 	if ($customProtCatID) {  # Get custom proteins Uniprot ACC as a semi-colon separated string from existing list with ID_CATEGORY
-		($customProteins)=$dbh->selectrow_array("SELECT GROUP_CONCAT(MI.VALUE SEPARATOR ';') FROM CATEGORY_PROTEIN CP INNER JOIN PROTEIN P ON CP.ID_PROTEIN=P.ID_PROTEIN INNER JOIN MASTERPROT_IDENTIFIER MI ON P.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN WHERE ID_CATEGORY=$customProtCatID AND MI.ID_IDENTIFIER=1 AND MI.RANK=1");
+		($customProteins)=$dbh->selectrow_array("SELECT GROUP_CONCAT(MI.VALUE SEPARATOR ';') FROM CATEGORY_PROTEIN CP INNER JOIN PROTEIN P ON CP.ID_PROTEIN=P.ID_PROTEIN INNER JOIN MASTERPROT_IDENTIFIER MI ON P.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN WHERE ID_CATEGORY=$customProtCatID AND MI.ID_IDENTIFIER=1 AND MI.IDENT_RANK=1");
 	} elsif ($custProtFile) {  # Get the same output but from user's text file
 		open(CUST_PROT_FILE, "$custProtFile") or die "Could not open the custom proteins file $!";
 		for my $line (<CUST_PROT_FILE>){
@@ -1090,7 +1093,7 @@ sub launchQuantifications {
 	sleep 3;
 	print qq
 |<SCRIPT type="text/javascript">
-var monitorJobsWin=window.open("$promsPath{cgi}/monitorJobs.cgi?filterType=Quantification [DESIGN:PROT_RULER]&filterDateNumber=1&filterDateType=DAY&filterStatus=Queued&filterStatus=Running",'monitorJobsWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
+var monitorJobsWin=window.open("$promsPath{cgi}/monitorJobs.cgi?filterType=Quantification [DESIGN:PROT_RULER]&filterDateNumber=1&filterDateType=DAY&filterStatus=Queued&filterStatus=Running&filterProject=$projectID",'monitorJobsWindow','width=1200,height=500,scrollbars=yes,resizable=yes');
 monitorJobsWin.focus();
 </SCRIPT>
 |;
@@ -1214,18 +1217,18 @@ sub getAvailableStates {
 	my $dbh = &promsConfig::dbConnect;
 	my ($refAvailableStates, $parentParamID) = @_;
 	my $statesNumber = 0;
-	my $sthString;
-	if ($parentParamID) {
-		$sthString = "SELECT EC.NAME, EC.ID_EXPCONDITION, Q.NAME, Q.ID_QUANTIFICATION
+	
+	die "Cannot fetch quantifications / states without quantification parameter ID" unless ($parentParamID);
+
+	my ($parentMethodID) = $dbh->selectrow_array("SELECT ID_QUANTIFICATION_METHOD FROM QUANTIFICATION_PARAMETER WHERE ID_QUANTIF_PARAMETER = $parentParamID");
+
+	my $sthString = "SELECT EC.NAME, EC.ID_EXPCONDITION, Q.NAME, Q.ID_QUANTIFICATION
 		FROM EXPCONDITION_QUANTIF EQ
 		INNER JOIN EXPCONDITION EC ON EQ.ID_EXPCONDITION = EC.ID_EXPCONDITION
 		INNER JOIN QUANTIFICATION Q ON EQ.ID_QUANTIFICATION = Q.ID_QUANTIFICATION
-		LEFT JOIN PROTEIN_QUANTIFICATION PQ ON Q.ID_QUANTIFICATION=PQ.ID_QUANTIFICATION
-		WHERE EC.ID_DESIGN=$designID AND PQ.ID_QUANTIF_PARAMETER=$parentParamID
+		WHERE EC.ID_DESIGN=$designID AND Q.ID_QUANTIFICATION_METHOD = $parentMethodID
 		GROUP BY Q.ID_QUANTIFICATION, EC.ID_EXPCONDITION";
-	} else {
-		die "Cannot fetch quantifications / states without quantification parameter ID";
-	}
+
 	my $sthGetStates = $dbh->prepare($sthString);
 	$sthGetStates->execute;
 	while (my ($stateName, $stateID, $parentQuantifName, $parentQuantifID) = $sthGetStates->fetchrow_array) {
@@ -1235,6 +1238,16 @@ sub getAvailableStates {
 	}
 	$sthGetStates->finish;
 	$dbh->disconnect;
+
+	# Need to check whether each parent quantif has the right quantif param, otherwise, delete 
+	my @notOkParentQuantifs;
+	foreach my $parentQuantifID (keys %{$refAvailableStates}) {
+		my $dbhLite = &promsQuantif::dbConnectProteinQuantification($parentQuantifID, $projectID);
+		my $okQuantif = $dbhLite->selectrow_array("SELECT 1 FROM PROTEIN_QUANTIFICATION WHERE ID_QUANTIF_PARAMETER = $parentParamID LIMIT 1");
+		$dbhLite->disconnect;
+		push @notOkParentQuantifs, $parentQuantifID unless ($okQuantif);
+	}	
+	delete @{$refAvailableStates}{@notOkParentQuantifs};
 
 	return $statesNumber;
 }
@@ -1269,6 +1282,10 @@ sub getAnnotStatesOrder {
 }
 
 #####>Revision history<#####
+# 1.0.12 [CHANGE] Minor change in SQLite query (PP 03/06/21)
+# 1.0.11 [UPDATE] Adapt script to PROTEIN_QUANTIFICATION table switch from MySQL to SQLite (VL 19/05/21)
+# 1.0.10 [MINOR] Added project selection when opening monitor jobs windows (VS 02/09/20)
+# 1.0.9 [UPDATE] Changed RANK field to IDENT_RANK for compatibility with MySQL 8 (PP 04/03/20) 
 # 1.0.8 [ENHANCEMENT] Add MyProMS LFQ to intensity metrics (VL 11/02/20)
 # 1.0.7 [ENHANCEMENT] Add possibility to separate nb of cells also for "total protein amount" (VL 10/01/20)
 # 1.0.6 [FEATURE] Add possibility to enter values per sample + cell number instead of uniquely per cell + minor modifs(VL 10/01/20)

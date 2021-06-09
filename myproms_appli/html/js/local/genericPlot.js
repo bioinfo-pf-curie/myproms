@@ -1,6 +1,6 @@
 /*
 ################################################################################
-# genericPlot.js    1.0.8                                                      #
+# genericPlot.js    1.0.9                                                      #
 # Authors: P. Poullet                                                          #
 # Contact: patrick.poullet@curie.fr                                            #
 ################################################################################
@@ -65,7 +65,8 @@ gpDataPoint.prototype = {
 		var values=valuesStrg.split(':').sort(this.ascNumSort);
 		var mean=0;
 		for (var i=0; i<values.length; i++) {mean+=(1*values[i]);}
-		this[axis]=Math.round(100*mean/values.length)/100;
+		//this[axis]=Math.round(100*mean/values.length)/100;
+		this[axis]=mean/values.length;
 		if (values.length > 1) {this.valueList[axis]=values;}
     },
 	ascNumSort: function(a,b) {return a-b;},
@@ -119,6 +120,7 @@ function genericPlot(plotData) {
 	this.existEditableThreshold=false; // default (al least 1 editable th)
 	this.allowHighlight=plotData.allowHighlight; // flag to allow or not highlighting
 	this.updateHighlight=plotData.updateHighlight; // object {callback:callback function in case delete/edit,editable:true/false (hl name edition flag)}
+	this.editHighlight=plotData.editHighlight; // flag to allow or not highlighting
 	this.highlightedPoints={}; // List of different user-defined labeled set of points
 	this.pointOnclick=plotData.pointOnclick;
 	this.pointOnList=plotData.pointOnList;
@@ -293,12 +295,13 @@ initializeForm(GP);
 		/***** Display chart(s) *****/
 		initializeChart(GP);
 
-    }
+    };
 
 } // end of GP
 
 /*
 ####>Revision history<####
+# 1.0.9 [FEATURE] New GP parameter 'editHighlight': Default true unless declared 'false' (PP 07/10/20)
 # 1.0.8 [FEATURE] Optional external pre-search function (PP 29/10/19)
 # 1.0.7 Minor bug fix in showDataSets initialization (PP 26/10/17)
 # 1.0.6 Uses chart registering for dynamic html calls (PP 20/02/16)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# displayClustering.cgi       1.2.6                                            #
+# displayClustering.cgi       1.3.4                                            #
 # Authors: P. Poullet, S.Liva (Institut Curie)                                 #
 # Contact: myproms@curie.fr                                                    #
 # display and store the results of Clustering analysis        		           #
@@ -69,29 +69,28 @@ my $pathToFile = "$promsPath{explorAna}/project_$projectID/$explorID";
 my $protAnnotMatchStrg=''; # required for ajax protein annotation calls
 my $quantifListStrg='';
 my %quantificationIDs;
-my $isPtmQuantif=0;
+my $isModifQuantif=0;
 my %ptmUsed;
-my $sthSelExplorQuantif=$dbh->prepare("SELECT Q.ID_QUANTIFICATION,GROUP_CONCAT(DISTINCT TARGET_POS ORDER BY TARGET_POS SEPARATOR '_'),CONCAT(COALESCE(Q.ID_MODIFICATION,'0'),',',COALESCE(GROUP_CONCAT(DISTINCT MQ.ID_MODIFICATION SEPARATOR ','),'0'))
+
+$dbh->do("SET SESSION group_concat_max_len = 1000000");
+my $sthSelExplorQuantif=$dbh->prepare("SELECT Q.ID_QUANTIFICATION,GROUP_CONCAT(TARGET_POS ORDER BY TARGET_POS SEPARATOR '_'),Q.ID_MODIFICATION,GROUP_CONCAT(DISTINCT MQ.ID_MODIFICATION ORDER BY MQ.MODIF_RANK SEPARATOR ',')
 								FROM QUANTIFICATION Q
 								LEFT JOIN MULTIMODIF_QUANTIFICATION MQ ON Q.ID_QUANTIFICATION=MQ.ID_QUANTIFICATION
 								INNER JOIN EXPLORANA_QUANTIF EQ ON EQ.ID_QUANTIFICATION=Q.ID_QUANTIFICATION
 								WHERE ID_EXPLORANALYSIS=? GROUP BY Q.ID_QUANTIFICATION");
-$sthSelExplorQuantif -> execute($explorID);
-while (my($quantifID,$targetPos,$ptmStrg) = $sthSelExplorQuantif -> fetchrow_array) {
+$sthSelExplorQuantif->execute($explorID);
+while (my ($quantifID,$targetPosStrg,$quantifModID,$multiModifStrg) = $sthSelExplorQuantif->fetchrow_array) {
     $quantifListStrg.=':' if $quantifListStrg;
-    $quantifListStrg.=$quantifID."_".$targetPos;
+    $quantifListStrg.=$quantifID."_".$targetPosStrg;
     $quantificationIDs{$quantifID}=1;
-    next if $ptmStrg eq '0,0'; # no PTM quantif
-    foreach my $modID (split(',',$ptmStrg)) {
-        $ptmUsed{$modID}=1 if $modID;
-    }
+	($isModifQuantif,my $isMultiModifQuantif)=&promsQuantif::getQuantifModificationInfo($dbh,$quantifModID,$multiModifStrg,{},\%ptmUsed);
 }
-$sthSelExplorQuantif -> finish;
+$sthSelExplorQuantif->finish;
 
 my $oldSingleModID=0; # to handle old single-site format stored in files (no modifID)
 if (scalar keys %ptmUsed) {
-    $isPtmQuantif=1;
-	$oldSingleModID=(keys %ptmUsed)[0]; # just in case PTM
+    $isModifQuantif=1;
+	$oldSingleModID=(keys %{$ptmUsed{NAME}})[0]; # just in case PTM
     $protAnnotMatchStrg=",'^###(\$|-)'";
 }
 
@@ -119,6 +118,9 @@ elsif ($ajax eq 'pathwayAnnotateClustering') {
 }
 elsif ($ajax eq 'getListTheme') {
     &ajaxGetListTheme;
+    exit;
+} elsif ($ajax eq 'exportMatrix') {
+    &exportMatrix;
     exit;
 }
 my @userInfo=&promsMod::getUserInfo($dbh,$userID,$projectID);
@@ -183,7 +185,7 @@ if ($view eq '2D') {
     $sthGO -> finish;
 
     ##PATHWAY ANALYSES
-    my $sthPA=$dbh->prepare("SELECT ID_PATHWAY_ANALYSIS, ID_CATEGORY, NAME, PARAM_STRG FROM PATHWAY_ANALYSIS WHERE ID_EXPERIMENT=$experimentID AND STATUS>0");
+    my $sthPA=$dbh->prepare("SELECT ID_PATHWAY_ANALYSIS, ID_CATEGORY, NAME, PARAM_STRG FROM PATHWAY_ANALYSIS WHERE ID_EXPERIMENT=$experimentID AND STATUS>0 AND ANALYSIS_TYPE='PATHWAY'");
     $sthPA->execute;
     while (my ($pathID, $catID, $name, $paramStrg)=$sthPA->fetchrow_array) {
         $catID = (!$catID)? "" : $catID;
@@ -195,7 +197,7 @@ if ($view eq '2D') {
 #######################
 ####>Starting HTML<####
 #######################
-my $hmRowItem=($isPtmQuantif)? 'Site' : 'Protein';
+my $hmRowItem=($isModifQuantif)? 'Site' : 'Protein';
 my $hmRowItems=$hmRowItem.'s';
 $quantifMeasName=~s/Protein/$hmRowItem/ if $view eq '2D'; # undef otherwise
 print header(-'content-encoding'=>'no',-charset=>'utf-8');
@@ -221,7 +223,7 @@ print qq
 <SCRIPT src="$promsPath{html}/js/other/canvg.js"></SCRIPT>
 <SCRIPT src="$promsPath{html}/js/other/svgfix-0.2.js"></SCRIPT>
 <SCRIPT src="$promsPath{html}/js/other/rgbcolor.js"></SCRIPT>
-<SCRIPT language="Javascript">
+<SCRIPT type="text/javascript">
 |;
 &promsMod::popupInfo();
 if ($view eq '2D') {
@@ -335,6 +337,19 @@ function ajaxProteinData(e,protID,refData,action,midX,botY,divNum) { // action=a
 	XHR.send(null);
 
 }
+function updateProteinList(set) { // adapted for displayClustering.cgi
+    var myForm=document.protForm;
+	var chkData=myForm.chkProt;
+	var chkStatus=(set==='none')? false : true;
+	if (chkData.length) {
+		for (let i=0; i<chkData.length; i++) {
+			chkData[i].checked=chkStatus;
+		}
+	}
+	else {
+		chkData.checked=chkStatus;
+	}
+}
 // <----- End of block
 
 function selectSort(newSort,ajax) { // view=list (true or from Volcano ajax)
@@ -422,12 +437,16 @@ function selectAnnotTarget(target) {
 
 /*** QUANTIF/COND ANNOTATION ***/
 // BIOSAMPLE PROPERTY / TREATMENT-BASED ANNOTATION
-function ajaxPropAnnotateClustering(selProp,propName,saved) {
-    if (!selProp) {
-       return;
-    }
+function ajaxPropAnnotateClustering(params,saved,jobRank) {
+	var [selProp,propName]=params;
+    //if (!selProp) {
+    //   return;
+    //}
+	if (!saved) saved=false;
     if (annotSetObject.quantif[propName]) {
         alert('ERROR: "'+propName+'" already used!');
+		/* Launch next job (if any) */
+		launchNextJob(jobRank);
         return;
     }
     if (!saved) saved=false;
@@ -444,7 +463,7 @@ function ajaxPropAnnotateClustering(selProp,propName,saved) {
     if (!XHR) {
         return false;
     }
-    XHR.open("POST","$promsPath{cgi}/displayClustering.cgi",!saved); // Switches to synchronous for already saved nnotations
+    XHR.open("POST","$promsPath{cgi}/displayClustering.cgi",true); // Switches to synchronous for already saved nnotations
 	//Send the proper header information along with the request
     XHR.setRequestHeader("Content-type", "application/x-www-form-urlencoded; charset=UTF-8");
     XHR.onreadystatechange=function() {
@@ -455,6 +474,8 @@ function ajaxPropAnnotateClustering(selProp,propName,saved) {
                 annotSetObject.quantif[propName] = {type:selData[0]+':'+selData[1],param:'#'+selData[2],position:annotRank.quantif}; // # for ID tag
                 if (!saved) document.getElementById('saveButton').style.display = '';
             }
+			/* Launch next job (if any) */
+			launchNextJob(jobRank);
         }
     }
     XHR.send(paramStrg);
@@ -479,7 +500,6 @@ function updateProtAnnotationType(protAnnotSel) {
         document.getElementById('termDisplayDIV').style.display='none';
         document.getElementById('listDisplayDIV').style.display='none';
         ajaxGetListTheme(typeInfo[1]);
-        //ajaxThemeAnnotateClustering(typeInfo[1],protAnnotSel.options[protAnnotSel.selectedIndex].text,false);
     }
     else if (typeInfo[0]=='PA') {
         document.getElementById('goAspect').style.display='none';
@@ -575,7 +595,7 @@ function userListAnnotateClustering() {
         if (strgList[0] == 'TH') {
             type = 'TH';
             annotHasChanged=1;
-            ajaxThemeAnnotateClustering(strgList[1],strgList[2],false,'THEME');
+            ajaxThemeAnnotateClustering([strgList[1],strgList[2],'THEME']);
         }
         else if (strgList[0] == 'LI') {
             type='LI';
@@ -585,7 +605,7 @@ function userListAnnotateClustering() {
     if (type == 'LI'){
         var listAnnot=(listID.length>1)? listID.join(':') : listID;
         annotHasChanged=1;
-        ajaxThemeAnnotateClustering(listAnnot,document.getElementById('annotListName').value,false,'LIST');
+        ajaxThemeAnnotateClustering([listAnnot,document.getElementById('annotListName').value,'LIST']);
     }
 
 }
@@ -604,7 +624,7 @@ function ajaxGetPathwayList(pathID) {
     if (!XHR) {
         return false;
     }
-    XHR.open("GET","$promsPath{cgi}/runAndDisplayPathwayAnalysis.cgi?AJAX=ajaxGetPathway&FROM=cluster&ID="+pathID,true);
+    XHR.open("GET","$promsPath{cgi}/displayPathwayAnalysis.cgi?AJAX=ajaxGetPathway&FROM=cluster&ID="+pathID,true);
     XHR.onreadystatechange=function() {
         if (XHR.readyState==4 && XHR.responseText) {
             termsDiv.innerHTML=XHR.responseText;
@@ -619,9 +639,12 @@ function ajaxGetPathwayList(pathID) {
     }
     XHR.send(null);
 }
-function ajaxGetPathwayProteinsList(name, termsStrg, pathID, saved) {
-    if (annotSetObject.prot[name]) {
+function ajaxPathwayAnnotateClustering(params,saved,jobRank) {
+    var [name,termsStrg,pathID]=params;
+	if (annotSetObject.prot[name]) {
         alert('ERROR: "'+name+'" is already used!');
+		/* Launch next job (if any) */
+		launchNextJob(jobRank);
         return;
     }
     if (!saved) saved=false;
@@ -645,6 +668,8 @@ function ajaxGetPathwayProteinsList(name, termsStrg, pathID, saved) {
                annotSetObject.prot[name] = {type:'prot:PA:M',param:'#'+pathID+':=:'+termsStrg,position:annotRank.prot}; // # for ID tag
                if (!saved) document.getElementById('saveButton').style.display = '';
             }
+			/* Launch next job (if any) */
+			launchNextJob(jobRank);
         }
     }
     XHR.send(null);
@@ -671,7 +696,7 @@ function userPathwayAnnotateClustering(pathID){
 
     var termsPathAnnot=termsArray.join(':\@:');
     var annotName=document.getElementById('annotName').value;
-    ajaxGetPathwayProteinsList(annotName,termsPathAnnot,pathID,false);
+    ajaxPathwayAnnotateClustering([annotName,termsPathAnnot,pathID]);
 }
 
 // GO-BASED ANNOTATION
@@ -747,12 +772,15 @@ function userGoAnnotateClustering() {
         return;
     }
     var annotName=document.getElementById('annotName').value;
-    ajaxGoAnnotateClustering(annotName,goID,goAspect,termsStrg,false);
+    ajaxGoAnnotateClustering([annotName,goID,goAspect,termsStrg]);
 }
 
-function ajaxGoAnnotateClustering(annotName,goID,goAspect,termsStrg,saved) {
+function ajaxGoAnnotateClustering(params,saved,jobRank) {
+	var [annotName,goID,goAspect,termsStrg]=params;
     if (annotSetObject.prot[annotName]) {
         alert('ERROR: "'+annotName+'" is already used!');
+		/* Launch next job (if any) */
+		launchNextJob(jobRank);
         return;
     }
     if (!saved) saved=false;
@@ -769,7 +797,7 @@ function ajaxGoAnnotateClustering(annotName,goID,goAspect,termsStrg,saved) {
     if (!XHR) {
         return false;
     }
-    XHR.open("POST","$promsPath{cgi}/displayClustering.cgi",!saved); // Switches to synchronous for already saved annotations
+    XHR.open("POST","$promsPath{cgi}/displayClustering.cgi",true); // Switches to synchronous for already saved annotations
     //Send the proper header information along with the request
     XHR.setRequestHeader("Content-type", "application/x-www-form-urlencoded; charset=UTF-8");
     XHR.onreadystatechange=function() {
@@ -779,16 +807,20 @@ function ajaxGoAnnotateClustering(annotName,goID,goAspect,termsStrg,saved) {
                 annotSetObject.prot[annotName] = {type:'prot:GO:M',param:'#'+goID+':=:'+goAspect+':=:'+termsStrg,position:annotRank.prot}; // # for ID tag
                 if (!saved) document.getElementById('saveButton').style.display = '';
             }
+			/* Launch next job (if any) */
+			launchNextJob(jobRank);
         }
     }
     XHR.send(paramStrg);
 }
 
 // LIST-BASED ANNOTATION
-function ajaxThemeAnnotateClustering(themeID,themeName,saved,type) {
-
+function ajaxThemeAnnotateClustering(params,saved,jobRank) {
+	var [themeID,themeName,type]=params;
     if (annotSetObject.prot[themeName]) {
         alert('ERROR: "'+themeName+'" is already used!');
+		/* Launch next job (if any) */
+		launchNextJob(jobRank);
         return;
     }
     if (!saved) saved=false;
@@ -803,7 +835,7 @@ function ajaxThemeAnnotateClustering(themeID,themeName,saved,type) {
     if (!XHR) {
         return false;
     }
-    XHR.open("GET","$promsPath{cgi}/displayClustering.cgi?AJAX=themeAnnotateClustering&experimentID=$experimentID&explorID=$explorID&name="+themeName+"&type="+type+"&themeID="+themeID,!saved);
+    XHR.open("GET","$promsPath{cgi}/displayClustering.cgi?AJAX=themeAnnotateClustering&experimentID=$experimentID&explorID=$explorID&name="+themeName+"&type="+type+"&themeID="+themeID,true);
     XHR.onreadystatechange=function() {
         if (XHR.readyState==4 && XHR.responseText) {
             if (eval(XHR.responseText)) {
@@ -811,6 +843,8 @@ function ajaxThemeAnnotateClustering(themeID,themeName,saved,type) {
                 annotSetObject.prot[themeName] = {type:'prot:'+type,param:'#'+themeID,position:annotRank.prot}; // # for ID tag
                 if (!saved) document.getElementById('saveButton').style.display = '';
             }
+			/* Launch next job (if any) */
+			launchNextJob(jobRank);
         }
     }
     XHR.send(null);
@@ -864,22 +898,11 @@ function ajaxSaveAnnotations() {
     }
     XHR.send(paramStrg);
 }
-
-function toggleValueDistribution() {
-	var graph = document.getElementById('valueDistribution');
-	var isDisplayed = (graph.style.display == '');
-	graph.style.display = (isDisplayed) ? 'none' : '';
-	
-	
-	var displayButton = document.getElementById('valueDistributionButton');
-	displayButton.innerHTML = (isDisplayed) ? 'Display values distribution' : 'Hide values distribution';
-}
-
 </SCRIPT>
 </HEAD>
 <BODY background="$promsPath{images}/bgProMS.gif">
 <CENTER>
-<FONT class="title">Clustering&nbsp;<SELECT class="title2" name="viewDim" onchange="selectClustDim(this.value)"><OPTION value="1D"$sel1D>1D</FONT></OPTION><OPTION value="2D"$sel2D>2D</OPTION></SELECT> : <FONT color=#DD0000>$clusteringName</FONT></FONT><BR>
+<FONT class="title">Clustering&nbsp;<SELECT class="title2" name="viewDim" onchange="selectClustDim(this.value)"><OPTION value="1D"$sel1D>1D</FONT></OPTION><OPTION value="2D"$sel2D>2D</OPTION></SELECT> : <FONT color=#DD0000>$clusteringName</FONT></FONT> <a href="$promsPath{cgi}/displayClustering.cgi?AJAX=exportMatrix&explorID=$explorID&experimentID=$experimentID&PROJECT_ID=$projectID"><input type="button" id="exportMatrixButton" onclick="" value="Export Data" /></a><BR>
 <BR>
 |;
 
@@ -917,6 +940,7 @@ while (my $lineQuantif = <QUANTIF_ORDER>) {
         #$strgQuantif=$quantifNames{OPTIMAL}{$quantif}  || $quantif;
         #$strgQuantif.='-'.$quantif;
     }
+    $strgQuantif=~s/['"]/./g;
     push @quantifOrder, $quantif;
     push @quantifInfo, "['$strgQuantif','$quantif']";
     #push @quantifInfo, "['$quantifNames{OPTIMAL}{$quantif}','$quantif']";
@@ -945,21 +969,20 @@ close (QUANTIF_DENDRO);
 if ($view eq '2D') {
 	
 	###>Get PTM info if any<###
-	my %quantifModifInfo;
-	if ($isPtmQuantif) {
-		my @quantifModifs=keys %ptmUsed;
-		&promsQuantif::getQuantifModificationInfo($dbh,\@quantifModifs,\%quantifModifInfo);
-	}
+	# my %quantifModifInfo;
+	# if ($isModifQuantif) {
+	# 	my @quantifModifs=keys %{$ptmUsed{NAME}};
+	# 	&promsQuantif::getQuantifModificationInfo($dbh,\@quantifModifs,\%quantifModifInfo);
+	# }
 
     my %protIdList;
-    #my $oldSingleModID=(keys %ptmUsed)[0]; # in case of old single PTM-site format
     open (PROTEIN_ORDER,"$pathToFile/protCluster.txt") || &stopOnError("ERROR!<BR>$!: '$pathToFile/protCluster.txt'");
     while (my $lineProtein = <PROTEIN_ORDER>) {
         chomp($lineProtein);
         next if ($. == 1);
         my ($index, $pos, $modProtID) = split("\t", $lineProtein);
-		my ($protID,$modCode)=$modProtID=~/^(\d+)-*(.*)/;
-		if ($modCode && $modCode !~ /^\d+:/) { # no starting modifID => old single PTM format
+		my ($protID,$modCode)=$modProtID=~/^(\d+)-?(.*)/;
+		if ($modCode && $modCode !~ /^-?\d+:/) { # no starting modifID => old single PTM format  // potential Free res (-1:...)
 			$modCode=$oldSingleModID.':'.$modCode;
 			$modProtID=$protID.'-'.$modCode;
 		}
@@ -975,7 +998,8 @@ if ($view eq '2D') {
 	while (my ($protID,$alias)=$sthProt->fetchrow_array) {
 		foreach my $modCode (@{$protIdList{$protID}}) {
 			if ($modCode) {
-				my ($formatCode,$displayCode)=&promsQuantif::formatProteinModificationSites($modCode,\%quantifModifInfo,'text');
+				#my ($formatCode,$displayCode)=&promsQuantif::formatProteinModificationSites($modCode,\%quantifModifInfo,'text');
+				my $displayCode=&promsQuantif::displayModificationSites($modCode,$ptmUsed{DISPLAY},'text');
 				$proteinNames{"$protID-$modCode"}=$alias.'-'.$displayCode;
 			}
 			else {$proteinNames{$protID}=$alias;}
@@ -1014,8 +1038,8 @@ if ($view eq '2D') {
             next;
         }
         my ($modProtID,@values) = split("\t",$_);
-		my ($protID,$modCode)=$modProtID=~/^(\d+)-*(.*)/;
-		if ($modCode && $modCode !~ /^\d+:/) {
+		my ($protID,$modCode)=$modProtID=~/^(\d+)-?(.*)/;
+		if ($modCode && $modCode !~ /^-?\d+:/) {
 			$modProtID=$protID.'-'.$oldSingleModID.':'.$modCode; # $oldSingleModID should be defined above
 		}
         for (my $j=0; $j <= $#values; $j++) {
@@ -1032,8 +1056,8 @@ if ($view eq '2D') {
         while (<MISSING>) {
             chomp;
             my ($modProtID,@quantifsNA)=split(/\t/,$_);
-			my ($protID,$modCode)=$modProtID=~/^(\d+)-*(.*)/;
-			if ($modCode && $modCode !~ /^\d+:/) {
+			my ($protID,$modCode)=$modProtID=~/^(\d+)-?(.*)/;
+			if ($modCode && $modCode !~ /^-?\d+:/) {
 				$modProtID=$protID.'-'.$oldSingleModID.':'.$modCode; # $oldSingleModID should be defined above
 			}
             foreach my $quantif (@quantifsNA) {
@@ -1047,9 +1071,8 @@ if ($view eq '2D') {
 my $strgProteinDendro = join(";", @proteinTab);
 my $strgQuantifDendro = join(";", @quantifTab);
 my $strgQuantif = join(",", @quantifInfo);
-
 print qq
-|<SCRIPT language="Javascript">
+|<SCRIPT type="text/javascript">
 var HM;
 var insertObject={};
 var checkObject={};
@@ -1114,46 +1137,63 @@ else {
 print qq|
     HM.draw();
 }
-function annotateClustering() {
+function annotateClustering(jobRank=1) {
+	if (jobList[jobRank]) {
+		let [hlFunction,params]=jobList[jobRank];
+		hlFunction(params,true,jobRank);
+	}
+}
+function launchNextJob(jobRank) {
+	if (jobRank) {
+		jobRank++; // next job
+		if (jobList[jobRank]) {annotateClustering(jobRank);}
+	}
+}
+var jobList={};
 |;
 
 ###>Restoring saved annotations<###
-my $sthSelectAnnot = $dbh -> prepare("SELECT NAME, RANK, ANNOT_TYPE, ANNOT_LIST FROM ANNOTATIONSET WHERE ID_EXPLORANALYSIS = $explorID ORDER BY RANK");
+my $sthSelectAnnot = $dbh -> prepare("SELECT NAME,ANNOT_RANK,ANNOT_TYPE,ANNOT_LIST FROM ANNOTATIONSET WHERE ID_EXPLORANALYSIS = $explorID ORDER BY ANNOT_RANK");
 my $sthProperty=$dbh->prepare("SELECT NAME FROM PROPERTY WHERE ID_PROPERTY=?");
 my $sthTheme=$dbh->prepare("SELECT NAME FROM CLASSIFICATION WHERE ID_CLASSIFICATION=?");
 $sthSelectAnnot -> execute;
+my $jobRank=0;
 while (my ($name, $rank, $annotType, $annotList) = $sthSelectAnnot -> fetchrow_array) {
+	$jobRank++;
     if ($annotType =~ /^property:/) { # BioSample property/treatment
         my ($propID)=($name=~/^#(\d+)/); # extract property ID
         $sthProperty -> execute($propID);
         my ($propName)=$sthProperty -> fetchrow_array;
         next unless $propName; # to be safe in case property has been deleted
-        print "\tajaxPropAnnotateClustering('$annotType:$propID','$propName',true);\n" ;
+		#print "\trestoreSavedHighlightings($jobRank,ajaxPropAnnotateClustering,['$annotType:$propID','$propName']);\n";
+		print "jobList[$jobRank]=[ajaxPropAnnotateClustering,['$annotType:$propID','$propName']];\n";
     }
     elsif ($annotType eq 'prot:THEME') { # Custom lists
         my ($themeID)=($name=~/^#(\d+)/); # extract classification ID
         $sthTheme -> execute($themeID);
         my ($themeName)=$sthTheme -> fetchrow_array;
         if ($view eq "1D") {
-            print qq|
-            annotRank.prot++;
-            annotSetObject.prot['$themeName'] = {type:'prot:THEME',param:'#$themeID',position:annotRank.prot}; // # for ID tag
-            |;
+            print qq
+|annotRank.prot++;
+annotSetObject.prot['$themeName'] = {type:'prot:THEME',param:'#$themeID',position:annotRank.prot}; // # for ID tag
+|;
         }
         else {
-            print "\tajaxThemeAnnotateClustering($themeID,'$themeName',true,'THEME');\n";
+			#print "\trestoreSavedHighlightings($jobRank,ajaxThemeAnnotateClustering,[$themeID,'$themeName','THEME']);\n";
+			print "jobList[$jobRank]=[ajaxThemeAnnotateClustering,[$themeID,'$themeName','THEME']];\n";
         }
     }
     elsif ($annotType eq 'prot:LIST') {
         $annotList=~s/#//g;
         if ($view eq "1D") {
-            print qq|
-            annotRank.prot++;
-            annotSetObject.prot['$name'] = {type:'prot:LIST',param:'#$annotList',position:annotRank.prot}; // # for ID tag
-            |;
+            print qq
+|annotRank.prot++;
+annotSetObject.prot['$name'] = {type:'prot:LIST',param:'#$annotList',position:annotRank.prot}; // # for ID tag
+|;
         }
         else {
-            print "\tajaxThemeAnnotateClustering('$annotList','$name',true,'LIST');\n";
+			#print "\trestoreSavedHighlightings($jobRank,ajaxThemeAnnotateClustering,['$annotList','$name','LIST']);\n";
+			print "jobList[$jobRank]=[ajaxThemeAnnotateClustering,['$annotList','$name','LIST']];\n";
         }
 
     }
@@ -1161,26 +1201,28 @@ while (my ($name, $rank, $annotType, $annotList) = $sthSelectAnnot -> fetchrow_a
         my ($goID,$goAspect,$termList)=split(':=:',$annotList);
         $goID=~s/^#//; # remove GOanaID tag
         if ($view eq "1D") {
-            print qq|
-            annotRank.prot++;
-            annotSetObject.prot['$name'] = {type:'prot:GO:M',param:'$annotList',position:annotRank.prot}; // # for ID tag
-            |;
+            print qq
+|annotRank.prot++;
+annotSetObject.prot['$name'] = {type:'prot:GO:M',param:'$annotList',position:annotRank.prot}; // # for ID tag
+|;
         }
         else {
-           print "\tajaxGoAnnotateClustering('$name',$goID,'$goAspect','$termList',true);\n";
+			#print "\trestoreSavedHighlightings($jobRank,ajaxGoAnnotateClustering,['$name',$goID,'$goAspect','$termList']);\n";
+			print "jobList[$jobRank]=[ajaxGoAnnotateClustering,['$name',$goID,'$goAspect','$termList']];\n";
         }
     }
     elsif ($annotType eq 'prot:PA:M') {
         my ($pathID, $termList)=split(':=:', $annotList);
         $pathID=~s/^#//;
         if ($view eq "1D") {
-            print qq|
-            annotRank.prot++;
-            annotSetObject.prot['$name'] = {type:'prot:PA:M',param:'$annotList',position:annotRank.prot}; // # for ID tag
-            |;
+            print qq
+|annotRank.prot++;
+annotSetObject.prot['$name'] = {type:'prot:PA:M',param:'$annotList',position:annotRank.prot}; // # for ID tag
+|;
         }
         else {
-           print "\tajaxGetPathwayProteinsList('$name','$termList',$pathID,true);\n";
+			#print "\trestoreSavedHighlightings($jobRank,ajaxPathwayAnnotateClustering,['$name','$termList',$pathID]);\n";
+			print "jobList[$jobRank]=[ajaxPathwayAnnotateClustering,['$name','$termList',$pathID]];\n";
         }
     }
 }
@@ -1188,10 +1230,9 @@ $sthSelectAnnot -> finish;
 $sthProperty -> finish;
 $sthTheme -> finish;
 $dbh -> disconnect;
-print qq
-|
-}
-</SCRIPT>|;
+
+print "</SCRIPT>\n";
+
 my $strgSelect = ($view eq "1D")? "Quantifications" : "<SELECT name=\"annotTarget\" class=\"title3\" onchange=\"selectAnnotTarget(this.value)\"><OPTION value=\"quantif\">Quantifications</OPTION><OPTION value=\"prot\">$hmRowItems</OPTION></SELECT>" ;
 print qq|
 <TABLE>
@@ -1200,7 +1241,7 @@ print qq|
     <TD bgcolor="$darkColor" class="title3" style="height:30px" align="center">&nbsp;Annotation for:&nbsp;$strgSelect</TD>
 </TR>
 <TR><TD valign="top" nowrap><TABLE cellspacing=0 cellpadding=0 border=0>
-    <TR><TD valign="top"><SELECT name="quantifAnnotationType" id="quantifAnnotationType" class="annotation title3" onchange="ajaxPropAnnotateClustering(this.value,this.options[this.selectedIndex].text,false)">
+    <TR><TD valign="top"><SELECT name="quantifAnnotationType" id="quantifAnnotationType" class="annotation title3" onchange="ajaxPropAnnotateClustering([this.value,this.options[this.selectedIndex].text],false)">
     <OPTION value="">-= Select =-</OPTION>
     <OPTGROUP label="BioSample properties:">
 |;
@@ -1268,18 +1309,6 @@ print qq
     <TR><TD><DIV id="listDisplayDIV" style="max-height:150px;max-width:300px;overflow:auto;display:none"></DIV><DIV id="saveList" style="display:none"><B>Annotation name:</B><INPUT type="text" id="annotListName" style="width:160px"/><br><INPUT type="button" value="Annotate" id="annotList" onclick="userListAnnotateClustering()"/></DIV></TD></TR>
     <TR><TD><INPUT type="button" id="saveButton" style="font-weight:bold;display:none" onclick="ajaxSaveAnnotations()" value="Save annotations"$disabSave></TD></TR>
     <TR><TD><SPAN id="saveSPAN" class="title3" style="color:#FFF;background-color:#387D38;padding:1px 7px;display:none">Annotations saved !</SPAN></TD></TR>
-|;
-
-my $distribPlotPath = "$promsPath{explorAna_html}/project_$projectID/$explorID/";
-print qq |
-    <TR><TH><br/>
-        <button id='valueDistributionButton' onclick='toggleValueDistribution();' />Display values distribution</button><br/>
-		<img src='$distribPlotPath/valueDistribution.png' id='valueDistribution' style='display:none' />
-    </TH></TR>
-| if(-e "$pathToFile/valueDistribution.png");
-
-
-print qq |
     </TABLE></TD></TR>
 </TABLE>
 <DIV id="protListDIV" style="clear:both;height:535;overflow:auto"></DIV>
@@ -1317,8 +1346,13 @@ sub ajaxPropAnnotateClustering {
                                 INNER JOIN ANA_QUANTIFICATION AQ ON O.ID_ANALYSIS=AQ.ID_ANALYSIS
                                 INNER JOIN EXPLORANA_QUANTIF EQ ON AQ.ID_QUANTIFICATION=EQ.ID_QUANTIFICATION
                                 WHERE BP.ID_PROPERTY=$propID AND EQ.ID_EXPLORANALYSIS=$explorID");
-    my ($propName)=$dbh->selectrow_array("SELECT NAME FROM PROPERTY WHERE ID_PROPERTY=$propID");
-    $sthPV->execute;
+    my ($propName,$possibleValueStrg)=$dbh->selectrow_array("SELECT NAME,POSSIBLE_VALUES FROM PROPERTY WHERE ID_PROPERTY=$propID");
+    my %propValueRank;
+	if ($possibleValueStrg) {
+		my $rank=0;
+		foreach my $possValue (split(':#:',$possibleValueStrg)) {$propValueRank{$possValue}=++$rank;}
+	}
+	$sthPV->execute;
     my %propValueCode;
     while (my ($propValue)=$sthPV->fetchrow_array) {
         my $propText=$propValue;
@@ -1328,18 +1362,19 @@ sub ajaxPropAnnotateClustering {
             $propText=&promsQuantif::convertTreatmentToText($propValue);
         }
         $propValueCode{$propValue}=$propText;
+		$propValueRank{$propValue}=9999 unless $propValueRank{$propValue};
     }
     $sthPV->finish;
 
     my $jsAnnotStrg='';
-    foreach my $propValue (sort{&promsMod::sortSmart(lc($a),lc($b))} keys %propValueCode) {
+    foreach my $propValue (sort{$propValueRank{$a}<=>$propValueRank{$b} || &promsMod::sortSmart(lc($a),lc($b))} keys %propValueCode) {
         my %matchedQuantifs=&promsQuantif::getQuantificationsFromPropertyValue($dbh,$propID,$propType,$propValue,param('qList'));
         if (scalar keys %matchedQuantifs) {
             $jsAnnotStrg.="," if $jsAnnotStrg;
-            $jsAnnotStrg.="'$propValueCode{$propValue}':'".join(',',keys %matchedQuantifs)."'";
+            $jsAnnotStrg.="['$propValueCode{$propValue}','".join(',',keys %matchedQuantifs)."']";
         }
     }
-    print "HM.addAnnotation('column','$propName',{$jsAnnotStrg},'^###(\$|%)');";
+    print "HM.addAnnotation('column','$propName',[$jsAnnotStrg],'^###(\$|%)');";
     $dbh->disconnect;
     exit;
 }
@@ -1361,7 +1396,7 @@ sub ajaxThemeAnnotateClustering {
     if ($type eq 'THEME') {
         $sthList->execute($themeID);
         while (my ($listID,$listName,$type)=$sthList->fetchrow_array) {
-			if ($isPtmQuantif && $type eq 'SITE') {
+			if ($isModifQuantif && $type eq 'SITE') {
 				my %siteList;
 				&promsQuantif::fetchCustomList($dbh,$listID,\%siteList);
 				my $first=1;
@@ -1499,12 +1534,12 @@ sub ajaxPathwayAnnotateClustering {
 
     my $codeIdent="AC";
     my ($identifierID)=$dbh->selectrow_array("SELECT ID_IDENTIFIER FROM IDENTIFIER WHERE CODE='$codeIdent'");
-    my ($strgFromSQL, $strgWhereSQL, $strgCondSQL)=($catID)? ("CATEGORY_PROTEIN C,","C.ID_CATEGORY=? and C.ID_PROTEIN=P.ID_PROTEIN and","") : ("PATHWAYANA_ANALYSIS PA,ANALYSIS_PROTEIN AP,","PA.ID_ANALYSIS = AP.ID_ANALYSIS and AP.ID_PROTEIN = P.ID_PROTEIN and", "and PA.ID_PATHWAY_ANALYSIS=? and AP.VISIBILITY>=1");
-    my $sthProt=$dbh->prepare("SELECT P.ID_PROTEIN, MI.VALUE  FROM $strgFromSQL PROTEIN P, MASTER_PROTEIN MP, MASTERPROT_IDENTIFIER MI
-                              where $strgWhereSQL
-                              P.ID_MASTER_PROTEIN = MP.ID_MASTER_PROTEIN and
-                              MP.ID_MASTER_PROTEIN = MI.ID_MASTER_PROTEIN and
-                              MI.ID_IDENTIFIER=? and MI.RANK=1 $strgCondSQL");
+    my ($strgFromSQL, $strgWhereSQL, $strgCondSQL)=($catID)? ("CATEGORY_PROTEIN C,","C.ID_CATEGORY=? and C.ID_PROTEIN=P.ID_PROTEIN AND","") : ("PATHWAYANA_ANALYSIS PA,ANALYSIS_PROTEIN AP,","PA.ID_ANALYSIS = AP.ID_ANALYSIS AND AP.ID_PROTEIN = P.ID_PROTEIN AND", "AND PA.ID_PATHWAY_ANALYSIS=? AND AP.VISIBILITY>=1");
+    my $sthProt=$dbh->prepare("SELECT P.ID_PROTEIN,MI.VALUE FROM $strgFromSQL PROTEIN P,MASTER_PROTEIN MP,MASTERPROT_IDENTIFIER MI
+                              WHERE $strgWhereSQL
+                              P.ID_MASTER_PROTEIN = MP.ID_MASTER_PROTEIN AND
+                              MP.ID_MASTER_PROTEIN = MI.ID_MASTER_PROTEIN AND
+                              MI.ID_IDENTIFIER=? AND MI.IDENT_RANK=1 $strgCondSQL");
     ($catID)? $sthProt->execute($catID, $identifierID) : $sthProt->execute($identifierID, $pathwayID);
     my %protIDs;
     while(my ($protID, $uniprot) = $sthProt->fetchrow_array){
@@ -1572,7 +1607,7 @@ sub ajaxSaveAnnotations {
     $dbh -> do("DELETE FROM ANNOTATIONSET WHERE ID_EXPLORANALYSIS = $explorID");
 
     my ($annotSetID) = $dbh -> selectrow_array("SELECT MAX(ID_ANNOTATIONSET) FROM ANNOTATIONSET");
-    my $sthInsertAnnot = $dbh -> prepare("INSERT INTO ANNOTATIONSET(ID_ANNOTATIONSET,ID_EXPLORANALYSIS,NAME,RANK,ANNOT_TYPE,ANNOT_LIST) values (?,$explorID,?,?,?,?)");
+    my $sthInsertAnnot = $dbh -> prepare("INSERT INTO ANNOTATIONSET(ID_ANNOTATIONSET,ID_EXPLORANALYSIS,NAME,ANNOT_RANK,ANNOT_TYPE,ANNOT_LIST) values (?,$explorID,?,?,?,?)");
 
     if (param('string')) {
         my @annotList;
@@ -1631,7 +1666,7 @@ sub getProteinsInCluster { # records both protID & (modProtID if any); GLOBALS: 
         chomp;
         next if $. == 1;
         my ($index, $pos, $modProtID) = split("\t",$_);
-		my ($protID,$modCode)=$modProtID=~/^(\d+)-*(.*)/;
+		my ($protID,$modCode)=$modProtID=~/^(\d+)-?(.*)/;
 		$refProtList->{$protID}=1;
 		if ($modCode) {
 			if ($modCode !~ /^\d+:/) { # no starting modifID => old format
@@ -1652,23 +1687,72 @@ sub ajaxGetListTheme {
 	my %listTypeName=('PROT'=>'Proteins','SITE'=>'Sites');
     my ($themeName)=$dbh->selectrow_array("SELECT NAME FROM CLASSIFICATION WHERE ID_CLASSIFICATION=$themeID");
     my $sthList=$dbh->prepare("SELECT ID_CATEGORY,NAME,LIST_TYPE FROM CATEGORY WHERE ID_CLASSIFICATION=$themeID ORDER BY DISPLAY_POS");
-    $sthList->execute();
-    #print qq|<SELECT MULTIPLE>|;
-    #my $bgColor=$lightColor;
-    print qq|<INPUT type="checkbox" value="TH:$themeID:$themeName" name="list" onclick="selectBoxes('TH')">All lists in theme<br>|;
+    $sthList->execute;
+    print qq|<LABEL><INPUT type="checkbox" value="TH:$themeID:$themeName" name="list" onclick="selectBoxes('TH')">All lists in theme</LABEL><BR>\n|;
     while (my ($listID,$listName,$listType)=$sthList->fetchrow_array) {
 		$listType='PROT' unless $listType;
-        print qq|<INPUT type="checkbox" value="LI:$listID:$listName" name="list" onclick="selectBoxes('LI')">$listName [$listTypeName{$listType}]<br>|;
-        #print qq|<OPTION value="$listID">$listName</OPTION>\n|;
-        #$bgColor=($bgColor eq $lightColor)? $darkColor : $lightColor;
+        print qq|<LABEL><INPUT type="checkbox" value="LI:$listID:$listName" name="list" onclick="selectBoxes('LI')">$listName [$listTypeName{$listType}]</LABEL><BR>\n|;
     }
-
-    #print qq|</SELECT>|;
     $sthList->finish;
     $dbh->disconnect;
     exit;
 }
 
+sub exportMatrix {
+    my (%protInfos, @allRows, @quantifs);
+    
+    # Get quantification names
+    %quantifNames=&promsQuantif::getDistinctQuantifNames($dbh,$quantifListStrg);
+    
+    # Get heatmap infos
+    open (MATRIX,"$pathToFile/matrix.txt") || &stopOnError("ERROR!<BR>$!: '$pathToFile/matrix.txt'");
+    while (<MATRIX>) {
+        chomp;
+        if ($. == 1) {
+            my ($empty, @quantifsHeader) = split("\t",$_);
+            foreach my $quantif (@quantifsHeader) {
+                push @quantifs, $quantifNames{OPTIMAL}{$quantif};
+            }
+            next;
+        }
+        my ($modProtID,@values) = split("\t",$_);
+		my ($protID,$modCode)=$modProtID=~/^(\d+)-?(.*)/;
+        @{$protInfos{$protID}} = (undef, undef) unless($protInfos{$protID});
+        
+		if ($modCode && $modCode !~ /^-?\d+:/) {
+			$modProtID = $protID.'-'.$oldSingleModID.':'.$modCode; # $oldSingleModID should be defined above
+		}
+        
+        unshift @values, $modProtID;
+        push @allRows, [@values];
+    }
+    close MATRIX;
+    
+    my $fileName = "heatmapData.tsv";
+    print header(-type=>"application/octet-stream", -attachment=>$fileName);
+    
+    if(%protInfos && @allRows && @quantifs) {
+        # Retrieve proteins infos
+        my $sthProt=$dbh->prepare("SELECT ID_PROTEIN, ALIAS, PROT_DES FROM PROTEIN WHERE ID_PROTEIN IN (".join(',', keys %protInfos).")");
+        $sthProt->execute();
+        while(my ($protID, $protName, $protDes) = $sthProt->fetchrow_array) {
+            @{$protInfos{$protID}} = ($protName, $protDes);
+        }
+        $sthProt->finish;
+        
+        # Output new matrix
+        print("UNIQID\tNAME\t".join("\t", @quantifs)."\n");
+        foreach my $rowRef (@allRows) {
+            my ($modProtID, @values) = @{$rowRef};
+            my ($protID, $modProt) = split("-", $modProtID);
+            $modProtID = @{$protInfos{$protID}}[0];
+            $modProtID .= '-'.$modProt if($modProt);
+            my $name = @{$protInfos{$protID}}[0];
+            $name .= '-'.$modProt if($modProt);
+            print("$modProtID\t$name\t".join("\t", @values)."\n");
+        }
+    }
+}
 
 
 sub stopOnError {
@@ -1684,6 +1768,20 @@ sub stopOnError {
 }
 
 ####>Revision history<####
+# 1.3.4 [BUGFIX] Fix checkbox JS bug after AJAX protein listing from compareQuantifications.cgi (PP 21/05/21)
+# 1.3.3 [UPDATE] Compatibility with Free residues quantifications (PP 04/12/20)
+# 1.3.2 [MODIF] Adapt query on PATHWAY_ANALYSIS to avoid GSEA entries (VL 18/11/20)
+# 1.3.1 [BUGFIX] Correct call to script runAndDisplayPathwayAnalysis replaced by displayPathwayAnalysis (VL 18/11/20)
+# 1.3.0 [FEATURE] Added possibility to export heatmap data (VS 23/09/20)
+# 1.2.15 [BUGFIX] Fixed truncated GROUP_CONCAT (PP 11/09/20)
+# 1.2.14 [ENHANCEMENT] Better AJAX calls chaining during saved highlightings restoration (PP 03/09/20)
+# 1.2.13 [CHANGE] Code change to use new &promsQuantif::getQuantifModificationInfo (PP 02/07/20)
+# 1.2.12 [BUGFIX] in cleaning ' and " from strings given to JS (PP 06/04/20)
+# 1.2.11 [ENHANCEMENT] Clean ' and " from strings given to JS (PP 23/03/20)
+# 1.2.10 [UPDATE] Changed RANK field to (ANNOT/IDENT)_RANK for compatibility with MySQL 8 (PP 04/03/20) 
+# 1.2.9 [ENHANCEMENT] Improved sorting of Property values & avoid synchronous AJAX when loading saved annotations (PP 27/02/20)
+# 1.2.8 [BUGFIX] in SQL query leading to truncated list of TARGET_POS when too many in same quantif (PP 22/02/20)
+# 1.2.7 [CHANGE] Removed values distribution chart (PP 21/02/20)
 # 1.2.6 [ENHANCEMENT] Better management of quantification parameters for ajaxListProt (PP 07/01/20)
 # 1.2.5 [BUGFIX] in SQL query requiring GROUP_CONCAT for TARGET_POS & [UX] Smooth scroll to list of proteins (PP 20/11/19)
 # 1.2.4 [ENHANCEMENT] Multi-site support (PP 24/10/19)

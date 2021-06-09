@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# manageBioSample.cgi               1.0.6                                      #
+# manageBioSample.cgi               1.0.7                                      #
 # Authors: P. Poullet, G. Arras, S.Liva (Institut Curie)              	       #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -115,7 +115,7 @@ if ($action=~/add|edit/ && param('submitted')) {
 
 	my $sthInsertBiosamp = $dbh -> prepare("INSERT INTO BIOSAMPLE (ID_BIOSAMPLE, ID_REFBIOSAMPLE, ID_SPECIES, IS_REFERENCE, NAME, DES,RECORD_DATE, UPDATE_DATE, UPDATE_USER) VALUES (?,?,?,?,?,?,NOW(),NOW(),?)");
 	my $sthInsertProjBiosamp = $dbh -> prepare("INSERT INTO PROJECT_BIOSAMPLE(ID_PROJECT, ID_BIOSAMPLE) VALUES (?,?)");
-	my $sthInsertBiosampProperty = $dbh -> prepare("INSERT INTO BIOSAMPLE_PROPERTY(ID_BIOSAMPLE, ID_PROPERTY, RANK,  PROPERTY_VALUE) VALUES (?,?,?,?)");
+	my $sthInsertBiosampProperty = $dbh -> prepare("INSERT INTO BIOSAMPLE_PROPERTY(ID_BIOSAMPLE,ID_PROPERTY,PROPERTY_RANK,PROPERTY_VALUE) VALUES (?,?,?,?)");
 
 	###>UPDATE biosample, biosample_property
 	if ($action eq 'edit') {
@@ -236,9 +236,9 @@ if ($action=~/summary|edit/) {
 	}
 
 	##select properties and treatment for specific sample
-	my $sthSelSampProp = $dbh -> prepare("SELECT BP.ID_PROPERTY, BP.RANK, BP.PROPERTY_VALUE, P.NAME, P.PROPERTY_TYPE FROM BIOSAMPLE_PROPERTY BP
+	my $sthSelSampProp = $dbh -> prepare("SELECT BP.ID_PROPERTY,BP.PROPERTY_RANK,BP.PROPERTY_VALUE,P.NAME,P.PROPERTY_TYPE FROM BIOSAMPLE_PROPERTY BP
 					     INNER JOIN PROPERTY P ON BP.ID_PROPERTY = P.ID_PROPERTY
-					     WHERE BP.ID_BIOSAMPLE = $biosampleID ORDER BY BP.RANK ");
+					     WHERE BP.ID_BIOSAMPLE = $biosampleID ORDER BY BP.PROPERTY_RANK");
 
 	$sthSelSampProp -> execute;
 	my %distinctSteps;
@@ -400,8 +400,8 @@ function numericOnly(e) {
 		return false;
 	}
 }
-var possValues = new Object();
-var usedPropertiesPos=new Object();
+var possValues = {};
+var usedPropertiesPos={};
 |;
 	foreach my $propID (keys %{$allProperties{values}}) {print "possValues[$propID] = '$allProperties{values}{$propID}';\n"; }
 	foreach my $rank (keys %sampleProperties) {print "usedPropertiesPos[$rank]=$sampleProperties{$rank}[0];\n";}
@@ -983,6 +983,7 @@ sub getConcentrationUnits {
 
 
 ####>Revision history<####
+# 1.0.7 [UPDATE] Changed RANK field to PROPERTY_RANK for compatibility with MySQL 8 (PP 04/03/20) 
 # 1.0.6 [BUGFIX] restrict duplicate bioSample name check to current project (PP 27/11/19)
 # 1.0.5 Minor bug fix in label-free observation display (PP 11/04/19)
 # 1.0.4 Minor modification for TMT (GA 03/04/17)
