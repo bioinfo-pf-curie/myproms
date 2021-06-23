@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# monitorJobs.cgi       1.1.16                                                 #
+# monitorJobs.cgi       1.1.18                                                 #
 # Authors: V. Sabatet (Institut Curie)                                         #
 # Contact: myproms@curie.fr                                                    #
 # Monitors all jobs (Quantifications, Libraries, PhosphoRS, DIA, TDA)          #
@@ -47,15 +47,15 @@ use strict;
 use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI ':standard';
 use POSIX qw(strftime tzset floor); # to get the time
-use File::stat;
+#use File::stat;
 use File::Basename;
-use File::Path qw(rmtree); # remove_tree
+#use File::Path qw(rmtree); # remove_tree
 use promsConfig;
 use promsMod;
 use promsQuantif;
-use Time::Piece;
-$ENV{'TZ'} = 'Europe/Paris';
-tzset();
+use Time::Piece; # WARNING: DO NOT compare converted datetime and timestamps!!!
+# $ENV{'TZ'} = 'Europe/Paris';
+# tzset();
 
 #######################
 ####>Configuration<####
@@ -66,8 +66,11 @@ my $userID = $ENV{'REMOTE_USER'};
 my $LIMIT_STORAGE = "1 MONTH"; # Store for a selected amount of time (matching mySQL INTERVAL format)
 my $REFRESH_TIME_INTERVAL = 5; # Refresh time interval (seconds)
 
+my %categoryDesc=(
+    'Phospho'   => 'Phospho-RS Analysis'
+);
 my %quantifProcesses = (
-    'XICMCQ'                     => 'Ext. ion chrom.',
+    'XICMCQ'                     => 'MassChroQ XIC Extraction',
     'EMPAI'                      => 'emPAI',
     'SIN'                        => 'SI<SUB>N</SUB>',
     'XICCORR'                    => 'XIC correction',
@@ -79,9 +82,9 @@ my %quantifProcesses = (
     'DESIGN:PEP_INTENSITY'       => 'Protein ratio (Peptide intensity)',
     'DESIGN:PEP_INTENSITY:Abund' => 'Protein Abundance (DDA)',
     'DESIGN:PEP_RATIO'           => 'Protein ratio (Peptide ratio)',
-    'DESIGN:MSstats'             => 'DIA-based Protein ratio (MSstats)',
-    'DESIGN:DIA'                 => 'DIA-based Protein ratio (myProMS)',
-    'DESIGN:DIA:Abund'           => 'DIA-based Protein Abundance',
+    'DESIGN:MSstats'             => 'Protein ratio (DIA-MSstats)',
+    'DESIGN:DIA'                 => 'Protein ratio (DIA-myProMS)',
+    'DESIGN:DIA:Abund'           => 'Protein Abundance (DIA-myProMS)',
     'DESIGN:TDA'                 => 'TDA (PRM/SRM/MRM)',
     'DESIGN:SSPA'                => 'SSP Analysis',
     'DESIGN:PROT_RULER'          => 'Proteomic Ruler',
@@ -139,7 +142,9 @@ print qq |
     <head>
         <title>Jobs Monitoring</title>
         <link rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
+ <!--
         <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.8.2/css/all.css" integrity="sha384-oS3vJWv+0UjzBfQzYUhtDYW+Pj2yciDJxpsK1OYPAYjqT085Qq/1cq5FLXAZQ7Ay" crossorigin="anonymous">
+-->
         <style>
             div.job {
                 margin: 12px 0 0 12px;
@@ -185,20 +190,14 @@ print qq |
                 max-width: 400px;
                 min-width: 100px;
             }
-            
+
             table#filtersTable {
-                margin: auto;
+                text-align: center;
             }
-            
             table#filtersTable td {
                 text-align: center;
                 vertical-align: top;
             }
-            
-            table#filtersTable tr > th {
-                padding-bottom: 7px;
-            }
-            
             select {
                 resize: vertical;
                 max-height: 160px;
@@ -236,15 +235,12 @@ print qq |
                     var jobsEl = projectEl.getElementsByClassName('job');
                     
                     //This will hide all matching elements except the first one
-                    for(var i = 0; i < jobsEl.length; i++){
+                    for (let i = 0; i < jobsEl.length; i++){
                        var jobEl = jobsEl[i];
                        jobEl.style.display = (jobEl.style.display === 'none') ? '' : 'none';
                     }
-                    
-                    var toggleIcon = document.getElementById('toggleIcon:' + projectID);
-                    if(toggleIcon) {
-                        toggleIcon.className = (toggleIcon.className == "far fa-plus-square") ? "far fa-minus-square" : "far fa-plus-square";
-                    }
+                    var newImage=(jobsEl[0].style.display==='none')? 'plus.gif' : 'minus1.gif';
+                    document.getElementById('image:' + projectID).src='$promsPath{images}/'+newImage;
                 }
             }
         
@@ -453,50 +449,37 @@ print qq |
     my $filterDateNumberSelected = (param("filterDateNumber")) ? param("filterDateNumber") : '';
     my $filterDateTypeSelected = (param("filterDateType")) ? param("filterDateType") : '';
     my @filterDateTypes = ('HOUR', 'DAY', 'WEEK', 'MONTH');
+    my $colSpan=($userStatus =~ /bioinfo|mass|manag/)? 5 : 3;
   
     print qq |
-    <fieldset id="filtersFieldSet" style="margin: 20px auto 45px auto; width:70%;">
-        <legend><b>Filter jobs:</b></legend>
-        
         <form action='./monitorJobs.cgi' method='GET' style="margin: 7px 0 7px 0;">
-            <table id='filtersTable'>
-                <tr>
-                    <th style='font-size:14px; min-width: 140px;'><label for='filterDateNumber'>From last</label></th>
-                    <th style='font-size:14px; min-width: 110px;'><label for='filterStatus'>Status</label></th>
-                    <th style='font-size:14px; min-width: 295px;'><label for='filterType'>Type</label></th>
+            <table id="filtersTable" align="center" cellspacing=0>
+                <tr><td colspan="$colSpan" style="text-align:left"><FONT class="title2">Job selection:</FONT></td></tr>
+                <tr bgcolor="$darkColor">
+                    <th class="rbBorder" style='font-size:14px; min-width: 100px;'><label for='filterStatus'>Status</label></th>
+                    <th class="rbBorder" style='font-size:14px; min-width: 250px;'><label for='filterType'>Type</label></th>
+
     |; 
     
-    if($userStatus =~ /bioinfo|mass|manag/) {
-        print "<th style='font-size:14px; min-width: 180px;'><label for='filterUser'>User</label></th>";
-        print "<th style='font-size:14px; min-width: 180px;'><label for='filterProject'>Project</label></th>";
+    if ($userStatus =~ /bioinfo|mass|manag/) {
+        print qq |
+        <th class="rbBorder" style='font-size:14px; min-width: 180px;'><label for='filterUser'>User</label></th>
+        <th class="rbBorder" style='font-size:14px; min-width: 250px;'><label for='filterProject'>Project</label></th>
+        |;
     }
     
     print qq |
-                    <th></th>
+                    <th class="bBorder" style='font-size:14px; min-width: 140px;'><label for='filterDateNumber'>From last</label></th>
                 </tr>
-                <tr>
-                    <td>
-                        <input type="number" id='filterDateNumber' name='filterDateNumber' min="0" max="99" size="2" style="width: 45px;" onKeyUp="if(parseInt(this.value)>parseInt(this.max)){this.value=this.max;}else if(parseInt(this.value)<parseInt(this.min)){this.value=this.min;}" value='$filterDateNumberSelected'>
-                        <select name='filterDateType'>
+                <tr bgcolor="$lightColor">
     |;
     
-    
-    foreach my $filterDateType (@filterDateTypes) {
-        print("<option value='$filterDateType'");
-        print(" selected") if($filterDateType eq $filterDateTypeSelected);
-        print(">".ucfirst(lc($filterDateType))."(s)</option>\n");
-    }
-    
-    print qq |
-                        </select>
-                    </td>
-    |;
-
     my (@projectsID, @projectsName, @userIDs, @userNames);
     my (@status, @types, @projects, @users);
-    my ($status, $types, $projects, $users) = $dbh->selectrow_array("SELECT GROUP_CONCAT(DISTINCT J.JOB_STATUS), GROUP_CONCAT(DISTINCT TYPE), GROUP_CONCAT(DISTINCT J.ID_PROJECT, ';', NAME), GROUP_CONCAT(DISTINCT J.ID_USER, ';', UL.USER_NAME) FROM JOB_HISTORY J LEFT JOIN PROJECT P ON P.ID_PROJECT=J.ID_PROJECT INNER JOIN USER_LIST UL ON UL.ID_USER=J.ID_USER") or die "Couldn't prepare statement: " . $dbh->errstr;
+   # my ($status, $types, $projects, $users) = $dbh->selectrow_array("SELECT GROUP_CONCAT(DISTINCT J.JOB_STATUS), GROUP_CONCAT(DISTINCT TYPE), GROUP_CONCAT(DISTINCT J.ID_PROJECT, ';', NAME), GROUP_CONCAT(DISTINCT J.ID_USER, ';', UL.USER_NAME) FROM JOB_HISTORY J LEFT JOIN PROJECT P ON P.ID_PROJECT=J.ID_PROJECT INNER JOIN USER_LIST UL ON UL.ID_USER=J.ID_USER") or die "Couldn't prepare statement: " . $dbh->errstr;
+    my ($types, $projects, $users) = $dbh->selectrow_array("SELECT GROUP_CONCAT(DISTINCT TYPE), GROUP_CONCAT(DISTINCT J.ID_PROJECT, ';', NAME), GROUP_CONCAT(DISTINCT J.ID_USER, ';', UL.USER_NAME) FROM JOB_HISTORY J LEFT JOIN PROJECT P ON P.ID_PROJECT=J.ID_PROJECT INNER JOIN USER_LIST UL ON UL.ID_USER=J.ID_USER") or die "Couldn't prepare statement: " . $dbh->errstr;
     @status = ('Queued', 'Running', 'Done', 'Stopped', 'Error');
-    @types = split(',', $types) if($types);
+    @types = split(',', $types) if $types;
     if ($projects) {
         @projects = split(',', $projects);
         @projectsID = map((split(';', $_))[0], @projects);
@@ -511,7 +494,7 @@ print qq |
     # Filter by Status
     print qq |
                     <td>
-                        <select name='filterStatus' id='filterStatus' multiple>
+                        <select name='filterStatus' id='filterStatus' multiple style="width:100px">
     |;
     
     my $allSelected = (scalar @{$filters{STATUS}} == 0) ? 'selected' : '';
@@ -530,7 +513,7 @@ print qq |
     # Filter by Type
     print qq |
                     <td>
-                        <select name='filterType' id='filterType' multiple>
+                        <select name='filterType' id='filterType' multiple style="width:250px">
     |;
 
     push(@types, ('Import', 'Quantification'));
@@ -550,18 +533,20 @@ print qq |
         }
     }
     
-    print("<option value='' $allSelected>All</option>");
+    print "<option value='' $allSelected>All</option>";
     foreach my $category (sort keys %jobTypes) {
-        print("<option value='$category'");
-        print(" selected") if($category && grep( /^$category$/, @{$filters{TYPE}}));
-        print(">".$category."</option>\n");
+        print "<option value='$category'";
+        print ' selected' if ($category && grep( /^$category$/, @{$filters{TYPE}}));
+        my $categoryText=$categoryDesc{$category} || $category;
+        $categoryText.=':' if scalar keys %{$jobTypes{$category}};
+        print ">$categoryText</option>\n";
         foreach my $typeDesc (sort {lc $a cmp lc $b} keys %{$jobTypes{$category}}) {
             my $types = join(';', @{$jobTypes{$category}{$typeDesc}});
-            print("<option value='$types'");
+            print "<option value='$types'";
             my $regex = quotemeta($types);
             $regex =~ s/;/\$|^/;
-            print(" selected") if($regex && grep( /^$regex$/, @{$filters{TYPE}}));
-            print(">&nbsp;&nbsp;&nbsp;&nbsp;".$typeDesc."</option>\n");
+            print ' selected' if($regex && grep( /^$regex$/, @{$filters{TYPE}}));
+            print ">&nbsp;&nbsp;&nbsp;&nbsp;$typeDesc</option>\n";
         }
     }
         
@@ -573,7 +558,7 @@ print qq |
     if($userStatus =~ /bioinfo|mass|manag/) {
         print qq |
                     <td>
-                        <select id='filterUser' name='filterUser' multiple>
+                        <select id='filterUser' name='filterUser' multiple style="width:180px">
         |;
         
         my @indices = sort { $userNames[$a] cmp $userNames[$b] }  0 .. $#userNames;
@@ -592,7 +577,7 @@ print qq |
                         </select>
                     </td>
                     <td>
-                        <select id='filterProject' name='filterProject' multiple>
+                        <select id='filterProject' name='filterProject' multiple style="width:250px">
         |;
     
         $allSelected = (scalar @{$filters{PROJECT}} == 0) ? 'selected' : '';
@@ -610,15 +595,24 @@ print qq |
         print qq |
                         </select>
                     </td>
+                    <td>
+                        <input type="number" id='filterDateNumber' name='filterDateNumber' min="0" max="99" size="2" style="width: 45px;" onKeyUp="if(parseInt(this.value)>parseInt(this.max)){this.value=this.max;}else if(parseInt(this.value)<parseInt(this.min)){this.value=this.min;}" value='$filterDateNumberSelected'>
+                        <select name='filterDateType'>
         |;    
     }
-    
+    foreach my $filterDateType (@filterDateTypes) {
+        print "<option value='$filterDateType'";
+        print ' selected' if($filterDateType eq $filterDateTypeSelected);
+        print ">".ucfirst(lc($filterDateType))."(s)</option>\n";
+    }
     print qq |
-                    <td style='vertical-align: middle;'><input type='submit' value='Apply filters'/></td>
+                        </select><BR><BR>
+                        <input type='submit' value='Apply filters'/>
+                    </td>
                 </tr>
+                <tr bgcolor="$darkColor"><th colspan="$colSpan"></th></tr>
             </table>
         </form>
-    </fieldset>
     |;
 
 
@@ -653,7 +647,7 @@ else { ########### DISPLAY JOBS ############################
             my @userInfo = &promsMod::getUserInfo($dbh, $userID, $job{projectID});
             my $projectAccess = ${$userInfo[2]}{$job{projectID}};
             $userStatus = $userInfo[1];
-            $projectDisplayName = "Project '$job{projectName}' $projectAccess";
+            $projectDisplayName = "Project '$job{projectName}'"; # [Access: $projectAccess]
             next if ($projectAccess !~ /bioinfo|mass|manag/ && $userID ne $job{userID});
         } else {
             next if ($userStatus !~ /bioinfo|mass|manag/);
@@ -688,8 +682,8 @@ else { ########### DISPLAY JOBS ############################
         if($currentProject ne $job{projectID}) {
             print("</div>") if($currentProject);
             print qq |
-                <div class='project' id='project:$job{projectID}'>
-                    <div class="title2" style='cursor:pointer' onclick="toggleProject('$job{projectID}');"><i id='toggleIcon:$job{projectID}' class="far fa-minus-square"></i> $projectDisplayName :</div>
+                <div class="project" id="project:$job{projectID}">
+                    <div class="title2" style="cursor:pointer" onclick="toggleProject('$job{projectID}')"><img id="image:$job{projectID}" src="$promsPath{images}/minus1.gif" style="vertical-align:bottom"/>$projectDisplayName:</div>
             |;
             $currentProject = $job{projectID};
         }
@@ -739,12 +733,15 @@ sub ajaxUpdateJobsStatus {
         
         # Get status + error messages of current job
         my ($error, $status) = ('', '');
-        my $startedTime = Time::Piece->strptime("$job{startedDate}", "%Y-%m-%d %H:%M:%S");
-        my $now = Time::Piece->new()+3600; # Shift of +2 hours to correspond to GMT+1
-        if($now > 1585447200 && $now < 1603584000) {
-            $now+=3600;
-        }
-        my $timeDiff = ($now - $startedTime)->pretty;
+        # my $startTime = Time::Piece->strptime("$job{startDate}", "%Y-%m-%d %H:%M:%S");
+        # my $now = Time::Piece->new()+3600; # Shift of +2 hours to correspond to GMT+1
+        # if($now > 1585447200 && $now < 1603584000) {
+        #     $now+=3600;
+        # }
+        # my $timeDiff = ($now - $startTime)->pretty;
+        my $startTime = Time::Piece->strptime("$job{startStamp}", "%s");
+        my $now=Time::Piece->strptime(time,"%s");
+        my $timeDiff = ($now-$startTime)->pretty;
         my $clusterError = ''; #(-s "$job{srcPath}/PBSerror.txt") ? $clusterInfo{'checkError'}->("$job{srcPath}/PBSerror.txt") : '';
         
         # Check cluster jobs for completion/errors
@@ -767,19 +764,21 @@ sub ajaxUpdateJobsStatus {
         } elsif($job{'status'} eq 'Queued' && (-s $job{'logPath'} || $job{'infos'}{'minStart'})) {
             $newStatus = 'Running';
         }
-        
-        if($newStatus) {
+        if ($newStatus) {
             my $newInfos = "JOB_STATUS='$newStatus'";
-            if($newStatus ne 'Running') {
+            if ($newStatus ne 'Running') {
                 my $endedStr = 'NOW()'; # Put local current time as default ending of other options fail
-                if($job{'infos'}{'maxEnd'} && $job{'infos'}{'minStart'}) { # Get cluster job end time if it was run on server (more precise)
+                if ($job{'infos'}{'maxEnd'} && $job{'infos'}{'minStart'}) { # Get cluster job end time if it was run on server (more precise)
                     my $timeDiffSec = $job{'infos'}{'maxEnd'}-$job{'infos'}{'minStart'};
                     $endedStr = "DATE_ADD(STARTED, INTERVAL $timeDiffSec SECOND)";
-                } elsif(-s $job{logPath}) { # Get job end time by looking at log file last modification
-                    my $endJob = stat($job{logPath})->[9]; # in sec
-                    my $startJob = Time::Piece->strptime($jobRef->{startedDate}, '%Y-%m-%d %H:%M:%S')->strftime("%s");;
-                    my $timeDiffSec = $endJob-$startJob;
-                    $endedStr = "DATE_ADD(STARTED, INTERVAL $timeDiffSec SECOND)";
+                }
+                elsif (-s $job{logPath}) { # Get job end time by looking at log file last modification
+                    # my $endJob = stat($job{logPath})->[9]; # in sec
+                    # my $startJob = Time::Piece->strptime($jobRef->{startDate}, '%Y-%m-%d %H:%M:%S')->strftime("%s");
+                    # my $timeDiffSec = $endJob-$startJob;
+                    my $endJob = (stat($job{logPath}))[9]; # in sec
+                    my $timeDiffSec = $endJob - $jobRef->{startStamp};
+                   $endedStr = "DATE_ADD(STARTED, INTERVAL $timeDiffSec SECOND)";
                 }
                 
                 $newInfos .= ", ENDED=$endedStr";
@@ -813,12 +812,12 @@ sub getJobStatus {
     my %job = %{$jobRef};
     my %clusterInfo;
     my $clusterError='';
-    if ($job{'processID'} =~ /^C/) { # job is on cluster
+    if ($job{'processID'} && $job{'processID'} =~ /^C/) { # job is on cluster
         %clusterInfo = &promsConfig::getClusterInfo;
         $clusterError = (-s "$job{srcPath}/PBSerror.txt") ? $clusterInfo{'checkError'}->("$job{srcPath}/PBSerror.txt") : '';
     }
     
-    if($job{status} eq 'Stopped') {
+    if ($job{status} eq 'Stopped') {
         return ('[ <b>Stopped</b> ]', '');
     } elsif($job{status} eq 'Done') {
         if(-s $job{logPath} && `tail -1 $job{logPath}` !~ /Ended/) {
@@ -894,11 +893,13 @@ sub getJobStatus {
     }
     
     # Check for errors
-    if ($job{'processID'} =~ /^C/) { # job is on cluster
-       $error = $clusterInfo{'checkError'}->($job{'errorPath'});
-    }
-    else {
-        $error = `cat $job{errorPath}` if(-s $job{'errorPath'}); # Error file : $prsHomeDir/current/$anaID\_$job{dirName}\_error.txt
+    if ($job{'processID'}) {
+        if ($job{'processID'} =~ /^C/) { # job is on cluster
+           $error = $clusterInfo{'checkError'}->($job{'errorPath'});
+        }
+        else {
+            $error = `cat $job{errorPath}` if(-s $job{'errorPath'}); # Error file : $prsHomeDir/current/$anaID\_$job{dirName}\_error.txt
+        }
     }
     if($job{status} ne 'Queued') {
         $status = " -> ".$status if($job{status} =~ /Running|Error/ && $status);
@@ -923,7 +924,7 @@ sub getJobs {
     my @jobs;
     my ($filtersRef) = @_;
 
-    my $getJobsQuery = "SELECT J.ID_JOB, J.ID_USER, J.ID_PROJECT, J.ID_JOB_CLUSTER, J.TYPE, J.JOB_STATUS, J.FEATURES, J.SRC_PATH, J.LOG_PATH, J.ERROR_PATH, J.STARTED, J.ENDED, IFNULL(UL.USER_NAME, 'Unknown'), IFNULL(P.NAME, 'Global') FROM JOB_HISTORY J LEFT JOIN USER_LIST UL ON UL.ID_USER=J.ID_USER LEFT JOIN PROJECT P ON P.ID_PROJECT=J.ID_PROJECT WHERE 1";
+    my $getJobsQuery = "SELECT J.ID_JOB, J.ID_USER, J.ID_PROJECT, J.ID_JOB_CLUSTER, J.TYPE, J.JOB_STATUS, J.FEATURES, J.SRC_PATH, J.LOG_PATH, J.ERROR_PATH, J.STARTED, UNIX_TIMESTAMP(J.STARTED), J.ENDED, UNIX_TIMESTAMP(J.ENDED), IFNULL(UL.USER_NAME, 'Unknown'), IFNULL(P.NAME, 'Global') FROM JOB_HISTORY J LEFT JOIN USER_LIST UL ON UL.ID_USER=J.ID_USER LEFT JOIN PROJECT P ON P.ID_PROJECT=J.ID_PROJECT WHERE 1";
     
     if($filtersRef->{ID} && @{$filtersRef->{ID}}) {
         if($filtersRef->{MULTI}) {
@@ -950,10 +951,10 @@ sub getJobs {
             $getJobsQuery .= " AND STARTED $beforeAfterSign NOW() - INTERVAL ".$filtersRef->{DATE};
         }
     }
-    $getJobsQuery .= " ORDER BY J.ID_PROJECT, Year(STARTED) DESC, Month(STARTED) DESC, Day(STARTED) DESC, Hour(STARTED) DESC, Minute(STARTED) DESC, J.TYPE, ID_JOB";
+    $getJobsQuery .= " ORDER BY J.ID_PROJECT, STARTED DESC, J.TYPE, ID_JOB";
     my $sthJobs = $dbh->prepare($getJobsQuery);
     $sthJobs->execute();
-    while (my ($ID, $userID, $projectID, $processID, $type, $status, $features, $srcPath, $logPath, $errorPath, $startedDate, $endDate, $userName, $projectName) = $sthJobs->fetchrow_array) {
+    while (my ($ID, $userID, $projectID, $processID, $type, $status, $features, $srcPath, $logPath, $errorPath, $startDate, $startStamp, $endDate, $endStamp, $userName, $projectName) = $sthJobs->fetchrow_array) {
         my %features = ();
         if($features) {
             foreach my $feature (split(';', $features)) {
@@ -975,10 +976,12 @@ sub getJobs {
             parentPath     => dirname($srcPath),
             logPath        => $logPath,
             errorPath      => $errorPath,
-            startedDate    => $startedDate,
+            startDate      => $startDate,
+            startStamp     => $startStamp,
             endDate        => $endDate,
+            endStamp       => $endStamp,
             userID         => $userID,
-            userName       => $userName,
+            userName       => $userName
         );
         push(@jobs, \%job);
     }
@@ -1082,7 +1085,7 @@ sub cleanJobData {
         }
         
         # Delete files
-        system("rm -f $promsPath{tmp}/quantification/current/*$job{ID}*");
+        system("rm -rf $promsPath{tmp}/quantification/current/*$job{ID}*");
     } if($job{type} =~ /Import/) {
         if($job{type} =~ /MaxQuant/) {
             my $expID = $job{features}{"ID_EXPERIMENT"};
@@ -1097,7 +1100,7 @@ sub cleanJobData {
             }
         }
     } elsif($job{type} eq 'Phospho') {
-        system("rm -f $promsPath{tmp}/phosphoRS/current/*$job{ID}*");
+        system("rm -rf $promsPath{tmp}/phosphoRS/current/*$job{ID}*");
     } elsif($job{type} =~ /Functional Analysis/) {  # Only GSEA for now
         my $gseaID = $job{features}{"ID_GSEA"};
         if ($gseaID && $job{status} !~ /Done/) { # analysis recorded in DB but data still in temp dir
@@ -1392,7 +1395,7 @@ sub printJob {
     
     # PhosphoRS
     if($job{type} eq 'Phospho') {
-        
+        $title .= $categoryDesc{$job{type}} || $job{type};
         # Build analysis hierarchy
         my $anaID = $job{features}{"ID_ANALYSIS"};
         my @anaInfo=&promsMod::getItemInfo($dbh, 'ANALYSIS', $anaID);
@@ -1405,7 +1408,7 @@ sub printJob {
         push(@columns, 'Analysis');
         push(@values, $anaName);
                              
-        $title .= "Parameters: Threshold=$job{features}{PROB_THRESHOLD}%, Activation type=$job{features}{ACTIVATION_TYPE}, Mass tolerance=$job{features}{MASS_TOLERANCE} Da";
+        $title .= "&nbsp;<SMALL>(Parameters: Threshold=$job{features}{PROB_THRESHOLD}%, Activation type=$job{features}{ACTIVATION_TYPE}, Mass tolerance=$job{features}{MASS_TOLERANCE} Da)</SMALL>";
     }
     
     # All quantification types
@@ -1632,15 +1635,15 @@ sub printJob {
     
     # Print last common information
     if($job{endDate} && $job{status} !~ /Queued|Running/) {
-        my $startedTime = Time::Piece->strptime("$job{startedDate}", "%Y-%m-%d %H:%M:%S");
-        my $endedTime = Time::Piece->strptime("$job{endDate}", "%Y-%m-%d %H:%M:%S");
-        my $timeDiff = ($endedTime - $startedTime)->pretty;
+        my $startTime = Time::Piece->strptime("$job{startDate}", "%Y-%m-%d %H:%M:%S");
+        my $endTime = Time::Piece->strptime("$job{endDate}", "%Y-%m-%d %H:%M:%S");
+        my $timeDiff = ($endTime - $startTime)->pretty;
         print qq |
-                                $job{startedDate} -> $job{endDate}<br/>
+                                $job{startDate} -> $job{endDate}<br/>
                                 <b>Duration: $timeDiff</B><br/>
         |;
     } else {
-        print qq |              Since <B>$job{startedDate}</B><br/> |;
+        print qq |              Since <B>$job{startDate}</B><br/> |;
     }
     
     print qq |          
@@ -1666,6 +1669,8 @@ sub printJob {
 }
 
 ####>Revision history<####
+# 1.1.18 [CHANGE] Display change in job selection form (PP 21/06/21)
+# 1.1.17 [BUGFIX] Revised job duration computation & More checks for defined job processID & added -r to rm of job directory (PP 15/06/21)
 # 1.1.16 [ENHANCEMENT] Use $clusterInfo{checkError}->() to filter out irrelevant cluster warnings from job error file (PP 04/06/21)
 # 1.1.15 [FEATURE] Add Hydrophobicity jobs (VL 15/02/21)
 # 1.1.14 [BUGFIX] Remove tracking of unstarted jobs on cluster that may caused jobs to fail (VS 08/03/21) 

@@ -1,6 +1,6 @@
 #!/usr/local/bin/perl -w
 ################################################################################
-# myproms4datFiles.pl        1.0.7                                             #
+# myproms4datFiles.pl        1.0.7D                                             #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -49,12 +49,7 @@ print header(-type=>'text/plain'); warningsToBrowser(1);
 ####>Security<####
 ##################
 my @remoteHostIPs=( # Uncomment (#) and add comma (,) after each server but last
-	'10.2.0.30', # pangaea
-	'10.2.200.39', # dev
-	'10.2.0.193', # new prod
-	'10.2.200.38', # dev/prod on bi-web02
-	'10.200.10.172', # BIWS ppoullet
-	'10.200.10.93' # BIWS fyvon
+	# '<IP address of myProMS web server>' (Add comma (,) after each entry but last)
 );
 if (scalar @remoteHostIPs) {
 	my $okRequest=0;

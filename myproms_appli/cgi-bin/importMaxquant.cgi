@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# importMaxquant.cgi       2.1.12                                              #
+# importMaxquant.cgi       2.1.14                                              #
 # Component of site myProMS Web Server                                         #
 # Authors: P. Poullet, G. Arras, S. Liva (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
@@ -78,8 +78,8 @@ print header(-'content-encoding'=>'no',-charset=>'utf-8'); warningsToBrowser(1);
 
 if ($action eq 'form') {
 
-	my (%DBlist,%isCrapDB);
-
+	####>Databanks<###
+	my (%DBlist,%DBmostUsed,%DBsource,%isCrapDB);
 	my $sthDB=$dbh->prepare("SELECT D.ID_DATABANK,D.NAME,VERSION_NAME,FASTA_FILE,DT.NAME,IS_CRAP FROM DATABANK D,DATABANK_TYPE DT WHERE D.ID_DBTYPE=DT.ID_DBTYPE AND USE_STATUS='yes'");
 	$sthDB->execute;
 	while (my ($dbID,$name,$version,$fastaFile,$dbankType,$isCrap)=$sthDB->fetchrow_array) {
@@ -97,16 +97,54 @@ if ($action eq 'form') {
 		$DBlist{$dbSource}{$dbID}.=" ($version)" if $version;
 		$DBlist{$dbSource}{$dbID}.=" [$dbankType]";
 		$isCrapDB{$dbID}=$isCrap;
+		$DBsource{$dbID}=$dbSource;
 	}
 	$sthDB->finish;
-	my $databaseString="<OPTION selected value=\"\">-= Select =-</OPTION>\n";
+	###>Databanks in project<###
+	if (scalar keys %DBsource > 5) {
+		my $sthProjDB=$dbh->prepare("SELECT ID_DATABANK,COUNT(*) AS OCC,MAX(A.START_DATE) AS DT FROM ANALYSIS_DATABANK AD
+										INNER JOIN ANALYSIS A ON A.ID_ANALYSIS=AD.ID_ANALYSIS
+										INNER JOIN SAMPLE S ON S.ID_SAMPLE=A.ID_SAMPLE
+										INNER JOIN EXPERIMENT E ON E.ID_EXPERIMENT=S.ID_EXPERIMENT
+										WHERE ID_PROJECT=? GROUP BY ID_DATABANK ORDER BY DT DESC, OCC DESC");
+		$sthProjDB->execute($projectID);
+		my $rank=0;
+		while (my ($dbID,$occ,$lastTimeUsed)=$sthProjDB->fetchrow_array) {
+			next unless $DBsource{$dbID};
+			next if $isCrapDB{$dbID};
+			@{$DBmostUsed{$dbID}}=($occ,++$rank,$DBsource{$dbID});
+		}
+		$sthProjDB->finish;
+	}
+	my $databaseString="<OPTION selected value=\"\">-= Choose from list =-</OPTION>\n";
 	my $databaseContString="<OPTION selected value=\"\">*Contaminants not searched*</OPTION>\n";
-
+	if (scalar keys %DBmostUsed) {
+		$databaseString.="<OPTGROUP label=\"Recently used:\">\n";
+		my $count=0;
+		foreach my $dbID (sort{$DBmostUsed{$b}[1]<=>$DBmostUsed{$a}[1]} keys %DBmostUsed) {
+			$count++;
+			my $dbSource=$DBmostUsed{$dbID}[2];
+			$databaseString.="<OPTION value=\"$dbID\">$DBlist{$dbSource}{$dbID} ($dbSource)</OPTION>\n";
+			last if $count==5;
+		}
+		$databaseString.="</OPTGROUP>\n";
+		if (scalar keys %DBmostUsed > 1) {
+			$databaseString.="<OPTGROUP label=\"Most used:\">\n";
+			$count=0;
+			foreach my $dbID (sort{$DBmostUsed{$b}[0]<=>$DBmostUsed{$a}[0]} keys %DBmostUsed) {
+				$count++;
+				my $dbSource=$DBmostUsed{$dbID}[2];
+				$databaseString.="<OPTION value=\"$dbID\">$DBlist{$dbSource}{$dbID} ($dbSource)</OPTION>\n";
+				last if $count==5;
+			}
+			$databaseString.="</OPTGROUP>\n";
+		}
+	}
 	foreach my $dbSource (sort{lc($a) cmp lc($b)} keys %DBlist) {
-		$databaseString.="<OPTGROUP label=\"$dbSource:\">\n";
+		$databaseString.="<OPTGROUP label=\"All ".(($dbSource eq 'Local')? 'local' : $dbSource).":\">\n";
 		foreach my $dbID (sort{lc($DBlist{$dbSource}{$a}) cmp lc($DBlist{$dbSource}{$b})} keys %{$DBlist{$dbSource}}) {
-			$databaseString.="<OPTION value=\"$dbID\">$DBlist{$dbSource}{$dbID}</OPTION>\n";
-			$databaseContString.="<OPTION value=\"$dbID\">$DBlist{$dbSource}{$dbID}</OPTION>\n" if $isCrapDB{$dbID};
+			if ($isCrapDB{$dbID}) {$databaseContString.="<OPTION value=\"$dbID\">$DBlist{$dbSource}{$dbID}</OPTION>\n";}
+			else {$databaseString.="<OPTION value=\"$dbID\">$DBlist{$dbSource}{$dbID}</OPTION>\n";}
 		}
 		$databaseString.="</OPTGROUP>\n";
 		$databaseContString.="</OPTGROUP>\n";
@@ -231,8 +269,7 @@ function checkFileForm(importForm) {
 |<DIV id="dbDIV_$d" $dispStrg><B>#$d:</B><SELECT id="db_$d" name="databank$d" style="width:550px" onchange="updateDatabankSelection($d,this.options.selectedIndex)">$databaseString</SELECT></DIV>
 |;
 	}
-	print qq
-|</TD>
+	print qq |</TD>
 	</TR>
 	<TR>
 		<TH align=right valign="top">Contaminants :</TH>
@@ -244,7 +281,7 @@ function checkFileForm(importForm) {
 	</TR>
 	<TR>
 		<TH align=right>Match groups rule :</TH>
-		<TD bgcolor=$color1 nowrap><SELECT name="mgType"><OPTION value="">-= Select =-</OPTION><OPTION value="MaxQuant">MaxQuant</OPTION><OPTION value="myProMS">myProMS</OPTION></SELECT></TD>
+		<TD bgcolor=$color1 nowrap><SELECT name="mgType"><OPTION value="">-= Select =-</OPTION><OPTION value="MaxQuant" selected>MaxQuant</OPTION><OPTION value="myProMS">myProMS</OPTION></SELECT></TD>
 	</TR>
 	<TR><TH colspan=2>
 		<INPUT type="submit" name="save" id="formSubmit" value=" Proceed ">
@@ -400,11 +437,10 @@ unless ($childPid) { # child here
 	#open STDERR, ">>$promsPath{logs}/launchQuantification.log";
 	#system "./launchQuantifications.pl single $userID $jobID MAXQUANT $experimentID";
 	
-	my $dbh=&promsConfig::dbConnect;
 	my $error;
 	my %cluster=&promsConfig::getClusterInfo;
 #$cluster{'on'}=0; # TEMP >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-	my $eviSize=("$tmpFilesDir/$evidenceFile")? -s "$tmpFilesDir/$evidenceFile" : 5 * (-s $archiveFile);
+	my $eviSize=(-e "$tmpFilesDir/$evidenceFile")? -s "$tmpFilesDir/$evidenceFile" : 5 * (-s "$tmpFilesDir/$archiveFile");
 	my $onCluster=0;
 	if ($cluster{'on'} && $eviSize > 50000000) { # 50 Mb
 		$onCluster=1;
@@ -412,20 +448,23 @@ unless ($childPid) { # child here
 		$cgiUnixDir=~s/\/*\s*$//;
 		# cd is required for script to find myproms .pm files!!!!
 		my $commandString="export LC_ALL=\"C\"; cd $cgiUnixDir; $cluster{path}{perl}/perl runMaxquantImport.pl $experimentID $jobID $onCluster 2> $currentQuantifDir/$experimentID\_$jobID\_error.txt";
-		my $maxMem=int(2 + (15 * $eviSize / 1024**3)); # 2 + 15 * size in Gb
+		my $maxMem=int(2 + (20 * $eviSize / 1024**3)); # 2 + 20 * size in Gb
 		my %jobParameters=(
 			maxMem=>$maxMem.'Gb',
 			numCPUs=>1,
 			maxHours=>24,
 			jobName=>"myProMS_MxQtImport_$experimentID\_$jobID",
+			jobHistoryID=>"$jobID",
 			pbsRunDir=>$cgiUnixDir,
 			commandBefore=>"mv $currentQuantifDir/$experimentID\_$jobID\_wait.flag $currentQuantifDir/$experimentID\_$jobID\_run.flag" # run flag file
 		);
-		my ($pbsError,$pbsErrorFile,$jobClusterID)=$cluster{'runJob'}->($tmpFilesDir,$commandString,\%jobParameters);
+		my ($pbsError,$pbsErrorFile,$jobClusterID)=$cluster{'runJob'}->($tmpFilesDir,$commandString,\%jobParameters); # No nowatch => runJob "watches" job & updates JOB_HISTORY.ID_JOB_CLUSTER
 		
 		# Add cluster job id to current job in DB
-		$dbh->do("UPDATE JOB_HISTORY SET ID_JOB_CLUSTER='C$jobClusterID' WHERE ID_JOB='$jobID'");
-		$dbh->commit;
+		#$dbh=&promsConfig::dbConnect;
+		#$dbh->do("UPDATE JOB_HISTORY SET ID_JOB_CLUSTER='C$jobClusterID' WHERE ID_JOB='$jobID'");
+		#$dbh->commit;
+		#$dbh->disconnect;
 		
 		if ($pbsError) { # move PBS error message to job error file
 			system "cat $pbsErrorFile >> $currentQuantifDir/$experimentID\_$jobID\_error.txt";
@@ -436,17 +475,20 @@ unless ($childPid) { # child here
 		rename("$currentQuantifDir/$experimentID\_$jobID\_wait.flag","$currentQuantifDir/$experimentID\_$jobID\_run.flag"); # run flag file
 
 		# Add process PID to current job in DB
+		$dbh=&promsConfig::dbConnect;
 		$dbh->do("UPDATE JOB_HISTORY SET ID_JOB_CLUSTER='L$$' WHERE ID_JOB='$jobID'");
 		$dbh->commit;
+		$dbh->disconnect;
 		
 		system "./runMaxquantImport.pl $experimentID $jobID $onCluster 2> $currentQuantifDir/$experimentID\_$jobID\_error.txt";
 
 		if (-s "$currentQuantifDir/$experimentID\_$jobID\_error.txt") {
 			$error=1;
 		}
-		
 	} # end of local launch
+	
 	if ($error) { # Update Quantifications status
+		$dbh=&promsConfig::dbConnect;
 		my $sthQ=$dbh->prepare("SELECT DISTINCT Q.ID_QUANTIFICATION FROM QUANTIFICATION Q,ANA_QUANTIFICATION AQ,ANALYSIS A,SAMPLE S
 								WHERE Q.ID_QUANTIFICATION=AQ.ID_QUANTIFICATION AND AQ.ID_ANALYSIS=A.ID_ANALYSIS AND A.ID_SAMPLE=S.ID_SAMPLE
 								AND S.ID_EXPERIMENT=? AND Q.STATUS=0");
@@ -458,6 +500,7 @@ unless ($childPid) { # child here
 		$sthQ->finish;
 		$sthUpQ->finish;
 		$dbh->commit;
+		$dbh->disconnect;
 	}
 	
 	unlink "$currentQuantifDir/$experimentID\_$jobID\_run.flag";
@@ -473,7 +516,6 @@ unless ($childPid) { # child here
 		unlink "$currentQuantifDir/$experimentID\_$jobID\_error.txt";
 	}
 	
-	$dbh->disconnect;
 	exit;
 } # end of child
 
@@ -523,7 +565,7 @@ sub copyAndPrint {
 			copy($sourceFile, $targetFile);
 			exit;
 		}
-		print "<BR>&nbsp;&nbsp;&nbsp;&nbsp;- Storing $fileName.";
+		print "<BR>&nbsp;&nbsp;&nbsp;&nbsp;- Retreving $fileName.";
 		sleep 1;  # To avoid sleeping 10 sec after in most cases
 	
 		# Start tracking target file and check if the copy is actually being done
@@ -553,6 +595,8 @@ sub copyAndPrint {
 
 
 ####>Revision history<####
+# 2.1.14 [UX] Added Recently/Most used databanks in selection list (PP 21/06/21)
+# 2.1.13 [ENHANCEMENT] Minor change in database (de)connection during runMaxquantImport.pl launch (PP 10/06/21)
 # 2.1.12 [ENHANCEMENT] Minor change to &amp;copyAndPrint to prevent fork on small files (PP 07/06/21)
 # 2.1.11 [BUGFIX] Print on web page during copy from scratch to avoid timeout for large size files (VL 19/05/21)
 # 2.1.10 [BUGFIX] Pass cluster parameter to runMaxquantImport for proper management in &getProtInfo (VL 19/05/21)

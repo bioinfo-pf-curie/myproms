@@ -1,5 +1,5 @@
 ################################################################################
-# promsConfig.pm           2.11.11D                                             #
+# promsConfig.pm           2.11.12D                                             #
 # Authors: P. Poullet, G. Arras & V. Sabatet (Institut Curie)                  #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -461,6 +461,7 @@ sub getClusterInfo {
 # 			#				-skipErrors			TODO: reference to array of error strings to be ignored in Cluster error output file (errorFile)
 # 			#				-jobEndFlag			Flag to be echo(ed)	just before job ends, default '_JOB_END_', 'none' if nothing to echo (=>noWatch set to true!!!)
 # 			#				-noWatch			Do not watch job: any non-(0/empty/undef) value, no default (undef: job is watched)
+# 			#				-jobHistoryID		Id of job in JOB_HISTORY table. Needed only if noWatch is not set (so that JOB_HISTORY.ID_JOB_CLUSTER can be set here)
 # 			# }
 
 # 			##<Checking parameters>##
@@ -487,7 +488,7 @@ sub getClusterInfo {
 # 			my $jobEndFlag=$refParam->{'jobEndFlag'} || '_JOB_END_';
 # 			my $noWatch=$refParam->{'noWatch'} || undef;
 # 			$noWatch=1 if $jobEndFlag eq 'none';
-
+# 			my $jobHistoryID=$refParam->{'jobHistoryID'} || undef;
 # 			##<Building command (file)>##
 # 			my $commandStrg=$cluster{'buildCommand'}->($runDir,$command);
 
@@ -520,29 +521,36 @@ sub getClusterInfo {
 # 			##<Sending job request to cluster>##
 # 			my $jobID = $cluster{'sendToCluster'}->($bashFile,$jobIdTag,$runDir);
 
-# 			##<Watch job>##
-# 			my $pbsError='';
-# 			unless ($noWatch) {
-# 				sleep 10;
-# 				my $nbWhile=0;
-# 				my $maxNbWhile=$maxHours*60*2;
-# 				while ((!-e $pbsFile || !`tail -3 $pbsFile | grep '$jobEndFlag'`) && !$pbsError) {
-# 					if ($nbWhile > $maxNbWhile) {
-# 						$pbsError="Aborting: Process is taking too long or died before completion";
-# 						system "echo $pbsError >> $pbsErrorFile";
-# 						$cluster{'killJob'}->([$jobID]);
-# 						last;
-# 					}
-# 					sleep 30;
+			# if ($jobHistoryID) {
+			# 	my $dbh=&dbConnect('no_user');
+			# 	$dbh->do("UPDATE JOB_HISTORY SET ID_JOB_CLUSTER='C$jobID' WHERE ID_JOB='$jobHistoryID'");
+			# 	$dbh->commit;
+			# 	$dbh->disconnect;
+			# }
 
-# 					##<Check for error
-# 					$pbsError=$cluster{'checkError'}->($pbsErrorFile,$refSkipErrors);
+			# ##<Watch job>##
+			# my $pbsError='';
+			# unless ($noWatch) {
+			# 	sleep 10;
+			# 	my $nbWhile=0;
+			# 	my $maxNbWhile=$maxHours*60*2;
+			# 	while ((!-e $pbsFile || !`tail -3 $pbsFile | grep '$jobEndFlag'`) && !$pbsError) {
+			# 		if ($nbWhile > $maxNbWhile) {
+			# 			$pbsError="Aborting: Process is taking too long or died before completion";
+			# 			system "echo $pbsError >> $pbsErrorFile";
+			# 			$cluster{'killJob'}->([$jobID]);
+			# 			last;
+			# 		}
+			# 		sleep 30;
 
-# 					$nbWhile++;
-# 				}
-# 			}
+			# 		##<Check for error
+			# 		$pbsError=$cluster{'checkError'}->($pbsErrorFile,$refSkipErrors);
+		
+			# 		$nbWhile++;
+			# 	}
+			# }
 			
-# 			return ($pbsError, $pbsErrorFile, $jobID, $pbsFile);
+			# return ($pbsError, $pbsErrorFile, $jobID, $pbsFile);
 		},
 
 		#'getJobStatus' => sub {
@@ -932,7 +940,8 @@ sub getFragmentClassif {
 1;
 
 ####>Revision history<####
-# 2.11.11D Adapted for distribution (PP 04/06/21)
+# 2.11.12D Adapted for distribution (PP 18/06/21)
+# 2.11.12 [UPDATE] &runJob() handles JOB_HISTORY update if no history id is passed & added "Cache disabled" to list of cluster warnings to ignore (PP 10/06/21)
 # 2.11.11 [UPDATE] sql_mode declaration in DB connection (PP 27/05/21)
 # 2.11.10 [UPDATE] Minor change to allow spaces in user-defined cluster errors to be ignored (PP 22/04/21)
 # 2.11.9 [UPDATE] Added "paper" instance for dev (PP 11/04/21)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# importBatchAnalyses.cgi         2.8.3                                        #
+# importBatchAnalyses.cgi         2.8.4                                        #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -140,7 +140,7 @@ A.file:hover,A.badFile:hover{color:#FF6600; text-decoration:none;}
 		}
 		####>Building file tree<####
 		print qq
-|<SCRIPT LANGUAGE="JavaScript">
+|<SCRIPT type="text/javascript">
 var fileInfo=new Object();
 |;
 		my %treeOptions;
@@ -264,7 +264,7 @@ parent.document.fileAccessForm.mascotAction.value='get'; // switch search to get
 		}
 		foreach my $filePath (@datFiles) {
 			my ($file)=($filePath=~/(F\d+\.dat)/);
-			print "<SCRIPT LANGUAGE=\"JavaScript\">document.getElementById('$file').innerHTML=\"...\";</SCRIPT>\n";
+			print "<SCRIPT type=\"text/javascript\">document.getElementById('$file').innerHTML=\"...\";</SCRIPT>\n";
 			#sleep 2;
 			my $newDatFile="$batchFilesDir/$file";
 			my ($popTargetFile,$popDecoyFile)=("$batchFilesDir/.percolator/$file.target.pop","$batchFilesDir/.percolator/$file.decoy.pop");
@@ -343,14 +343,14 @@ parent.document.fileAccessForm.mascotAction.value='get'; // switch search to get
 									my $progress=100 * $bytesReceived / $fileLength;
 									if ($progress-$prevProgress > 5) { # in %
 										my $progressStrg=sprintf "%d%%",$progress;
-										print "<SCRIPT LANGUAGE=\"JavaScript\">document.getElementById('$file').innerHTML=\"...$progressStrg\";</SCRIPT>\n";
+										print "<SCRIPT type=\"text/javascript\">document.getElementById('$file').innerHTML=\"...$progressStrg\";</SCRIPT>\n";
 										$prevProgress=$progress;
 									}
 								}
 								else {
 									my $now=time;
 									if ($now-$before > 30) { # in seconds
-										print "<SCRIPT LANGUAGE=\"JavaScript\">document.getElementById('$file').innerHTML+=\".\";</SCRIPT>\n";
+										print "<SCRIPT type=\"text/javascript\">document.getElementById('$file').innerHTML+=\".\";</SCRIPT>\n";
 										$before=$now;
 									}
 								}
@@ -373,14 +373,14 @@ parent.document.fileAccessForm.mascotAction.value='get'; // switch search to get
 								#	my $progress=100 * $bytesReceived / $fileLength;
 								#	if ($progress-$prevProgress > 5) { # in %
 								#		my $progressStrg=sprintf "%d%%",$progress;
-								#		print "<SCRIPT LANGUAGE=\"JavaScript\">document.getElementById('$file').innerHTML=\"...$progressStrg\";</SCRIPT>\n";
+								#		print "<SCRIPT type=\"text/javascript\">document.getElementById('$file').innerHTML=\"...$progressStrg\";</SCRIPT>\n";
 								#		$prevProgress=$progress;
 								#	}
 								#}
 								#else {
 								#	my $now=time;
 								#	if ($now-$before > 30) { # in seconds
-								#		print "<SCRIPT LANGUAGE=\"JavaScript\">document.getElementById('$file').innerHTML+=\".\";</SCRIPT>\n";
+								#		print "<SCRIPT type=\"text/javascript\">document.getElementById('$file').innerHTML+=\".\";</SCRIPT>\n";
 								#		$before=$now;
 								#	}
 								#}
@@ -402,14 +402,14 @@ parent.document.fileAccessForm.mascotAction.value='get'; // switch search to get
 								#	my $progress=100 * $bytesReceived / $fileLength;
 								#	if ($progress-$prevProgress > 5) { # in %
 								#		my $progressStrg=sprintf "%d%%",$progress;
-								#		print "<SCRIPT LANGUAGE=\"JavaScript\">document.getElementById('$file').innerHTML=\"...$progressStrg\";</SCRIPT>\n";
+								#		print "<SCRIPT type=\"text/javascript\">document.getElementById('$file').innerHTML=\"...$progressStrg\";</SCRIPT>\n";
 								#		$prevProgress=$progress;
 								#	}
 								#}
 								#else {
 								#	my $now=time;
 								#	if ($now-$before > 30) { # in seconds
-								#		print "<SCRIPT LANGUAGE=\"JavaScript\">document.getElementById('$file').innerHTML+=\".\";</SCRIPT>\n";
+								#		print "<SCRIPT type=\"text/javascript\">document.getElementById('$file').innerHTML+=\".\";</SCRIPT>\n";
 								#		$before=$now;
 								#	}
 								#}
@@ -426,11 +426,11 @@ parent.document.fileAccessForm.mascotAction.value='get'; // switch search to get
 				unlink $newDatFile;
 				$imageFlag='bad.gif';
 			}
-			print "<SCRIPT LANGUAGE=\"JavaScript\">document.getElementById('$file').innerHTML=\"&nbsp;<IMG src='$promsPath{images}/$imageFlag'>\";</SCRIPT>\n";
+			print "<SCRIPT type=\"text/javascript\">document.getElementById('$file').innerHTML=\"&nbsp;<IMG src='$promsPath{images}/$imageFlag'>\";</SCRIPT>\n";
 		}
 		sleep 3;
-		print qq
-|<SCRIPT LANGUAGE="JavaScript">
+		print qq |
+<SCRIPT type="text/javascript">
 //alert('Done.');
 parent.location="$promsPath{cgi}/importBatchAnalyses.cgi?ID=$ID&ACT=UseUserDirectory";
 </SCRIPT>
@@ -485,8 +485,8 @@ elsif ($action eq 'UseSharedDirectory') {
 		else {print " Done.</B><BR>\n";}
 	}
 	sleep 3;
-	print qq
-|<SCRIPT LANGUAGE="JavaScript">
+	print qq |
+<SCRIPT type="text/javascript">
 window.location="$promsPath{cgi}/importBatchAnalyses.cgi?ID=$ID&ACT=UseUserDirectory";
 </SCRIPT>
 </BODY>
@@ -525,7 +525,7 @@ if ($action ne 'start' && $action ne 'delete') {
 .msf_lrBorder {border-width: 0px 2px 0px 2px;}
 .msf_noBorder {}
 </STYLE>
-<SCRIPT LANGUAGE="JavaScript">
+<SCRIPT type="text/javascript">
 function cancelAction() {
 	//top.promsFrame.selectedAction='summary'; // set default action to 'summary'
 	top.promsFrame.optionFrame.selectOption();
@@ -574,7 +574,7 @@ function cancelAction() {
 	########################################
 	####>Recovering information from DB<####
 	########################################
-	my (%anaParentList,%DBlist);  #%listSample,
+	my (%anaParentList,%DBlist,%DBmostUsed);  #%listSample,
 	my @itemAnalyses; # decoyData only
 	my $projectID=&promsMod::getProjectID($dbh,$itemID,$item);
 
@@ -639,6 +639,7 @@ function cancelAction() {
 			}
 
 			####>Databanks<###
+			my %DBsource;
 			my $sthDB=$dbh->prepare("SELECT D.ID_DATABANK,D.NAME,VERSION_NAME,FASTA_FILE,DT.NAME FROM DATABANK D,DATABANK_TYPE DT WHERE D.ID_DBTYPE=DT.ID_DBTYPE AND USE_STATUS='yes'");
 			$sthDB->execute;
 			while (my ($dbID,$name,$version,$fastaFile,$dbankType)=$sthDB->fetchrow_array) {
@@ -655,8 +656,25 @@ function cancelAction() {
 				$DBlist{$dbSource}{$dbID}=$name;
 				$DBlist{$dbSource}{$dbID}.=" ($version)" if $version;
 				$DBlist{$dbSource}{$dbID}.=" [$dbankType]";
+				$DBsource{$dbID}=$dbSource;
 			}
 			$sthDB->finish;
+			###>Databanks in project<###
+			if (scalar keys %DBsource > 5) {
+				my $projectID=&promsMod::getProjectID($dbh,$itemID,$item);
+				my $sthProjDB=$dbh->prepare("SELECT ID_DATABANK,COUNT(*) AS OCC,MAX(A.START_DATE) AS DT FROM ANALYSIS_DATABANK AD
+												INNER JOIN ANALYSIS A ON A.ID_ANALYSIS=AD.ID_ANALYSIS
+												INNER JOIN SAMPLE S ON S.ID_SAMPLE=A.ID_SAMPLE
+												INNER JOIN EXPERIMENT E ON E.ID_EXPERIMENT=S.ID_EXPERIMENT
+												WHERE ID_PROJECT=? GROUP BY ID_DATABANK ORDER BY DT DESC, OCC DESC");
+				$sthProjDB->execute($projectID);
+				my $rank=0;
+				while (my ($dbID,$occ,$lastTimeUsed)=$sthProjDB->fetchrow_array) {
+					next unless $DBsource{$dbID};
+					@{$DBmostUsed{$dbID}}=($occ,++$rank,$DBsource{$dbID});
+				}
+				$sthProjDB->finish;
+			}
 		}
 		&updateWaitBox;
 	}
@@ -699,12 +717,12 @@ function cancelAction() {
 	my $phenyxTaxo=0;
 	while (defined ($currentDatFile = readdir (DIR))) {
 		next if -d "$batchFilesDir/$currentDatFile"; # directory
-		next if ($action eq 'UseServerDirectory' && $currentDatFile !~ /.+\.dat\Z/i && $currentDatFile !~ /.+\.xml\Z/i && $currentDatFile !~ /.+\.msf\Z/i);
+		# next if ($action eq 'UseServerDirectory' && $currentDatFile !~ /\.(dat|xml|msf)$/i);
 		#next if ($currentDatFile =~ /.+\.tmp\Z/); # avoid to read in a .tmp file that was previously created in the /tmp directory
 		$filesInfo{$currentDatFile}{'OK'}=0; # default
 		#my $localError = 0;
 
-		###>SEQUEST<###
+		###>MSF from Proteome Discoverer<###
 		if ($currentDatFile =~ /.+\.msf\Z/i) {
 			my $dbsqlite = DBI->connect( "dbi:SQLite:$currentDatFile", "", "", {PrintError=>0,RaiseError=>0}) || next; # if the file isn't opened, it's not a sqlite file!
 			my ($proteomeDiscovererVersion)=$dbsqlite->selectrow_array("SELECT SoftwareVersion FROM SchemaInfo ORDER BY rowid ASC LIMIT 1"); # RaiseError=>1 causes SQLite error in next query before error handling!
@@ -781,6 +799,8 @@ function cancelAction() {
 			next;
 		}
 
+		next if -B $currentDatFile; # only plain text files allowed from now on
+
 		###>X! TANDEM<###
 		if ($currentDatFile=~/.tandem.pep.xml/) {
 			open(TDMFILE,"<",$currentDatFile) or die ("open: $!");
@@ -811,7 +831,7 @@ function cancelAction() {
 			$filesInfo{$currentDatFile}{'OK'}=1;
 			next;
 		}
-		elsif($currentDatFile=~/.(tandem|xml)/){
+		elsif ($currentDatFile=~/.(tandem|xml)/){
 			open(TDMFILE,"<",$currentDatFile) or die ("open: $!");
 			my $DBpath;
 			while (<TDMFILE>) {
@@ -1029,8 +1049,8 @@ function cancelAction() {
 
 	##############
 	####>HTML<####
-	print qq
-|<SCRIPT LANGUAGE="JavaScript">
+	print qq |
+<SCRIPT type="text/javascript">
 var checkStatus=true;
 function cancelAction() {
 	//top.promsFrame.optionFrame.selectOption();
@@ -1135,8 +1155,8 @@ function checkFileForm(myForm) {
 |;
 		}
 		else { # not decoy files
-			print qq
-|function checkFileForm(myForm) {
+			print qq |
+function checkFileForm(myForm) {
 	if (testCheckbox(myForm)==0) {
 		alert('ERROR: No files selected !');
 		return false;
@@ -1315,7 +1335,7 @@ function updateDatabankSelection(dbNum,dbValue) {
 		else {
 			print qq
 |	<TH nowrap width=100 nowrap>Analysis name<BR>
-		<SELECT onchange="selectAnaName(this.value)" style="font-size:9px">
+		<SELECT id="anaNameSel" onchange="selectAnaName(this.value)" style="font-size:9px">
 		<OPTION value="manual">Manual</OPTION>
 		<OPTION value="ms">MS file</OPTION>
 		<OPTION value="search">Search file</OPTION>
@@ -1403,8 +1423,7 @@ function updateDatabankSelection(dbNum,dbValue) {
 			if (!$filesInfo{$dataFile}{'OK'}) {
 				#my $colspan=($decoyFile)? 5 : 6;
 				my $colspan=($decoyFile && $disabMZXML) ? 5 : ($disabMZXML) ? 6 : 7;
-				print qq
-|<TR class="list" bgcolor=$bgColor valign=middle>
+				print qq |<TR class="list" bgcolor=$bgColor valign=middle>
 	<TH nowrap align=left><INPUT type="checkbox" name="badFile" value="$dataFile" disabled>$dataFile</TH>
 	<TH colspan=$colspan align=left><FONT style=\"color:#DD0000\">&nbsp;Unsupported file format or version.</FONT></TH>
 </TR>
@@ -1507,9 +1526,31 @@ function updateDatabankSelection(dbNum,dbValue) {
 		print "</TABLE></TD></TR>\n";
 
 		unless ($decoyFile) { # normal import
-			my $databaseString="<OPTION selected value=\"\">-=Choose from list=-</OPTION>\n";
+			my $databaseString="<OPTION selected value=\"\">-= Choose from list =-</OPTION>\n";
+			if (scalar keys %DBmostUsed) {
+				$databaseString.="<OPTGROUP label=\"Recently used:\">\n";
+				my $count=0;
+				foreach my $dbID (sort{$DBmostUsed{$b}[1]<=>$DBmostUsed{$a}[1]} keys %DBmostUsed) {
+					$count++;
+					my $dbSource=$DBmostUsed{$dbID}[2];
+					$databaseString.="<OPTION value=\"$dbID\">$DBlist{$dbSource}{$dbID} ($dbSource)</OPTION>\n";
+					last if $count==5;
+				}
+				$databaseString.="</OPTGROUP>\n";
+				if (scalar keys %DBmostUsed > 1) {
+					$databaseString.="<OPTGROUP label=\"Most used:\">\n";
+					$count=0;
+					foreach my $dbID (sort{$DBmostUsed{$b}[0]<=>$DBmostUsed{$a}[0]} keys %DBmostUsed) {
+						$count++;
+						my $dbSource=$DBmostUsed{$dbID}[2];
+						$databaseString.="<OPTION value=\"$dbID\">$DBlist{$dbSource}{$dbID} ($dbSource)</OPTION>\n";
+						last if $count==5;
+					}
+					$databaseString.="</OPTGROUP>\n";
+				}
+			}
 			foreach my $dbSource (sort{lc($a) cmp lc($b)} keys %DBlist) {
-				$databaseString.="<OPTGROUP label=\"$dbSource:\">\n";
+				$databaseString.="<OPTGROUP label=\"All ".(($dbSource eq 'Local')? 'local' : $dbSource).":\">\n";
 				foreach my $dbID (sort{lc($DBlist{$dbSource}{$a}) cmp lc($DBlist{$dbSource}{$b})} keys %{$DBlist{$dbSource}}) {
 					$databaseString.="<OPTION value=\"$dbID\">$DBlist{$dbSource}{$dbID}</OPTION>\n";
 				}
@@ -1564,6 +1605,15 @@ function updateDatabankSelection(dbNum,dbValue) {
 	</TABLE>
 |;
 		print "</TD></TR></TABLE>\n*Applies only to interpretations based on MS/MS\n" unless $decoyFile;
+		print qq |
+<SCRIPT type="text/javascript">
+const anaNameSEL=document.getElementById('anaNameSel');
+if (anaNameSEL) {
+	anaNameSEL.selectedIndex=2; // -> search file
+	selectAnaName(anaNameSEL.value);
+}
+</SCRIPT>
+|;
 	}
 	elsif ($action eq 'clean') {
 		#######################################
@@ -1720,7 +1770,7 @@ elsif ($action eq 'start') {
 <HEAD>
 <TITLE>Search file sources</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
-<SCRIPT LANGUAGE="JavaScript">
+<SCRIPT type="text/javascript">
 |;
 	&promsMod::browseDirectory_JavaScript if $promsPath{'shared'};
 	print qq
@@ -1982,18 +2032,9 @@ function updateDisableStatus() { // needed after '<< BACK' button
 		<TD colspan=2>&nbsp<FONT class="title2">Possible sources :</FONT></TD>
 		<TD></TD>
 	</TR>
-<!-- OBSOLETE
 	<TR>
-		<TH><INPUT type="radio" name="selSource" value="UseMyDirectory" onclick="selectSource(this.value);"></TH>
-		<TH align=right><U>my</U> server directory :</TH>
-		<TH bgcolor=$color1 align=left>&nbsp;$batchDir/$userID
-		&nbsp&nbsp&nbsp<INPUT type="submit" name="clean" value="Clean My Directory" style="font-weight:bold;color:#DD0000;width:170px" onclick="fileSource='clean'">
-		</TH>
-	</TR>
--->
-	<TR>
-		<TH><INPUT type="radio" name="selSource" value="UseUserDirectory" onclick="selectSource(this.value);"></TH>
-		<TH align=right>A user directory on server :</TH>
+		<TH><INPUT type="radio" name="selSource" id="selSource_uds" value="UseUserDirectory" onclick="selectSource(this.value);"></TH>
+		<TH align=right><LABEL for="selSource_uds">A user directory on server</LABEL> :</TH>
 		<TH bgcolor=$color1 align=left width=610px><SELECT name="userDir" style="font-weight:bold" disabled>
 |;
 	foreach my $userDir (sort{lc($a) cmp lc($b)} @userDirList) {
@@ -2011,8 +2052,8 @@ function updateDisableStatus() { // needed after '<< BACK' button
 	if ($promsPath{'shared'}) {
 		print qq
 |	<TR valign=top>
-		<TH><INPUT type="radio" name="selSource" value="UseSharedDirectory" onclick="selectSource(this.value);"></TH>
-		<TH align=right>Shared data directory :</TH>
+		<TH><INPUT type="radio" name="selSource" id="selSource_sdd" value="UseSharedDirectory" onclick="selectSource(this.value);"></TH>
+		<TH align=right><LABEL for="selSource_sdd">Shared data directory<LABEL> :</TH>
 		<TD bgcolor=$color1><DIV id="sharedDirDIV" style="width:600px;max-height:300px;overflow:auto;display:none">
 |;
 		&promsMod::browseDirectory_getFiles($promsPath{'shared'},'sharedDirFiles',{fileMatch=>qr/\.(dat|msf|xml|zip|gz)$/i}); # List of handled file extensions
@@ -2024,8 +2065,8 @@ function updateDisableStatus() { // needed after '<< BACK' button
 	if ($userStatus eq 'bioinfo') {
 		print qq
 |	<TR valign=top>
-		<TH><INPUT type="radio" name="selSource" value="UseServerDirectory" onclick="selectSource(this.value);"></TH>
-		<TH align=right>Any directory on server<SUP>*</SUP> :</TH>
+		<TH><INPUT type="radio" name="selSource" id="selSource_ads" value="UseServerDirectory" onclick="selectSource(this.value);"></TH>
+		<TH align=right><LABEL for="selSource_ads">Any directory on server<SUP>*</SUP></LABEL> :</TH>
 		<TD bgcolor=$color1><INPUT type="text" name="newDir" value="" size=70 disabled><BR><FONT style="font-style:italic"><SUP>*</SUP> for bioinformatician only</FONT>
 		</TD>
 	</TR>
@@ -2034,8 +2075,8 @@ function updateDisableStatus() { // needed after '<< BACK' button
 	my $disabMascotFlag=($okMascot)? '' : ' disabled';
 	print qq
 |	<TR valign=top>
-		<TH><INPUT type="radio" name="selSource" value="UseMascot" onclick="selectSource(this.value);"$disabMascotFlag></TH>
-		<TH align=right>Mascot server :</TH>
+		<TH><INPUT type="radio" name="selSource" id="selSource_ms" value="UseMascot" onclick="selectSource(this.value);"$disabMascotFlag></TH>
+		<TH align=right><LABEL for="selSource_ms">Mascot server</LABEL> :</TH>
 		<TD bgcolor=$color1>
 |;
 		if ($okMascot) {
@@ -2076,13 +2117,13 @@ function updateDisableStatus() { // needed after '<< BACK' button
 |		</TD>
 	</TR>
 	<TR>
-		<TH><INPUT type="radio" name="selSource" value="UseZipFile" onclick="selectSource(this.value);"></TH>
-		<TH align=right>Upload Zip archive :</TH>
+		<TH><INPUT type="radio" name="selSource" id="selSource_uza" value="UseZipFile" onclick="selectSource(this.value);"></TH>
+		<TH align=right><LABEL for="selSource_uza">Upload Zip archive</LABEL> :</TH>
 		<TD bgcolor=$color1><INPUT type="file" name="uplArch" size=80 disabled></TD>
 	</TR>
 	<TR>
-		<TH valign=top><INPUT type="radio" name="selSource" value="UseUploadedFiles" onclick="selectSource(this.value);"></TH>
-		<TH align=right valign=top>Upload multiple files :</TH>
+		<TH valign=top><INPUT type="radio" name="selSource" id="selSource_umf" value="UseUploadedFiles" onclick="selectSource(this.value);"></TH>
+		<TH align=right valign=top><LABEL for="selSource_umf">Upload multiple files</LABEL> :</TH>
 		<TD bgcolor=$color1>
 |;
 	print "\t\t\t<TABLE id=\"tabFile_1\"><TR><TH align=right width=70 nowrap>File #1 :</TH><TD><INPUT type=\"file\" id=\"uploaded_file_1\" name=\"uploaded_file_1\" size=80 onchange=\"displayNextFile(1)\" disabled></TD></TR></TABLE>\n";
@@ -2100,7 +2141,7 @@ function updateDisableStatus() { // needed after '<< BACK' button
 </TABLE>
 </FORM>
 </CENTER>
-<SCRIPT LANGUAGE="JavaScript">
+<SCRIPT type="text/javascript">
 |;
 	####>Fetching list of search logs for all Mascot servers<####
 	foreach my $mascotServer (keys %mascotServers) {
@@ -2162,7 +2203,7 @@ elsif ($action eq 'delete') {
 
 	sleep 5;
 	print qq
-|<SCRIPT LANGUAGE="JavaScript">
+|<SCRIPT type="text/javascript">
 	//top.promsFrame.selectedAction='summary'; // set default action to 'summary'
 	top.promsFrame.optionFrame.selectOption();
 </SCRIPT>
@@ -2179,7 +2220,7 @@ sub printError {
 #|<HTML>
 #<HEAD>
 #<LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
-#<SCRIPT LANGUAGE="JavaScript">
+#<SCRIPT type="text/javascript">
 #function cancelAction() {
 #	//top.promsFrame.selectedAction='summary'; // set default action to 'summary'
 #	top.promsFrame.optionFrame.selectOption();
@@ -2316,10 +2357,11 @@ $activationString$massFilterString
 }
 
 sub updateWaitBox {
-	print "<SCRIPT language=\"JavaScript\">document.getElementById('waitSpan').innerHTML+='.';</SCRIPT>\n";
+	print "<SCRIPT type=\"text/javascript\">document.getElementById('waitSpan').innerHTML+='.';</SCRIPT>\n";
 }
 
 ####>Revision history<####
+# 2.8.4 [UX] Added Recently/Most used databanks in selection list & auto-select "search file" for Analysis name (PP 22/06/21)
 # 2.8.3 Uses new &promsConfig::getMascotServers function (PP 25/06/19)
 # 2.8.2 Modification of merge-file string (GA 08/01/19)
 # 2.8.1 Creates batch/<userID> at start up if not exists (PP 04/12/18)

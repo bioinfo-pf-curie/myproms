@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# startGSEA.cgi       1.0.0                                                    #
+# startGSEA.cgi       1.0.2                                                    #
 # Authors: V. Laigle (Institut Curie)                                          #
 # Contact: myproms@curie.fr                                                    #
 # Initialisation, launch and data import of Gene Set Enrichment Analysis       #
@@ -352,7 +352,7 @@ function updateSpecies(species) {
                 <OPTION value="none" selected>None</OPTION>
                 <OPTION value="all">All</OPTION>
                 <OPTION value="distinct">Distinct</OPTION>
-                <OPTION value="msms"$disabTruePep>Truly identified</OPTION>
+                <!-- <OPTION value="msms"$disabTruePep>Truly identified</OPTION> Not handled (yet)-->
             </SELECT>
         </TD>
     </TR>
@@ -513,17 +513,21 @@ sub startGSEA {  # Globals: $promsPath, $quantifID, $isRatio
         if ($clusterInfo{'on'}) {
             # cd required for script to find myproms .pm files
             my $commandString = "cd $cgiUnixDir; $clusterInfo{path}{perl}/perl runGSEA.pl $gseaID $userID $tmpDir 2> $errorFilePath";
-            my $maxMem = ceil(log(param('protNb'))/log(10));  # Adjust max cluster memory to ceiling of log10(protNb)
+            my $maxMem     = ceil(log(param('protNb'))/log(10));  # Adjust max cluster memory to ceil of log10(protNb)
+            my $maxCPUs    = 1;
+            my $maxHours   = 1;
+            my $jobEndFlag = "_JOB_END_";
             my %jobParameters = (
                 maxMem          => $maxMem . "Gb",
-                numCPUs         => 1,
-                maxHours        => 1,
+                numCPUs         => $maxCPUs,
+                maxHours        => $maxHours,
                 jobName         => "myProMS_GSEA_$tmpDir",
                 pbsRunDir       => $gseaDir,
                 commandBefore   => "echo \"Launched GSEA $gseaID on cluster\" >> $logFilePath",
                 noWatch         => '1',
+                jobEndFlag      => $jobEndFlag
             );
-            my ($pbsError, $pbsErrorFile, $jobClusterID) = $clusterInfo{'runJob'}->($gseaDir, $commandString, \%jobParameters);
+            my ($pbsError, $pbsErrorFile, $jobClusterID, $pbsFile) = $clusterInfo{'runJob'}->($gseaDir, $commandString, \%jobParameters);
 
             # Add cluster job id to current job in DB
             $dbh = &promsConfig::dbConnect;
@@ -531,8 +535,26 @@ sub startGSEA {  # Globals: $promsPath, $quantifID, $isRatio
             $dbh->commit;
             $dbh->disconnect;
 
-            if ($pbsError) {  # move PBS error message to job error file
-                system "cat $pbsErrorFile >> $errorFilePath";
+            # Check for errors on cluster while job is running
+            sleep 10;
+			my $nbWhile = 0;
+			my $maxNbWhile = $maxHours * 60 * 3;  # maxHours * 60 min/h * 3 loop/min
+			while ((!-e $pbsFile || !`tail -3 $pbsFile | grep '$jobEndFlag'`) && !$pbsError) {
+				if ($nbWhile > $maxNbWhile) {
+					$pbsError = "Aborting: GSEA process is taking too long or died before completion";
+					system "echo $pbsError >> $pbsErrorFile";
+					$clusterInfo{'killJob'}->([$jobClusterID]);
+					last;
+				}
+				sleep 20;
+
+    			##<Check for error
+				$pbsError = $clusterInfo{'checkError'}->($pbsErrorFile, []);
+				$nbWhile++;
+			}
+
+            system "cat $pbsErrorFile >> $errorFilePath" if ($pbsError);  # move PBS error message to job error file
+            if (-s $errorFilePath) {
                 $dbh = &promsConfig::dbConnect;
                 $dbh->do("UPDATE PATHWAY_ANALYSIS SET STATUS = -1, UPDATE_DATE = NOW() WHERE ID_PATHWAY_ANALYSIS = $gseaID"); # Failed
                 $dbh->commit;
@@ -606,4 +628,6 @@ sub ajaxFetchGeneSets {  # Globals: $dbh, $projectID
 }
 
 ####>Revision history<####
+# 1.0.2 [BUGFIX] Remove MS/MS peptides weighting, not handled correctly downstream (VL 14/06/21)
+# 1.0.1 [BUGFIX] Better error handling, both from cluster or scripts (VL 11/06/21)
 # 1.0.0 Created (VL 21/10/20)

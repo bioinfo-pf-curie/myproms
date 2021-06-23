@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# showProtQuantification.cgi     2.14.0                                        #
+# showProtQuantification.cgi     2.14.2                                        #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Displays protein quantification data                                         #
@@ -150,6 +150,7 @@ elsif ($action eq 'ajaxPepRatio') {&ajaxPeptideRatios; exit;}
 elsif ($action eq 'ajaxPepMaxQuant') {&ajaxPeptideMaxQuant; exit;}
 elsif ($action eq 'ajaxPepSwath') {&ajaxPeptideSwath; exit;}
 elsif ($action eq 'ajaxPepAbund') {&ajaxPeptideAbundance; exit;}
+elsif ($action eq 'ajaxPepProtRuler') {&ajaxPeptideProtRuler; exit;}
 elsif ($action eq 'ajaxListProt') {&ajaxListSelectedProteins; exit;}
 elsif ($action eq 'ajaxListDecGraph') {&ajaxListDecorateGraph; exit;}
 elsif ($action eq 'ajaxGoTerms') {&ajaxGetGoTerms; exit;}
@@ -2642,7 +2643,7 @@ $biasCorrButtonStrg.="<INPUT type=\"button\" class=\"font11\" value=\"Coeff. lis
 	my $correlImgFileName=($quantifSoftware eq 'myProMS')? 'Beforematrixcorrelation.jpeg' : 'AllProtein_Before_matrixcorrelation.jpeg'; # !!! Temp! Remove "AllProtein_" for SWATH!!!!
 	#my $correlMatFileName=($quantifSoftware eq 'myProMS')? 'Beforematrixcorrelation.txt' : 'AllProtein_Before_matrixcorrelation.txt'; # !!! Temp! Remove "AllProtein_" for SWATH!!!!
 	my $correlMatFileName=($algoVersion >= 2)? 'Beforematrixcorrelation.txt' : 'AllProtein_Before_matrixcorrelation.txt'; # !!! Temp! Remove "AllProtein_" for SWATH!!!!
-	my $ajaxPepAction=($quantifSoftware=~/SWATH|DIA|Spectronaut/)? 'ajaxPepSwath' : ($quantifSoftware eq 'MaxQuant')? 'ajaxPepMaxQuant' : ($ratioType eq 'None')? 'ajaxPepAbund' : 'ajaxPepRatio';
+	my $ajaxPepAction=($quantifSoftware=~/SWATH|DIA|Spectronaut/)? 'ajaxPepSwath' : ($quantifSoftware eq 'MaxQuant')? 'ajaxPepMaxQuant' : ($protRulerCase)? 'ajaxPepProtRuler' : ($ratioType eq 'None')? 'ajaxPepAbund' : 'ajaxPepRatio';
 	#my $dispMeasParamStrg=(($quantifSoftware =~ /MaxQuant|Spectronaut/ && $ratioType eq 'None') || $protRulerCase)? "&dispMeasure=$dispMeasure" : '';
 	my $dispMeasParamStrg=($ratioType eq 'None' || $protRulerCase)? "&dispMeasure=$dispMeasure" : '';
 	print qq
@@ -4023,7 +4024,7 @@ setTimeout(checkQuantifStatus,10000);
 			print "<SUP class=\"trueFilter\" onmouseover=\"popup('<B>Validated:</B> peptides formally identified by <B>MSMS</B><BR>(Unlike those identified by <B>MBWR</B>)')\" onmouseout=\"popout()\">?</SUP>" if $hasTruePepCount;
 			print " <FONT class=\"trueFilter\">peptides &ge;</FONT>\n";
 		}
-		my $numPepWidth=($hasTruePepCount)? '50px' : '40px';
+		my $numPepWidth=($hasTruePepCount)? '50px' : '50px';
 		print qq
 |<INPUT type="number" name="numPep" min="1" max="100" value="$dispNumPep" style="width:$numPepWidth" class="trueFilter" onchange="alterUpdateButton()"/>|;
 		if ($quantifSoftware eq 'myProMS' && $algoVersion >= 3 && $quantifType ne 'PROT_ABUNDANCE') {
@@ -4697,7 +4698,7 @@ if ($dispPepType ne 'all' || $numPepScope ne 'ratio') { # includes Distinct pept
 	print "</TR>\n";
 
 	my $bgColor=$lightColor;
-	my $ajaxPepAction=($quantifSoftware=~/SWATH|DIA|Spectronaut/)? 'ajaxPepSwath' : ($quantifSoftware eq 'MaxQuant')? 'ajaxPepMaxQuant' : ($ratioType eq 'None')? 'ajaxPepAbund' : 'ajaxPepRatio';
+	my $ajaxPepAction=($quantifSoftware=~/SWATH|DIA|Spectronaut/)? 'ajaxPepSwath' : ($quantifSoftware eq 'MaxQuant')? 'ajaxPepMaxQuant' : ($protRulerCase)? 'ajaxPepProtRuler' : ($ratioType eq 'None')? 'ajaxPepAbund' : 'ajaxPepRatio';
 	my $numDispItems=0;
 	my %dispProteins;
 	my ($pepCode4Filter,$pepFilterValue)=($dispPepType eq 'msmsPc')? ('FRAC_TRUE_USED',$dispNumPep/100) : ($numPepScope =~ /^replicate/ || $dispPepType =~ /^msms/)? ($numPepCode.'_SUBSET',$dispNumPep) : ($numPepCode,$dispNumPep); # numPepCode is GLOBAL
@@ -4887,6 +4888,7 @@ document.getElementById('protCountDIV').innerHTML='$protString';
 
 sub listProteinIntensities { # Abundance or Maxquant (including MaxQuant SILAC ratio!!!)
 	my ($labelType,$refLabelingInfo,$refStateInfo,$refQuantifValues,$refProteinInfo,$refDispModifSites)=@_; # $labelType  not global for all calls
+	my $quantifSoftware=($refLabelingInfo->{'SOFTWARE'})? $refLabelingInfo->{'SOFTWARE'}[0] : 'myProMS'; $quantifSoftware='MaxQuant' if $quantifSoftware eq 'MQ';
 	my $measureName=$quantifParamInfo{$dispMeasure}[1]; # only for no-ratio
 	my $invDispFoldChange=1/$dispFoldChange;
 	my $numTotQuantifItems=scalar keys %{$refQuantifValues};
@@ -7601,6 +7603,88 @@ sub ajaxPeptideMaxQuant { # Data display not yet implemented
 	exit;
 }
 
+
+####################<<<ajaxPeptideProtRuler>>>#####################
+sub ajaxPeptideProtRuler { # Data display not yet implemented
+	my $modProtID = param('id_prot');
+	my ($protID, $modStrg) = ($modProtID =~ /^(\d+)-?(.*)/);
+	my $dispMeasure = param('dispMeasure') || '';
+	my $selTargetPos = param('ratio');
+	my $trueTargetPos = abs($selTargetPos);
+
+	###<Connecting to the database>###
+	my $dbh = &promsConfig::dbConnect;
+	my $projectID = &promsMod::getProjectID($dbh, $selQuantifID, 'QUANTIFICATION');
+	my $dbhLite = &promsQuantif::dbConnectProteinQuantification($selQuantifID, $projectID);
+	my %proteinQuantifFamilies = &promsQuantif::getProteinQuantifFamilies;
+	my $dispMeasName;
+	foreach my $refMeas (@{$proteinQuantifFamilies{'MEASURES'}{'PROT_RULER'}}) {
+		my ($measCode, $measName, $isOptional) = @{$refMeas};
+		next if ($measCode ne $dispMeasure);
+		$dispMeasName = $measName;
+	}
+
+	my ($quantifAnnot, $designID, $quantifMethodID, $quantifType, $quantifModID, $multiModifStrg) = $dbh->selectrow_array("SELECT QUANTIF_ANNOT, ID_DESIGN, M.ID_QUANTIFICATION_METHOD, M.CODE, Q.ID_MODIFICATION,
+		GROUP_CONCAT(MQ.ID_MODIFICATION ORDER BY MQ.MODIF_RANK SEPARATOR ',')
+		FROM QUANTIFICATION Q
+		LEFT JOIN MULTIMODIF_QUANTIFICATION MQ ON Q.ID_QUANTIFICATION = MQ.ID_QUANTIFICATION
+		INNER JOIN QUANTIFICATION_METHOD M ON Q.ID_QUANTIFICATION_METHOD = M.ID_QUANTIFICATION_METHOD
+		WHERE Q.ID_QUANTIFICATION = $selQuantifID GROUP BY Q.ID_QUANTIFICATION"
+	);
+
+	my %labelingInfo;
+	my ($labelStrg, @labelInfo) = split('::', $quantifAnnot);
+	my ($labelType) = ($labelStrg)? $labelStrg =~ /LABEL=(.+)/ : ('FREE');
+	$labelType = uc($labelType);
+	$labelingInfo{'LABELTYPE'} = $labelType;
+	foreach my $infoStrg (@labelInfo) {
+		my ($setting, $valueStrg) = split('=', $infoStrg);
+		$valueStrg =~ s/#//g; # remove all ID tags
+		@{$labelingInfo{$setting}} = split(';', $valueStrg);
+	}
+
+	# Get protein data
+	my ($protAlias) = $dbh->selectrow_array("SELECT ALIAS FROM PROTEIN WHERE ID_PROTEIN = $protID");
+	my ($paramID) = $dbh->selectrow_array("SELECT ID_QUANTIF_PARAMETER, NAME, CODE FROM QUANTIFICATION_PARAMETER WHERE ID_QUANTIFICATION_METHOD = $quantifMethodID AND CODE = '$dispMeasure'");
+	my ($protValue) = $dbhLite->selectrow_array("SELECT QUANTIF_VALUE FROM PROTEIN_QUANTIFICATION WHERE ID_QUANTIF_PARAMETER = $paramID AND ID_PROTEIN = $protID AND TARGET_POS = $trueTargetPos");
+
+	# Process design info
+	my ($selParentQuantif, $selParTargetPos) = split(':', $labelingInfo{PARENT_Q}[$selTargetPos-1]);
+	my ($selParentQuantifID, $selParentStateID, $selParentPos) = split(',', $selParentQuantif);
+	my ($quantifTargetName) = $dbh->selectrow_array("SELECT NAME FROM EXPCONDITION WHERE ID_EXPCONDITION = $selParentStateID");
+
+	my $sthAnaInfo = $dbh->prepare("SELECT A.ID_ANALYSIS FROM ANALYSIS A 
+		INNER JOIN OBSERVATION O ON A.ID_ANALYSIS=O.ID_ANALYSIS
+		INNER JOIN OBS_EXPCONDITION OE ON O.ID_OBSERVATION=OE.ID_OBSERVATION
+		INNER JOIN EXPCONDITION E ON OE.ID_EXPCONDITION=E.ID_EXPCONDITION
+		WHERE E.ID_EXPCONDITION=? ORDER BY A.DISPLAY_POS ASC"
+	);
+	my %anaList;
+	$sthAnaInfo->execute($selParentStateID);
+	while (my ($analysisID) = $sthAnaInfo->fetchrow_array) {
+		unless ($anaList{$analysisID}) {
+			$anaList{$analysisID} = 1;
+		}
+	}
+	my $anaString = join(',', keys %anaList);
+
+	$dbh->disconnect;
+	$dbhLite->disconnect;
+
+	####<Starting HTML>###
+	print header(-type=>'text/plain',-charset=>'utf-8'); warningsToBrowser(1);
+	my $protValueStrg .= $dispMeasName . ' = ' . sprintf("%.2E", $protValue);
+	print qq
+|<TABLE><TR><TD nowrap><FONT class="title2">Peptide raw data for <A href="javascript:sequenceView($protID, '$anaString')">$protAlias</A> in $quantifTargetName ($protValueStrg):</FONT>
+&nbsp;&nbsp;<INPUT type="button" class="font11" value=" Close " onclick="document.getElementById('displayDIV').style.display='none'"/>
+</TD></TR></TABLE>
+<BR>
+<BR><FONT class="title3">Not yet implemented...</FONT><BR><BR>
+|;
+	exit;
+}
+
+
 sub ajaxCheckQuantifStatus {
 	###<Connecting to the database>###
 	my $dbh=&promsConfig::dbConnect;
@@ -10195,6 +10279,8 @@ sub ajaxDisplayProteinQuantities {  # Globals: %promsPath, $selQuantifID, $light
 
 
 ####>Revision history<#####
+# 2.14.2 [BUGFIX] Fix minor bug in AJAX protein list table header for MaxQuant (PP 16/06/21)
+# 2.14.1 [BUGFIX] Fix error when trying to display raw peptide data for Proteomic Ruler (VL 10/06/21)
 # 2.14.0 [CHANGE] Always uses max num peptides used for point size & multiple bug fixes for PEP_RATIO (PP 26/05/21)
 # 2.13.7 [BUGFIX] Fix listing of manually selected peptide for bias correction (PP 03/05/21)
 # 2.13.6 [BUGFIX] Fix non-implemented peptide view popup for Abundance (PP 15/03/21)

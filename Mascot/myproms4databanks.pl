@@ -1,6 +1,6 @@
 #!/usr/local/bin/perl -w
 ################################################################################
-# myproms4databanks.pl        1.1.0                                            #
+# myproms4databanks.pl        1.2.0D                                            #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -29,18 +29,11 @@ use CGI ':standard';
 #use URI::Escape;
 use strict;
 
-print header(-type=>'text/plain'); warningsToBrowser(1);
-
 ##################
 ####>Security<####
 ##################
 my @remoteHostIPs=( # Add comma (,) after each server but last
-	'10.2.0.30', # pangaea
-	'10.2.200.39', # server bioinfo-web-dev
-	'10.2.0.193', # new prod
-	'10.2.200.38', # dev/prod on bi-web02
-	'10.200.10.172', # BIWS ppoullet
-	'10.200.10.93', # BIWS fyvon
+	# '<IP address of myProMS web server>' (Add comma (,) after each entry but last)
 );
 if (!param('SKIP') && scalar @remoteHostIPs) {
 	my $okRequest=0;
@@ -51,6 +44,7 @@ if (!param('SKIP') && scalar @remoteHostIPs) {
 		}
 	}
 	unless ($okRequest) {
+		print header(-type=>'text/plain'); warningsToBrowser(1);
 		print "# REQUEST DENIED FOR HOST $ENV{REMOTE_ADDR}\n";
 		exit;
 	}
@@ -60,6 +54,10 @@ if (!param('SKIP') && scalar @remoteHostIPs) {
 ####>Parameters<####
 ####################
 my $action=(param('ACT'))? param('ACT') : 'test';
+
+if ($action ne 'getDbFile') { # different header for getDbFile
+	print header(-type=>'text/plain'); warningsToBrowser(1);
+}
 
 ##############
 ####>Test<####
@@ -206,7 +204,7 @@ elsif ($action eq 'scan') {
 	foreach my $identifier (split(',:,',param('protList'))) {$protList{$identifier}=1;}
 #my $dbOrganism=param('dbOrganism');
 #	my $parseRules=uri_unescape(param('parseRules'));#deprotection of url information
-##$parseRules=~s/£/\+/g;
+##$parseRules=~s/ï¿½/\+/g;
 #	my @rules=split(',:,',$parseRules);
 ##my @rules=split(',:,','ID=([^\|]+_[^\s\|]+),:,ORG=\s?- ([^\(]*),:,');
 #	my ($idRule)=($rules[0]=~/ID=(.+)/);
@@ -349,6 +347,20 @@ elsif ($action eq 'prots') {
 	exit;
 }
 
+###################################
+####>Send entire databank file<####
+###################################
+elsif ($action eq 'getDbFile') {
+	my $trueDbFile = &getDatabankFile(param('DB'));
+	my $dbSize=-s $trueDbFile;
+	print header(-type=>'text/plain',-'content-length'=>$dbSize); warningsToBrowser(1);
+	open(DB, $trueDbFile) || die "can't open $trueDbFile\n";
+	while (<DB>) {
+		print $_;
+	}
+	close DB;
+	exit;
+}
 
 ################################
 ####<Fetching databank file>####
@@ -393,7 +405,7 @@ sub getParseRules {
 	#my $parseRules=uri_unescape($_[0]); # deprotection of url information
 	my $parseRules=$_[0];
 	#$parseRules=uri_unescape($parseRules) if $parseRules=~/\%/;
-	$parseRules=~s/£/\+/g; # back comptatibility with myProMS 2.7.2
+	$parseRules=~s/ï¿½/\+/g; # back comptatibility with myProMS 2.7.2
 	my @rules=split(',:,',$parseRules);
 #my @rules=split(',:,','ID=([^\|]+_[^\s\|]+),:,ORG=\s?- ([^\(]*),:,');
 	my ($idRule)=($rules[0]=~/ID=(.+)/);
@@ -407,6 +419,7 @@ sub getParseRules {
 }
 
 ####>Revision history<####
+# 1.2.0 [FEATURE] Add ACT=prots option to allow full databank file retrieval through http protocole (PP 22/06/21) 
 # 1.1.0 [ENHANCEMENT] Added a skip parameter to bypass IP adress restriction (VS 27/10/20)
 # 1.0.10 [FEATURE] Add ACT=prots option to return all protein identifiers from databank (VL 08/10/20)
 # 1.0.9 [CHANGE] Changed identifier parsing separator for ACT=scan (PP 29/09/20)

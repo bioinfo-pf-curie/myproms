@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# compareAnalyses.cgi               2.4.0                                      #
+# compareAnalyses.cgi               2.4.1                                      #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Compares the protein & peptide contents of multiple (groups of) analyses     #
@@ -339,7 +339,7 @@ my $sthCatInfo=$dbh->prepare("SELECT CL.NAME, C.NAME
 							  FROM CLASSIFICATION CL
 							  INNER JOIN CATEGORY C ON C.ID_CLASSIFICATION=CL.ID_CLASSIFICATION
 							  WHERE ID_CATEGORY=?");
-my $sthCatProt=$dbh->prepare("SELECT DISTINCT ID_PROTEIN FROM CATEGORY_PROTEIN WHERE C.ID_CATEGORY=?"); # Only at protein-level (sites are downgraded)
+my $sthCatProt=$dbh->prepare("SELECT DISTINCT ID_PROTEIN FROM CATEGORY_PROTEIN WHERE ID_CATEGORY=?"); # Only at protein-level (sites are downgraded)
 #}
 #elsif ($item eq 'experiment') {
 #	push @sthAnaList,$dbh->prepare("SELECT SAMPLE.NAME,ANALYSIS.NAME FROM SAMPLE,ANALYSIS WHERE ID_ANALYSIS=? AND SAMPLE.ID_SAMPLE=ANALYSIS.ID_SAMPLE AND SAMPLE.ID_SPOT IS NULL"); # free sample
@@ -940,7 +940,7 @@ while (my @subProtList=splice(@protIdList,0,1000)) { # chuncks of 1000 proteins
 		}
 	}	
 	$sthProtInfo->finish;
-	&updateProgress('.','+=');
+	&updateProgress('.','+=') unless $exportType;
 }
 
 
@@ -5815,6 +5815,7 @@ sub ajaxGetModificationSiteDetails {;
 }
 
 ####>Revision history<####
+# 2.4.1 [BUGFIX] Removed HTML progress code written during XLS export & fix SQL error in CATEGORY_PROTEIN line 342 (PP 15/06/21)
 # 2.4.0 [UPDATE] Uses standardized protein site format & multiple enhancements and bug fixes (PP 20/05/21)
 # 2.3.8 [FEATURE] Handles PtmRS PTMs info displaying (VS 21/08/20)
 # 2.3.7 [FEATURE] Handles Spectronaut PTMs info displaying (VS 06/06/20)

@@ -11,6 +11,7 @@ myproms_shared/*
 
 myproms_appli/html/data
 myproms_appli/cgi-bin/mypromsVersions.cgi
+__pycache__
 
 myproms_data/banks/db_*
 myproms_data/exploratory_data

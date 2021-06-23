@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# searchKwProtein.cgi      2.3.1                                               #
+# searchKwProtein.cgi      2.3.2                                               #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Searches DB for proteins using keywords                                      #
@@ -116,7 +116,7 @@ print qq
 <STYLE type="text/css">
 FONT.matched {background-color:#F6C2F9;}
 </STYLE>
-<SCRIPT LANGUAGE="JavaScript">
+<SCRIPT type="text/javascript">
 |;
 &promsMod::popupInfo();
 print qq
@@ -230,8 +230,7 @@ unless ($searchString) {
 
 #----------- A search is performed ----------#
 my $refItemName=($refItem eq 'PROJECT')? 'Project' : ($refItem eq 'LIST')? "List <FONT style=\"color:#DD0000\">$listName</FONT>" : "$itemType <FONT style=\"color:#DD0000\">$itemName</FONT>";
-print qq
-|<CENTER>
+print qq |<CENTER>
 <FONT style="font-size:22px;font-weight:bold">Search results for $refItemName <SPAN id="resultCountSPAN"></SPAN></FONT>
 <BR>
 <DIV id="waitDIV">
@@ -250,10 +249,12 @@ $searchString=~s/[^\w\s\.\-]+//g; # remove non-word/space except '-' or '.'
 #$searchString=~s/\|/\\\|/g; # converting | into \|
 # $searchString=~s/["',\.]//g; # ignoring these characters
 
+my ($mysqlVersion)=$dbh->selectrow_array('SELECT VERSION()');
+my ($wordStartBound,$wordEndBound)=($mysqlVersion=~/^8/)? ('\\\b','\\\b') : ('[[:<:]]','[[:>:]]'); # "\b" -> "\\\b" because interpreted by Perl and MySQL before being used 
 my @wordList=split(/\s+/,lc($searchString));
 my @trueWordList=@wordList; # unprocessed words
 my $orPattern=join('|',@wordList); # used even for $selOrAnd='and' because each word can match different item. AND filtering is performed at result display
-$orPattern='[[:<:]]('.$orPattern.')[[:>:]]' unless $chk_partial;
+$orPattern="$wordStartBound($orPattern)$wordEndBound" unless $chk_partial;
 $orPattern="REGEXP '$orPattern'";
 
 my @sthSrch;
@@ -356,7 +357,7 @@ $sthGN->finish;
 
 if ($projectAccess ne 'guest' && $projectStatus <= 0) {
 	print qq
-|<SCRIPT LANGUAGE="JavaScript">
+|<SCRIPT type="text/javascript">
 function changeCatList(classIdx){
 	var myForm=document.storeForm;
 	myForm.catList.options.length=0;
@@ -749,7 +750,7 @@ sub storeResult {
 |<HTML>
 <HEAD>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
-<SCRIPT LANGUAGE="JavaScript">
+<SCRIPT type="text/javascript">
 function displayClassification() {
 	top.promsFrame.selectedMode='classification:$classID';
 	top.promsFrame.selectedAction='proteins';
@@ -786,6 +787,7 @@ function displayClassification() {
 }
 
 ####>Revision history<####
+# 2.3.2 [BUGFIX] Detects MySQL version in order to use compatible word boundaries in SQL queries (PP 15/06/21)
 # 2.3.1 [UPDATE] Changed RANK field to IDENT_RANK for compatibility with MySQL 8 (PP 04/03/20) 
 # 2.3.0 [FEATURE] Remove locked experiments from search database (VS 08/08/19)
 # 2.2.10 Added number of matches found (PP 14/06/18)

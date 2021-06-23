@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# displayGSEA.cgi       1.1.0                                                  #
+# displayGSEA.cgi       1.1.1                                                  #
 # Authors: V. Laigle (Institut Curie)                                          #
 # Contact: myproms@curie.fr                                                    #
 # Display the results of Gene Set Enrichment Analysis                          #
@@ -673,6 +673,7 @@ sub printHeatMap {
     $min = floor($min);
     $max = ceil($max);
     my $limits = ($min < 0)? "min: $min, ref: 0, max: $max" : "min: 0, max: $max";
+    my $pepStrg = ($gseaInfo{'pepWeights'} eq "msms")? "MS/MS peptides" : ($gseaInfo{'pepWeights'} eq "distinct")? "Dist. peptides" : "All peptides";
 
     # Draw HeatMap
     print qq 
@@ -726,7 +727,7 @@ function showValue(value, hCell) {
             if (protData[rowIdData[0]]) {
                 valueStrg += '\\nQuantif. Value: ' + protData[rowIdData[0]][0];
                 valueStrg += '\\nQuantif. p-value: ' + protData[rowIdData[0]][1];
-                valueStrg += '\\nNum. pep. used: ' + protData[rowIdData[0]][2];
+                valueStrg += '\\n$pepStrg: ' + protData[rowIdData[0]][2];
             }
         }
     }
@@ -1311,7 +1312,7 @@ sub showGraph {  # Globals: %promsPath, $projectID, $gseaID
 }
 
 
-sub displayProtGeneSets {  # Globals: %protResults, %genes2Terms, $lightColor, $darkColor
+sub displayProtGeneSets {  # Globals: %protResults, %genes2Terms, %gseaResults, %gseaData, %gseaInfo, $lightColor, $darkColor
     my ($refProtIDs) = @_;
     my @protIDs = @{$refProtIDs};
     
@@ -1321,6 +1322,18 @@ sub displayProtGeneSets {  # Globals: %protResults, %genes2Terms, $lightColor, $
 
     my $exportFilterParam = "";
     $exportFilterParam .= "&protID=" . join("&protID=", @protIDs) if (@protIDs);
+
+    my ($pepStrg, $pepPopup);
+    if ($gseaInfo{'pepWeights'} eq 'msms') {
+        $pepStrg = "&nbsp;MS/MS&nbsp;<BR>&nbsp;Peptides&nbsp;";
+        $pepPopup = "Truly identified peptides found in quantification and used to weight protein scores in GSEA";
+    } elsif ($gseaInfo{'pepWeights'} eq 'distinct') {
+        $pepStrg = "&nbsp;Dist.&nbsp;<BR>&nbsp;Peptides&nbsp;";
+        $pepPopup = "Distinct Peptides found in quantification and used to weight protein scores in GSEA";
+    } else {
+        $pepStrg = "&nbsp;Peptides&nbsp;";
+        $pepPopup = "All Peptides used in quantification";
+    }
 
     my $titleStrg = "Protein Information";
     print header(-'content-encoding' => 'no',-charset=>'utf-8');
@@ -1348,9 +1361,11 @@ sub displayProtGeneSets {  # Globals: %protResults, %genes2Terms, $lightColor, $
         <TH class="rbBorder" style="min-width:125px;" align="center">&nbsp;Protein&nbsp;</TH>
         <TH class="rbBorder" align="center">&nbsp;Uniprot&nbsp;ACC&nbsp;</TH>
         <TH class="rbBorder" align="center">&nbsp;Gene&nbsp;name&nbsp;</TH>
+        <TH class="rbBorder" style="min-width:130px;" align="center">&nbsp;Quantif. value&nbsp;</TH>
+        <TH class="rbBorder" style="min-width:130px;" align="center">&nbsp;Quantif. p-value&nbsp;</TH>
         <TH class="rbBorder" align="center">
-            <FONT style="cursor:help;" onmouseover="popup('Peptides in best Analysis');" onmouseout="popout();">
-                &nbsp;Peptides&nbsp;
+            <FONT style="cursor:help;" onmouseover="popup('$pepPopup');" onmouseout="popout();">
+                $pepStrg
             </FONT>
         </TH>
         <TH class="bBorder" width=700 align="center">Description - Species</TH>
@@ -1358,14 +1373,18 @@ sub displayProtGeneSets {  # Globals: %protResults, %genes2Terms, $lightColor, $
 |;
 
     my $bgColor = $lightColor;
-    foreach my $protID (sort { $protInfo{$b}{'NumPep'} <=> $protInfo{$a}{'NumPep'} } @protIDs) {
+    foreach my $protID (sort { $gseaData{$b}{'pepNb'} <=> $gseaData{$a}{'pepNb'} } @protIDs) {
         my $gene = $protResults{$protID}{'gene'};
 
         my $geneSetsStr = '';
         if (defined $genes2Terms{$gene}) {
             foreach my $geneSet (@{$genes2Terms{$gene}}) {
+                my $gsEnrichment = ($gseaResults{$geneSet})? ($gseaResults{$geneSet}{'NES'} > 0)? 
+                    "<IMG src=\"$promsPath{images}/up_red.png\" width=\"11\" height=\"11\"/>" : 
+                    "<IMG src=\"$promsPath{images}/down_green.png\" width=\"11\" height=\"11\"/>" : 
+                    "<span style=\"padding-left:11px\"></span>";
                 $geneSetsStr .= "<BR>" if ($geneSetsStr);
-                $geneSetsStr .= "<A href=\"javascript:ajaxGSDetails('$geneSet', $protID);\">$geneSet</A>";
+                $geneSetsStr .= "&nbsp;&nbsp;$gsEnrichment&nbsp;&nbsp;<A href=\"javascript:ajaxGSDetails('$geneSet', $protID);\">$geneSet</A>";
             }
         }
         my $geneStrg = '-';
@@ -1383,6 +1402,10 @@ sub displayProtGeneSets {  # Globals: %protResults, %genes2Terms, $lightColor, $
             my $uniACC = @{$masterProts{$protInfo{$protID}{'MasterProt'}}{'uniACC'}}[0];
             $uniAccStrg = $uniACC;
         }
+        my $quantifVal = $gseaData{$protID}{'value'};
+        my $pval = $gseaData{$protID}{'pvalue'};
+        $pval = '-' unless ($pval && $pval ne "NA");
+        my $pepNb = $gseaData{$protID}{'pepNb'};
 
         print qq 
 |   <TR bgcolor=$bgColor>
@@ -1390,7 +1413,9 @@ sub displayProtGeneSets {  # Globals: %protResults, %genes2Terms, $lightColor, $
         <TH align="center" valign="center">&nbsp;<A href="javascript:sequenceView($protID,$protInfo{$protID}{AnaID})">$protInfo{$protID}{'Name'}</A>&nbsp;</TH>
         <TH align="center" valign="center">&nbsp;$uniAccStrg&nbsp;</TH>
         <TH align="center" valign="center">&nbsp;$geneStrg&nbsp;</TH>
-        <TH align="center" valign="center">&nbsp;$protInfo{$protID}{'NumPep'}</TH>
+        <TH align="center" valign="center">&nbsp;$quantifVal&nbsp;</TH>
+        <TH align="center" valign="center">&nbsp;$pval&nbsp;</TH>
+        <TH align="center" valign="center">&nbsp;$pepNb&nbsp;</TH>
         <TD>&nbsp;$protInfo{$protID}{'Des'} <FONT class="org">$protInfo{$protID}{'Org'}</FONT></TD>
     </TR>
 |;
@@ -1833,13 +1858,15 @@ sub exportGSEAResults {  # Globals: %gseaResults, %gseaInfo, $name, $desc
 }
 
 
-sub exportProtList {  # Globals: %protResults, %genes2Terms
+sub exportProtList {  # Globals: %protResults, %genes2Terms, %gseaData, %gseaInfo
     my ($refProtIDs) = @_;
     my @protIDs = @{$refProtIDs};
 
     my ($protInfoRef, $masterProtsRef) = &getProtInfo(\@protIDs);
     my %protInfo = %{$protInfoRef};
     my %masterProts = %{$masterProtsRef};
+
+    my $pepStrg = ($gseaInfo{'pepWeights'} eq "msms")? "MS/MS peptides" : ($gseaInfo{'pepWeights'} eq "distinct")? "Dist. peptides" : "All peptides";
 
     print header(-type => "application/vnd.ms-excel", -attachment => "Protein_list.xls");
     warningsToBrowser(1);
@@ -1856,18 +1883,20 @@ sub exportProtList {  # Globals: %protResults, %genes2Terms
     $contentFormat->set_text_wrap();
 
     # Writting column headers
-    $worksheet->write_string("A1",'Gene Set(s)',$headerMergeFormat);  # min-width:400px;
-    $worksheet->write_string("B1",'Proteins',$headerMergeFormat);  # min-width:125px;
-    $worksheet->write_string("C1",'Uniprot ACC',$headerMergeFormat);
-    $worksheet->write_string("D1",'Gene Name',$headerMergeFormat);
-    $worksheet->write_string("E1","Peptides",$headerFormat);  # popup('Peptides in best Analysis')
-    $worksheet->write_string("F1","Description - Species",$headerFormat);  # width=700
+    $worksheet->write_string("A1", "Gene Set(s)", $headerFormat);
+    $worksheet->write_string("B1", "Proteins", $headerFormat);
+    $worksheet->write_string("C1", "Uniprot ACC", $headerFormat);
+    $worksheet->write_string("D1", "Gene Name", $headerFormat);
+    $worksheet->write_string("E1", "Quantif. value", $headerFormat);
+    $worksheet->write_string("F1", "Quantif. p-value", $headerFormat);
+    $worksheet->write_string("G1", $pepStrg, $headerFormat);
+    $worksheet->write_string("H1", "Description - Species", $headerFormat);
 
     my $row=1;
     my $maxCharGS = 0;
     my $maxCharDesc = 0;
 
-    foreach my $protID (sort { $protInfo{$b}{'NumPep'} <=> $protInfo{$a}{'NumPep'} } @protIDs) {
+    foreach my $protID (sort { $gseaData{$b}{'pepNb'} <=> $gseaData{$a}{'pepNb'} } @protIDs) {
         my $gene = $protResults{$protID}{'gene'};
 
         my $geneSetCount = 0;
@@ -1889,16 +1918,24 @@ sub exportProtList {  # Globals: %protResults, %genes2Terms
         if ($protInfo{$protID}{'MasterProt'} && $masterProts{$protInfo{$protID}{'MasterProt'}}{'uniACC'}[0]) {
             $uniAccStrg = shift @{$masterProts{$protInfo{$protID}{'MasterProt'}}{'uniACC'}};
         }
+        my $pval = $gseaData{$protID}{'pvalue'};
+        $pval = '-' unless ($pval && $pval ne "NA");
 
         $worksheet->write_string($row, 0, $geneSetsStr, $contentFormat);
         $worksheet->write_string($row, 1, $protInfo{$protID}{'Name'}, $contentFormat);
         $worksheet->write_string($row, 2, $uniAccStrg, $contentFormat);
         $worksheet->write_string($row, 3, $geneStrg, $contentFormat);
-        $worksheet->write_number($row, 4, $protInfo{$protID}{'NumPep'}, $contentFormat);
+        $worksheet->write_string($row, 4, $gseaData{$protID}{'value'}, $contentFormat);
+        if ($pval eq "-") {
+            $worksheet->write_string($row, 5, $pval, $contentFormat);
+        } else {
+            $worksheet->write_number($row, 5, $pval, $contentFormat);
+        }
+        $worksheet->write_number($row, 6, $gseaData{$protID}{'pepNb'}, $contentFormat);
         
         my $protDesc = $protInfo{$protID}{'Des'} . " - " . $protInfo{$protID}{'Org'};
         $maxCharDesc = length($protDesc) if (length($protDesc) > $maxCharDesc);
-        $worksheet->write_string($row, 5, $protDesc, $contentFormat);
+        $worksheet->write_string($row, 7, $protDesc, $contentFormat);
 
         my $rowHeight = ($geneSetCount > 1)? $geneSetCount * 12 : 14;
         $worksheet->set_row($row, $rowHeight);
@@ -1910,11 +1947,14 @@ sub exportProtList {  # Globals: %protResults, %genes2Terms
     $worksheet->set_column(1, 1, 15);
     $worksheet->set_column(2, 2, 15);
     $worksheet->set_column(3, 3, 15);
-    $worksheet->set_column(4, 4, 10);
-    $worksheet->set_column(5, 5, $maxCharDesc);
+    $worksheet->set_column(4, 4, 15);
+    $worksheet->set_column(5, 5, 15);
+    $worksheet->set_column(6, 6, 15);
+    $worksheet->set_column(7, 7, $maxCharDesc);
     $workbook->close();
 }
 
 ####>Revision history<####
+# 1.1.1 [ENHANCEMENT] Small improvement to protein lists display (VL 10/06/21)
 # 1.1.0 [ENHENCEMENT] Add interactive dotplot and heatmap (VL 27/05/21)
 # 1.0.0 Created (VL 09/11/20)

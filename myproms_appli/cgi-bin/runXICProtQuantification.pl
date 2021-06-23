@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# runXICProtQuantification.pl       2.19.7                                     #
+# runXICProtQuantification.pl       2.19.8                                     #
 # Component of site myProMS Web Server                                         #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
@@ -3909,7 +3909,6 @@ sub runProteinAbundance { # all non-absolute measures: SUM,MEDIAN,...,LFQ
 		MAIN_LOOP:while ($currentJob < $numAbundJobs) {
 	
 			###>Parallel launch of up to $MAX_PARALLEL_QUANTIFS jobs
-			open (ABUND_LOG,">>$resultDir/abundance.log");
 			my $newJobs=0;
 			while (scalar (keys %runningJobs) < $MAX_PARALLEL_QUANTIFS) {
 					
@@ -3923,26 +3922,30 @@ sub runProteinAbundance { # all non-absolute measures: SUM,MEDIAN,...,LFQ
 				my $jobDir="$resultDir/ABUND$currentJob";
 				if (-e "$jobDir/end.flag") { # in case using data from previous incomplete quantif
 					$numJobToRun--;
+					open (ABUND_LOG,">>$resultDir/abundance.log"); # open/print/close to premature close by sub $SIG{CHLD}()
 					print ABUND_LOG "Job #$currentJob already run. Skipping\n";
+					close ABUND_LOG;
 				}
 				else {
+					open (ABUND_LOG,">>$resultDir/abundance.log");
 					print ABUND_LOG "Launching job #$currentJob... ";
+					close ABUND_LOG;
 					my $childPid = fork;
 					unless ($childPid) { # child here
-						close ABUND_LOG;
 						#system "echo RUN > $jobDir/run.flag", # run flag file
 						system "./runXICProtQuantification.pl $quantifID $quantifDate ABUND_JOB:$currentJob";					
 						#system "echo END > $jobDir/end.flag", # end flag file
 						exit;
 					}
 					$runningJobs{$childPid}=$currentJob;
+					open (ABUND_LOG,">>$resultDir/abundance.log");
 					print ABUND_LOG " OK\n";
+					close ABUND_LOG;
 				}
 				$newJobs++;
 				last if $currentJob==$numAbundJobs; # no more jobs to launch
 				sleep 2;
 			}
-			close ABUND_LOG;
 
 			if ($newJobs) {
 				open(FILESTAT,">>$fileStat");
@@ -5354,6 +5357,7 @@ sub getAllProtInfo {
 # TODO: Make clear choice for labeled quantif done with PEP_INTENSITY algo: treat as 100% Label-Free or mixed LF/Label ?????
 # TODO: Move label-free peptide matching check further downstream for compatibility with PTM quantif
 ####>Revision history<####
+# 2.19.8 [BUGFIX] Fix premature close of ABUND_LOG fh in main job fork loop by sub $SIG{CHLD} (PP 18/06/21) 
 # 2.19.7 [BUGFIX] Fix no retry limit for abundance sub job taking too long (PP 03/06/21)
 # 2.19.6 [BUGFIX] Fix +/-INF peptide count for SILAC with multi-replicate reference state in non-Super Ratio context (PP 26/04/21)
 # 2.19.5 [UPDATE] Modified +/-INF decision rules & quantif code version management moved here (PP 13/04/21) 

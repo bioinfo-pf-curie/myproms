@@ -597,7 +597,7 @@ idvis.heatMap = function(mapData) {
 		.click(showHideHelpText);
 		let yShift=50;
 		//var helpText='HELP:\n[Mouseover+/-Shift] for cell information.';
-			helpText='HELP:';
+		var helpText='HELP:';
 		if (hasCells) {
 			helpText+='\n[Mouseover] for cell information.';
 			if (!noCellExclusion) {helpText+='\n[Shift+Click] to exclude/include a cell.';}

@@ -27,7 +27,7 @@ sed -i "s@DB_USER@${DB_USER}@g" ${APPLI_DIR}/cgi-bin/promsConfig.pm
 sed -i "s@DB_PASSWORD@${DB_PASSWORD}@g" ${APPLI_DIR}/cgi-bin/promsConfig.pm
 sed -i "s@DB_NAME@${DB_NAME}@g" ${APPLI_DIR}/cgi-bin/promsConfig.pm
 sed -i "s@APPLI_DIR@${APPLI_DIR}@g" ${APPLI_DIR}/cgi-bin/promsConfig.pm
-sed -i "s@DATA_DIR@${DATA_DIR}@g" ${APPLI_DIR}/cgi-bin/promsConfig.pm
+sed -i "s@\bDATA_DIR\b@${DATA_DIR}@g" ${APPLI_DIR}/cgi-bin/promsConfig.pm # \b (word boundary) to prevent overwriting MASCOT_DATA_DIR
 sed -i "s@SHARED_DIR@${SHARED_DIR}@g" ${APPLI_DIR}/cgi-bin/promsConfig.pm
 sed -i "s@JAVA_DIR@${JAVA_DIR}@g" ${APPLI_DIR}/cgi-bin/promsConfig.pm
 sed -i "s@R_DIR@${R_DIR}@g" ${APPLI_DIR}/cgi-bin/promsConfig.pm
