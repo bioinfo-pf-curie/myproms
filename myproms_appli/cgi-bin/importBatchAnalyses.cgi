@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# importBatchAnalyses.cgi         2.8.4                                        #
+# importBatchAnalyses.cgi         2.8.5                                        #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -141,7 +141,7 @@ A.file:hover,A.badFile:hover{color:#FF6600; text-decoration:none;}
 		####>Building file tree<####
 		print qq
 |<SCRIPT type="text/javascript">
-var fileInfo=new Object();
+var fileInfo={};
 |;
 		my %treeOptions;
 		$treeOptions{'BUTTON'}='font-size:9px;width:55px';
@@ -257,13 +257,15 @@ parent.document.fileAccessForm.mascotAction.value='get'; // switch search to get
 <FONT class="title3">Retrieving files...</FONT><BR>
 |;
 		####>Looping through selected files<####
+		my %alreadyRetrieved;
 		foreach my $filePath (@datFiles) {
-			my ($file)=($filePath=~/(F\d{6}\.dat)/);
-			my $spanStrg=(-e "$batchFilesDir/$file")? "<IMG src='$promsPath{images}/good.gif'>" : ''; # file already retrieve
+			my ($file)=($filePath=~/(F\d+\.dat)/);
+			(my $spanStrg,$alreadyRetrieved{$file})=(-e "$batchFilesDir/$file")? ("<IMG src='$promsPath{images}/good.gif'>",1) : ('',0); # file already retrieved
 			print "<B>-$file<SPAN id=\"$file\">$spanStrg</SPAN></B><BR>\n";
 		}
 		foreach my $filePath (@datFiles) {
 			my ($file)=($filePath=~/(F\d+\.dat)/);
+			next if $alreadyRetrieved{$file};
 			print "<SCRIPT type=\"text/javascript\">document.getElementById('$file').innerHTML=\"...\";</SCRIPT>\n";
 			#sleep 2;
 			my $newDatFile="$batchFilesDir/$file";
@@ -271,8 +273,7 @@ parent.document.fileAccessForm.mascotAction.value='get'; // switch search to get
 			unless (-e $newDatFile) {
 				if ($mascotServers{$mascotServer}{data_local_path}) { # Mascot is on same computer or NFS
 					$mascotServers{$mascotServer}{data_local_path}=~s/\/\Z//; # remove end '/' if any
-					$filePath=~s/^\.+//; # remove cd up
-					$filePath=~s/^\///; # remove starting '/'
+					$filePath=~s/.+\/(\d{8}\/.+)/$1/; # remove everything before date folder (../data/<date>/Fxxxxxx.dat)
 					if ($mascotServers{$mascotServer}{link_files}) { # symbolic link (no copy)
 						symlink("$mascotServers{$mascotServer}{data_local_path}/$filePath",$newDatFile);
 					}
@@ -280,32 +281,30 @@ parent.document.fileAccessForm.mascotAction.value='get'; // switch search to get
 						copy("$mascotServers{$mascotServer}{data_local_path}/$filePath",$newDatFile);
 					}
 					# Copy *.pop files for percolator
-					my @infos=split(/\//,$filePath);
-					my @date=split('',$infos[2]);
-					my ($year,$month)=(join('',($date[0],$date[1],$date[2],$date[3])),join('',($date[4],$date[5])));
+					my ($year,$month)=$filePath=~/^(\d{4})(\d{2})/; # <date>/Fxxxxxx.dat
 					my $mainCacheDir="$mascotServers{$mascotServer}{data_local_path}/cache/$year/$month"; # "$mascotServers{$mascotServer}[2]/data/cache/$year/$month"
 					opendir(CACHEDIR,$mainCacheDir);
 					my $foundFile=0;
 					while ((my $cacheDir=readdir(CACHEDIR))) {
 						next if ($cacheDir =~ /^\.+$/ || ! -d "$mainCacheDir/$cacheDir"); # skip . and ..
 						opendir(DATDIR,"$mainCacheDir/$cacheDir");
-						while ((my $file=readdir(DATDIR))) {
-							next if $cacheDir =~ /^\.\.?$/; # skip . and ..
-							if ($file =~ /$infos[3].*\.target\.pop/) {
+						while ((my $cacheFile=readdir(DATDIR))) {
+							next if $cacheFile =~ /^\.+$/; # skip . and ..
+							if ($cacheFile =~ /$file.*\.target\.pop/) {
 								if ($mascotServers{$mascotServer}{link_files}) {
-									symlink("$mainCacheDir/$cacheDir/$file",$popTargetFile);
+									symlink("$mainCacheDir/$cacheDir/$cacheFile",$popTargetFile);
 								}
 								else{
-									copy("$mainCacheDir/$cacheDir/$file",$popTargetFile);
+									copy("$mainCacheDir/$cacheDir/$cacheFile",$popTargetFile);
 								}
 								$foundFile++;
 							}
-							elsif($file =~ /$infos[3].*\.decoy\.pop/){
+							elsif($cacheFile =~ /$file.*\.decoy\.pop/){
 								if ($mascotServers{$mascotServer}{link_files}) {
-									symlink("$mainCacheDir/$cacheDir/$file",$popDecoyFile);
+									symlink("$mainCacheDir/$cacheDir/$cacheFile",$popDecoyFile);
 								}
 								else{
-									copy("$mainCacheDir/$cacheDir/$file",$popDecoyFile);
+									copy("$mainCacheDir/$cacheDir/$cacheFile",$popDecoyFile);
 								}
 								$foundFile++;
 							}
@@ -1090,7 +1089,7 @@ function showHideSearchParam(searchRequest,action) {
 	####>File selection for import<####
 	###################################
 	if ($action ne 'clean') {
-		print "var fileNames=new Array();\n";
+		print "var fileNames=[];\n";
 		my $count=0;
 		my $disabMZXML=1;
 		foreach my $dataFile (sort {&promsMod::sortSmart(lc($a),lc($b))} keys %filesInfo) {
@@ -1765,16 +1764,16 @@ elsif ($action eq 'start') {
 	####>Starting HTML<####
 	print header(-'content-encoding'=>'no',-charset=>'utf-8'); warningsToBrowser(1);
 
-	print qq
-|<HTML>
+	print qq |
+<HTML>
 <HEAD>
 <TITLE>Search file sources</TITLE>
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
 <SCRIPT type="text/javascript">
 |;
 	&promsMod::browseDirectory_JavaScript if $promsPath{'shared'};
-	print qq
-|var fileSource;
+	print qq |
+var fileSource;
 function cancelAction() {
 	//top.promsFrame.selectedAction='summary'; // set default action to 'summary'
 	top.promsFrame.optionFrame.selectOption();
@@ -1789,7 +1788,7 @@ function selectSource(source) {
 	if (myForm.newDir) {myForm.newDir.disabled=false;} // not defined if user is bio
 	if (document.getElementById('sharedDirDIV')) {document.getElementById('sharedDirDIV').style.display='none';} // sharedDIr unabled
 	myForm.uplArch.disabled=true;
-	for (var i=1;i<=$maxUpFiles;i++) {
+	for (let i=1;i<=$maxUpFiles;i++) {
 		document.getElementById('uploaded_file_'+i).disabled=true;
 	}
 	if ($okMascot) {document.getElementById('mascotTable').style.display='none';}
@@ -1808,7 +1807,7 @@ function selectSource(source) {
 		myForm.uplArch.disabled=false;
 	}
 	else if (fileSource=='UseUploadedFiles') { // Upload multiple files
-		for (var i=1;i<=$maxUpFiles;i++) {
+		for (let i=1;i<=$maxUpFiles;i++) {
 			document.getElementById('uploaded_file_'+i).disabled=false;
 		}
 	}
@@ -1823,7 +1822,7 @@ function selectSource(source) {
 function displayNextFile(f) {
 	// check for duplicates
 	var fileValue=document.getElementById('uploaded_file_'+f).value;
-	for (var i=1;i<=$maxUpFiles;i++) {
+	for (let i=1;i<=$maxUpFiles;i++) {
 		if (i != f && document.getElementById('uploaded_file_'+i).value && document.getElementById('uploaded_file_'+i).value==fileValue) {
 			alert('ERROR: This file (#'+f+') is already used at position #'+i+' !');
 			document.getElementById('uploaded_file_'+f).value='';
@@ -1834,12 +1833,12 @@ function displayNextFile(f) {
 	f++;
 	document.getElementById('tabFile_'+f).style.display='block';
 }
-var searchLogs=new Object(); // updated after FORM
+var searchLogs={}; // updated after FORM
 function updateLogList(mascotServer) {
 	var selSearchLogs=document.getElementById('searchLogs');
 	selSearchLogs.options.length=0;
 	if (searchLogs[mascotServer]) {
-		for (var i=0;i<searchLogs[mascotServer].length;i++) {
+		for (let i=0;i<searchLogs[mascotServer].length;i++) {
 			selSearchLogs.options[i]=new Option(searchLogs[mascotServer][i],searchLogs[mascotServer][i]);
 		}
 		selSearchLogs.disabled=false;
@@ -1854,8 +1853,6 @@ function searchMascotServer() {
 	var myForm=document.fileAccessForm;
 	if (!myForm.mascotServer.value) {alert("ERROR: No Mascot server selected !"); return;}
 	if (!myForm.searchLogs.value) {alert("ERROR: No Mascot log files selected !"); return;}
-//alert('OK');
-//return;
 	//Date range check
 	if (myForm.startDate.value) {
 		if (!myForm.endDate.value) {
@@ -1886,7 +1883,6 @@ function searchMascotServer() {
 		return;
 	}
 	//Job range check
-//alert('S="'+myForm.startJob.value+'"   E="'+myForm.endJob.value+'"');
 	if (myForm.startJob.value) {
 		if (!myForm.endJob.value) {
 			alert('ERROR: No end job number provided !');
@@ -1922,7 +1918,6 @@ function searchMascotServer() {
 	myForm.ACT.value='UseMascot';
 	myForm.mascotAction.value='list';
 	document.getElementById('mascotFrame').style.display='block';
-//alert(myForm.mascotServer.value);
 	myForm.target='mascotFrame';
 	myForm.submit();
 }
@@ -1951,7 +1946,7 @@ function checkStartForm(myForm) {
 		if (!myForm.uplArch.value) {alert("ERROR: No archive file provided !"); return false;}
 	}
 	else if (fileSource=='UseUploadedFiles') {
-		for (var i=1;i<=$maxUpFiles;i++) {
+		for (let i=1;i<=$maxUpFiles;i++) {
 			if (document.getElementById('uploaded_file_'+i).value) {
 				return true;
 			}
@@ -1967,16 +1962,16 @@ function checkStartForm(myForm) {
 		//'get' mode: Fetch list of checked dat files
 		var chkList=mascotFrame.getCheckedItems();
 		if (chkList.match('folder')) { // transform 'folder' into 'file'
-			var newList=new Array();
+			var newList=[];
 			var chkItems=chkList.split('+');
-			for (var I=0;I<chkItems.length;I++) {
+			for (let I=0;I<chkItems.length;I++) {
 				// folders
 				if (chkItems[I].match('folder')) {
 					var itemBoxes=mascotFrame.document.treeForm.checkIndex;
 					var chkFolders=chkItems[I].split(/[:,]/);
-					for (var F=1;F<chkFolders.length;F++) {
+					for (let F=1;F<chkFolders.length;F++) {
 						var tabIndex=mascotFrame.getItemIndex('folder:'+chkFolders[F]);
-						for (var i=tabIndex+1;i<mascotFrame.tableArray.length;i++) {
+						for (let i=tabIndex+1;i<mascotFrame.tableArray.length;i++) {
 							if (mascotFrame.tableArray[i][2]<=mascotFrame.tableArray[tabIndex][2]) {break;} // brother or parent is reached
 							if (itemBoxes[i].disabled) {continue;}
 							var branch=mascotFrame.tableArray[i][4].split(':');
@@ -1987,7 +1982,7 @@ function checkStartForm(myForm) {
 				// files
 				else {
 					var chkFiles=chkItems[I].split(/[:,]/);
-					for (var f=1;f<chkFiles.length;f++) {
+					for (let f=1;f<chkFiles.length;f++) {
 					newList.push(chkFiles[f]);}
 				}
 			}
@@ -2003,7 +1998,7 @@ function checkStartForm(myForm) {
 }
 function updateDisableStatus() { // needed after '<< BACK' button
 	var radioSource=document.fileAccessForm.selSource;
-	for (var i=0;i<radioSource.length;i++) {
+	for (let i=0;i<radioSource.length;i++) {
 		if (radioSource[i].checked) {
 			selectSource(radioSource[i].value);
 			break;
@@ -2361,6 +2356,7 @@ sub updateWaitBox {
 }
 
 ####>Revision history<####
+# 2.8.5 [BUGFIX] Fix wrong path to Mascot dat files when data_local_path is defined (PP 30/06/21)
 # 2.8.4 [UX] Added Recently/Most used databanks in selection list & auto-select "search file" for Analysis name (PP 22/06/21)
 # 2.8.3 Uses new &promsConfig::getMascotServers function (PP 25/06/19)
 # 2.8.2 Modification of merge-file string (GA 08/01/19)

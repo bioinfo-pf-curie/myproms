@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# runXICProtQuantification.pl       2.19.8                                     #
+# runXICProtQuantification.pl       2.19.9                                     #
 # Component of site myProMS Web Server                                         #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
@@ -3773,6 +3773,7 @@ sub runProteinAbundance { # all non-absolute measures: SUM,MEDIAN,...,LFQ
 					my $pbsError=$cluster{'checkError'}->($pbsErrorFile);
 					if ($pbsError) {
 						print ABUND_LOG "**Job #$job on $jobClusterID has failed $triedJobs{$job} time(s)!**\n";
+						print ABUND_LOG "$pbsError\n";
 						if ($triedJobs{$job} == 5) {
 							close ABUND_LOG;
 							system "echo FAILED > $jobDir/failed.flag";
@@ -5217,7 +5218,9 @@ sub parsePrimaryAbundanceResults { # Globals: %dataFiles, %optDataFiles, %quanti
 		###<Combining data before outlier filtering & lost proteins>###
 		&getAllProtInfo("$jobDir/allProteins.txt", $refProteinAbundance, $refAllPeptides, $refLostProteins);
 	}
-	
+	# Remove keys of refPeptideCount not present in refProteinAbundance. These proteins are not quantified.
+	# They are usually lost prots when using LFQ only and it creates undef values in importAbundanceInDB which fails
+	%{$refPeptideCount} = %{$refPeptideCount}{keys %{$refProteinAbundance}};
 }
 
 sub parseSecondaryAbundanceResults {
@@ -5357,6 +5360,7 @@ sub getAllProtInfo {
 # TODO: Make clear choice for labeled quantif done with PEP_INTENSITY algo: treat as 100% Label-Free or mixed LF/Label ?????
 # TODO: Move label-free peptide matching check further downstream for compatibility with PTM quantif
 ####>Revision history<####
+# 2.19.9 [BUGFIX] Fix undef values for pep nb when using only LFQ and protein normalization (VL 25/06/21)
 # 2.19.8 [BUGFIX] Fix premature close of ABUND_LOG fh in main job fork loop by sub $SIG{CHLD} (PP 18/06/21) 
 # 2.19.7 [BUGFIX] Fix no retry limit for abundance sub job taking too long (PP 03/06/21)
 # 2.19.6 [BUGFIX] Fix +/-INF peptide count for SILAC with multi-replicate reference state in non-Super Ratio context (PP 26/04/21)

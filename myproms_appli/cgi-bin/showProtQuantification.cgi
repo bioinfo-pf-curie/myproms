@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# showProtQuantification.cgi     2.14.2                                        #
+# showProtQuantification.cgi     2.14.3                                        #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Displays protein quantification data                                         #
@@ -4492,7 +4492,7 @@ sub displayRatioPlot {
 	my $revFoldChange=1/$dispFoldChange;
 	my $log2=log(2);
 	print qq
-|</CENTER>$numPepCode
+|</CENTER>
 <SCRIPT type="text/javascript">
 function myPointLabel(dp,type) {
 	var infoStrg=dp.label;
@@ -9082,7 +9082,7 @@ sub ajaxDisplayCorrelationMatrix {
 			#my $corrMatrixFile="$promsPath{quantification}/project_$projectID/quanti_$selQuantifID/results/Afteroutmatrixcorrelation.txt";
 			open(CORR,$corrMatrixFile) or die "ERROR: Cannot open file '$corrMatrixFile': $!";
 			my (%convertLabels,@labelArray);
-my @rawLabelList; # Temp
+			my @rawLabelList; # Temp
 			while (<CORR>) {
 				chomp;
 				if ($.==1) {
@@ -9091,7 +9091,7 @@ my @rawLabelList; # Temp
 					my $prevExpCode='';
 					foreach my $rawLabel (split(/\t/,$_)) {
 						next unless $rawLabel; # top left cell is empty
-push @rawLabelList,$rawLabel;
+						push @rawLabelList,$rawLabel;
 						my ($expCode,$stateNum,$bioRepNum,$techRepNum);
 						if ($algoVersion==2) {
 							($expCode,$stateNum,$bioRepNum,$techRepNum)=($rawLabel=~/^(\w*)-?State(\d+)-biorep(\d+)-techRep(\d+)/); # "\w-" only for SuperRatio
@@ -9201,7 +9201,7 @@ normalization:{scope:'row',reference:'user',limitValues:{ref:0,max:1}} //$minCor
 		}
 		if ($states{$prevStatePos}[1] > 1) {
 			$groupStrg.=',' if $groupStrg;
-			$groupStrg.=",['$states{$prevStatePos}[0]',$prevStatePos,,$begGrIdx,$#sortedLabels]";
+			$groupStrg.="['$states{$prevStatePos}[0]',$prevStatePos,,$begGrIdx,$#sortedLabels]";
 		}
 		print qq
 |GCM.defineGroups('row',[$groupStrg]);
@@ -10279,6 +10279,7 @@ sub ajaxDisplayProteinQuantities {  # Globals: %promsPath, $selQuantifID, $light
 
 
 ####>Revision history<#####
+# 2.14.3 [BUGFIX] Removed forgotten debug text & fixed global correlation heatMap (PP 26/06/21)
 # 2.14.2 [BUGFIX] Fix minor bug in AJAX protein list table header for MaxQuant (PP 16/06/21)
 # 2.14.1 [BUGFIX] Fix error when trying to display raw peptide data for Proteomic Ruler (VL 10/06/21)
 # 2.14.0 [CHANGE] Always uses max num peptides used for point size & multiple bug fixes for PEP_RATIO (PP 26/05/21)

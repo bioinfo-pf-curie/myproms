@@ -1,6 +1,6 @@
 #!/usr/local/bin/perl -w
 ################################################################################
-# myproms4databanks.pl        1.2.0D                                            #
+# myproms4databanks.pl        1.2.2                                            #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -33,9 +33,14 @@ use strict;
 ####>Security<####
 ##################
 my @remoteHostIPs=( # Add comma (,) after each server but last
-	# '<IP address of myProMS web server>' (Add comma (,) after each entry but last)
+	'10.2.0.30', # pangaea
+	'10.2.200.39', # server bioinfo-web-dev
+	'10.2.0.193', # new prod
+	'10.2.200.38', # dev/prod on bi-web02
+	'10.200.10.172', # BIWS ppoullet
+	'10.200.10.93', # BIWS fyvon
 );
-if (!param('SKIP') && scalar @remoteHostIPs) {
+if (!param('SKIP') && scalar @remoteHostIPs && $ENV{'REMOTE_ADDR'}) {
 	my $okRequest=0;
 	foreach my $allowedIP (@remoteHostIPs) {
 		if ($allowedIP eq $ENV{'REMOTE_ADDR'}) {
@@ -352,8 +357,9 @@ elsif ($action eq 'prots') {
 ###################################
 elsif ($action eq 'getDbFile') {
 	my $trueDbFile = &getDatabankFile(param('DB'));
-	my $dbSize=-s $trueDbFile;
-	print header(-type=>'text/plain',-'content-length'=>$dbSize); warningsToBrowser(1);
+	# my $dbSize=-s $trueDbFile;
+	# print header(-type=>'text/plain',-'content-length'=>$dbSize); warningsToBrowser(1);
+	print header(-type=>'text/plain'); warningsToBrowser(1);
 	open(DB, $trueDbFile) || die "can't open $trueDbFile\n";
 	while (<DB>) {
 		print $_;
@@ -419,7 +425,9 @@ sub getParseRules {
 }
 
 ####>Revision history<####
-# 1.2.0 [FEATURE] Add ACT=prots option to allow full databank file retrieval through http protocole (PP 22/06/21) 
+# 1.2.2 [BUGFIX] Removed content-length in &getDatabankFile to prevent myProMS timeout (PP 02/07/21)
+# 1.2.1 [FEATURE] Added check on $ENV{REMOTE_ADDR} (PP 28/06/21)
+# 1.2.0 [FEATURE] Added ACT=getDbFile option to allow full databank file retrieval through http protocole (PP 22/06/21) 
 # 1.1.0 [ENHANCEMENT] Added a skip parameter to bypass IP adress restriction (VS 27/10/20)
 # 1.0.10 [FEATURE] Add ACT=prots option to return all protein identifiers from databank (VL 08/10/20)
 # 1.0.9 [CHANGE] Changed identifier parsing separator for ACT=scan (PP 29/09/20)

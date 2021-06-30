@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# testMyProMS.cgi         2.5.6                                                #
+# testMyProMS.cgi         2.5.7                                                #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -413,8 +413,8 @@ elsif ($action eq 'lwp') {
 	exit;
 }
 
-print qq
-|<SCRIPT LANGUAGE="JavaScript">
+print qq |
+<SCRIPT type="text/javascript">
 var startDate = new Date();
 function updateVariablesDisplay() {
 	if (document.getElementById('envDiv').style.display=='none') {
@@ -429,7 +429,7 @@ function updateVariablesDisplay() {
 function updateScriptDisplay() {
 	if (document.getElementById('scriptDiv').style.display=='none') {
 		document.getElementById('scriptButton').value='Hide versions';
-		document.getElementById('scriptDiv').style.display='block';
+		document.getElementById('scriptDiv').style.display='';
 	}
 	else {
 		document.getElementById('scriptButton').value='Show versions';
@@ -440,7 +440,16 @@ function showHideRPackages(clusterIdx) {
 	var packageDiv=document.getElementById('Rpackages_'+clusterIdx+'DIV');
 	packageDiv.style.display=(packageDiv.style.display=='none')? '' : 'none';
 }
-
+function updateMascotVariablesDisplay(mcRank) {
+	if (document.getElementById('mascotDiv'+mcRank).style.display=='none') {
+		document.getElementById('mascotEnvButton'+mcRank).value='Hide server variables';
+		document.getElementById('mascotDiv'+mcRank).style.display='';
+	}
+	else {
+		document.getElementById('mascotEnvButton'+mcRank).value='Show server variables';
+		document.getElementById('mascotDiv'+mcRank).style.display='none';
+	}
+}
 //AJAX
 /*** Job: local or cluster(s) ***/
 function checkBinaries(clusterIdx,name) {
@@ -583,7 +592,7 @@ print qq
 foreach my $v (@INC) {print "-$v<BR>\n";}
 print "<BR><B>>Environment variables (\%ENV):</B><BR>\n";
 foreach my $v (sort{lc($a) cmp lc($b)} keys %ENV) {print "$v: $ENV{$v}<BR>\n";}
-print "</DIV><BR><BR>\n";
+print "</FIELDSET></DIV><BR><BR>\n";
 
 ####>Checking Perl modules<####
 my @requiredModules=qw(
@@ -957,7 +966,9 @@ if (scalar keys %mascotServers && $lwpOK) {
 	print "<B>>Checking communication with Mascot server(s)...</B><BR>\n";
 	my $agent = LWP::UserAgent->new(agent=>'libwww-perl myproms@curie.fr');
 	$agent->timeout(360);
+	my $mascotCount=0;
 	foreach my $mascotServer (sort{lc($a) cmp lc($b)} keys %mascotServers) {
+		$mascotCount++;
 		print "&nbsp;&nbsp;<B>&bull;$mascotServer</B> ($mascotServers{$mascotServer}{url}):<BR>\n";
 		if ($mascotServers{$mascotServer}{proxy}) { # proxy settings
 			if (lc($mascotServers{$mascotServer}{proxy}) eq 'no') {$agent->no_proxy($mascotServers{$mascotServer}{url});}
@@ -965,6 +976,7 @@ if (scalar keys %mascotServers && $lwpOK) {
 		}
 		else {$agent->env_proxy;}
 		#>Checking scripts
+		my $okDatFiles=0;
 		foreach my $script ('myproms4datFiles.pl','myproms4databanks.pl','myproms4emPAI.pl') {
 			my $response = $agent->get("$mascotServers{$mascotServer}{url}/cgi/$script?ACT=test");
 			while (my $wait = $response->header('Retry-After')) {
@@ -980,6 +992,7 @@ if (scalar keys %mascotServers && $lwpOK) {
 				if ($mascotResponse[0]=~/# OK FROM (.+)/) {
 					print "&nbsp;&nbsp;&nbsp;&nbsp;-$script on $1 is OK<BR>\n";
 					$responded=1;
+					$okDatFiles=1 if $script eq 'myproms4datFiles.pl';
 				}
 				elsif ($mascotResponse[0]=~/.+DENIED.+HOST (.+)/) {
 					print "<FONT color=red>&nbsp;&nbsp;&nbsp;&nbsp;-Server $1 is not allowed to connect to $mascotServer</FONT><BR>\n";
@@ -991,7 +1004,9 @@ if (scalar keys %mascotServers && $lwpOK) {
 		#>Checking path to dat file if declared
 		if ($mascotServers{$mascotServer}{data_local_path}) {
 			if (-e "$mascotServers{$mascotServer}{data_local_path}") { # $mascotServers{$mascotServer}[2]/data
-				print "&nbsp;&nbsp;&nbsp;&nbsp;-Local path to data is found: <B>$mascotServers{$mascotServer}{data_local_path}</B><BR>\n";
+				my $error=&testMascotLocalDataDir($agent,$mascotServers{$mascotServer});
+				my $accessStrg=($error)? "<FONT color=red>ERROR: $error</FONT>" : '<FONT color=green>Access OK</FONT>';
+				print "&nbsp;&nbsp;&nbsp;&nbsp;-Local path to data is found: <B>$mascotServers{$mascotServer}{data_local_path}</B> ($accessStrg)<BR>\n";
 			}
 			else {
 				print "<FONT color=red>&nbsp;&nbsp;&nbsp;&nbsp;-Local path to data <B>not</B> found: <B>$mascotServers{$mascotServer}{data_local_path}</B></FONT><BR>\n";
@@ -1000,6 +1015,22 @@ if (scalar keys %mascotServers && $lwpOK) {
 			else {print "&nbsp;&nbsp;&nbsp;&nbsp;-Search files are <B>copied</B>, not linked<BR>\n";}
 		}
 		else {print "&nbsp;&nbsp;&nbsp;&nbsp;-Search files are <B>copied</B><BR>\n";}
+		#>Displaying Mascot server variables
+		if ($okDatFiles) {
+			my $response = $agent->get("$mascotServers{$mascotServer}{url}/cgi/myproms4datFiles.pl?ACT=mascotVar");
+			while (my $wait = $response->header('Retry-After')) {
+				sleep $wait;
+				$response = $agent->get($response->base);
+			}
+			if ($response->is_success) {
+				my $responseStrg=$response->content;
+				print qq |
+				&nbsp;&nbsp;&nbsp;&nbsp;<INPUT type="button" id="mascotEnvButton$mascotCount" value="Show server variables" onclick="updateMascotVariablesDisplay($mascotCount)"/>
+				<DIV id="mascotDiv$mascotCount" style="display:none">
+					<FIELDSET><LEGEND><FONT style="font-weight:bold;font-size:14px">$mascotServer variables:</FONT></LEGEND>$responseStrg</FIELDSET></DIV><BR>
+				|;
+			}
+		}
 	}
 	print "<B>Done.</B><BR><BR>\n";
 }
@@ -1245,8 +1276,61 @@ sub checkInternetConnection {
 	exit;
 }
 
+sub testMascotLocalDataDir {
+	my ($agent,$refMascotServer)=@_;
+	my $error='';
+
+	#<Get search log
+	my $response = $agent->get($refMascotServer->{url}."/cgi/myproms4datFiles.pl?ACT=log");
+	while (my $wait = $response->header('Retry-After')) {
+		sleep $wait;
+		$response = $agent->get($response->base);
+	}
+	my @resultLines;
+	if ($response->is_success) {
+		@resultLines = split("\n",$response->content);
+	}
+	my $logFile;
+	foreach (@resultLines) {
+		next if /^#/;
+		chomp;
+		if (/\.log\Z/) {
+			$logFile=$_;
+			last;
+		}
+	}
+	if ($logFile) {
+		#<Get last dat file
+		my $response = $agent->get($refMascotServer->{url}."/cgi/myproms4datFiles.pl?ACT=list&LOG=$logFile");
+		while (my $wait = $response->header('Retry-After')) {
+			sleep $wait;
+			$response = $agent->get($response->base);
+		}
+		my @resultLines;
+		if ($response->is_success) {
+			@resultLines = split("\n",$response->content);
+		}
+		for (my $i=$#resultLines; $i>=0; $i--) {
+			if ($resultLines[$i]=~/F\d+\.dat/) {
+				my $lastDatFile=(split(/\s+/,$resultLines[$i]))[0]; # '../data/<date>/Fxxxxxx.dat'
+				$lastDatFile=~s/.+\/(\d{8}\/.+)/$1/; # remove everything before date folder: '<date>/Fxxxxxx.dat'
+				my $fullDatFile=$refMascotServer->{data_local_path}."/$lastDatFile";
+				if (-e $fullDatFile) {
+					my $okDatFile=`tail -1 $fullDatFile | grep -c gc0p4Jq0M2Yt08jU534c0p` || 0;
+					chomp $okDatFile;
+					$error="Could not access '$fullDatFile'." unless $okDatFile;
+				}
+				else {$error="File '$fullDatFile' could not be found.";}
+				last;
+			}
+		}
+	}
+	else {$error='No Mascot search log file found.';}
+	return $error;
+}
 
 ####>Revision history<####
+# 2.5.7 [ENHANCEMENT] Tests access to Mascot data_local_path & displays Mascot server environment variables (PP 30/06/21) 
 # 2.5.6 [UPDATE] Added 5 R packages used by aLFQ and MassChroQ RT outliers filtering (PP 08/02/21)
 # 2.5.5 [ENHANCEMENT] Tests all python version & AJAX job detects job directory deletion and aborts job (PP 28/07/20)
 # 2.5.4 [UPDATE] Added R packages bit and bit64 (PP 20/11/19)

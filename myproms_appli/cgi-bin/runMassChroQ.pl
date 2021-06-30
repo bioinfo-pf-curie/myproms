@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# runMassChroQ.pl              1.9.14                                          #
+# runMassChroQ.pl              1.9.15                                          #
 # Authors: P. Poullet, V. Laigle, G. Arras, F. Yvon (Institut Curie)           #
 # Contact: myproms@curie.fr                                                    #
 # Interface between myProMS and MassChroQ software, developed by Inra.         #
@@ -560,7 +560,7 @@ $masschroqPath/masschroq --tmpdir $mcqTmpDir --parse-peptides $quantifDir/quanti
 	my $timeStamp=strftime("%Y%m%d%H%M%S",localtime);
 	# my $maxMem=int(3 + 0.1*$numAna).'Gb'; # 1.5 + 0.2*$numAna
 	my $coeff=($numAna > 100)? 0.1 : ($numAna > 50)? 0.15 : ($numAna > 25)? 0.2 : ($numAna > 10)? 0.3 : 0.5;
-	my $maxMem=int(3 + $coeff*$numAna).'Gb';
+	my $maxMem=int(3.5 + $coeff*$numAna).'Gb';
 	my %jobParams=(
 		maxMem=>$maxMem,
 		numCPUs=>1,
@@ -747,8 +747,8 @@ $masschroqPath/masschroq --tmpdir $mcqTmpDir --cpus $nbProcs $quantifDir/parsed-
 	#my $maxMem=(2*$numAna > 100)? (100+($numAna-50)).'Gb' : 2*$numAna.'Gb';
 	#my $maxMem=(1+$numAna).'Gb';
 	#my $maxMem=int(3 + 0.25*$numAna).'Gb';
-	my $coeff=($numAna > 100)? 0.25 : ($numAna > 50)? 0.3 : ($numAna > 25)? 0.5 : ($numAna > 10)? 0.75  : 1;
-	my $maxMem=int(3 + $coeff*$numAna).'Gb';
+	my $coeff=($numAna > 100)? 0.3 : ($numAna > 50)? 0.4 : ($numAna > 25)? 0.6 : ($numAna > 10)? 0.8  : 1;
+	my $maxMem=int(3.5 + $coeff*$numAna).'Gb';
 	my $timeStamp=strftime("%Y%m%d%H%M%S",localtime);
 	my %jobParams=(
 		maxMem=>$maxMem,
@@ -984,7 +984,9 @@ $pathR/R CMD BATCH --no-save --no-restore '--args $quantifDir $params{RT_SD_FILT
 		chmod $modBash, $scriptfile;
 
 		# my $maxMem=(int(1.5 + 0.75*$numAna)).'Gb';
-		my $maxMem=int(3 + 0.2*$numAna).'Gb';
+		# my $maxMem=int(3 + 0.2*$numAna).'Gb';
+		my $coeff=($numAna > 100)? 0.3 : ($numAna > 50)? 0.4 : ($numAna > 25)? 0.6 : ($numAna > 10)? 0.8  : 1;
+		my $maxMem=int(3.5 + $coeff*$numAna).'Gb';
 		my $timeStamp=strftime("%Y%m%d%H%M%S",localtime);
 		my %jobParams=(
 			maxMem=>$maxMem,
@@ -2092,6 +2094,7 @@ package mzXMLHandler; {
 
 
 ####> Revision history
+# 1.9.15 [CHANGE] Increased cluster memory in step-based computation (PP 28/06/21)
 # 1.9.14 [CHANGE] Step-based cluster memory computation for both sub jobs (PP 24/06/21)
 # 1.9.13 [CHANGE] Higher cluster memory for file parsing (step 1) (PP 21/06/21)
 # 1.9.12 [CHANGE] Lower cluster memory estimation for all child jobs (PP 02/06/21)

@@ -1,6 +1,6 @@
 #!/usr/local/bin/perl -w
 ################################################################################
-# myproms4datFiles.pl        1.0.7D                                             #
+# myproms4datFiles.pl        1.0.9                                             #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -43,15 +43,19 @@ use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI ':standard';
 use strict;
 
-print header(-type=>'text/plain'); warningsToBrowser(1);
 
 ##################
 ####>Security<####
 ##################
 my @remoteHostIPs=( # Uncomment (#) and add comma (,) after each server but last
-	# '<IP address of myProMS web server>' (Add comma (,) after each entry but last)
+	'10.2.0.30', # pangaea
+	'10.2.200.39', # dev
+	'10.2.0.193', # new prod
+	'10.2.200.38', # dev/prod on bi-web02
+	'10.200.10.172', # BIWS ppoullet
+	'10.200.10.93' # BIWS fyvon
 );
-if (scalar @remoteHostIPs) {
+if (!param('SKIP') && scalar @remoteHostIPs && $ENV{'REMOTE_ADDR'}) {
 	my $okRequest=0;
 	foreach my $allowedIP (@remoteHostIPs) {
 		if ($allowedIP eq $ENV{'REMOTE_ADDR'}) {
@@ -60,6 +64,7 @@ if (scalar @remoteHostIPs) {
 		}
 	}
 	unless ($okRequest) {
+		print header(-type=>'text/plain'); warningsToBrowser(1);
 		print "# REQUEST DENIED FOR HOST $ENV{REMOTE_ADDR}\n";
 		exit;
 	}
@@ -68,13 +73,32 @@ if (scalar @remoteHostIPs) {
 ####################
 ####>Parameters<####
 ####################
-my $action=(param('ACT'))? param('ACT') : 'test';
+my $action=param('ACT') || 'test';
+
+if ($action ne 'get') { # different header for 'get'
+	print header(-type=>'text/plain'); warningsToBrowser(1);
+}
 
 ##############
 ####>Test<####
 ##############
 if ($action eq 'test') {
 	print "# OK FROM $ENV{SERVER_NAME}\n";
+	exit;
+}
+
+#################################
+####>Mascot server variables<####
+#################################
+elsif ($action eq 'mascotVar') {
+	print qq |
+<B>Script variable:</B><BR>
+-Perl \$0: $0<BR><BR>
+<B>Known paths (\@INC):</B><BR>
+|;
+	foreach my $v (@INC) {print "$v<BR>\n";}
+	print "<BR><B>Environment variables (\%ENV):</B><BR>\n";
+	foreach my $v (sort{lc($a) cmp lc($b)} keys %ENV) {print "$v: $ENV{$v}<BR>\n";}
 	exit;
 }
 
@@ -164,7 +188,10 @@ elsif ($action eq 'get') {
 			while ((my $file=readdir(DATDIR))) {
 				next if $cacheDir =~ /^\.\.?$/; # skip . and ..
 				if ($file =~ /$infos[3].*\.$popFile\.pop/) {
-					open(POP,"../data/cache/$year/$month/$cacheDir/$file");
+					my $popFile="../data/cache/$year/$month/$cacheDir/$file";
+					my $fileSize=-s $popFile;
+					print header(-type=>'text/plain',-'content-length'=>$fileSize); warningsToBrowser(1);
+					open(POP,$popFile);
 					while (<POP>) {
 						print $_;
 					}
@@ -178,7 +205,10 @@ elsif ($action eq 'get') {
 		}
 		close CACHEDIR;
 	}
-	else{
+	else {
+		# my $fileSize=-s $selFile;
+		# print header(-type=>'text/plain',-'content-length'=>$fileSize); warningsToBrowser(1);
+		print header(-type=>'text/plain'); warningsToBrowser(1);
 		open(DAT,$selFile); # || die "Can't open file $selFile\n";
 		while (<DAT>) {
 			print $_;
@@ -189,6 +219,8 @@ elsif ($action eq 'get') {
 }
 
 ####>Revision history<####
+# 1.0.9 [BUGFIX] Removed content-length for file retrieval to prevent myProMS timeout (PP 02/07/21)
+# 1.0.8 [FEATURE] Added ACT=mascotVar to retrieve Mascot server variables and check on $ENV{REMOTE_ADDR} & content-length for file retrieval (PP 28/06/21)
 # 1.0.7 Send Mascot *.pop files created in the cache folder when Percolator is run (GA 22/09/16)
 # 1.0.6 Cleaner line ending during search log scan (PP 28/10/13)
 # 1.0.5 GPL license (PP 19/09/13)
