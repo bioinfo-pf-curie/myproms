@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 #############################################################################
-# analysePhospho.cgi         2.0.9                                          #
+# analysePhospho.cgi         2.1.0                                          #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                   #
 # Contact: myproms@curie.fr                                                 #
 # Script processing PhosphoRS analyses started by selectAnalyses.cgi        #
@@ -76,13 +76,24 @@ if ($#ARGV < 0) {
 <LINK rel="stylesheet" href="$promsPath{html}/promsStyle.css" type="text/css">
 </HEAD>
 <BODY background="$promsPath{images}/bgProMS.gif">
+<CENTER><FONT class="title">Deleting Previous PhosphoRS Analyses</FONT></CENTER>
+<BR><BR>
 |;
-		print "<FONT class=\"title3\">&nbsp;&nbsp;- ";
 		my $dbh=&promsConfig::dbConnect;
-		&deletePRS($dbh,param('deleteID'),1);
-		print "</FONT><BR>\n";
+		my $sthAN = $dbh->prepare("SELECT NAME FROM ANALYSIS WHERE ID_ANALYSIS=?");
+		####>Looping through analyses<####
+		foreach my $anaID (split(',',param('deleteID'))) {
+			$anaID=~s/\D+//g; # clean parameter
+			next unless $anaID;
+			$sthAN->execute($anaID);
+			my ($anaName)=$sthAN->fetchrow_array;
+			print "<BR><FONT class=\"title3\">&nbsp;&nbsp;- Analysis $anaName...";
+			&deletePRS($dbh,$anaID);
+			print " Done.</FONT><BR>\n";
+		}
+		$sthAN->finish;
 		$dbh->disconnect;
-
+		sleep 3;
 		print qq
 |<SCRIPT type="text/javascript">
 window.location="$promsPath{cgi}/selectAnalyses.cgi?ID=$branchID&callType=phosphoRS";
@@ -803,6 +814,7 @@ sub deletePRS{
 }
 
 ####>Revision history<####
+# 2.1.0 [FEATURE] Handle reversion of multiple Analyses at once (PP 02/08/21)
 # 2.0.9 [BUGFIX] Multiple fixes including ended jobs detection in cluster context (PP 21/04/21) 
 # 2.0.8 [FEATURE] Clears PhosphoRS error & MySQL8 compatibility (PP 12/02/21)
 # 2.0.7 [UPDATE] Changed JOB_HISTORY.STATUS to JOB_HISTORY.JOB_STATUS (PP 28/08/20)

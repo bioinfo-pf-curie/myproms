@@ -1,5 +1,5 @@
 ################################################################################
-# promsQuantif.pm           1.9.9                                              #
+# promsQuantif.pm           1.9.10                                             #
 # Authors: P. Poullet, G. Arras, S. Liva (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -48,7 +48,7 @@ $VERSION=1.00;
 
 #use POSIX qw(strftime);
 use strict;
-use File::Path qw(rmtree); # remove_tree
+use File::Path qw(rmtree make_path); # remove_tree
 
 my $MAX_INF_RATIO_DB=1000;
 my $MIN_INF_RATIO_DB=1/$MAX_INF_RATIO_DB; # 0.001;
@@ -201,7 +201,7 @@ sub getQuantifNormalizationName {
 sub dbCreateProteinQuantification {
 	my ($quantifID,$path)=@_;
 	$path="." unless $path;
-	system "mkdir -p $path" unless -e $path;
+	make_path($path) unless -e $path;
 	my $dbFile="$path/protein_quantification_$quantifID.db";
 	my %promsPath=&promsConfig::getServerInfo('no_user');
 	my $dbTemplate="$promsPath{quantification}/protein_quantification_template.db";
@@ -2452,6 +2452,7 @@ sub siteCode2QuantifFileCode { # Convert standardized modCodeStrg (w mod ID or m
 1;
 
 ####>Revision history
+# 1.9.10 [MINOR] Changed from mkdir -p to make_path to avoid system cmd failure (VS 25/05/2021)
 # 1.9.9 [CHANGE] Added &preparePTMcontexts for PTM context motif preprocessing and upgraded &modifyFreeResidues for context-compatibility (PP 05/03/21)
 # 1.9.8 [BUGFIX] Minor fix in &fetchQuantifications for LFQ to exclude peptide counts for sites quantified only by non-LFQ metrics (PP 18/02/21)
 # 1.9.7 [CHANGE] &modifyFreeResidues replaces &recreateModifSites & &displayModificationSites compatible with free residue quantification (PP 23/11/20)

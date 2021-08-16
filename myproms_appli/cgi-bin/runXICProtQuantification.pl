@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# runXICProtQuantification.pl       2.19.9                                     #
+# runXICProtQuantification.pl       2.19.10                                     #
 # Component of site myProMS Web Server                                         #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
@@ -4528,8 +4528,10 @@ sub importAbundanceInDB {
 
 	my $numEntities=scalar keys %{$refProteinAbundance};
 	my (%numMissingValues,%protLostLFQ);
+	my (@pepMeasures,@nonPepMeasures,%isPepMeasure);
 	foreach my $paramCode (@allMeasures) {
-		next if ($paramCode=~/_(USED|PEP)/  || $paramCode=~/^CI_(INF|SUP)/ || $paramCode=~/^GEO_(SD|CV)/); # skip peptide and variability measures
+		if ($paramCode=~/_(USED|PEP_)/) {push @pepMeasures,$paramCode; $isPepMeasure{$paramCode}=1;} else {push @nonPepMeasures,$paramCode}
+		next if ($isPepMeasure{$paramCode}  || $paramCode=~/^CI_(INF|SUP)/ || $paramCode=~/^GEO_(SD|CV)/); # skip peptide and variability measures
 		foreach my $statePos (1..$numStates) {
 			$numMissingValues{$paramCode}{$statePos}=0;
 		}
@@ -4549,15 +4551,22 @@ sub importAbundanceInDB {
 		my $numMissingLFQ=0;
 		my ($protID,$modStrg)=split(/-/,$protID0);
 		#foreach my $statePos (sort{$a<=>$b} keys %{$refProteinAbundance->{$protID0}}) { # }
+		my $okStateData=0;
 		foreach my $statePos (1..$numStates) {
 			#foreach my $paramCode (keys %{$refProteinAbundance->{$protID0}{$statePos}}) { # also includes (NUM/DIST)_(PEP/TRUE)_USED
-			foreach my $paramCode (@allMeasures) {
-				if (defined $refProteinAbundance->{$protID0}{$statePos}{$paramCode}) {
-					$sthInsProt->execute($protID,$modStrg,$quantifParamIDs{$paramCode},$refProteinAbundance->{$protID0}{$statePos}{$paramCode},$statePos);
-				}
-				elsif ($paramCode !~ /_(USED|PEP)/  && $paramCode !~ /^CI_(INF|SUP)/ && $paramCode !~ /^GEO_(SD|CV)/) {
-					$numMissingValues{$paramCode}{$statePos}++;
-					$numMissingLFQ++ if $paramCode eq 'MY_LFQ'; # For LFQ, prot can be missing in all states -> do not count as missing values but as missing prot
+			my $hasQuantifData=0;
+			foreach my $refMeasType (\@nonPepMeasures,\@pepMeasures) { # make sure to process non-peptide measures first
+				foreach my $paramCode (@{$refMeasType}) { # @allMeasures
+					if ($refProteinAbundance->{$protID0}{$statePos} && defined $refProteinAbundance->{$protID0}{$statePos}{$paramCode}) {
+						$hasQuantifData=1 unless $isPepMeasure{$paramCode};
+						next unless $hasQuantifData; # Do not record peptide measure if no quantif data (in case of LQF-only quantifs some proteins can be lost AFTER peptide count)
+						$sthInsProt->execute($protID,$modStrg,$quantifParamIDs{$paramCode},$refProteinAbundance->{$protID0}{$statePos}{$paramCode},$statePos);
+						$okStateData=1;
+					}
+					elsif (!$isPepMeasure{$paramCode}  && $paramCode !~ /^CI_(INF|SUP)/ && $paramCode !~ /^GEO_(SD|CV)/) {
+						$numMissingValues{$paramCode}{$statePos}++;
+						$numMissingLFQ++ if $paramCode eq 'MY_LFQ'; # For LFQ, prot can be missing in all states -> do not count as missing values but as missing prot
+					}
 				}
 			}
 		}
@@ -4566,7 +4575,7 @@ sub importAbundanceInDB {
 			foreach my $statePos (keys %{$numMissingValues{'MY_LFQ'}}) {$numMissingValues{'MY_LFQ'}{$statePos}--;}
 		}
 		#>All peptides
-		$sthInsProt->execute($protID,$modStrg,$quantifParamIDs{'NUM_PEP_TOTAL'},$refAllPeptides->{$protID0},undef);
+		$sthInsProt->execute($protID,$modStrg,$quantifParamIDs{'NUM_PEP_TOTAL'},$refAllPeptides->{$protID0},undef) if $okStateData;
 	}
 	$dbhLite->commit;
 	$dbhLite->disconnect;
@@ -5220,7 +5229,7 @@ sub parsePrimaryAbundanceResults { # Globals: %dataFiles, %optDataFiles, %quanti
 	}
 	# Remove keys of refPeptideCount not present in refProteinAbundance. These proteins are not quantified.
 	# They are usually lost prots when using LFQ only and it creates undef values in importAbundanceInDB which fails
-	%{$refPeptideCount} = %{$refPeptideCount}{keys %{$refProteinAbundance}};
+	# %{$refPeptideCount} = %{$refPeptideCount}{keys %{$refProteinAbundance}}; # Problem now treated in &importAbundanceInDB (PP 09/08/21)
 }
 
 sub parseSecondaryAbundanceResults {
@@ -5360,6 +5369,7 @@ sub getAllProtInfo {
 # TODO: Make clear choice for labeled quantif done with PEP_INTENSITY algo: treat as 100% Label-Free or mixed LF/Label ?????
 # TODO: Move label-free peptide matching check further downstream for compatibility with PTM quantif
 ####>Revision history<####
+# 2.19.10 [BUGFIX] Fix bug introduced in v2.19.9 with alternative correction of undef pep nb value for LFQ-only quantif (PP 09/08/21)
 # 2.19.9 [BUGFIX] Fix undef values for pep nb when using only LFQ and protein normalization (VL 25/06/21)
 # 2.19.8 [BUGFIX] Fix premature close of ABUND_LOG fh in main job fork loop by sub $SIG{CHLD} (PP 18/06/21) 
 # 2.19.7 [BUGFIX] Fix no retry limit for abundance sub job taking too long (PP 03/06/21)

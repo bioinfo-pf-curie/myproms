@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# showProtQuantification.cgi     2.14.3                                        #
+# showProtQuantification.cgi     2.14.4                                        #
 # Authors: P. Poullet, G. Arras, F. Yvon (Institut Curie)                      #
 # Contact: myproms@curie.fr                                                    #
 # Displays protein quantification data                                         #
@@ -1609,7 +1609,7 @@ sub fetchDesignQuantificationData { # GLOBAL: $selQuantifID, $ratioType, $dispMe
 		my ($GNidentID)=$dbh->selectrow_array("SELECT ID_IDENTIFIER FROM IDENTIFIER WHERE CODE='GN'");
 		my ($allAnaStrg)=$dbh->selectrow_array("SELECT GROUP_CONCAT(ID_ANALYSIS) FROM ANA_QUANTIFICATION WHERE ID_QUANTIFICATION=$selQuantifID");
 		my ($geneQuery1,$geneQuery2)=($finalView eq 'list' || $action eq 'export')? (",GROUP_CONCAT(DISTINCT MI.VALUE ORDER BY IDENT_RANK SEPARATOR ',')","LEFT JOIN MASTERPROT_IDENTIFIER MI ON P.ID_MASTER_PROTEIN=MI.ID_MASTER_PROTEIN AND MI.ID_IDENTIFIER=$GNidentID") : ('','');
-		my ($anaQuery1,$anaQuery2)=($finalView eq 'list')? (",GROUP_CONCAT(DISTINCT ID_ANALYSIS SEPARATOR ',')","INNER JOIN ANALYSIS_PROTEIN AP ON AP.ID_PROTEIN=P.ID_PROTEIN AND ID_ANALYSIS IN ($allAnaStrg)") : ('',''); #  AND VISIBILITY >= 1
+		my ($anaQuery1,$anaQuery2)=($finalView eq 'list')? (",GROUP_CONCAT(DISTINCT ID_ANALYSIS SEPARATOR ',')","LEFT JOIN ANALYSIS_PROTEIN AP ON AP.ID_PROTEIN=P.ID_PROTEIN AND ID_ANALYSIS IN ($allAnaStrg)") : ('',''); #  "LEFT JOIN" to handle rare MaxQuant bug where protein is quantified but no identified in selected Analysi(e)s
 		#my $protIdStrg=join(',',keys %{$refProteinInfo});
 		my @protIdList=keys %{$refProteinInfo};
 		while (my @subProtList=splice(@protIdList,0,1000)) { # chuncks of 1000 proteins
@@ -10279,6 +10279,7 @@ sub ajaxDisplayProteinQuantities {  # Globals: %promsPath, $selQuantifID, $light
 
 
 ####>Revision history<#####
+# 2.14.4 [BUGFIX] Handles rare MaxQuant bug where a quantified protein is not identified in selected Analyses (PP 06/08/21)
 # 2.14.3 [BUGFIX] Removed forgotten debug text & fixed global correlation heatMap (PP 26/06/21)
 # 2.14.2 [BUGFIX] Fix minor bug in AJAX protein list table header for MaxQuant (PP 16/06/21)
 # 2.14.1 [BUGFIX] Fix error when trying to display raw peptide data for Proteomic Ruler (VL 10/06/21)

@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
 
 ################################################################################
-# selectAnalyses.cgi      2.7.2                                                #
+# selectAnalyses.cgi      2.9.0                                                #
 # Authors: P. Poullet, G. arras, F. Yvon, S. Liva (Institut Curie)             #
 # Contact: myproms@curie.fr                                                    #
 ################################################################################
@@ -45,6 +45,9 @@ $| = 1;
 use strict;
 use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI ':standard';
+use POSIX qw(strftime); # to get the time
+use Spreadsheet::WriteExcel;
+use Encode qw(encode_utf8 decode_utf8); # ... Encode needed if hard UTF8 chars in code!!!
 use promsConfig;
 use promsMod;
 
@@ -61,12 +64,13 @@ $msTypeName{'MIS'}="MS/MS"; #redef, to keep space
 ###############################
 my $projectID=param('id_project'); # defined for duplicate, appFilter & remFilter
 my $branchID=param('ID');
-my $goType=(param('goType'))? param('goType'):'ana';
+my $goType=param('goType') || 'ana';
 my ($item,$itemID)=split(':',$branchID);
 my $callType = param('callType') || 'report'; #can be report,list,delete,duplicate,appFilter,remFilter,clearSel,remFlag
 $callType='report' if $callType eq 'send'; # just in case
 my $srcType=(param('srcType'))? param('srcType') : ($callType eq 'goQuantiAnalysis')? 'design' : 'ana';
 my $showParam = param('showParam') || 0;
+my $export=param('export') || 0; # only when callType is 'list'
 $item=lc($item);
 my $ITEM=uc($item);
 
@@ -104,10 +108,12 @@ my (%listDataBank,@itemAnalyses,@itemDesigns,%okDelete,%okRemFilter,%okActLowSco
 
 ####>PhosphoRS<####
 my (%prsParam,%prsRunning,%anaHasPhospho);
+my ($okPRSCurDir,$okRevertPRS)=(0,0);
 my $sthPhospho;
 if ($callType eq 'phosphoRS') {
 	my ($phosphoModID)=$dbh->selectrow_array("SELECT ID_MODIFICATION FROM MODIFICATION WHERE UNIMOD_ACC=21");
 	$sthPhospho=$dbh->prepare("SELECT 1 FROM ANALYSIS_MODIFICATION WHERE ID_MODIFICATION=$phosphoModID AND ID_ANALYSIS=?");
+	$okPRSCurDir=1 if (-e "$promsPath{tmp}/phosphoRS" && -e "$promsPath{tmp}/phosphoRS/current");
 }
 
 ####>Recovering DBs name<####
@@ -292,17 +298,24 @@ foreach my $sthI (@sthItem) {
 				$prsParamFile = "$promsPath{valid}/ana_$anaID/PRSparam_$dataFile.txt";
 			}
 			$prsRunning{$anaID}=0; # always defined
-			if (-e "$promsPath{tmp}/phosphoRS" && -e "$promsPath{tmp}/phosphoRS/current" && glob "$promsPath{tmp}/phosphoRS/current/$anaID\_*.flag") {
-				$prsRunning{$anaID}=1;
-				#my ($errorFile)=(glob "$promsPath{tmp}/phosphoRS/current/$anaID\_*_error.txt")[0];
+			my @flags=($okPRSCurDir)? glob "$promsPath{tmp}/phosphoRS/current/$anaID\_*.flag" : ();
+			if (scalar @flags) {
+				foreach my $flagFile (@flags) {
+					if ($flagFile=~/_(wait|run)\.flag$/) {$prsRunning{$anaID}=1;}
+					elsif ($flagFile=~/_end\.flag$/) {unlink $flagFile;} # clean tmp dir
+				}
 				my $errorFile;
 				my $latestJob=0;
-				foreach my $file (glob "$promsPath{tmp}/phosphoRS/current/$anaID\_*_error.txt") { # keep only latest job if many
-					my ($job)=$file=~/current\/$anaID\_(\d+)/;
-					if ($job*1 > $latestJob) {
-						$latestJob=$job;
-						$errorFile=$file;
+				my @errors=glob "$promsPath{tmp}/phosphoRS/current/$anaID\_*_error.txt";
+				foreach my $file (@errors) { # keep only latest job if many
+					if ($prsRunning{$anaID}) {
+						my ($job)=$file=~/current\/$anaID\_(\d+)/;
+						if ($job*1 > $latestJob) {
+							$latestJob=$job;
+							$errorFile=$file;
+						}
 					}
+					else {unlink $file;} # clean tmp dir
 				}
 				#if ($errorFile) {$prsRunning{$anaID}=(-s $errorFile)? -1 : 1;} # -1 => error in file
 				if ($errorFile && -s $errorFile) {$prsRunning{$anaID}=-1} # error in file
@@ -467,6 +480,12 @@ elsif ($callType eq 'list' && param('quanti')) {
 
 $dbh->disconnect;
 
+####>Export to Excel<####
+if ($export && $callType eq 'list') {
+	&exportAnalysisList;
+	exit;
+}
+
 #######################
 ####>Starting HTML<####
 #######################
@@ -497,6 +516,9 @@ if ($callType eq 'list') {
 	print qq
 |function changeViewParam(expMode) {
 	window.location='./selectAnalyses.cgi?callType=list&ID=$branchID&showParam='+expMode$addParam;
+}
+function exportAnalysisList() {
+	window.location='./selectAnalyses.cgi?callType=list&ID=$branchID&showParam=$showParam&export=1'$addParam;
 }
 |;
 }
@@ -572,8 +594,19 @@ function checkall(checkStatus){
 	}
 	return true;
 }
-function revertPhosphoRS(anaID) {
-	window.location="$promsPath{cgi}/analysePhospho.cgi?deleteID="+anaID+"&branchID=$branchID";
+function revertPhosphoRS() {
+	var revertBoxes=document.selAnaForm.deleteID;
+	if (!revertBoxes.length) revertBoxes=[revertBoxes]; //make sure always an array
+	var selAnaIDs=[];
+	for (let i=0; i<revertBoxes.length; i++) {
+		if (revertBoxes[i].checked) selAnaIDs.push(revertBoxes[i].value);
+	}
+	if (selAnaIDs.length) {
+		window.location="$promsPath{cgi}/analysePhospho.cgi?branchID=$branchID&deleteID="+(selAnaIDs.join(','));
+	}
+	else {
+		alert('ERROR: Select at least 1 Analysis');
+	}
 }
 function clearPhosphoRSerrors(anaIdList) {
 	window.location="$promsPath{cgi}/analysePhospho.cgi?branchID=$branchID&clearErrors=1&anaList="+anaIdList;
@@ -827,7 +860,7 @@ if ($callType eq 'list') {
 	my ($buttonAction,$expMode)=($showParam)? ('Hide',0) : ('Show',1);
 	print qq
 |<TABLE border=0 cellspacing=0 cellpadding=0>
-<TR><TD colspan=8><INPUT type="button" value="$buttonAction Search Parameters" onclick="changeViewParam($expMode)"></TD></TR>
+<TR><TD colspan=8><INPUT type="button" value="$buttonAction Search Parameters" onclick="changeViewParam($expMode)">&nbsp;<INPUT type="button" value="Export List" onclick="exportAnalysisList()"></TD></TR>
 <TR bgcolor="$darkColor">
 |;
 }
@@ -964,7 +997,7 @@ if ($srcType eq 'ana') {
 	print qq
 |	</TH>
 	<TH class="rbBorder" nowrap colspan=2>&nbsp;Analysis name&nbsp;</TH>
-	<TH class="rbBorder">&nbsp;MS type&nbsp;<BR>& nile</TH>
+	<TH class="rbBorder">&nbsp;MS type&nbsp;<BR>& File</TH>
 	<TH class="rbBorder">&nbsp;Instrument&nbsp;</TH>
 	<TH class="rbBorder">Search file<BR>&nbsp;& Engine&nbsp;</TH>
 	<TH class="rbBorder">Databank(s)<BR>&nbsp;Taxonomy&nbsp;</TH>
@@ -980,26 +1013,26 @@ else {
 }
 if ($callType eq 'phosphoRS') {
 	print qq
-|	<TH class="rbBorder">&nbsp;Selected&nbsp;<BR>&nbsp;proteins&nbsp;</TH>
+|	<TH class="rbBorder">&nbsp;Validated&nbsp;<BR>&nbsp;proteins&nbsp;</TH>
 	<TH class="bBorder">&nbsp;PhosphoRS&nbsp;<BR>&nbsp;status&nbsp;</TH>
 |;
 }
 elsif ($callType eq 'goQuantiAnalysis') {
-	print "<TH class=\"rbBorder\">&nbsp;Selected&nbsp;<BR>&nbsp;proteins&nbsp;</TH>\n" unless $srcType eq 'design';
+	print "<TH class=\"rbBorder\">&nbsp;Validated&nbsp;<BR>&nbsp;proteins&nbsp;</TH>\n" unless $srcType eq 'design';
 	print qq
 |	<TH class="rbBorder">&nbsp;Select Quantification&nbsp;</TH>
 	<TH class="rbBorder">&nbsp;Ratio&nbsp;</TH>
 |;
 }
-elsif($callType eq 'list' and param('quanti')){
+elsif ($callType eq 'list' && param('quanti')){
 	print qq
-|	<TH class="rbBorder">&nbsp;Selected&nbsp;<BR>&nbsp;proteins&nbsp;</TH>
+|	<TH class="rbBorder">&nbsp;Validated&nbsp;<BR>&nbsp;proteins&nbsp;</TH>
 	<TH class="rbBorder">&nbsp;Selected Quantification&nbsp;</TH>
 	<TH class="rbBorder">&nbsp;Selected&nbsp;<BR>&nbsp;Ratio&nbsp;</TH>
 |;
 }
 else {
-	print "<TH class=\"bBorder\">&nbsp;Selected&nbsp;<BR>&nbsp;proteins&nbsp;</TH>";
+	print "<TH class=\"bBorder\">&nbsp;Validated&nbsp;<BR>&nbsp;proteins&nbsp;</TH>";
 }
 my %itemIcones=&promsConfig::getItemIcones;
 #my $bgColor=($ITEM eq 'SAMPLE' || $ITEM eq 'SPOT')? $lightColor : $darkColor;
@@ -1092,7 +1125,7 @@ if ($srcType eq 'ana') {
 	<TD class="center">&nbsp;$minScore&nbsp;<BR>&nbsp;$maxRank&nbsp;</TD>
 	<TD class="center">&nbsp;$labeling&nbsp;</TD>
 |;
-		##>Selected proteins
+		##>Validated proteins
 		if ($valStat>=1) {print "<TD class=\"center\">$anaProteins{$anaID}[0] ($anaProteins{$anaID}[1])</TD>\n";}
 		else {print "<TD class=\"center\">$anaProteins{$anaID}[0] / $anaProteins{$anaID}[1]</TD>\n";}
 
@@ -1113,10 +1146,11 @@ if ($srcType eq 'ana') {
 						$pRSstatus .= "&nbsp;$name: $value&nbsp;\n<BR>";
 					}
 					$pRSstatus =~ s/<BR>$//;
-					$pRSstatus .= "</TD><TD align=\"center\" valign=\"center\">&nbsp;<INPUT type=\"button\" value=\"Revert\" class=\"font11\" onclick=\"revertPhosphoRS($anaID)\">&nbsp;</TD></TABLE>";
+					$pRSstatus .= "</TD><TD align=\"center\" valign=\"center\">&nbsp;<LABEL><INPUT type=\"checkbox\" name=\"deleteID\" value=\"$anaID\"/><B>Revert</B></LABEL>&nbsp;</TD></TABLE>";
+					$okRevertPRS=1;
 				}
 				elsif ($prsRunning{$anaID}==1) {
-					$pRSstatus = '&nbsp;<FONT style="color:#00A000;font-weight:bold">On-going...</FONT>&nbsp;';
+					$pRSstatus = '&nbsp;<FONT style="color:#00A000;font-weight:bold">Ongoing...</FONT>&nbsp;';
 				}
 				elsif ($prsRunning{$anaID}==-1) {
 					$pRSstatus = "&nbsp;<FONT style=\"color:#DD0000;font-weight:bold\">Error</FONT>&nbsp;<INPUT type=\"button\" value=\"Clear\" class=\"font11\" onclick=\"clearPhosphoRSerrors($anaID)\">&nbsp;";
@@ -1153,7 +1187,7 @@ if ($srcType eq 'ana') {
 			}
 
 		}
-		elsif ($callType eq 'list' and param('quanti')) {
+		elsif ($callType eq 'list' && param('quanti')) {
 			print "<TD>&nbsp;$quantiData{$anaID}{'Quantification'}&nbsp;</TD>\n";
 			print "<TD>&nbsp;$quantiData{$anaID}{'Ratio'}&nbsp;</TD>\n";
 		}
@@ -1166,24 +1200,25 @@ if ($srcType eq 'ana') {
 |;
 			foreach my $param (sort {$a cmp $b} keys %{$listParam{$anaID}}) {
 				(my $trueParam=$param)=~s/^\w://; # remove sort tag
-				if ($trueParam eq 'Databank') {
+				if ($trueParam=~/Databank|MS tolerance/) { # MaxQuant "MS/MS tolerance"
 					#>Fetching number of databanks searched
 					my $lastIndex=0;
 					foreach my $subParam (keys %{$listParam{$anaID}{$param}}) {
 						$lastIndex=$#{$listParam{$anaID}{$param}{$subParam}};
 						last;
 					}
-					$trueParam='Multiple databanks' if $lastIndex >= 1;
+					$trueParam='Multiple databanks' if ($trueParam eq 'Databank' && $lastIndex >= 1);
 					print "<TR valign=top><TH align=right nowrap>$trueParam:</TH><TD width=100%>";
+					my @subParams;
 					foreach my $i (0..$lastIndex) {
-						my $first=1;
+						my @subSubParams;
 						foreach my $subParam (sort {$a cmp $b} keys %{$listParam{$anaID}{$param}}) {
 							(my $trueSubParam=$subParam)=~s/^\w://; # remove sort tag
-							if ($first) {print "&nbsp;&bull;";} else {print "&nbsp;&nbsp;&nbsp;";}
-							print "<B>$trueSubParam:</B>&nbsp;$listParam{$anaID}{$param}{$subParam}[$i]<BR>";
-							$first=0;
+							push @subSubParams,"<B>$trueSubParam:</B>&nbsp;$listParam{$anaID}{$param}{$subParam}[$i]";
 						}
+						push @subParams,join("<BR>&nbsp;&nbsp;",@subSubParams);
 					}
+					print "&nbsp;&bull;",join("<BR>&nbsp;&bull;",@subParams);
 				}
 				else {print "<TR valign=top><TH align=right nowrap>$trueParam:</TH><TD width=100%>&nbsp;$listParam{$anaID}{$param}</TD></TR>\n";}
 			}
@@ -1276,15 +1311,191 @@ else {
 			($callType eq 'export')? 'Export Analyses' :
 			'';
 		print "<INPUT type=\"submit\" name=\"Submit\" value=\"$submitName\" class=\"title3\"$disabSubmit>&nbsp;&nbsp;";
-		print "<INPUT type=\"button\" value=\"Clear all errors\" class=\"title3\" onclick=\"clearPhosphoRSerrors('",join(',',@errorInPhosphoRS),"')\"/>&nbsp;&nbsp;" if ($callType eq 'phosphoRS' && scalar @errorInPhosphoRS > 1);
+		if ($callType eq 'phosphoRS') {
+			print "<INPUT type=\"button\" value=\"Clear all errors\" class=\"title3\" onclick=\"clearPhosphoRSerrors('",join(',',@errorInPhosphoRS),"')\"/>&nbsp;&nbsp;" if scalar @errorInPhosphoRS > 1;
+			print "<INPUT type=\"button\" value=\"Revert PhosphoRS\" class=\"title3\" onclick=\"revertPhosphoRS()\"/>&nbsp;&nbsp;" if $okRevertPRS;
+		}
 	}
 	print "<INPUT type=\"button\" value=\"Cancel\" onclick=\"cancelAction();\"></TD></TR>\n";
 }
 print "</TABLE>\n";
 print "</FORM>\n" if $callType ne 'list';
 print "</BODY>\n</HTML>\n";
+exit;
+
+#######################################
+####<Export Analysis list to Excel>####
+#######################################
+sub exportAnalysisList { # All primary variables are global
+
+	my $title="List of Analyses in ".&promsMod::getItemType($ITEM)." '$itemName'";
+	####<Prepare export to Excel>####
+	my $timeStamp=strftime("%Y-%m-%d-%H-%M",localtime);
+
+	my $workbook=Spreadsheet::WriteExcel->new("-");
+	$workbook->set_properties(title=>'List of Analyses',
+							  author=>'myProMS server',
+							  comments=>'Automatically generated with Perl and Spreadsheet::WriteExcel'
+							  );
+	$workbook->set_custom_color(40,189,215,255); # light light color  #BDD7FF (new myProMS colors V3.5+)
+	#$workbook->set_custom_color(41,128,179,255); # dark blue color  #80B3FF
+	my %itemFormat=(
+			title =>			$workbook->add_format(align=>'center',size=>18,bold=>1,border=>1),
+			header =>			$workbook->add_format(align=>'center',size=>10,text_wrap=>1,bold=>1,bg_color=>40,border=>1),
+			headerR =>			$workbook->add_format(align=>'right',valign=>'top',size=>10,text_wrap=>1,bold=>1,bg_color=>40,border=>1),
+			headerVCenter =>	$workbook->add_format(align=>'center',valign=>'vcenter',size=>10,text_wrap=>1,bold=>1,bg_color=>40,border=>1),
+			mergeRowHeader =>	$workbook->add_format(align=>'center',valign=>'vcenter',size=>12,text_wrap=>1,bold=>1,bg_color=>40,border=>1),
+			mergeColHeader =>	$workbook->add_format(align=>'center',valign=>'vcenter',size=>12,text_wrap=>1,bold=>1,bg_color=>40,border=>1),
+			mergeColHeaderL =>	$workbook->add_format(align=>'left',valign=>'vcenter',size=>12,text_wrap=>1,bold=>1,bg_color=>40,border=>1),
+			text =>				$workbook->add_format(align=>'left',size=>10,valign=>'top',text_wrap=>0,border=>1),
+			textWrap =>			$workbook->add_format(align=>'left',size=>10,valign=>'top',text_wrap=>1,border=>1),
+			#mergeText =>		$workbook->add_format(align=>'left',size=>10,valign=>'top',text_wrap=>0,border=>1),
+			mergeColText =>		$workbook->add_format(align=>'left',size=>10,text_wrap=>1,border=>1),
+			#numberVis =>			$workbook->add_format(size=>10,align=>'center',valign=>'top',border=>1,bold=>1),
+			#numberHid =>			$workbook->add_format(size=>10,align=>'center',valign=>'top',border=>1),
+			#numberVisBC =>			$workbook->add_format(size=>10,align=>'center',valign=>'top',border=>1,bold=>1,color=>'grey'),
+			#numberHidBC =>			$workbook->add_format(size=>10,align=>'center',valign=>'top',border=>1,color=>'grey'),
+			#numberVisVP =>			$workbook->add_format(size=>10,align=>'center',valign=>'top',border=>1,bold=>1,italic=>1),
+			#numberHidVP =>			$workbook->add_format(size=>10,align=>'center',valign=>'top',border=>1,italic=>1),
+			number =>			$workbook->add_format(size=>10,align=>'center',valign=>'top',border=>1),
+			#mergeNumber =>		$workbook->add_format(size=>10,align=>'center',valign=>'top',border=>1),
+			number1d =>			$workbook->add_format(size=>10,align=>'center',valign=>'top',num_format=>'0.0',border=>1),
+#mergeNumber1d =>	$workbook->add_format(size=>10,align=>'center',valign=>'top',num_format=>'0.0',border=>1)
+			);
+
+	####<Start printing>####
+	print header(-type=>"application/vnd.ms-excel",-attachment=>"Analysis_list_$timeStamp.xls");
+	my $worksheet=$workbook->add_worksheet('Analyses');
+
+	###<Headers>###
+	my @headerList=('Status','MS type','MS file','Instrument','Search file','Search engine','Databank(s)','Taxonomy','Min. score','Max. rank','Labeling','Validated proteins');
+	my $xlsCol=scalar @headerList;
+	my @sortedParams; # all params for all analyses
+	if ($showParam==1) {
+		my %allParams;
+		foreach my $refAnaData (@itemAnalyses) {
+			my $anaID=$refAnaData->[0];
+			foreach my $param (keys %{$listParam{$anaID}}) {$allParams{$param}=1;}
+		}
+		foreach my $param (sort {$a cmp $b} keys %allParams) {
+			push @sortedParams,$param;
+			(my $trueParam=$param)=~s/^\w://; # remove sort tag
+			push @headerList,$trueParam;
+		}
+	}
+	$worksheet->set_column(0,0,50); # (+/-Sample) Analysis col width
+	my $xlsRow=0;
+	$worksheet->merge_range($xlsRow,0,$xlsRow,scalar @headerList,decode_utf8($title),$itemFormat{'title'});
+	$xlsRow++;
+	$worksheet->merge_range($xlsRow,0,$xlsRow+1,0,'Analysis name',$itemFormat{'mergeRowHeader'}); # not if 
+	$worksheet->merge_range($xlsRow,1,$xlsRow,$xlsCol,'myProMS parameters',$itemFormat{'mergeColHeader'});
+	$worksheet->merge_range($xlsRow,++$xlsCol,$xlsRow,scalar @headerList,'Search engine parameters',$itemFormat{'mergeColHeader'}) if $showParam==1;
+	$xlsRow++;
+	$xlsCol=0;
+	foreach my $headerName (@headerList) {
+		$worksheet->write_string($xlsRow,++$xlsCol,$headerName,$itemFormat{'header'});
+	}
+	foreach my $refAnaData (@itemAnalyses) {
+		$xlsRow++;
+		$xlsCol=-1;
+		my ($anaID,$valStat,$msType,$dataFile,$fileFormat,$wiffFile,$taxonomy,$maxRank,$minScore,$instrument,$refDbUsed,$labeling,$lowerScores,@projHierarchy)=@{$refAnaData};
+		if ($taxonomy) {
+			$taxonomy=~s/\(.*\)//;
+			$taxonomy='('.$taxonomy.')';
+		}
+		else {$taxonomy='';}
+		$msType=$msTypeName{$msType}; # global
+		$fileFormat=~s/\..*//;
+		$instrument='-' unless $instrument;
+		$maxRank='-' unless $maxRank;
+		$minScore='-' unless defined $minScore;
+		#my $quantifMethod=($quantifID)? $listQuantif{$quantifID} : 'None';
+		$labeling='None' unless $labeling;
+		$labeling=~s/ .+//; # iTRAQ 4plex -> iTRAQ
+		##>Row color
+		# my $fatherIt=$projHierarchy[-3];
+		# if (($fatherIt && (!$prevItemName{$fatherIt} || $prevItemName{$fatherIt} ne $projHierarchy[-2])) || $ITEM =~ /SAMPLE|SPOT/) { # keep color if same analysis parent item (SAMPLE or SPOT)
+		# 	$bgColor=($bgColor eq $lightColor)? $darkColor : $lightColor;
+		# }
+		##>Parents
+		my $parentStrg='';
+		for (my $i=0;$i<=$#projHierarchy-2;$i+=2) { # stops before ana name
+			my $IT=$projHierarchy[$i];
+			my $itName=$projHierarchy[$i+1];
+			if ($prevItemName{$IT} && $prevItemName{$IT} eq $itName) {
+				$parentStrg.="$itName > ";
+			}
+			else {
+				$parentStrg.="$itName > ";
+				$prevItemName{$projHierarchy[$i]}=$itName;
+				for (my $j=$i+2;$j<$#projHierarchy-1;$j+=2) {$prevItemName{$projHierarchy[$j]}='';}
+			}
+		}
+		my $anaPathName=$parentStrg.=$projHierarchy[-1];
+		$worksheet->write_string($xlsRow,++$xlsCol,$anaPathName,$itemFormat{'textWrap'}); # Ana path & name
+		##>Analysis status
+		my $statusStrg=($valStat==-1)? 'Databank not scaned' : ($valStat==0)? 'Not validated' : ($valStat==1)? 'Partially validated' : 'Validated';
+		$worksheet->write_string($xlsRow,++$xlsCol,$statusStrg,$itemFormat{'text'});
+		$worksheet->write_string($xlsRow,++$xlsCol,$msType,$itemFormat{'text'});
+		$worksheet->write_string($xlsRow,++$xlsCol,$wiffFile,$itemFormat{'text'});
+		$worksheet->write_string($xlsRow,++$xlsCol,$instrument,$itemFormat{'text'});
+		$worksheet->write_string($xlsRow,++$xlsCol,$dataFile,$itemFormat{'text'});
+		$worksheet->write_string($xlsRow,++$xlsCol,$fileFormat,$itemFormat{'text'}); # Search engine
+		##>Databank(s)
+		my @dbs;
+		foreach my $dbID (@{$refDbUsed}) {
+			push @dbs,$listDataBank{$dbID};
+		}
+		$worksheet->write_string($xlsRow,++$xlsCol,join(', ',@dbs),$itemFormat{'text'});
+		$worksheet->write_string($xlsRow,++$xlsCol,$taxonomy,$itemFormat{'text'});
+		$worksheet->write_number($xlsRow,++$xlsCol,$minScore,$itemFormat{'number'});
+		$worksheet->write_number($xlsRow,++$xlsCol,$maxRank,$itemFormat{'number'});
+		$worksheet->write_string($xlsRow,++$xlsCol,$labeling,$itemFormat{'text'});
+		##>Validated proteins
+		my $validProtStrg=($valStat>=1)? "$anaProteins{$anaID}[0] ($anaProteins{$anaID}[1])" : "$anaProteins{$anaID}[0] / $anaProteins{$anaID}[1]";
+		$worksheet->write_string($xlsRow,++$xlsCol,$validProtStrg,$itemFormat{'text'});
+		##>True search parameters
+		if ($showParam==1) {
+			foreach my $param (@sortedParams) {
+				unless ($listParam{$anaID}{$param}) {
+					$xlsCol++;
+					next;
+				}
+				my $paramStrg='';
+				(my $trueParam=$param)=~s/^\w://; # remove sort tag
+				if ($trueParam=~/Databank|MS tolerance/) { # MaxQuant "MS/MS tolerance"
+					#>Fetching number of databanks searched
+					my $lastIndex=0;
+					foreach my $subParam (keys %{$listParam{$anaID}{$param}}) {
+						$lastIndex=$#{$listParam{$anaID}{$param}{$subParam}};
+						last;
+					}
+					my @subParams;
+					foreach my $i (0..$lastIndex) {
+						my @subSubParams;
+						foreach my $subParam (sort {$a cmp $b} keys %{$listParam{$anaID}{$param}}) {
+							(my $trueSubParam=$subParam)=~s/^\w://; # remove sort tag
+							push @subSubParams,$trueSubParam.':'.$listParam{$anaID}{$param}{$subParam}[$i];
+						}
+						push @subParams,join(", ",@subSubParams);
+					}
+					$paramStrg=join(" / ",@subParams);
+				}
+				else {
+					$paramStrg=$listParam{$anaID}{$param};
+				}
+				if ($paramStrg !~ /^-?\d+\.?\d*$/) {$worksheet->write_string($xlsRow,++$xlsCol,$paramStrg,$itemFormat{'text'});} # string
+				else {$worksheet->write_number($xlsRow,++$xlsCol,$paramStrg,$itemFormat{'number'});} # number
+			}
+		}
+	}
+	$workbook->close();
+	exit;
+}
 
 ####>Revision history<####
+# 2.9.0 [FEATURE] Export option for Analysis list & fix for MaxQuant MS/MS tolerance display (PP 14/08/21)
+# 2.8.0 [FEATURE] PhosphoRS reversion for multiple Analyses at once (PP 02/08/21)
 # 2.7.2 [BUGFIX] Checks only latest error file when listing Analyses PhosphoRS status (PP 22/04/21)
 # 2.7.1 [FEATURE] Option to clear PhosphoRS error & speed up loading (PP 11/02/21)
 # 2.7.0 [CHANGE] Make the generation of the experiment design file optional (VS 04/02/21)
